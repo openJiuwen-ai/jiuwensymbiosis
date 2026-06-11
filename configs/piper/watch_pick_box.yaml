@@ -1,0 +1,71 @@
+# Piper 常驻监视抓放盒子 —— 把黑盒子放到白盒子上面，完成后回初始观测位持续观测，
+# 用视觉判定任务是否已完成：黑盒已经在白盒上→判完成→停在初始位等待；你把黑盒从白盒上
+# 移走→黑盒不在白盒上→继续抓放。启动时没看到黑盒也停在初始位等待，直到观测到。
+#
+# 这是一个控制循环（run_watch_pick_place），不经过 LLM：要抓什么/放哪里由下面的
+# chip_object_name / slot_object_name 给出。观测就在机械臂的初始位（home_use_init_pose=
+# 启动时由操作者摆好的那个位姿），不需要额外配置观测位姿。
+#
+# 启动（真机；CAN 先激活，sudo 手动执行）：
+#   PYTHONPATH=/xxx/jiuwensymbiosis \
+#     python examples/piper_watch_pick_place.py \
+#       --config configs/piper/watch_pick_box.yaml
+#   Ctrl-C 停止。无硬件干跑（mock：放置→判完成→移走→再抓放）： 追加 --mock
+
+env:
+  cfg:
+    low_level:
+      can_port: "can_left"
+      move_speed: 20
+      tool_offset_mm: 95.0
+      z_correction_mm: -57.0
+      calib_path: "piper_calib.json"
+      home_lift_mm: 250.0
+      z_safe_margin_mm: -10.0
+      home_use_init_pose: true        # home = 初始观测位（由操作者摆放）；监视循环在此观测
+      x_min_mm: 0.0
+      x_max_mm: 700.0
+      y_min_mm: -500.0
+      y_max_mm: 500.0
+      z_max_mm: 800.0
+      gripper_open_mm: 90.0
+      gripper_effort: 1000
+      gripper_settle_s: 0.8
+      camera_serial: "349622073363"
+      camera_resolution: [640, 480]
+      camera_fps: 30
+
+slot_pick:
+  # 要抓的物体 / 放置目标（这台部署的任务）
+  chip_object_name: "black box"
+  slot_object_name: "white box"
+  # 视觉完成判定：黑盒检测 xy 与白盒检测 xy 距离 <= 此值，即认为"已放到白盒上→任务完成"。
+  place_done_radius_mm: 60.0
+  # 堆叠几何（复刻 pick_box：夹在盒顶下方 25mm；指尖放到白盒顶 +75mm 让黑盒底贴住白盒顶）
+  chip_pick_z_offset_mm: -25.0
+  chip_thickness_mm: 75.0
+  slot_place_z_offset_mm: 0.0
+  chip_approach_hover_mm: 60.0
+  place_approach_hover_mm: 60.0
+  place_r_delta_deg: 0.0           # 盒子叠放不需要旋转
+  max_reach_radius_mm: 0.0
+  safe_travel_z_min_mm: 0.0
+
+api_servers:
+  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+    gdino_model_id: "IDEA-Research/grounding-dino-base"
+    sam2_model_id: "facebook/sam2.1-hiera-large"
+    box_threshold: 0.35
+    text_threshold: 0.25
+    use_sam2: true
+
+# 仅当用 --vlm（用视觉大模型判断"黑盒是否已在白盒上"）时才需要：必须是 VLM。
+# 几何判定（默认，不加 --vlm）不需要本段。用 --api-key 覆盖密钥。
+model:
+  provider: OpenAI
+  api_base: "your own api"
+  api_key: ""
+  model_name: "Qwen/Qwen3-VL-32B-Instruct"

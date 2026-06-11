@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "_comment": "INITIAL VALUES — ported from an initial left.json (T_tcp_camera) by composing with the flange->tcp tool offset: T_flange_cam = translate(0,0,-135.8mm) @ T_tcp_camera. MUST be validated on the real Piper (see docs/piper_pick_box_migration_design.md §7/§9 V2). 'object.xyz_base_mm' is a PLACEHOLDER table-height anchor and MUST be re-measured: it sets z_min_safe (= object_z + z_safe_margin) and the fallback home height.",
+  "T_flange_cam": {
+    "_frame": "camera pose in flange frame; translation in mm",
+    "matrix_4x4": [
+      [0.002174, 0.941033, 0.338307, -80.291852],
+      [-0.999953, -0.001155, 0.00964, -0.278827],
+      [0.009463, -0.338312, 0.940986, -114.118327],
+      [0.0, 0.0, 0.0, 1.0]
+    ]
+  },
+  "_intrinsics_comment": "LIVE-measured on RealSense SN 349622073363 @ 640x480 color (2026-06-08). the prior 392.69 was NOT this camera's 640x480 color intrinsic (wrong scale → back-projection error). distortion is factory-rectified (all zeros).",
+  "intrinsics": [
+    [603.678, 0.0, 326.699],
+    [0.0, 603.188, 248.428],
+    [0.0, 0.0, 1.0]
+  ],
+  "object": {
+    "_comment": "PLACEHOLDER — re-measure on the real robot. xyz of the calibration/table anchor in base frame (mm).",
+    "xyz_base_mm": [300.0, 0.0, 30.0]
+  }
+}

@@ -1,0 +1,21 @@
+# jiuwensymbiosis 第三方依赖
+# 安装: pip install -r requirements.txt
+
+fastapi==0.136.1
+httpx==0.28.1
+numpy==2.4.4
+opencv-python==4.13.0.92
+openjiuwen==0.1.13
+pillow==12.2.0
+pydantic==2.13.3
+pyrealsense2==2.57.7.10387
+PyYAML==6.0.3
+requests==2.33.1
+scipy==1.17.1
+transformers==5.7.0
+uvicorn==0.46.0
+
+# piper_sdk: 当前使用版本为piper_sdk==0.6.1，请手动安装
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.8.0+cu128

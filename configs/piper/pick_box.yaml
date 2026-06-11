@@ -1,0 +1,83 @@
+# Piper 夹盒子演示 —— 视觉驱动(VLM) + 平行夹爪 + 黑盒/白盒。
+#
+# 视觉驱动夹盒子，要点：
+#   - 笛卡尔运动走 piper_sdk EndPoseCtrl（固件解 IK），无 Pyroki/URDF；
+#   - 反投影用 6-DoF eye-in-hand `T_base_cam = T_base_flange(EndPose) @ T_flange_cam`；
+#   - 本版不写专用 skill，靠 mode=hybrid + 下方 prompt 让 VLM 编排现成工具。
+#
+# 启动（真机；CAN 需先激活，sudo 命令手动执行）：
+#   PYTHONPATH=项目路径 python examples/piper_pick_demo.py \
+#       --config configs/piper/pick_box.yaml --max-iter 30
+#   无硬件干跑： 追加 --mock
+#
+# 真机就位前务必校核：calib(piper_calib.json 的 T_flange_cam / object 锚点)、
+# tool_offset_mm、工具朝下姿态(adapters/piper/api.py _TOOL_DOWN_RX/RY)。
+
+env:
+  cfg:
+    low_level:
+      # --- arm（单臂，左臂；命名 CAN 接口）
+      can_port: "can_left"
+      move_speed: 20                # 真机先慢，跑通再提
+      tool_offset_mm: 95.0          # 法兰→指尖（真机实测夹爪长 ~9.5cm，2026-06-08）
+      z_correction_mm: -57.0        # 检测Z高估~57mm(T_flange_cam初值未标定)，触碰标定得；下拉
+      grasp_z_offset_mm: -25.0      # 检测顶面下方多少 mm 夹盒身；get_grasp_info_simple 据此给出确定化 grasp_z
+      chip_thickness_mm: 75.0       # 叠放偏移=被抓盒指尖到底面距离；get_grasp_info_simple 给出 place_z=目标顶+此值
+
+      # --- workspace
+      calib_path: "piper_calib.json"   # 与本 yaml 同目录；T_flange_cam + 内参 + 锚点
+      home_lift_mm: 250.0
+      z_safe_margin_mm: -10.0
+      home_use_init_pose: true         # 启动位姿 = 观察位（由操作者摆放）
+
+      # --- cartesian 安全盒（mm；EndPoseCtrl 前钳制）
+      x_min_mm: 0.0
+      x_max_mm: 700.0
+      y_min_mm: -500.0
+      y_max_mm: 500.0
+      z_max_mm: 800.0
+
+      # --- gripper（平行夹爪；piper 支持宽度+力）
+      gripper_open_mm: 90.0         # 真机确认：罩住黑盒需张到 ~90mm 才有容错
+      gripper_effort: 1000             # 0.001 N·m 单位（=1 N·m）
+      gripper_settle_s: 0.8
+
+      # --- camera（腕部 RealSense）
+      camera_serial: "349622073363"
+      camera_resolution: [640, 480]
+      camera_fps: 30
+
+    prompt: |
+      把黑色盒子放到白色盒子上面。
+
+      （只说任务，不传物体参数：要抓的物体「黑色盒子」和放置目标「白色盒子」，由你从上面这句话里
+      自己识别，作为 get_grasp_info_simple 的 object_name。换个任务就改这句话即可。）
+
+      抓放的步骤顺序、抓取/放置高度的算法都见 visual_pick / visual_place 技能文档。下面只是本任务约束：
+      - 先读坐标再移动：腕部相机在机械臂移动后会被遮挡，所以 home 后、任何 goto 之前，先把
+        「要抓的物体」和「放置目标」两次 get_grasp_info_simple 的结果都读出来存好；之后不要中途回 home 重拍。
+        识别置信度低就换措辞重试一次。
+      - **所有 z 都用检测返回的值**：抓取下降到检测的 `grasp_z`；放置下降到**放置目标**检测的 `place_z`
+        ——**不要自己估盒高、不要手算 z 偏移**。
+      坐标单位 mm；用 robot_control / 工具调用执行，不要写 run_python 绕过 rails。
+
+api_servers:
+  - _target_: jiuwen_robotics.serving.grounding_dino_sam2_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+    gdino_model_id: "/xxx/hub/models/IDEA-Research/grounding-dino-base"
+    sam2_model_id: "/xxx/hub/models--facebook--sam2.1-hiera-large/snapshots/665f8e2ad61cf5f53d65644ff27c8ee525124610"
+    box_threshold: 0.35
+    text_threshold: 0.25
+    use_sam2: true
+model:
+  provider: OpenAI
+  api_base: "your own api"
+  api_key: ""   # 用 --api-key 覆盖
+  # 不用 VLM：视觉由 GroundingDINO+SAM2 工具(get_grasp_info_simple)完成，编排 LLM 只需原生工具调用。
+  # Qwen3-VL 会把 tool_call 塞进 reasoning_content 导致不调工具。
+  # 跑时配合 --no-visual-feedback（非 VLM）。
+  model_name: "deepseek-ai/DeepSeek-V3.2"
+  temperature: 0.3
+  max_tokens: 2048
