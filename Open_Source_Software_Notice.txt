@@ -172,3 +172,33 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+Software: httpx 0.28.1
+Copyright notice:
+Copyright (c) 2019, Encode OSS Ltd
+
+License: BSD 3-Clause License
+Please see above
+Software: opencv-python 4.13.0.92
+Copyright notice:
+Copyright (C) 2000-2025, Intel Corporation
+
+License: Apache License V2.0
+Please see above
+Software: pyrealsense2 2.57.7.10387
+Copyright notice:
+Copyright (c) 2016 Intel Corporation
+
+License: Apache License V2.0
+Please see above
+Software: transformers 5.7.0
+Copyright notice:
+Copyright 2018- The Hugging Face team
+
+License: Apache License V2.0
+Please see above
+Software: piper_sdk 0.6.1
+Copyright notice:
+Copyright (c) 2023 AgileX Robotics
+
+License: MIT License
+Please see above
