@@ -202,3 +202,48 @@ Copyright (c) 2023 AgileX Robotics
 
 License: MIT License
 Please see above
+Software: pytest 9.0.3
+Copyright notice:
+Copyright (c) 2004 Holger Krekel and others
+Copyright Holger Krekel and others, 2004
+Copyright (c) 2014, Gregory Boissinot
+
+License: MIT License
+Please see above
+Software: pytest-asyncio 1.4.0
+Copyright notice:
+No copyright notice found in source files of this software
+License: Apache License V2.0
+Please see above
+Software: pytest-mock 3.15.1
+Copyright notice:
+Copyright (c) 2016 Bruno Oliveira
+
+License: MIT License
+Please see above
+Software: iniconfig 2.3.0
+Copyright notice:
+(c) Ronny Pfannschmidt, Holger Krekel
+Copyright (c) 2010 - 2023 Holger Krekel and others
+
+License: MIT License
+Please see above
+Software: pluggy 1.6.0
+Copyright notice:
+Copyright (c) 2015 holger krekel
+
+License: MIT License
+Please see above
+Software: packaging 26.2
+Copyright notice:
+Copyright (c) Donald Stufft and individual contributors. All rights reserved
+Copyright (c) 2017-present Ofek Lev <oss@ofek.dev>
+
+License: Apache License V2.0
+Please see above
+Software: respx 0.23.1
+Copyright notice:
+Copyright (c) 2020, Jonas Lundberg
+
+License: BSD 3-Clause License
+Please see above
