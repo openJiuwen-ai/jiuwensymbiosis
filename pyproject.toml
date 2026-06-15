@@ -1,0 +1,55 @@
+# coding: utf-8
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwensymbiosis"
+version = "0.1.0"
+description = "Robotics agent framework on top of openjiuwen"
+requires-python = ">=3.11"
+dependencies = [
+    "openjiuwen>=0.1.13",
+    "numpy>=2",
+    "pydantic>=2",
+    "PyYAML>=6",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+    "respx>=0.22",
+    "pillow>=12",
+    "httpx>=0.28",
+]
+full = [
+    "torch>=2",
+    "pyrealsense2>=2.57",
+    "opencv-python>=4",
+    "transformers>=5",
+    "fastapi>=0.136",
+    "uvicorn>=0.46",
+    "requests>=2.31",
+]
+
+[tool.setuptools.packages.find]
+include = ["jiuwensymbiosis*"]
+
+[tool.setuptools.package-data]
+jiuwensymbiosis = ["skills/**/SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: no hardware or GPU required",
+    "integration: requires real hardware, GPU, or external services",
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:pymilvus",
+    "ignore::DeprecationWarning:openjiuwen",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+]
