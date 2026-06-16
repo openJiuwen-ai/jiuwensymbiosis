@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Detector sidecar — spawn the open-vocabulary detection server
-(``jiuwen_robotics.serving.grounding_dino_sam2_server``) as a subprocess.
+(``jiuwensymbiosis.serving.grounding_dino_sam2_server``) as a subprocess.
 
 The server is intentionally NOT imported in-process: it loads heavy CUDA
 models (GroundingDINO + SAM2) and conflicts with vLLM/torch state if hosted in

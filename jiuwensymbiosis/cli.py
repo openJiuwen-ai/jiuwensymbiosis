@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import logging
 import runpy
-import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -15,8 +17,8 @@ _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 def _run_example(script: str) -> None:
     script_path = _EXAMPLES_DIR / script
     if not script_path.is_file():
-        sys.stderr.write(f"Example script not found: {script_path}\n")
-        raise SystemExit(1)
+        logger.error("Example script not found: %s", script_path)
+        raise FileNotFoundError(script_path)
     runpy.run_path(str(script_path), run_name="__main__")
 
 

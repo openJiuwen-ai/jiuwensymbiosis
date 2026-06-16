@@ -8,8 +8,8 @@ name = "jiuwensymbiosis"
 version = "0.1.0"
 description = "Robotics agent framework on top of openjiuwen"
 readme = "README.md"
-license = "Apache-2.0"
-requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11,<3.14"
 
 dependencies = [
     "openjiuwen>=0.1.13",

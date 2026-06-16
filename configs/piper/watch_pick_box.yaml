@@ -31,7 +31,7 @@ env:
       gripper_open_mm: 90.0
       gripper_effort: 1000
       gripper_settle_s: 0.8
-      camera_serial: "349622073363"
+      # camera_serial: "<your-camera-serial>"  # 替换为你的 RealSense 序列号，mock 模式无需设置
       camera_resolution: [640, 480]
       camera_fps: 30
 

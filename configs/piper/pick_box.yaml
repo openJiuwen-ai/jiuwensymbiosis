@@ -43,7 +43,7 @@ env:
       gripper_settle_s: 0.8
 
       # --- camera（腕部 RealSense）
-      camera_serial: "349622073363"
+      # camera_serial: "<your-camera-serial>"  # 替换为你的 RealSense 序列号，mock 模式无需设置
       camera_resolution: [640, 480]
       camera_fps: 30
 
@@ -62,12 +62,12 @@ env:
       坐标单位 mm；用 robot_control / 工具调用执行，不要写 run_python 绕过 rails。
 
 api_servers:
-  - _target_: jiuwen_robotics.serving.grounding_dino_sam2_server.main
+  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
     device: cuda
     port: 8114
     host: 127.0.0.1
-    gdino_model_id: "/xxx/hub/models/IDEA-Research/grounding-dino-base"
-    sam2_model_id: "/xxx/hub/models--facebook--sam2.1-hiera-large/snapshots/665f8e2ad61cf5f53d65644ff27c8ee525124610"
+    gdino_model_id: "IDEA-Research/grounding-dino-base"
+    sam2_model_id: "facebook/sam2.1-hiera-large"
     box_threshold: 0.35
     text_threshold: 0.25
     use_sam2: true
