@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -125,6 +126,8 @@ class PiperConfig:
         valid = {f.name for f in dataclasses.fields(cls)}
         clean = {k: v for k, v in kw.items() if k in valid}
         clean["detector"] = detector_cfg
+        if "CAMERA_SERIAL" in os.environ:
+            clean["camera_serial"] = os.environ["CAMERA_SERIAL"]
         if prompt is not None:
             clean["task_prompt"] = prompt
         return cls(**clean)
@@ -163,10 +166,14 @@ def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServer
             host=host,
             port=port,
             device=s.get("device", "cuda"),
-            gdino_model_id=s.get("gdino_model_id", defaults.gdino_model_id),
-            sam2_model_id=s.get("sam2_model_id", defaults.sam2_model_id),
+            gdino_model_id=os.environ.get("GDINO_MODEL_ID") or s.get("gdino_model_id", defaults.gdino_model_id),
+            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or s.get("sam2_model_id", defaults.sam2_model_id),
             box_threshold=float(s.get("box_threshold", defaults.box_threshold)),
             text_threshold=float(s.get("text_threshold", defaults.text_threshold)),
             use_sam2=bool(s.get("use_sam2", defaults.use_sam2)),
         )
-    return DetectorServerConfig()
+    defaults = DetectorServerConfig()
+    return DetectorServerConfig(
+        gdino_model_id=os.environ.get("GDINO_MODEL_ID") or defaults.gdino_model_id,
+        sam2_model_id=os.environ.get("SAM2_MODEL_ID") or defaults.sam2_model_id,
+    )

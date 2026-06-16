@@ -1,5 +1,8 @@
-# jiuwensymbiosis 第三方依赖
-# 安装: pip install -r requirements.txt
+# jiuwensymbiosis — pinned dependencies for reproducibility
+# 开发安装推荐: pip install -e ".[dev]"
+# 完整安装（含视觉/GPU）: pip install -e ".[full]"
+# Piper 硬件: pip install -e ".[piper]"
+# 本文件用精确版本号锁定，pyproject.toml 用最低版本约束，两者策略不同
 
 fastapi==0.136.1
 httpx==0.28.1

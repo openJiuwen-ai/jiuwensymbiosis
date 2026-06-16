@@ -7,7 +7,10 @@ build-backend = "setuptools.build_meta"
 name = "jiuwensymbiosis"
 version = "0.1.0"
 description = "Robotics agent framework on top of openjiuwen"
-requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11,<3.14"
+
 dependencies = [
     "openjiuwen>=0.1.13",
     "numpy>=2",
@@ -33,7 +36,14 @@ full = [
     "fastapi>=0.136",
     "uvicorn>=0.46",
     "requests>=2.31",
+    "pillow>=12",
+    "httpx>=0.28",
 ]
+piper = ["piper_sdk>=0.6.1"]
+
+[project.scripts]
+piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"
+piper-watch-pick-place = "jiuwensymbiosis.cli:piper_watch_pick_place"
 
 [tool.setuptools.packages.find]
 include = ["jiuwensymbiosis*"]

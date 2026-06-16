@@ -24,14 +24,24 @@ conda create -n 你的环境名 python=3.11
 conda activate 你的环境名
 ```
 
-安装第三方依赖：
+安装本包（推荐可编辑模式）：
+
+```bash
+# 开发安装（核心 + 测试依赖）
+pip install -e ".[dev]"
+
+# 完整安装（额外包含视觉/GPU 依赖：torch、transformers、FastAPI 等）
+pip install -e ".[full]"
+
+# Piper 真机环境（安装 piper_sdk）
+pip install -e ".[piper]"
+```
+
+或使用锁定版本号的依赖文件以保障可复现性：
 
 ```bash
 pip install -r requirements.txt
 ```
-
-说明：
-- `piper_sdk`（Piper 机械臂 SDK）仅真机场景需要，请按当前使用版本 `piper_sdk==0.6.1` 手动安装；无硬件干跑（`--mock`）无需安装。
 
 ### 样例
 
@@ -91,16 +101,17 @@ if __name__ == "__main__":
 ### 运行 Demo
 
 ```bash
-# 注意：需要将当前项目路径加入PYTHONPATH，不然import jiuwensymbiosis可能会报错
+# 通过命令行入口运行（pip install 后可用）
+piper-pick-demo --config configs/piper/pick_box.yaml --mock
+
+# 或直接运行脚本
+python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock
+
 # 真机模式（需激活 CAN 总线）
 python examples/piper_pick_demo.py \
     --config configs/piper/pick_box.yaml \
     --max-iter 30 \
     --api-key ""
-
-# 无硬件干跑
-python examples/piper_pick_demo.py \
-    --config configs/piper/pick_box.yaml --mock
 ```
 
 ## 架构设计

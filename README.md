@@ -24,14 +24,24 @@ conda create -n your_env_name python=3.11
 conda activate your_env_name
 ```
 
-Install third-party dependencies:
+Install the package (editable mode recommended):
+
+```bash
+# Development installation (core + test deps)
+pip install -e ".[dev]"
+
+# Full installation (adds vision/GPU deps: torch, transformers, FastAPI, etc.)
+pip install -e ".[full]"
+
+# Piper hardware (installs piper_sdk)
+pip install -e ".[piper]"
+```
+
+Or install from the pinned requirements file for reproducibility:
 
 ```bash
 pip install -r requirements.txt
 ```
-
-Notes:
-- `piper_sdk` (Piper robotic arm SDK) is only required for real hardware scenarios. Please install it manually according to the current version in use: `piper_sdk==0.6.1`. It is not needed for hardware-free dry runs (`--mock`).
 
 ### Example
 
@@ -91,16 +101,17 @@ Expected output: The agent executes the visual_pick / visual_place skill workflo
 ### Running the Demo
 
 ```bash
-# Note: Add the current project path to PYTHONPATH, otherwise importing jiuwensymbiosis may fail.
-# Real hardware mode (CAN bus must be activated)
+# Via console script (after pip install)
+piper-pick-demo --config configs/piper/pick_box.yaml --mock
+
+# Or run the script directly
+python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock
+
+# Real hardware mode (CAN bus must be active)
 python examples/piper_pick_demo.py \
     --config configs/piper/pick_box.yaml \
     --max-iter 30 \
     --api-key ""
-
-# Hardware-free dry run
-python examples/piper_pick_demo.py \
-    --config configs/piper/pick_box.yaml --mock
 ```
 
 ## Architecture

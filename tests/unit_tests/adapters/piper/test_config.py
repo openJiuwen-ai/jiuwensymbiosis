@@ -80,3 +80,47 @@ class TestPiperConfigFromYaml:
         cfg = PiperConfig.from_yaml(p)
         assert cfg.can_port == "can_left"
         assert cfg.move_speed == 40
+
+
+class TestEnvVarOverrides:
+    """Environment variable overrides for detector model IDs and camera serial."""
+
+    def test_gdino_model_id_env_override(self, monkeypatch):
+        monkeypatch.setenv("GDINO_MODEL_ID", "my-org/custom-gdino")
+        servers = [
+            {
+                "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
+                "gdino_model_id": "IDEA-Research/grounding-dino-base",
+            }
+        ]
+        cfg = _extract_detector_from_api_servers(servers)
+        assert cfg.gdino_model_id == "my-org/custom-gdino"
+
+    def test_sam2_model_id_env_override(self, monkeypatch):
+        monkeypatch.setenv("SAM2_MODEL_ID", "my-org/custom-sam2")
+        servers = [
+            {
+                "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
+                "sam2_model_id": "facebook/sam2.1-hiera-large",
+            }
+        ]
+        cfg = _extract_detector_from_api_servers(servers)
+        assert cfg.sam2_model_id == "my-org/custom-sam2"
+
+    def test_env_override_no_yaml_value(self, monkeypatch):
+        """Env var should apply even when YAML doesn't set the field (defaults are used)."""
+        monkeypatch.setenv("GDINO_MODEL_ID", "env-only-dino")
+        monkeypatch.setenv("SAM2_MODEL_ID", "env-only-sam2")
+        cfg = _extract_detector_from_api_servers([])
+        assert cfg.gdino_model_id == "env-only-dino"
+        assert cfg.sam2_model_id == "env-only-sam2"
+
+    def test_camera_serial_env_override(self, monkeypatch):
+        monkeypatch.setenv("CAMERA_SERIAL", "999999999999")
+        cfg = PiperConfig.from_dict({"camera_serial": "123456789012"})
+        assert cfg.camera_serial == "999999999999"
+
+    def test_camera_serial_env_override_no_yaml(self, monkeypatch):
+        monkeypatch.setenv("CAMERA_SERIAL", "999999999999")
+        cfg = PiperConfig.from_dict({})
+        assert cfg.camera_serial == "999999999999"

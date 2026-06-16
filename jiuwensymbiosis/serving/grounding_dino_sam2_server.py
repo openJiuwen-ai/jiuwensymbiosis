@@ -60,9 +60,9 @@ from PIL import Image
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("jiuwen_robotics.serving.gdino_sam2")
+logger = logging.getLogger("jiuwensymbiosis.serving.gdino_sam2")
 
-app = FastAPI(title="jiuwen-robotics GroundingDINO+SAM2 server")
+app = FastAPI(title="jiuwensymbiosis GroundingDINO+SAM2 server")
 
 # --- global model state (populated in main()) -------------------------------
 _GDINO_PROCESSOR: Any | None = None
@@ -285,7 +285,7 @@ async def segment(req: SegmentRequest):
 # --- entry point ------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     """Parse CLI arguments, load models, and start the uvicorn server."""
-    parser = argparse.ArgumentParser(description="jiuwen-robotics GroundingDINO(+SAM2) server.")
+    parser = argparse.ArgumentParser(description="jiuwensymbiosis GroundingDINO(+SAM2) server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8114)
     parser.add_argument("--device", default="cuda")
