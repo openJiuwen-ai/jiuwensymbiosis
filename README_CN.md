@@ -15,7 +15,7 @@
 
 ### 安装
 
-- 操作系统：当前版本支持Ubuntu (已在22.04验证）。
+- 操作系统：当前版本支持Ubuntu （已在22.04验证）。
 - Python 版本：>= 3.11。
 
 新建conda环境：
@@ -31,7 +31,9 @@ conda activate 你的环境名
 pip install -e ".[dev]"
 
 # 完整安装（额外包含视觉/GPU 依赖：torch、transformers、FastAPI 等）
-pip install -e ".[full]"
+# torch需要CUDA 12.8 构建（2.8.0+cu128），该版本仅存在于 PyTorch 官方源，
+# 因此必须带上 --extra-index-url，否则会直接报错（而非静默装成 CPU 版）。
+pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Piper 真机环境（安装 piper_sdk）
 pip install -e ".[piper]"

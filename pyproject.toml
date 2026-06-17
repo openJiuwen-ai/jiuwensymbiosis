@@ -29,7 +29,10 @@ dev = [
     "httpx>=0.28",
 ]
 full = [
-    "torch>=2",
+    # torch/torchvision 必须配合 --extra-index-url https://download.pytorch.org/whl/cu128 安装，
+    # torchvision 0.23.0 与 torch 2.8.0 配对；SAM2(transformers Sam2ImageProcessor)依赖 torchvision。
+    "torch==2.8.0+cu128",
+    "torchvision==0.23.0+cu128",
     "pyrealsense2>=2.57",
     "opencv-python>=4",
     "transformers>=5",

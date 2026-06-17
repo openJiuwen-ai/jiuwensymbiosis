@@ -1,6 +1,6 @@
 # jiuwensymbiosis — pinned dependencies for reproducibility
 # 开发安装推荐: pip install -e ".[dev]"
-# 完整安装（含视觉/GPU）: pip install -e ".[full]"
+# 完整安装（含视觉/GPU）: pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128
 # Piper 硬件: pip install -e ".[piper]"
 # 本文件用精确版本号锁定，pyproject.toml 用最低版本约束，两者策略不同
 
