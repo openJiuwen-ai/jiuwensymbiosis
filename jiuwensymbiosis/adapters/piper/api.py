@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
 
 from jiuwensymbiosis.adapters._common.detector_client import init_detector
 from jiuwensymbiosis.adapters._common.vision import (
@@ -83,26 +86,12 @@ class PiperApi(
         self._chip_thickness_mm = float(chip_thickness_mm)
 
     # ============================================================  Motion
-    @robot_tool(desc="Return Piper to the configured home pose (safe upper height).", tags=["motion"])
-    def home(self) -> None:
-        ll = self._ll()
-        hp = ll.home_pose
-        logger.info(
-            "[PiperApi] home -> (%.2f, %.2f, %.2f, rx=%.2f, ry=%.2f, rz=%.2f)",
-            hp.x,
-            hp.y,
-            hp.z,
-            hp.rx,
-            hp.ry,
-            hp.rz,
-        )
-        ll.home()
+    # ``home`` is inherited from MotionMixin (delegates to env.home()).
 
     @robot_tool(desc="Get current TIP pose (mm/deg, base frame).")
     def get_pose(self) -> dict:
-        ll = self._ll()
-        p = ll.get_pose()  # FLANGE
-        tool_off = ll.tool_offset_mm
+        p = self.env.get_flange_pose()
+        tool_off = self.env.tool_offset_mm
         return {
             "x": p.x,
             "y": p.y,
@@ -114,12 +103,12 @@ class PiperApi(
 
     @robot_tool(desc="Get raw flange pose (diagnostic; prefer get_pose for task code).")
     def get_flange_pose(self) -> dict:
-        p = self._ll().get_pose()
+        p = self.env.get_flange_pose()
         return {"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}
 
     @robot_tool(desc="Get the home pose constants (read-only).")
     def get_home_pose(self) -> dict:
-        p = self._ll().home_pose
+        p = self.env.home_pose
         return {
             "x": p.x,
             "y": p.y,
@@ -140,14 +129,13 @@ class PiperApi(
         tags=["motion"],
     )
     def goto_xyzr(self, x: float, y: float, z: float, r: Optional[float] = None) -> None:
-        ll = self._ll()
         if r is None:
-            r = ll.get_pose().rz
+            r = self.env.get_flange_pose().rz
         # Tilted tool (ry=_TOOL_DOWN_RY): the tip sits tool_offset_mm along the tool
         # axis below AND ahead of the flange. flange = tip + tool_offset_mm·(sin ry in
         # +X, cos ry in +Z).  (The +X sign matches the touch calibration: flange is
         # behind the tip.)
-        tool_offset_mm = ll.tool_offset_mm
+        tool_offset_mm = self.env.tool_offset_mm
         ry_rad = math.radians(_TOOL_DOWN_RY)
         flange_x = x + tool_offset_mm * math.sin(ry_rad)
         flange_z = z + tool_offset_mm * math.cos(ry_rad)
@@ -162,7 +150,7 @@ class PiperApi(
             flange_z,
             _TOOL_DOWN_RY,
         )
-        ll.move_to_pose_blocking(FlangePose(flange_x, y, flange_z, _TOOL_DOWN_RX, _TOOL_DOWN_RY, float(r)))
+        self.env.move_to_flange(FlangePose(flange_x, y, flange_z, _TOOL_DOWN_RX, _TOOL_DOWN_RY, float(r)))
 
     @robot_tool(
         desc="Full 6-DoF move (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg). "
@@ -190,35 +178,16 @@ class PiperApi(
     def goto_pose(self, pose: FlangePose) -> None:
         if isinstance(pose, dict):
             pose = FlangePose(**pose)
-        ll = self._ll()
         logger.info("[PiperApi] goto_pose -> %s", pose.as_tuple())
-        ll.move_to_pose_blocking(pose)
+        self.env.move_to_flange(pose)
 
     # ============================================================  Joint
-    @robot_tool(desc="Move to a 6-joint configuration q (degrees).", tags=["motion"])
-    def move_joint(self, q: list[float]) -> None:
-        ll = self._ll()
-        logger.info("[PiperApi] move_joint -> %s", q)
-        ll.move_joint_blocking(q)
+    # ``move_joint`` is inherited from JointMotionMixin (delegates to env.move_joint()).
 
     # ============================================================  Gripper
-    @robot_tool(
-        desc="Close the parallel gripper to grasp. force_n is accepted but v1 uses " "the configured grip effort.",
-        tags=["grasp"],
-    )
-    def close_gripper(self, force_n: Optional[float] = None) -> dict:
-        logger.info("[PiperApi] gripper CLOSE")
-        self._ll().set_gripper(True)
-        return {"ok": True, "state": "closed"}
-
-    @robot_tool(
-        desc="Open the parallel gripper to release. width_mm is accepted but v1 opens " "to the configured width.",
-        tags=["grasp"],
-    )
-    def open_gripper(self, width_mm: float = 80.0) -> dict:
-        logger.info("[PiperApi] gripper OPEN")
-        self._ll().set_gripper(False)
-        return {"ok": True, "state": "open"}
+    # ``open_gripper`` / ``close_gripper`` are inherited from ParallelGripperMixin
+    # (delegate to env.set_end_effector()); v1 uses the configured width/effort and
+    # accepts width_mm/force_n only for API parity.
 
     # ============================================================  Vision
     @robot_tool(
@@ -369,7 +338,7 @@ class PiperApi(
         #   place_z = top + chip_thickness_mm  (descend HERE to release a held object
         #             ON TOP of this object, so the held object's bottom rests on this top).
         top_z = float(xyz_final[2])
-        z_floor = getattr(ll, "z_min_safe", None)
+        z_floor = self.env.z_min_safe
         grasp_z = top_z + self._grasp_z_offset_mm
         if z_floor is not None:
             grasp_z = max(grasp_z, float(z_floor))
@@ -398,10 +367,7 @@ class PiperApi(
             "depth_m": depth_m,
         }
 
-    @robot_tool(desc="Latest RGB frame (debug; the agent rarely needs to call this directly).")
-    def get_image(self) -> Any:
-        frames = self._ll().grab_frames()
-        return None if frames is None else frames[0]
+    # ``get_image`` is inherited from VisionMixin (grabs frames via env.low_level).
 
     @robot_tool(
         desc="Run a higher-level scene analysis grounded on object_name. "
@@ -412,7 +378,7 @@ class PiperApi(
         rgb = self.get_image()
         if rgb is None:
             return {"ok": False, "reason": "no_camera"}
-        self._ensure__ensure_detector()
+        self._ensure_detector()
         if self._seg_fn is None:
             return {"ok": False, "reason": "detector_unavailable"}
         try:
@@ -428,8 +394,14 @@ class PiperApi(
         }
 
     # ---------------------------------------------------------------- helpers
-    def _ll(self) -> Any:
-        """Return the underlying low-level driver; raise if not connected."""
+    def _ll(self) -> "PiperFullDriver":
+        """The vendor driver, for vision/calibration reads only (motion/gripper go via ``self.env``).
+
+        The returned object satisfies RobotDriver + JointDriver + CameraDriver +
+        GripperDriver + VisionDriver. Callers accessing vision-specific attributes
+        (``tf_flange_cam``, ``calibration``, ``intrinsics``, ``grab_frames``)
+        should be aware that these come from the composite driver protocol.
+        """
         ll = self.env.low_level
         if ll is None:
             raise RuntimeError("PiperApi: env not connected. Call session.connect() / use `with session:`.")

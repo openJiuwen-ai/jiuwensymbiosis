@@ -193,7 +193,7 @@ class PiperLowLevel:
         # --- connect + enable
         try:
             from piper_sdk import C_PiperInterface_V2
-        except ImportError as exc:  # noqa: BLE001
+        except ImportError as exc:
             raise RuntimeError(
                 "[Piper] piper_sdk not installed. `pip install piper_sdk` "
                 "(and bring the CAN interface up) to use the real arm."

@@ -57,3 +57,49 @@ class TestBuildRobotTools:
         tools = build_robot_tools(api)
         tool_names = {t.card.name for t in tools}
         assert tool_names == names
+
+
+class TestEnvIntersectionGating:
+    """env∩api gating: tools whose capability the hardware lacks are dropped."""
+
+    def _motion_only_env(self):
+        from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+
+        class MotionOnlyEnv(BaseRobotEnv):
+            capabilities = frozenset({"motion.cartesian"})
+            name = "motion_only"
+
+            def connect(self):
+                pass
+
+            def disconnect(self):
+                pass
+
+            def get_observation(self):
+                return RobotObservation()
+
+        return MotionOnlyEnv()
+
+    def test_env_lacking_cap_drops_tools(self):
+        env = self._motion_only_env()
+        # MockApi declares motion.cartesian + grasp.parallel + vision.detection.
+        api = MockApi(env)
+        names = {t.card.name for t in build_robot_tools(api, env=env)}
+        assert "home" in names and "goto_xyzr" in names         # motion kept
+        assert "close_gripper" not in names                     # grasp.parallel gated out
+        assert "open_gripper" not in names
+        assert "get_grasp_info_simple" not in names             # vision.detection gated out
+
+    def test_without_env_keeps_all_api_tools(self):
+        env = self._motion_only_env()
+        api = MockApi(env)
+        names = {t.card.name for t in build_robot_tools(api)}    # no env → api caps only
+        assert "close_gripper" in names
+        assert "get_grasp_info_simple" in names
+
+    def test_list_tool_meta_honors_env(self):
+        env = self._motion_only_env()
+        api = MockApi(env)
+        names = {m["name"] for m in list_tool_meta(api, env=env)}
+        assert "close_gripper" not in names
+        assert "home" in names

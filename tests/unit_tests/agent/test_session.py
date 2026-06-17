@@ -89,6 +89,14 @@ class TestRobotSessionDescribe:
         assert "env_capabilities" in desc
         assert "api_capabilities" in desc
 
+    def test_describe_effective_capabilities_is_intersection(self):
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="mybot")
+        desc = s.describe()
+        expected = sorted(set(env.capabilities) & set(api.capabilities))
+        assert desc["effective_capabilities"] == expected
+
 
 class TestRobotSessionSidecars:
     def test_sidecar_started_on_connect(self):

@@ -91,14 +91,20 @@ async def _run_on_gpu(fn, *args, **kwargs):
 
 # --- helpers ----------------------------------------------------------------
 def _to_numpy(tensor: Any) -> np.ndarray:
-    """Convert a torch tensor or array-like to a plain numpy array."""
-    if hasattr(tensor, "numpy"):
-        return tensor.numpy()
-    if hasattr(tensor, "detach"):
+    """Convert a torch tensor or array-like to a plain numpy array.
+
+    torch tensors MUST be moved to host first: a CUDA tensor has ``.numpy()``
+    but calling it raises ("can't convert cuda:0 device type tensor to numpy").
+    So route any torch tensor through ``detach().cpu()`` BEFORE the generic
+    ``.numpy()`` fallback (which is only for non-torch array-likes).
+    """
+    if isinstance(tensor, torch.Tensor):
         t = tensor.detach().cpu()
         if t.dtype == torch.bfloat16:
             t = t.float()
         return t.numpy()
+    if hasattr(tensor, "numpy"):
+        return tensor.numpy()
     return np.asarray(tensor)
 
 

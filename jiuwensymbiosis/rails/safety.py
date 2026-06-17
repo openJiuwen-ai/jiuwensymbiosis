@@ -9,8 +9,9 @@ table is at z=0. The env-level driver should already enforce these limits;
 we just reject earlier with a clearer message so the LLM can self-correct without raising.
 
 Currently checks:
-- Cartesian Z floor (default: env's ``z_min_safe`` if exposed, else None)
-- Cartesian XY workspace bounds (if ``session.workspace_bounds`` is set)
+- Cartesian Z floor: explicit ``z_floor_mm``, else the env's ``z_min_safe``.
+- Cartesian XY bounds: explicit ``xy_bounds_mm``, else the env's
+  ``workspace_bounds`` (unless ``enforce_xy_from_env=False``).
 
 Reject mechanism: forces a tool error result instead of executing the tool,
 by raising via ``ctx.request_force_finish`` is not appropriate here (we
@@ -39,12 +40,18 @@ class SafetyRail(AgentRail):
         z_floor_mm: Optional[float] = None,
         xy_bounds_mm: Optional[tuple[float, float, float, float]] = None,  # (xmin, ymin, xmax, ymax)
         watch_tools: Optional[set[str]] = None,
+        enforce_xy_from_env: bool = True,
     ) -> None:
-        """Initialize the safety rail with optional bounds."""
+        """Initialize the safety rail with optional bounds.
+
+        When ``xy_bounds_mm`` is not given, XY bounds fall back to the env's
+        ``workspace_bounds`` property unless ``enforce_xy_from_env`` is False.
+        """
         super().__init__()
         self.session = session
         self.z_floor = z_floor_mm
         self.xy_bounds = xy_bounds_mm
+        self.enforce_xy_from_env = enforce_xy_from_env
         # Default: only intercept cartesian moves. ``home`` is always safe.
         self.watch_tools = set(watch_tools) if watch_tools else {"goto_xyzr", "goto_pose"}
 
@@ -81,8 +88,9 @@ class SafetyRail(AgentRail):
                 "Either raise z, or call home() first."
             )
 
-        if self.xy_bounds is not None:
-            xmin, ymin, xmax, ymax = self.xy_bounds
+        xy_bounds = self._resolve_xy_bounds()
+        if xy_bounds is not None:
+            xmin, ymin, xmax, ymax = xy_bounds
             x, y = args.get("x"), args.get("y")
             if x is not None and not xmin <= float(x) <= xmax:
                 raise ValueError(f"SafetyRail: refusing {tool_name}: x={x} out of bounds [{xmin}, {xmax}].")
@@ -90,17 +98,30 @@ class SafetyRail(AgentRail):
                 raise ValueError(f"SafetyRail: refusing {tool_name}: y={y} out of bounds [{ymin}, {ymax}].")
 
     def _resolve_z_floor(self) -> Optional[float]:
-        """Resolve the Z floor from the explicit value or the env."""
+        """Z floor: explicit ``z_floor``, else the env's ``z_min_safe``, else None."""
         if self.z_floor is not None:
             return self.z_floor
         env = getattr(self.session, "env", None)
-        for attr in ("z_min_safe", "_z_min_safe"):
-            try:
-                val = getattr(env, attr, None)
-                if callable(val):
-                    val = val()
-                if val is not None:
-                    return float(val)
-            except Exception:  # noqa: BLE001
-                continue
-        return None
+        val = getattr(env, "z_min_safe", None)
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_xy_bounds(self) -> Optional[tuple[float, float, float, float]]:
+        """XY bounds: explicit ``xy_bounds``, else the env's ``workspace_bounds``."""
+        if self.xy_bounds is not None:
+            return self.xy_bounds
+        if not self.enforce_xy_from_env:
+            return None
+        env = getattr(self.session, "env", None)
+        bounds = getattr(env, "workspace_bounds", None)
+        if bounds is None:
+            return None
+        try:
+            xmin, ymin, xmax, ymax = bounds
+            return (float(xmin), float(ymin), float(xmax), float(ymax))
+        except (TypeError, ValueError):
+            return None

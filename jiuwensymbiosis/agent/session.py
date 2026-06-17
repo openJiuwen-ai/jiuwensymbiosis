@@ -81,6 +81,25 @@ class RobotSession:
         self._connected = True
         logger.info("RobotSession[%s] connected", self.name)
 
+        env_caps = set(self.env.capabilities)
+        api_caps = set(self.api.capabilities)
+        env_only = env_caps - api_caps
+        api_only = api_caps - env_caps
+        if env_only:
+            logger.warning(
+                "RobotSession[%s]: env has capabilities not declared by api: %s. "
+                "These capabilities will not generate tools.",
+                self.name,
+                sorted(env_only),
+            )
+        if api_only:
+            logger.warning(
+                "RobotSession[%s]: api declares capabilities not in env: %s. "
+                "These capabilities lack hardware support.",
+                self.name,
+                sorted(api_only),
+            )
+
     def disconnect(self) -> None:
         """Disconnect the env and stop all sidecars. Idempotent."""
         if not self._connected:
@@ -112,10 +131,13 @@ class RobotSession:
 
     # --------------------------------------------------------------- description
     def describe(self) -> dict[str, Any]:
-        """Return a JSON-able summary of this session."""
+        """JSON-able summary. ``effective_capabilities`` (env ∩ api) gates tools."""
+        env_caps = set(self.env.capabilities)
+        api_caps = set(self.api.capabilities)
         return {
             "name": self.name,
             "env": getattr(self.env, "name", type(self.env).__name__),
-            "env_capabilities": sorted(self.env.capabilities),
-            "api_capabilities": sorted(self.api.capabilities),
+            "env_capabilities": sorted(env_caps),
+            "api_capabilities": sorted(api_caps),
+            "effective_capabilities": sorted(env_caps & api_caps),
         }

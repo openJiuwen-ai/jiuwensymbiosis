@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +58,9 @@ class SlotPickStrategy(Protocol):
 
 
 def _api_z_min_safe(api: Any) -> Optional[float]:
-    """Read the ``z_min_safe`` from the api's low-level driver; return None if unavailable."""
-    ll_fn = getattr(api, "_ll", None)
-    if not callable(ll_fn):
-        return None
-    try:
-        z_min = getattr(ll_fn(), "z_min_safe", None)
-    except Exception:  # noqa: BLE001 - best-effort safety metadata only
-        return None
+    """Lowest safe TIP-frame z from ``api.env.z_min_safe``, or None if unset."""
+    env = getattr(api, "env", None)
+    z_min = getattr(env, "z_min_safe", None) if env is not None else None
     if z_min is None:
         return None
     try:
@@ -94,13 +89,16 @@ class GripperStrategy:
 
     Args:
       api: the robot api (needs ``goto_xyzr`` and ``open_gripper``/``close_gripper``;
-        optionally ``goto_xyzr_joint`` for joint-space arcs and ``_ll().clear_errors``).
+        optionally ``goto_xyzr_joint`` for joint-space arcs).
       max_reach_radius_mm: soft reach cap for PROCESS waypoints only (0 = off).
         When a process xy radius exceeds it, the point is scaled inward along its
         azimuth so the arm gets "as close as reachable along the direction"
         instead of tripping a reach-edge alarm. Critical points ignore this.
       safe_travel_z_min_mm: minimum TIP-frame z for PROCESS waypoints (0 = off).
         Only the EXEMPT vertical pick/place strokes dip below it.
+      error_clearer: optional callable to clear latched controller errors
+        (e.g. ``lambda: env.clear_errors()``).  When ``None``, error recovery
+        is skipped and the strategy re-raises the original exception.
     """
 
     def __init__(
@@ -109,11 +107,13 @@ class GripperStrategy:
         *,
         max_reach_radius_mm: float = 0.0,
         safe_travel_z_min_mm: float = 0.0,
+        error_clearer: Optional[Callable[[], None]] = None,
     ) -> None:
         """Store the api reference and motion guard constants."""
         self._api = api
         self._max_reach_radius_mm = float(max_reach_radius_mm)
         self._safe_travel_z_min_mm = float(safe_travel_z_min_mm)
+        self._error_clearer = error_clearer
 
     # ----------------------------------------------------------------- grasp
     def grasp(self) -> dict:
@@ -220,10 +220,9 @@ class GripperStrategy:
 
     # ---------------------------------------------------------------- helpers
     def _clear_errors(self) -> None:
-        """Clear any latched error state on the low-level driver, if available."""
-        ll_fn = getattr(self._api, "_ll", None)
-        if callable(ll_fn):
+        """Clear any latched error state via the injected callback, if available."""
+        if self._error_clearer is not None:
             try:
-                ll_fn().clear_errors()
+                self._error_clearer()
             except Exception:  # noqa: BLE001
                 pass

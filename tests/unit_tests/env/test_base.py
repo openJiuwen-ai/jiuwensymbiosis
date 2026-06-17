@@ -113,3 +113,32 @@ class TestBaseRobotEnvSubclass:
         with env:
             assert env._connected is True
         assert env._connected is False
+
+
+class TestOptionalHardwareContract:
+    """Default optional contract: low_level / z_min_safe / workspace_bounds → None."""
+
+    def _make_env(self):
+        class PlainEnv(BaseRobotEnv):
+            capabilities = frozenset({"motion.cartesian"})
+            name = "plain"
+
+            def connect(self):
+                pass
+
+            def disconnect(self):
+                pass
+
+            def get_observation(self):
+                return RobotObservation()
+
+        return PlainEnv()
+
+    def test_low_level_defaults_none(self):
+        assert self._make_env().low_level is None
+
+    def test_z_min_safe_defaults_none(self):
+        assert self._make_env().z_min_safe is None
+
+    def test_workspace_bounds_defaults_none(self):
+        assert self._make_env().workspace_bounds is None

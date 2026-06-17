@@ -39,10 +39,19 @@ class TestClampRadius:
 
 
 class TestApiZMinSafe:
-    def test_no_ll(self):
-        api = MockApi(MockArmEnv())
-        result = _api_z_min_safe(api)
-        assert result is None
+    def test_reads_from_env_property(self):
+        # Source of truth is the formalized env.z_min_safe contract property.
+        api = MockApi(MockArmEnv(z_min_safe=37.5))
+        assert _api_z_min_safe(api) == 37.5
+
+    def test_none_when_env_has_no_floor(self):
+        class _Api:
+            class _Env:
+                z_min_safe = None
+
+            env = _Env()
+
+        assert _api_z_min_safe(_Api()) is None
 
 
 class TestGripperStrategy:

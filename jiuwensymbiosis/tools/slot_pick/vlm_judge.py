@@ -31,7 +31,7 @@ def _encode_jpeg_b64(image: Any) -> Optional[str]:
     try:
         import cv2
         import numpy as np
-    except Exception:  # noqa: BLE001 - optional deps; degrade to geometric fallback
+    except ImportError:  # optional deps; degrade to geometric fallback
         return None
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[2] != 3:
