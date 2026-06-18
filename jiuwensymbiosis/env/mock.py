@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -13,7 +13,14 @@ from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 
 class MockArmEnv(BaseRobotEnv):
-    """A stand-in 4-DOF arm. Tracks pose in memory; renders a dummy 2D scene."""
+    """A stand-in 4-DOF arm. Tracks pose in memory; renders a dummy 2D scene.
+
+    When a ``scene`` is provided (any object with ``render_rgb()`` and
+    ``render_depth_m()`` methods, e.g. ``tests.mocks.mock_scene.MockScene``),
+    ``get_observation`` renders RGB + depth from the scene instead of the
+    default gray frame + center marker. This enables scene-aware mock apis
+    to run the real perception pipeline against synthetic ground truth.
+    """
 
     capabilities = frozenset(
         {
@@ -31,8 +38,15 @@ class MockArmEnv(BaseRobotEnv):
         z_min_safe: float = 0.0,
         image_hw: tuple[int, int] = (480, 640),
         workspace_bounds: Optional[tuple[float, float, float, float]] = None,
+        scene: Any = None,
     ) -> None:
-        """Initialize mock arm with given home pose and safety limits."""
+        """Initialize mock arm with given home pose and safety limits.
+
+        Args:
+            scene: Optional scene object with ``render_rgb() -> np.ndarray`` and
+                ``render_depth_m() -> np.ndarray`` methods. When set,
+                ``get_observation`` renders from the scene.
+        """
         self._home = home_pose or {"x": 200.0, "y": 0.0, "z": 250.0, "r": 0.0}
         self._pose = dict(self._home)
         self._z_min_safe = z_min_safe
@@ -41,6 +55,7 @@ class MockArmEnv(BaseRobotEnv):
         self._connected = False
         self._image_hw = image_hw
         self._move_log: list[dict] = []
+        self._scene = scene
 
     # ------------------------------------------------ formal hardware contract
     @property
@@ -70,7 +85,19 @@ class MockArmEnv(BaseRobotEnv):
 
     # ----------------------------------------------------------------- query
     def get_observation(self) -> RobotObservation:
-        """Return a simulated observation with a dummy RGB frame and current pose."""
+        """Return a simulated observation with an RGB frame and current pose.
+
+        When a ``scene`` is attached, renders RGB + depth from the scene
+        (ground-truth consistent). Otherwise renders a gray frame with a
+        center marker (legacy dryrun behavior).
+        """
+        if self._scene is not None:
+            return RobotObservation(
+                pose=dict(self._pose),
+                rgb=self._scene.render_rgb(),
+                depth=self._scene.render_depth_m(),
+                extra={"suction": self._suction, "z_min_safe": self._z_min_safe},
+            )
         h, w = self._image_hw
         rgb = np.full((h, w, 3), 96, dtype=np.uint8)
         # Draw a marker at center to simulate a detection target.
