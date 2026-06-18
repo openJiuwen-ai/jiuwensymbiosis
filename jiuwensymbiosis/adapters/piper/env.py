@@ -54,9 +54,7 @@ class PiperEnv(BaseRobotEnv):
     def z_min_safe(self) -> Optional[float]:
         """Tip-frame Z floor (mm): from the live driver if connected, else config."""
         if self._inner is not None:
-            val = getattr(self._inner, "z_min_safe", None)
-            if val is not None:
-                return float(val)
+            return float(self._inner.z_min_safe)
         cfg_val = getattr(self.cfg, "z_min_safe_mm", None)
         return float(cfg_val) if cfg_val is not None else None
 
@@ -128,9 +126,7 @@ class PiperEnv(BaseRobotEnv):
         if not self._connected:
             return
         try:
-            close = getattr(self._inner, "close", None)
-            if callable(close):
-                close()
+            self._inner.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning("PiperEnv disconnect failed: %s", exc)
         self._inner = None
@@ -168,7 +164,9 @@ class PiperEnv(BaseRobotEnv):
             depth=depth,
             extra={
                 "z_min_safe": self.z_min_safe,
-                "gripper_state": getattr(self._inner, "gripper_state", None),
+                "gripper_state": self._inner.gripper_state
+                if "grasp.parallel" in self.capabilities
+                else None,
             },
         )
 

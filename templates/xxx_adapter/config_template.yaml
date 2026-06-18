@@ -1,0 +1,49 @@
+# Xxx 机械臂配置模板
+# 复制此文件到 configs/xxx/default.yaml
+# 标注: [必填] / [选填] / [选填-仅xxx能力需要]
+
+# ==================== 基本信息 [必填] ====================
+name: "xxx"
+
+# ==================== 硬件连接 [必填] ====================
+# TODO: 替换为你的实际连接参数
+can_port: "can0"                # CAN / 串口 / 网络 端口
+move_speed: 50                  # [选填] 运动速度百分比 (0-100)
+
+# ==================== 运动学 [选填] ====================
+# tool_offset_mm: 0.0           # [选填] 法兰→工具末端 Z 向偏移 (mm)
+# home_pose_xyzrxryrz_mm_deg: [200, 0, 400, 0, 90, 0]  # [选填] Home 位姿
+# home_use_init_pose: false     # [选填] 是否用当前位置作 home
+
+# ==================== 安全边界 [选填] ====================
+z_min_safe_mm: 50.0             # [选填] Z 向安全下限 (SafetyRail 用)
+# x_min_mm: 0.0                 # [选填] X 向工作空间下界
+# x_max_mm: 700.0               # [选填] X 向工作空间上界
+# y_min_mm: -500.0              # [选填] Y 向工作空间下界
+# y_max_mm: 500.0               # [选填] Y 向工作空间上界
+
+# ==================== 夹爪/吸盘 [选填-仅 grasp.*] ====================
+# gripper_open_mm: 70.0         # [选填-仅 grasp.parallel] 打开宽度
+# gripper_effort: 1000          # [选填-仅 grasp.parallel] 夹持力
+
+# ==================== 相机 [选填-仅 vision.*] ====================
+# camera_serial: null           # [选填-仅 vision.camera] 相机序列号
+# camera_resolution: [640, 480] # [选填-仅 vision.camera]
+# camera_fps: 30                # [选填-仅 vision.camera]
+
+# ==================== 检测校正 [选填-仅 vision.detection] ====================
+# z_correction_mm: 0.0          # [选填-仅 vision.detection] Z 向校正
+# grasp_z_offset_mm: -25.0      # [选填-仅 vision.detection] 抓取深度偏移
+# chip_thickness_mm: 75.0       # [选填-仅 vision.detection] 堆叠偏移
+
+# ==================== 检测服务 [选填-仅 vision.detection] ====================
+# detector:
+#   spawn: true
+#   host: "127.0.0.1"
+#   port: 8114
+
+# ==================== 标定 [选填-仅 vision.detection] ====================
+# calib_path: "calib.json"      # [选填-仅 vision.detection] 手眼标定文件
+
+# ==================== 任务 [选填] ====================
+# task_prompt: ""               # [选填] 自定义任务提示词
