@@ -62,7 +62,7 @@ class TestMockArmEnvHome:
 
     def test_home_pose_returns_copy(self):
         env = MockArmEnv()
-        hp = env.home_pose()
+        hp = env.home_pose
         assert hp["x"] == pytest.approx(env._home["x"])
 
 
@@ -73,6 +73,19 @@ class TestMockArmEnvSuction:
         assert env._suction is True
         env.set_suction(False)
         assert env._suction is False
+
+
+class TestMockArmEnvSafetyContract:
+    def test_z_min_safe_property(self):
+        env = MockArmEnv(z_min_safe=50.0)
+        assert env.z_min_safe == pytest.approx(50.0)
+
+    def test_workspace_bounds_default_none(self):
+        assert MockArmEnv().workspace_bounds is None
+
+    def test_workspace_bounds_property(self):
+        env = MockArmEnv(workspace_bounds=(0.0, -300.0, 500.0, 300.0))
+        assert env.workspace_bounds == (0.0, -300.0, 500.0, 300.0)
 
 
 class TestMockArmEnvObservation:

@@ -10,6 +10,8 @@ from jiuwensymbiosis.adapters._common.protocol import (
     JointDriver,
     CameraDriver,
     SuctionDriver,
+    GripperDriver,
+    VisionDriver,
 )
 
 from tests.mocks.mock_driver import MockPiperDriver
@@ -75,6 +77,25 @@ class _MinimalSuctionDriver:
         pass
 
 
+class _MinimalGripperDriver:
+    def set_gripper(self, on):
+        pass
+
+    @property
+    def gripper_state(self):
+        return False
+
+
+class _MinimalVisionDriver:
+    @property
+    def tf_flange_cam(self):
+        return None
+
+    @property
+    def calibration(self):
+        return None
+
+
 class TestProtocols:
     def test_robot_driver_protocol(self):
         assert isinstance(_MinimalRobotDriver(), RobotDriver)
@@ -87,6 +108,17 @@ class TestProtocols:
 
     def test_suction_driver_protocol(self):
         assert isinstance(_MinimalSuctionDriver(), SuctionDriver)
+
+    def test_gripper_driver_protocol(self):
+        assert isinstance(_MinimalGripperDriver(), GripperDriver)
+
+    def test_vision_driver_protocol(self):
+        assert isinstance(_MinimalVisionDriver(), VisionDriver)
+
+    def test_gripper_and_suction_are_distinct(self):
+        # A suction-only driver must NOT structurally satisfy GripperDriver.
+        assert not isinstance(_MinimalSuctionDriver(), GripperDriver)
+        assert not isinstance(_MinimalGripperDriver(), SuctionDriver)
 
     def test_mock_piper_driver_satisfies_robot_driver(self):
         assert isinstance(MockPiperDriver(), RobotDriver)

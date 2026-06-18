@@ -831,7 +831,7 @@ def _filter_runtime_overrides(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(payload)
 
 
-class SlotPickSkillTool(Tool):  # type: ignore[no-redef]
+class SlotPickSkillTool(Tool):
     def __init__(
         self,
         api: Any,

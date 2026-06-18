@@ -31,7 +31,9 @@ Install the package (editable mode recommended):
 pip install -e ".[dev]"
 
 # Full installation (adds vision/GPU deps: torch, transformers, FastAPI, etc.)
-pip install -e ".[full]"
+# torch is pinned to the CUDA 12.8 build (2.8.0+cu128), which only lives on the
+# PyTorch index, so the --extra-index-url flag is required.
+pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Piper hardware (installs piper_sdk)
 pip install -e ".[piper]"
@@ -133,6 +135,45 @@ serving/     Visual perception service subprocess (current version: GroundingDIN
 * **Agent Layer**: `RobotSession` manages the hardware lifecycle and sidecar processes; `build_robot_agent` constructs a callable DeepAgent in one step.
 * **Safety Policy Layer**: Subclasses of openjiuwen AgentRail that insert safety checks, exception recovery, and visual feedback before and after tool invocations.
 * **Hardware Adapter Layer**: `piper/` demonstrates how to integrate a specific hardware platform; `_common/builder.py` provides a generic polymorphic session factory.
+
+## Adding New Hardware
+
+JiuwenSymbiosis supports adapting to any robot form factor through the Capability Mixin + Adapter pattern. See the **[Hardware Porting Guide](docs/hardware-porting-guide.md)** for a step-by-step walkthrough.
+
+**Quick start:**
+
+```bash
+# 1. Copy the adapter template
+cp -r templates/xxx_adapter/ jiuwensymbiosis/adapters/my_robot/
+
+# 2. Follow the guide to implement 6 files (config, driver, env, api, session, yaml)
+
+# 3. Validate your adapter
+python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
+```
+
+The adapter template (`templates/xxx_adapter/`) provides a complete skeleton with:
+- `config.py` — hardware configuration dataclass with required/optional field annotations
+- `lowlevel.py` — driver skeleton with mock implementation for offline validation
+- `env.py` — hardware abstraction wrapping the driver (delegation pattern)
+- `api.py` — capability mixin composition with three common scenarios (SCARA+suction, 6-DoF+gripper, vision-enabled)
+- `session.py` — one-line session factory via `make_builder()`
+- `config_template.yaml` — YAML template with Chinese annotations
+
+Run the validation tool to check compatibility before connecting real hardware:
+
+```bash
+$ python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
+=================================================================
+ jiuwensymbiosis adapter compatibility validation
+ target: jiuwensymbiosis.adapters.my_robot
+=================================================================
+ ✓ Config class MyConfig found
+ ✓ Config has from_yaml / from_dict
+ ...
+ Result: ALL PASS — compatibility 100%
+=================================================================
+```
 
 ## Features
 

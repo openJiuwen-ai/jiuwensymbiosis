@@ -126,3 +126,46 @@ class SuctionDriver(Protocol):
 
     def set_suction(self, on: bool) -> None:
         """Turn the suction gripper on or off."""
+
+
+@runtime_checkable
+class GripperDriver(Protocol):
+    """Optional parallel-gripper IO surface (sibling of ``SuctionDriver``)."""
+
+    def set_gripper(self, on: bool) -> None:
+        """Close (True) or open (False) the parallel gripper."""
+
+    @property
+    def gripper_state(self) -> Any:
+        """Last commanded gripper state (implementation-defined; e.g. bool closed)."""
+
+
+@runtime_checkable
+class VisionDriver(Protocol):
+    """Optional hand-eye calibration surface for eye-in-hand back-projection."""
+
+    @property
+    def tf_flange_cam(self) -> Optional[np.ndarray]:
+        """4x4 flange→camera extrinsic transform, or None if uncalibrated."""
+
+    @property
+    def calibration(self) -> Optional[dict]:
+        """Loaded hand-eye calibration payload, or None."""
+
+
+# ---------------------------------------------------------------------------
+# Composite driver types for adapters whose driver implements multiple protocols.
+# These are typing-only unions — MyPy / pyright understand that an object
+# satisfying all listed protocols also satisfies the composite.
+# ---------------------------------------------------------------------------
+
+PiperFullDriver = RobotDriver
+"""Type alias for the full PiperLowLevel surface.
+
+``PiperLowLevel`` implements RobotDriver + JointDriver + CameraDriver +
+GripperDriver + VisionDriver.  Because Python Protocol unions are not
+directly expressable as ``Protocol & Protocol & ...``, we document the
+expected surface here and use the most-specific base protocol as the
+static type.  Runtime ``isinstance`` checks against individual protocols
+still work because ``PiperLowLevel`` implements all of them.
+"""

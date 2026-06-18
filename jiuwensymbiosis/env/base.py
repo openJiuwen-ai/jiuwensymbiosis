@@ -21,9 +21,13 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    # Type-only: keeps the core ``env`` package free of an ``adapters`` runtime import.
+    from jiuwensymbiosis.adapters._common.protocol import RobotDriver
 
 logger = logging.getLogger(__name__)
 
@@ -135,3 +139,75 @@ class BaseRobotEnv(ABC):
     def has(self, capability: str) -> bool:
         """Check whether the env supports a given capability string."""
         return capability in self.capabilities
+
+    # --- optional hardware contract (default None; adapters set or override) ---
+    # Assign in connect() (e.g. ``self.low_level = XxxDriver()``) or override as a
+    # @property. ``z_min_safe`` / ``workspace_bounds`` are the safety envelope
+    # SafetyRail reads. ``home_pose`` / ``tool_offset_mm`` are robot body constants
+    # the api layer needs for coordinate math.
+    #
+    # ``low_level`` is a **controlled penetration point**: motion / end-effector /
+    # safety-boundary access MUST go through Env methods (``home()``,
+    # ``get_flange_pose()`` etc). Vision calibration data (``tf_flange_cam``,
+    # ``calibration``, ``intrinsics``, ``grab_frames``) and vendor-specific
+    # operations may access ``low_level`` directly — but the access is type-
+    # constrained by the ``RobotDriver`` (and sibling) Protocol(s).
+    low_level: Optional["RobotDriver"] = None
+    z_min_safe: Optional[float] = None
+    workspace_bounds: Optional[tuple[float, float, float, float]] = None
+
+    # Robot body constants. Adapters override as @property or set in connect().
+    home_pose: Any = None
+    tool_offset_mm: float = 0.0
+
+    # --- motion / end-effector verbs (default: delegate to low_level) ---
+
+    def _require_driver(self) -> "RobotDriver":
+        """Return ``low_level`` or raise if the env is not connected."""
+        ll = self.low_level
+        if ll is None:
+            raise RuntimeError(f"{self.name}: env not connected (no low_level driver).")
+        return ll
+
+    def home(self) -> None:
+        """Move to the home pose (blocking)."""
+        self._require_driver().home()
+
+    def get_flange_pose(self) -> Any:
+        """Return the current flange-frame pose (vendor Pose object)."""
+        return self._require_driver().get_pose()
+
+    def move_to_flange(self, pose: Any) -> None:
+        """Move to a FLANGE-frame target pose (blocking)."""
+        self._require_driver().move_to_pose_blocking(pose)
+
+    def move_joint(self, q: list[float]) -> None:
+        """Move to a joint-space configuration (blocking)."""
+        self._require_driver().move_joint_blocking(q)
+
+    def set_end_effector(self, engaged: bool) -> None:
+        """Engage (True) / release (False) the end effector.
+
+        Dispatches to the driver's ``set_gripper`` or ``set_suction`` based on
+        the env's declared capabilities (``grasp.parallel`` vs ``grasp.suction``).
+        """
+        driver = self._require_driver()
+        if "grasp.parallel" in self.capabilities:
+            driver.set_gripper(engaged)
+        elif "grasp.suction" in self.capabilities:
+            driver.set_suction(engaged)
+        else:
+            raise NotImplementedError(
+                f"{self.name}: no grasp capability declared "
+                f"(need 'grasp.parallel' or 'grasp.suction')"
+            )
+
+    # --- sensor convenience ---
+
+    def grab_rgb(self) -> Optional[np.ndarray]:
+        """Single-frame RGB grab for vision tools.
+
+        Default delegates to ``get_observation().rgb``; override in adapters
+        that can fetch RGB more cheaply than a full observation snapshot.
+        """
+        return self.get_observation().rgb

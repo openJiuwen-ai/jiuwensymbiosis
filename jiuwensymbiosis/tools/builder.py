@@ -3,10 +3,11 @@
 
 """Walk a `BaseRobotApi` instance, find @robot_tool methods, build openjiuwen Tools.
 
-Capability gating: a tool whose `capability` is set is emitted only if the
-api advertises it. This lets us share Mixins across robots that implement
-only a subset (e.g. a mixin defining 6 vision methods, but a robot has only
-detection + pixel projection).
+Capability gating: a tool is emitted only if its owning capability is in the
+gate set. The owning capability is the tool's explicit ``meta.capability``, else
+the ``capability`` of the mixin that declares the method. The gate set is
+``api.capabilities & env.capabilities`` when ``env`` is given, else
+``api.capabilities``.
 """
 
 from __future__ import annotations
@@ -16,9 +17,35 @@ from typing import Any, Optional
 from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
 
 
+def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
+    """Capabilities a tool may be gated against: api ∩ env (or api alone)."""
+    api_caps = getattr(api, "capabilities", None) or frozenset()
+    if env is None:
+        return frozenset(api_caps)
+    env_caps = getattr(env, "capabilities", None) or frozenset()
+    return frozenset(api_caps) & frozenset(env_caps)
+
+
+def _owning_capability(api_type: type, attr_name: str, meta: Any) -> Optional[str]:
+    """Resolve the capability a tool belongs to.
+
+    Explicit ``meta.capability`` wins; otherwise find the mixin in the MRO that
+    declares ``attr_name`` and carries a ``capability`` class attribute. Returns
+    None for body-specific tools owned by no capability mixin (never gated).
+    """
+    if meta.capability:
+        return meta.capability
+    for cls in api_type.__mro__:
+        cap = cls.__dict__.get("capability")
+        if isinstance(cap, str) and attr_name in cls.__dict__:
+            return cap
+    return None
+
+
 def build_robot_tools(
     api: Any,
     *,
+    env: Any = None,
     allow: Optional[set[str]] = None,
     deny: Optional[set[str]] = None,
 ) -> list[Any]:
@@ -27,6 +54,9 @@ def build_robot_tools(
     Args:
         api: An instance of a class that mixes ``BaseRobotApi`` with capability
             mixins. Must have ``capabilities`` (frozenset[str]).
+        env: Optional ``BaseRobotEnv``. When given, tools are gated by
+            ``api.capabilities & env.capabilities`` so the hardware's actual
+            capabilities are respected. When None, only ``api.capabilities``.
         allow: If given, only tool *names* in this set are emitted.
         deny: If given, tool names in this set are skipped (applied after ``allow``).
 
@@ -36,15 +66,13 @@ def build_robot_tools(
     Raises:
         ImportError: if openjiuwen is not installed.
     """
-    api_caps = getattr(api, "capabilities", None)
-    if api_caps is None:
-        # Fall back to method-level discovery only.
-        api_caps = frozenset()
+    effective_caps = _effective_capabilities(api, env)
+    api_type = type(api)
 
     tools: list[Any] = []
     seen: set[str] = set()
     # Walk MRO so subclass overrides are preferred but base-class decorators are still picked up.
-    for cls in type(api).__mro__:
+    for cls in api_type.__mro__:
         for attr_name, attr_value in cls.__dict__.items():
             if attr_name in seen:
                 continue
@@ -59,7 +87,8 @@ def build_robot_tools(
                 continue
             if deny is not None and meta.name in deny:
                 continue
-            if meta.capability and meta.capability not in api_caps:
+            owning_cap = _owning_capability(api_type, attr_name, meta)
+            if owning_cap and owning_cap not in effective_caps:
                 continue
 
             bound = getattr(api, attr_name)  # bound method on the api instance
@@ -73,14 +102,15 @@ def build_robot_tools(
     return tools
 
 
-def list_tool_meta(api: Any) -> list[dict]:
+def list_tool_meta(api: Any, *, env: Any = None) -> list[dict]:
     """Diagnostics: enumerate the tools `build_robot_tools` would emit, without
     actually instantiating openjiuwen objects. Useful in tests and for logging.
     """
-    api_caps = getattr(api, "capabilities", frozenset())
+    effective_caps = _effective_capabilities(api, env)
+    api_type = type(api)
     out: list[dict] = []
     seen: set[str] = set()
-    for cls in type(api).__mro__:
+    for cls in api_type.__mro__:
         for attr_name, attr_value in cls.__dict__.items():
             if attr_name in seen or not callable(attr_value):
                 continue
@@ -88,7 +118,8 @@ def list_tool_meta(api: Any) -> list[dict]:
             if meta is None:
                 continue
             seen.add(attr_name)
-            if meta.capability and meta.capability not in api_caps:
+            owning_cap = _owning_capability(api_type, attr_name, meta)
+            if owning_cap and owning_cap not in effective_caps:
                 continue
             out.append(
                 {

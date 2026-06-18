@@ -3,20 +3,23 @@
 
 """``PiperEnv`` — adapter from ``BaseRobotEnv`` to ``PiperLowLevel``.
 
-holds the local driver as ``self._inner``, forwards
-attribute lookups via ``__getattr__``, exposes ``connect/disconnect/
-get_observation``. No external deps beyond ``lowlevel``.
+Wraps the driver (``low_level``), exposes ``connect``/``disconnect``/
+``get_observation`` plus the safety contract (``z_min_safe`` /
+``workspace_bounds``). Motion/end-effector use the inherited Env verbs.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 
 from jiuwensymbiosis.adapters.piper.config import PiperConfig
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+
+if TYPE_CHECKING:
+    from jiuwensymbiosis.adapters._common.protocol import RobotDriver
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +42,47 @@ class PiperEnv(BaseRobotEnv):
     def __init__(self, cfg: PiperConfig) -> None:
         """Store config; driver is None until connect()."""
         self.cfg = cfg
-        self._inner: Optional[Any] = None  # PiperLowLevel
+        self._inner: Optional["RobotDriver"] = None  # PiperLowLevel
         self._connected = False
 
     @property
-    def low_level(self):
+    def low_level(self) -> Optional["RobotDriver"]:
         """The underlying low-level driver (PiperLowLevel), or None before connect()."""
         return self._inner
 
-    def __getattr__(self, name: str) -> Any:
-        """Forward unknown attribute lookups to the inner driver."""
-        inner = self.__dict__.get("_inner")
-        if inner is not None and hasattr(inner, name):
-            return getattr(inner, name)
-        raise AttributeError(f"PiperEnv has no attribute {name!r} (inner={inner!r})")
+    @property
+    def z_min_safe(self) -> Optional[float]:
+        """Tip-frame Z floor (mm): from the live driver if connected, else config."""
+        if self._inner is not None:
+            val = getattr(self._inner, "z_min_safe", None)
+            if val is not None:
+                return float(val)
+        cfg_val = getattr(self.cfg, "z_min_safe_mm", None)
+        return float(cfg_val) if cfg_val is not None else None
+
+    @property
+    def workspace_bounds(self) -> Optional[tuple[float, float, float, float]]:
+        """XY workspace bounds ``(xmin, ymin, xmax, ymax)`` in mm from config, or None."""
+        c = self.cfg
+        xmin, ymin = getattr(c, "x_min_mm", None), getattr(c, "y_min_mm", None)
+        xmax, ymax = getattr(c, "x_max_mm", None), getattr(c, "y_max_mm", None)
+        if None in (xmin, ymin, xmax, ymax):
+            return None
+        return (float(xmin), float(ymin), float(xmax), float(ymax))
+
+    @property
+    def home_pose(self):
+        """Home pose (vendor Pose object) from the driver, or None before connect."""
+        if self._inner is not None:
+            return self._inner.home_pose
+        return None
+
+    @property
+    def tool_offset_mm(self) -> float:
+        """Flange-to-tip offset (mm) from the driver, or 0 before connect."""
+        if self._inner is not None:
+            return float(self._inner.tool_offset_mm)
+        return float(getattr(self.cfg, "tool_offset_mm", 0.0))
 
     # ----------------------------------------------------------------- connect
     def connect(self) -> None:
@@ -137,7 +167,7 @@ class PiperEnv(BaseRobotEnv):
             rgb=rgb,
             depth=depth,
             extra={
-                "z_min_safe": getattr(self._inner, "z_min_safe", None),
+                "z_min_safe": self.z_min_safe,
                 "gripper_state": getattr(self._inner, "gripper_state", None),
             },
         )

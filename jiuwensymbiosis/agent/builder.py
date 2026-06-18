@@ -229,7 +229,7 @@ def _build_tools(
 
     tools: list[Any] = []
     if mode in ("tool", "hybrid"):
-        tools.extend(build_robot_tools(session.api))
+        tools.extend(build_robot_tools(session.api, env=session.env))
     if mode in ("code", "hybrid"):
         tools.append(make_inproc_code_tool(session.globals_provider))
     if enable_skill:
