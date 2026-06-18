@@ -122,3 +122,30 @@ class TestProtocols:
 
     def test_mock_piper_driver_satisfies_robot_driver(self):
         assert isinstance(MockPiperDriver(), RobotDriver)
+
+
+class _FullMockDriver(
+    _MinimalRobotDriver,
+    _MinimalJointDriver,
+    _MinimalCameraDriver,
+    _MinimalGripperDriver,
+    _MinimalVisionDriver,
+):
+    """A mock that satisfies all five vendor protocols simultaneously."""
+
+    pass
+
+
+class TestPiperFullDriver:
+    """Tests for the composite PiperFullDriver Protocol."""
+
+    def test_full_mock_satisfies_composite(self):
+        from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
+
+        assert isinstance(_FullMockDriver(), PiperFullDriver)
+
+    def test_robot_only_does_not_satisfy_composite(self):
+        from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
+
+        # A driver implementing only RobotDriver must NOT satisfy the composite.
+        assert not isinstance(_MinimalRobotDriver(), PiperFullDriver)

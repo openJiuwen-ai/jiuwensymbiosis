@@ -155,17 +155,23 @@ class VisionDriver(Protocol):
 
 # ---------------------------------------------------------------------------
 # Composite driver types for adapters whose driver implements multiple protocols.
-# These are typing-only unions — MyPy / pyright understand that an object
-# satisfying all listed protocols also satisfies the composite.
+# A multi-protocol ``Protocol`` subclass gives true static type checking (mypy /
+# pyright verify every member) plus a ``runtime_checkable`` ``isinstance`` probe
+# for capability gating — replacing the former type alias which only documented
+# the expected surface without enforcing it.
 # ---------------------------------------------------------------------------
 
-PiperFullDriver = RobotDriver
-"""Type alias for the full PiperLowLevel surface.
 
-``PiperLowLevel`` implements RobotDriver + JointDriver + CameraDriver +
-GripperDriver + VisionDriver.  Because Python Protocol unions are not
-directly expressable as ``Protocol & Protocol & ...``, we document the
-expected surface here and use the most-specific base protocol as the
-static type.  Runtime ``isinstance`` checks against individual protocols
-still work because ``PiperLowLevel`` implements all of them.
-"""
+@runtime_checkable
+class PiperFullDriver(RobotDriver, JointDriver, CameraDriver, GripperDriver, VisionDriver, Protocol):
+    """Composite driver surface — union of all five vendor protocols.
+
+    ``PiperLowLevel`` implements all five; ``PiperApi._ll()`` returns this
+    type so vision reads (``tf_flange_cam`` / ``calibration`` / ``intrinsics``
+    / ``grab_frames``) plus motion / gripper / camera reads are statically
+    verified by mypy / pyright. ``isinstance(driver, PiperFullDriver)`` gives
+    a runtime capability check for adapters that want to gate on the full
+    surface.
+    """
+
+    pass

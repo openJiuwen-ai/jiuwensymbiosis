@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, cast
 
 import numpy as np
 
@@ -203,7 +203,7 @@ class PiperApi(
             intrinsics = ll.intrinsics
         if intrinsics is None:
             raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
-        p = ll.get_pose()
+        p = self.env.get_flange_pose()
         flange_pose = FlangePose(p.x, p.y, p.z, p.rx, p.ry, p.rz)
         xyz = pixel_and_depth_to_base_xyz((u, v), depth_m, flange_pose, ll.tf_flange_cam, intrinsics)
         if calib is not None:
@@ -227,7 +227,7 @@ class PiperApi(
             return {"ok": False, "reason": "no_camera"}
         rgb, depth_img_m = frames
 
-        tcp_at_grab = ll.get_pose()
+        tcp_at_grab = self.env.get_flange_pose()
         self._ensure_detector()
         det = detect_and_centroid(
             rgb=rgb,
@@ -255,7 +255,7 @@ class PiperApi(
         if intrinsics is None:
             raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
 
-        tcp_at_proj = ll.get_pose()
+        tcp_at_proj = self.env.get_flange_pose()
         if tcp_at_proj.as_tuple() != tcp_at_grab.as_tuple():
             logger.warning(
                 "[grasp-debug] flange pose moved between frame grab and projection! " "grab=%s proj=%s",
@@ -405,7 +405,7 @@ class PiperApi(
         ll = self.env.low_level
         if ll is None:
             raise RuntimeError("PiperApi: env not connected. Call session.connect() / use `with session:`.")
-        return ll
+        return cast("PiperFullDriver", ll)
 
     def _ensure_detector(self) -> None:
         """Lazy-init the detector segmentation function if not already bound."""
