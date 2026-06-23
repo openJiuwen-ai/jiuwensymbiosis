@@ -34,27 +34,20 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+# Single source of truth — import from the package so the validator and the
+# ``__init_subclass__`` gate in env/base.py can never drift out of sync.
+from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES
+
 # Dedicated logger — configured in main() with a raw-message handler so the
 # report keeps its visual layout, while third-party INFO logs (e.g. openjiuwen)
 # are suppressed via the root logger level.
 logger = logging.getLogger("validate_adapter")
 
 # ---------------------------------------------------------------------------
-# Known capabilities — keep in sync with jiuwensymbiosis/env/base.py:39
+# Known capabilities — single-sourced from jiuwensymbiosis.env.base above.
+# (Previously a hand-copied frozenset with a "keep in sync" comment — a
+# silent drift hazard; the E-04 check now reads the same set env/base enforces.)
 # ---------------------------------------------------------------------------
-KNOWN_CAPABILITIES = frozenset(
-    {
-        "motion.cartesian",
-        "motion.joint",
-        "grasp.suction",
-        "grasp.parallel",
-        "vision.camera",
-        "vision.depth",
-        "vision.detection",
-        "sorting.command",
-        "speech.tts",
-    }
-)
 
 # Mapping of abstract methods per Mixin (from api/mixins.py).
 # Only methods that still `raise NotImplementedError` belong here — the rest
@@ -613,7 +606,7 @@ def _check_tool_tags(api_cls: type, env_caps: set[str]) -> list[str]:
         obj = getattr(api_cls, attr_name, None)
         if obj is None:
             continue
-        meta = getattr(obj, "_tool_meta", None)
+        meta = getattr(obj, "__robot_tool__", None)
         if meta is None:
             continue
         cap = getattr(meta, "capability", None)

@@ -78,6 +78,14 @@ class TestRobotAgentConfig:
             cfg = RobotAgentConfig(mode=mode)
             assert cfg.mode == mode
 
+    def test_strict_capabilities_default_false(self):
+        cfg = RobotAgentConfig()
+        assert cfg.strict_capabilities is False
+
+    def test_strict_capabilities_settable(self):
+        cfg = RobotAgentConfig(strict_capabilities=True)
+        assert cfg.strict_capabilities is True
+
 
 class TestPromptTemplate:
     def test_contains_robot_name_placeholder(self):

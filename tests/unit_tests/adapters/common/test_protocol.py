@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from jiuwensymbiosis.adapters._common.protocol import (
     RobotDriver,
     JointDriver,
@@ -94,6 +96,29 @@ class _MinimalVisionDriver:
     @property
     def calibration(self):
         return None
+
+
+class TestMoveToPoseBlockingSignature:
+    """The Protocol used to type move_to_pose_blocking as ``*args, **kwargs``,
+    hiding a forgotten ``pose`` argument until runtime. The first positional
+    parameter must be the structured ``pose`` object."""
+
+    def test_first_param_is_pose(self):
+        sig = inspect.signature(RobotDriver.move_to_pose_blocking)
+        params = list(sig.parameters)
+        assert params[0] == "self"
+        assert params[1] == "pose", (
+            "move_to_pose_blocking must declare `pose` as its first non-self "
+            "parameter so a missing pose is a static error, not a runtime crash"
+        )
+
+    def test_vendor_kwargs_still_accepted(self):
+        # Vendor extensions (sync_timeout_s, joint=...) ride in *args/**kwargs
+        # after pose — changing the signature must not break Piper's override.
+        sig = inspect.signature(RobotDriver.move_to_pose_blocking)
+        params = sig.parameters
+        assert any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values())
+        assert any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class TestProtocols:

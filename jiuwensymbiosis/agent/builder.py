@@ -257,16 +257,43 @@ def _maybe_append_skill_rail(rails: list[Any], enable_skill: bool) -> list[Any]:
     return rails
 
 
-def _build_system_prompt(session: RobotSession, custom_prompt: Optional[str]) -> str:
+def _build_system_prompt(session: RobotSession, custom_prompt: Optional[str], mode: Mode = "hybrid") -> str:
     """Render ``ROBOT_PROMPT_TEMPLATE`` for this session.
 
     Only the robot name is interpolated; tool descriptions reach the LLM
     through the OpenAI ``tools`` field, not through prose duplication.
+
+    When the agent runs an in-process code tool (``mode`` in ``code``/``hybrid``),
+    the names available to that code (``env``, ``api``, ``np`` + any
+    ``extra_globals``) are appended so the model knows what it can reference —
+    otherwise ``extra_globals`` helpers stay invisible to the LLM.
     """
     if custom_prompt is not None:
         return custom_prompt
     desc = session.describe()
-    return ROBOT_PROMPT_TEMPLATE.format(robot_name=desc["name"])
+    base = ROBOT_PROMPT_TEMPLATE.format(robot_name=desc["name"])
+    if mode not in ("code", "hybrid"):
+        return base
+    globals_section = _render_globals_section(session)
+    if globals_section:
+        return base + "\n\n" + globals_section
+    return base
+
+
+def _render_globals_section(session: RobotSession) -> str:
+    """One prose line listing the names ``InProcessCodeTool`` injects.
+
+    Reflected from ``session.globals_provider()`` so ``extra_globals`` additions
+    are auto-documented without the adapter author editing the prompt.
+    """
+    keys = list(session.globals_provider().keys())
+    if not keys:
+        return ""
+    names = ", ".join(f"`{k}`" for k in keys)
+    return (
+        "在代码模式（run_python）中，以下全局变量可直接使用："
+        f"{names}。多步控制流可写进 run_python，把最终值赋给 RESULT。"
+    )
 
 
 def build_robot_agent(
@@ -287,13 +314,17 @@ def build_robot_agent(
     responsibility (use ``with session:`` for clean teardown).
     """
     config = config or RobotAgentConfig()
+    # Propagate the strictness flag onto the session BEFORE the caller connects
+    # it (typical: ``agent = build_robot_agent(session); with session: ...``).
+    # If the session is already connected this is a no-op for this connect cycle.
+    session.strict_capabilities = config.strict_capabilities
     model = config.model or build_model(config.model_spec)
     tools = _build_tools(session, config.mode, config.extra_tools, enable_skill=config.enable_skill)
     rails = _resolve_rails(
         session, config.enable_visual_feedback, config.enable_safety, config.enable_recovery, config.extra_rails
     )
     rails = _maybe_append_skill_rail(rails, config.enable_skill)
-    sys_prompt = _build_system_prompt(session, config.system_prompt)
+    sys_prompt = _build_system_prompt(session, config.system_prompt, mode=config.mode)
     workspace = _resolve_workspace(session, config.workspace)
 
     return create_deep_agent(

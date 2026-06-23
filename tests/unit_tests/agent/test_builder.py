@@ -60,6 +60,38 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(mock_session, "Custom prompt")
         assert prompt == "Custom prompt"
 
+    def test_custom_prompt_skips_globals(self, mock_session):
+        # A fully custom prompt is used verbatim — globals are not appended.
+        mock_session.extra_globals = {"my_helper": object()}
+        prompt = _build_system_prompt(mock_session, "Custom", mode="code")
+        assert prompt == "Custom"
+
+    def test_code_mode_lists_globals(self):
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t", extra_globals={"my_helper": object()})
+        prompt = _build_system_prompt(s, None, mode="code")
+        # Built-in globals always present.
+        for name in ("env", "api", "np"):
+            assert name in prompt
+        # extra_globals surfaced automatically.
+        assert "my_helper" in prompt
+
+    def test_tool_mode_omits_globals(self):
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t", extra_globals={"my_helper": object()})
+        prompt = _build_system_prompt(s, None, mode="tool")
+        assert "my_helper" not in prompt
+
+    def test_default_mode_is_hybrid_lists_globals(self):
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t", extra_globals={"my_helper": object()})
+        # Default mode (hybrid) includes the inproc code tool → globals listed.
+        prompt = _build_system_prompt(s, None)
+        assert "my_helper" in prompt
+
 
 class TestRailRegistry:
     def test_should_enable_visual_feedback(self):

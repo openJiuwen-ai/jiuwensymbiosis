@@ -116,6 +116,42 @@ python examples/piper_pick_demo.py \
     --api-key ""
 ```
 
+### Testing
+
+Activate your conda environment first, then run the unit tests (no hardware required):
+
+```bash
+conda activate your_env_name
+
+# Full suite (unit tests only; integration tests are auto-skipped without hardware/GPU)
+pytest
+
+# A subset
+pytest tests/unit_tests/agent/                     # one directory
+pytest tests/unit_tests/adapters/common/test_smoke.py  # one file
+pytest -k "strict_capabilities"                    # by name pattern
+pytest -m integration                              # only hardware/GPU-dependent tests
+```
+
+Adapter validation comes in two layers — run both before connecting real hardware:
+
+```bash
+# 1. Static structure check (class hierarchy, capability declarations, method presence)
+python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.piper
+
+# 2. Runtime smoke test: drive every @robot_tool with a mock env and assert
+#    no crash + JSON-serializable return. Catches field-name typos and runtime
+#    shape errors that the static check cannot.
+python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
+#    --json  emits a machine-readable report instead of the formatted one
+```
+
+> The smoke CLI builds the session from an empty config dict, so it works for
+> adapters whose config dataclass has defaults for every field (PiperConfig
+> does). Adapters with required cfg fields, or that need a connected hardware
+> env, should call the core function directly:
+> `from scripts.smoke_test_adapter import smoke_test_api; smoke_test_api(api, env=mock_env)`.
+
 ## Architecture
 
 ```

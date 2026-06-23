@@ -141,6 +141,9 @@ class RobotAgentConfig:
         extra_rails: Additional rails appended to the rail list.
         max_iterations: Maximum agent loop iterations.
         workspace: Agent workspace directory.
+        strict_capabilities: When True, raise on connect if the api declares
+            capabilities the env does not provide (a config error). Defaults to
+            False (warn only) for backward compatibility.
     """
 
     mode: Mode = "hybrid"
@@ -155,3 +158,4 @@ class RobotAgentConfig:
     extra_rails: Optional[list[Any]] = None
     max_iterations: int = 15
     workspace: Optional[str] = None
+    strict_capabilities: bool = False

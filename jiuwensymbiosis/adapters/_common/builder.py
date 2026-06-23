@@ -11,7 +11,8 @@ Each adapter exposes one ``build_xxx_session`` callable that:
 Wiring this up by hand in every adapter is pure boilerplate. ``make_builder``
 takes (cfg_cls, env_cls, api_cls) plus optional callbacks for adapter-specific
 session decoration (e.g. detector sidecar starter, extra_globals) and returns a
-``_Builder`` instance with the three call shapes above. The adapter just does:
+callable (a plain function carrying ``.from_yaml`` / ``.from_dict`` attributes)
+with the three call shapes above. The adapter just does:
 
     build_xxx_session = make_builder(
         XxxConfig, XxxEnv, XxxApi,
@@ -23,7 +24,7 @@ session decoration (e.g. detector sidecar starter, extra_globals) and returns a
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from jiuwensymbiosis.agent.session import RobotSession
 
@@ -31,13 +32,80 @@ from jiuwensymbiosis.agent.session import RobotSession
 SidecarBuilder = Callable[[Any], Any]
 SessionDecorator = Callable[[RobotSession, Any], None]
 
+# A field-mapping spec for declarative api_kwargs_from_cfg:
+#   "cfg_field"          → pass cfg.cfg_field as api kwarg of the same name
+#   "cfg_field:api_kwarg" → pass cfg.cfg_field as api kwarg "api_kwarg"
+# A plain callable is also accepted (backward compat).
+ApiKwargsSpec = Union[Callable[[Any], dict], list[str]]
+
+
+def _resolve_api_kwargs(spec: Optional[ApiKwargsSpec], cfg: Any) -> dict:
+    """Turn a kwargs spec into the kwargs dict passed to ``api_cls(env, **kw)``.
+
+    * ``None`` → no kwargs.
+    * ``callable`` → ``spec(cfg)`` (legacy per-adapter extractor).
+    * ``list[str]`` → declarative field mapping. Each item is either a bare
+      cfg attribute name (passed through under the same name) or
+      ``"cfg_attr:api_kwarg"`` to rename on the way through. ``cfg_attr`` may
+      use dotted paths (e.g. ``detector.url``) to reach nested sub-configs.
+    """
+    if spec is None:
+        return {}
+    if callable(spec):
+        return spec(cfg)
+    kwargs: dict[str, Any] = {}
+    for item in spec:
+        if ":" in item:
+            cfg_path, api_kwarg = item.split(":", 1)
+        else:
+            cfg_path = api_kwarg = item
+        value = cfg
+        for part in cfg_path.split("."):
+            value = getattr(value, part)
+        kwargs[api_kwarg] = value
+    return kwargs
+
+
+def make_detector_sidecar(cfg_attr: str = "detector"):
+    """Return a ``SidecarBuilder`` that spawns the GroundingDINO+SAM2 server.
+
+    Reads the detector sub-config from ``cfg.<cfg_attr>`` (default
+    ``cfg.detector``) and, when its ``spawn`` flag is set, returns a zero-arg
+    factory that produces a ``detector_subprocess(...)`` context manager.
+    Returns ``None`` when spawning is disabled or no detector config is present,
+    so an adapter without vision can still wire this in unconditionally.
+
+    Mirrors the field shape of ``DetectorServerConfig``
+    (``host/port/device/startup_timeout_s/gdino_model_id/...``).
+    """
+    def _build(cfg: Any) -> Optional[Callable]:
+        det = getattr(cfg, cfg_attr, None)
+        if det is None or not getattr(det, "spawn", False):
+            return None
+        from jiuwensymbiosis.adapters._common.detector_sidecar import detector_subprocess
+
+        kwargs = dict(
+            host=det.host,
+            port=det.port,
+            device=det.device,
+            startup_timeout_s=det.startup_timeout_s,
+            gdino_model_id=det.gdino_model_id,
+            sam2_model_id=det.sam2_model_id,
+            box_threshold=det.box_threshold,
+            text_threshold=det.text_threshold,
+            use_sam2=det.use_sam2,
+        )
+        return lambda: detector_subprocess(**kwargs)
+
+    return _build
+
 
 def make_builder(
     cfg_cls: type,
     env_cls: type,
     api_cls: type,
     *,
-    api_kwargs_from_cfg: Optional[Callable[[Any], dict]] = None,
+    api_kwargs_from_cfg: Optional[ApiKwargsSpec] = None,
     sidecar_builders: Optional[list[SidecarBuilder]] = None,
     decorate: Optional[SessionDecorator] = None,
 ):
@@ -47,19 +115,24 @@ def make_builder(
       cfg_cls: Config dataclass with ``from_yaml`` and ``from_dict`` classmethods.
       env_cls: ``BaseRobotEnv`` subclass; constructed as ``env_cls(cfg)``.
       api_cls: ``BaseRobotApi`` subclass; constructed as
-        ``api_cls(env, **api_kwargs_from_cfg(cfg))`` if a kwargs callback is given,
+        ``api_cls(env, **api_kwargs_from_cfg(cfg))`` if a kwargs spec is given,
         else ``api_cls(env)``.
+      api_kwargs_from_cfg: Either a callable ``cfg -> dict`` (legacy), or a
+        list of cfg-attribute mappings (declarative). Bare names pass through
+        unchanged; ``"cfg_attr:api_kwarg"`` renames on the way to the Api.
+        This removes the per-adapter field-shuffling function when cfg and Api
+        already use (near-)matching names.
       sidecar_builders: Each callable, given the cfg, returns either a context
         manager (e.g. ``detector_subprocess(...)``) or None. Only non-None returns
         are appended to the session's sidecar_starters. The order is preserved.
       decorate: Optional final-pass callback for storing things on the session.
 
-    Returns the builder instance — callable directly with a cfg, with
-    ``.from_yaml`` and ``.from_dict`` classmethods.
+    Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``
+    and ``.from_dict(dict)`` as attributes.
     """
     def _session_from_cfg(cfg: Any) -> RobotSession:
         env = env_cls(cfg)
-        api_kwargs = api_kwargs_from_cfg(cfg) if api_kwargs_from_cfg else {}
+        api_kwargs = _resolve_api_kwargs(api_kwargs_from_cfg, cfg)
         api = api_cls(env, **api_kwargs)
 
         sidecar_starters: list[Callable[[], Any]] = []
@@ -86,22 +159,18 @@ def make_builder(
             decorate(session, cfg)
         return session
 
-    class _Builder:
-        """Polymorphic session factory — call directly, or use ``.from_yaml`` / ``.from_dict``."""
+    def build(cfg: Any) -> RobotSession:
+        """Build a session directly from an in-memory config object."""
+        return _session_from_cfg(cfg)
 
-        @staticmethod
-        def __call__(cfg: Any) -> RobotSession:
-            """Build a session directly from an in-memory config object."""
-            return _session_from_cfg(cfg)
+    def from_yaml(path: str | Path) -> RobotSession:
+        """Build a session from a YAML config file at ``path``."""
+        return _session_from_cfg(cfg_cls.from_yaml(path))
 
-        @staticmethod
-        def from_yaml(path: str | Path) -> RobotSession:
-            """Build a session from a YAML config file at ``path``."""
-            return _session_from_cfg(cfg_cls.from_yaml(path))
+    def from_dict(data: dict[str, Any]) -> RobotSession:
+        """Build a session from an in-memory config ``dict``."""
+        return _session_from_cfg(cfg_cls.from_dict(data))
 
-        @staticmethod
-        def from_dict(data: dict[str, Any]) -> RobotSession:
-            """Build a session from an in-memory config ``dict``."""
-            return _session_from_cfg(cfg_cls.from_dict(data))
-
-    return _Builder()
+    build.from_yaml = from_yaml
+    build.from_dict = from_dict
+    return build

@@ -83,10 +83,11 @@ cp -r templates/xxx_adapter/ jiuwensymbiosis/adapters/my_robot/
 #  - lowlevel.py: 实现硬件通信（或先写 Mock）
 #  - env.py: 声明 capabilities + connect/disconnect/observe
 #  - api.py: 选择 Mixin 组合，覆写带专属几何的方法
-#  - session.py: 无需修改（make_builder 已封装）
+#  - session.py: 无需修改（make_builder 已封装；声明式 api_kwargs_from_cfg + make_detector_sidecar）
 
-# 3. 验证
+# 3. 验证（静态结构 + 运行时冒烟）
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
+python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot
 
 # 4. 测试运行
 python -c "
@@ -114,7 +115,9 @@ capability   RobotDriver  实现观测      返回 ok/error   必填/选填     
 > 主要工作量在**步骤 2（驱动）**：硬件通信、运动、传感全在这里实现。
 > Env（步骤 3）通常只写 `connect/disconnect/get_observation` + 暴露 `low_level` 和安全属性——
 > 运动/末端动词由 `BaseRobotEnv` 默认委托给驱动。Api（步骤 4）的运动/抓取/取图方法由 Mixin
-> 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）并实现高层视觉。
+> 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）并实现高层视觉——eye-in-hand
+> 视觉可委托 `adapters/_common/vision.default_get_grasp_info_simple` /
+> `default_pixel_to_base_xyz`，只补一个 `pose_to_tf` 回调与检测器 `seg_fn`。
 
 每步详细说明见后续章节。
 
