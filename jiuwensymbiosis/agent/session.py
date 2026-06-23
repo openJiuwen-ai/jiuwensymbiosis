@@ -41,6 +41,12 @@ class RobotSession:
         extra_globals: Extra names exposed to ``InProcessCodeTool``-executed
             code. The default exposes ``env`` and ``api``; add ``np``,
             ``time``, your own helpers here.
+        strict_capabilities: When True, raise ``ValueError`` on connect if the
+            api declares capabilities the env does not (a clear config error —
+            a Mixin was added without updating the env, or the env's hardware
+            capabilities changed). ``env``-only capabilities (hardware has a
+            feature the api doesn't surface) always stay a warning, since that
+            is a missing tool, not a misconfiguration.
     """
 
     env: BaseRobotEnv
@@ -48,6 +54,7 @@ class RobotSession:
     name: str = "robot"
     sidecar_starters: list[Callable[[], Any]] = field(default_factory=list)
     extra_globals: dict[str, Any] = field(default_factory=dict)
+    strict_capabilities: bool = False
 
     _stack: Optional[ExitStack] = field(default=None, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
@@ -93,11 +100,31 @@ class RobotSession:
                 sorted(env_only),
             )
         if api_only:
+            env_cls = type(self.env).__name__
+            api_cls = type(self.api).__name__
+            fix_hint = (
+                f"修复指引：在 {env_cls}.capabilities 里加入这些能力，"
+                f"或从 {api_cls} 移除对应的 Mixin。"
+            )
+            if self.strict_capabilities:
+                # api declares a capability the hardware does not provide — a
+                # config error (Mixin added without updating env, or hardware
+                # changed). Surface it loudly instead of silently dropping tools.
+                self._connected = False
+                if self._stack is not None:
+                    self._stack.close()
+                    self._stack = None
+                raise ValueError(
+                    f"RobotSession[{self.name}] strict_capabilities: api declares "
+                    f"capabilities not in env: {sorted(api_only)}. "
+                    f"These capabilities lack hardware support. {fix_hint}"
+                )
             logger.warning(
                 "RobotSession[%s]: api declares capabilities not in env: %s. "
-                "These capabilities lack hardware support.",
+                "These capabilities lack hardware support. %s",
                 self.name,
                 sorted(api_only),
+                fix_hint,
             )
 
     def disconnect(self) -> None:

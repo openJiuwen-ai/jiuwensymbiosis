@@ -66,3 +66,6 @@ filterwarnings = [
     "ignore::DeprecationWarning:openjiuwen",
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
+
+[tool.black]
+line-length = 100

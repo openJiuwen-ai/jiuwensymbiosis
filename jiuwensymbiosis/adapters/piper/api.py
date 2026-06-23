@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 from jiuwensymbiosis.adapters._common.detector_client import init_detector
 from jiuwensymbiosis.adapters._common.vision import (
+    GraspFailure,
+    GraspResult,
     apply_xy_correction,
     detect_and_centroid,
     dump_grasp_debug,
@@ -220,7 +222,7 @@ class PiperApi(
         '"grasp_position": [x,y,z]_mm, "place_z": float, "place_position": [x,y,z]_mm, '
         '"score": float, "pixel_uv": [u,v], "depth_m": float}.'
     )
-    def get_grasp_info_simple(self, object_name: str) -> dict:
+    def get_grasp_info_simple(self, object_name: str) -> GraspResult | GraspFailure:
         ll = self._ll()
         frames = ll.grab_frames()
         if frames is None:

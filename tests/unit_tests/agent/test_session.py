@@ -5,10 +5,21 @@
 
 from __future__ import annotations
 
+import pytest
+
+from jiuwensymbiosis.api.mixins import JointMotionMixin
 from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
 
 from tests.mocks.mock_api import MockApi
+
+
+class _ApiWithJointMixin(JointMotionMixin, MockApi):
+    """MockApi + joint motion: declares motion.joint, which MockArmEnv lacks.
+
+    This makes ``api_only == {"motion.joint"}`` — a clear config error to test
+    the strict_capabilities gate.
+    """
 
 
 class TestRobotSessionConstruction:
@@ -116,4 +127,53 @@ class TestRobotSessionSidecars:
         s = RobotSession(env=env, api=api, name="t", sidecar_starters=[starter])
         s.connect()
         assert len(started) == 1
+        s.disconnect()
+
+
+class TestStrictCapabilities:
+    def test_strict_raises_on_api_only(self):
+        # api declares motion.joint but env does not — a config error.
+        env = MockArmEnv()
+        api = _ApiWithJointMixin(env)
+        assert "motion.joint" in api.capabilities
+        assert "motion.joint" not in env.capabilities
+
+        s = RobotSession(env=env, api=api, name="t", strict_capabilities=True)
+        with pytest.raises(ValueError) as exc_info:
+            s.connect()
+        assert "motion.joint" in str(exc_info.value)
+        # Did not transition to connected.
+        assert s._connected is False
+
+    def test_strict_disabled_warns_on_api_only(self, caplog):
+        import logging
+
+        env = MockArmEnv()
+        api = _ApiWithJointMixin(env)
+        s = RobotSession(env=env, api=api, name="t", strict_capabilities=False)
+        with caplog.at_level(logging.WARNING):
+            s.connect()  # must NOT raise
+        assert s._connected is True
+        assert any("motion.joint" in r.getMessage() for r in caplog.records)
+        s.disconnect()
+
+    def test_strict_passes_when_aligned(self):
+        env = MockArmEnv()
+        api = MockApi(env)  # capabilities ⊆ env.capabilities
+        s = RobotSession(env=env, api=api, name="t", strict_capabilities=True)
+        s.connect()
+        assert s._connected is True
+        s.disconnect()
+
+    def test_env_only_never_raises_even_strict(self):
+        # env has a capability the api doesn't declare — that's a feature not
+        # surfaced as a tool, not necessarily an error. strict must not fire.
+        env = MockArmEnv()
+        api = MockApi(env)
+        # MockArmEnv has vision.camera; MockApi does not declare it.
+        assert "vision.camera" in env.capabilities
+        assert "vision.camera" not in api.capabilities
+        s = RobotSession(env=env, api=api, name="t", strict_capabilities=True)
+        s.connect()
+        assert s._connected is True
         s.disconnect()

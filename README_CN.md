@@ -116,6 +116,39 @@ python examples/piper_pick_demo.py \
     --api-key ""
 ```
 
+### 测试
+
+先激活 conda 环境，再运行单元测试（无需硬件）：
+
+```bash
+conda activate your_env_name
+
+# 全量（仅单元测试；集成测试在无硬件/GPU 时自动跳过）
+pytest
+
+# 子集
+pytest tests/unit_tests/agent/                     # 单个目录
+pytest tests/unit_tests/adapters/common/test_smoke.py  # 单个文件
+pytest -k "strict_capabilities"                    # 按名称过滤
+pytest -m integration                              # 仅硬件/GPU 依赖的集成测试
+```
+
+适配器校验分两层——连接真机前两者都跑一遍：
+
+```bash
+# 1. 静态结构检查（类继承、能力声明、方法是否存在）
+python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.piper
+
+# 2. 运行时冒烟测试：用 mock env 驱动每个 @robot_tool，断言不崩 + 返回可 JSON 序列化。
+#    捕获静态检查查不到的字段名拼写错、运行时 shape 错误。
+python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
+#    --json  输出机器可读的 JSON 报告，而非格式化报告
+```
+
+> 冒烟测试 CLI 用空配置 dict 构造 session，因此适用于配置 dataclass 全字段都有默认值的适配器（PiperConfig 满足）。
+> 若适配器有必需 cfg 字段，或需要已连接的硬件 env，请直接调用核心函数：
+> `from scripts.smoke_test_adapter import smoke_test_api; smoke_test_api(api, env=mock_env)`
+
 ## 架构设计
 
 ```

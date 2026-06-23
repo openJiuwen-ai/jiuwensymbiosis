@@ -48,9 +48,9 @@ class RobotDriver(Protocol):
     """The minimum surface a per-vendor low-level driver exposes.
 
     Vendor Pose dataclasses are returned by ``get_pose`` / ``home_pose``.
-    ``move_to_pose_blocking`` is intentionally typed ``*args, **kwargs``
-    because the positional shape differs by DoF (4 or 6).
-    Each call site uses the vendor-appropriate signature.
+    ``move_to_pose_blocking`` takes the structured ``pose`` object first
+    (the vendor Pose dataclass, 4- or 6-DoF), with vendor extensions in
+    ``*args``/``**kwargs`` after it.
     """
 
     @property
@@ -79,11 +79,15 @@ class RobotDriver(Protocol):
     def get_pose(self) -> Any:
         """Return the current pose as the vendor's Pose dataclass."""
 
-    def move_to_pose_blocking(self, *args: Any, **kwargs: Any) -> None:
+    def move_to_pose_blocking(self, pose: Any, *args: Any, **kwargs: Any) -> None:
         """Move to a FLANGE-frame target pose, blocking until motion completes.
 
-        Typed ``*args, **kwargs`` because the positional shape is vendor-
-        specific (4-DoF vs 6-DoF).
+        ``pose`` is the structured vendor Pose object (``x,y,z,rx,ry,rz`` for
+        6-DoF, ``x,y,z,r`` for 4-DoF SCARA). Making it a named positional
+        parameter — rather than burying it in ``*args`` — turns a forgotten
+        pose into a static error instead of a runtime crash. Vendor extensions
+        (``sync_timeout_s``, ``joint=True``, ...) ride in ``*args``/``**kwargs``
+        after it.
         """
 
 
