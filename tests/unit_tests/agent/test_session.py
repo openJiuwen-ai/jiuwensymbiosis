@@ -180,7 +180,7 @@ class TestStrictCapabilities:
 
 
 class TestTraceFinalizeOnDisconnect:
-    """disconnect() fully tears down the TraceRail (Issue #9 safety net)."""
+    """disconnect() fully tears down the TraceRail."""
 
     def test_disconnect_calls_close(self):
         from types import SimpleNamespace

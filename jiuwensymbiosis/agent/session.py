@@ -155,6 +155,15 @@ class RobotSession:
         logger.info("RobotSession[%s] disconnected", self.name)
 
     # ------------------------------------------------------------------- globals
+    def attach_trace_rail(self, trace_rail: Any) -> None:
+        """Bind a TraceRail so ``disconnect`` flushes + detaches it on teardown.
+
+        Set by ``build_robot_agent`` when tracing is enabled. Safe to overwrite
+        a prior rail (the old one is dropped — ``disconnect`` finalizes the
+        currently-attached one).
+        """
+        self._trace_rail = trace_rail
+
     def globals_provider(self) -> dict[str, Any]:
         """Return the dict that ``InProcessCodeTool`` injects on every run.
 

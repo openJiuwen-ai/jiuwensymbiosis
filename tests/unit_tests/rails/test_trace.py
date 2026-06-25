@@ -210,7 +210,7 @@ class TestLogCapture:
         ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3}))
         await trace_rail.before_tool_call(ctx)
         trace_rail.record_log_event(
-            logger="jiuwensymbiosis.rails.recovery",
+            logger_name="jiuwensymbiosis.rails.recovery",
             level="WARNING", msg="home() failed", ts=0.0,
         )
         last = trace_rail.trace.entries[-1]
@@ -220,7 +220,7 @@ class TestLogCapture:
     async def test_log_without_step_goes_trace_log(self, trace_rail):
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c9")))
         trace_rail.record_log_event(
-            logger="jiuwensymbiosis.detector", level="WARNING",
+            logger_name="jiuwensymbiosis.detector", level="WARNING",
             msg="detector unreachable", ts=0.0,
         )
         assert any("detector unreachable" in e["msg"] for e in trace_rail.trace.trace_log)
@@ -403,7 +403,7 @@ class TestCurrentStepAndFrameSink:
 
     @pytest.mark.asyncio
     async def test_frame_sink_filename_aligns_with_entry_step(self, trace_rail, tmp_path):
-        # Contract: _maybe_save_frame_for_sink must name the frame after the
+        # Contract: save_frame_for_sink must name the frame after the
         # active step so it matches entry.step (previously it read the private
         # _step_counter; now it uses the public current_step property).
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="cs2")))
@@ -415,7 +415,7 @@ class TestCurrentStepAndFrameSink:
         from jiuwensymbiosis.env.mock import MockArmEnv
 
         rgb = MockArmEnv().get_observation().rgb
-        path = trace_rail._maybe_save_frame_for_sink(rgb)
+        path = trace_rail.save_frame_for_sink(rgb)
         assert path is not None
         assert path.endswith("step_002.jpg")
         assert trace_rail.trace.current_step == 2

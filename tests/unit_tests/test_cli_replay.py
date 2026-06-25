@@ -96,12 +96,8 @@ class TestReplay:
 
 
 class TestReplayHtml:
-    def test_writes_html_and_does_not_open_by_default(self, tmp_path, monkeypatch):
-        # Default: write HTML + print path, but do NOT launch a browser.
-        opened = []
-        import jiuwensymbiosis.cli as cli_mod
-
-        monkeypatch.setattr(cli_mod, "_open_in_viewer", lambda p: opened.append(p) or True)
+    def test_writes_html_and_prints_path(self, tmp_path):
+        # Default: write HTML + print path.
         p = tmp_path / "conv-1.json"
         p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
         out = io.StringIO()
@@ -111,22 +107,8 @@ class TestReplayHtml:
         assert html_path.is_file()
         text = out.getvalue()
         assert f"wrote {html_path}" in text
-        assert opened == []  # browser never launched by default
 
-    def test_open_flag_launches_browser(self, tmp_path, monkeypatch):
-        opened = []
-        import jiuwensymbiosis.cli as cli_mod
-
-        monkeypatch.setattr(cli_mod, "_open_in_viewer", lambda p: opened.append(p) or True)
-        p = tmp_path / "conv-1.json"
-        p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
-        rc = replay_html(str(p), open_browser=True, out=io.StringIO())
-        assert rc == 0
-        html_path = p.with_suffix(".html")
-        assert opened == [str(html_path)]  # --open → launched
-
-    def test_html_contains_step_content(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jiuwensymbiosis.cli._open_in_viewer", lambda p: True)
+    def test_html_contains_step_content(self, tmp_path):
         p = tmp_path / "conv-1.json"
         p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
         out = io.StringIO()

@@ -24,17 +24,18 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, List, Optional, Union
 
-from jiuwensymbiosis.agent.abstractions import (
-    Model,
-    ModelClientConfig,
-    ModelRequestConfig,
-)
 from openjiuwen.core.foundation.llm.model_clients.base_model_client import (
     BaseModelClient,
 )
 from openjiuwen.core.foundation.llm.schema.message import AssistantMessage
 from openjiuwen.core.foundation.llm.schema.message_chunk import (
     AssistantMessageChunk,
+)
+
+from jiuwensymbiosis.agent.abstractions import (
+    Model,
+    ModelClientConfig,
+    ModelRequestConfig,
 )
 
 __all__ = ["MockModelClient", "build_mock_model"]

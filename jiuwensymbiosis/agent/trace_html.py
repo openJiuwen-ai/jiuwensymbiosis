@@ -57,7 +57,7 @@ def _inline_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> str:
     if not p.is_absolute():
         if trace_dir is None:
             return ""
-        p = (trace_dir / p)
+        p = trace_dir / p
     try:
         data = p.read_bytes()
     except (OSError, ValueError):
@@ -80,32 +80,38 @@ def _step_timeline(entry: dict) -> list[dict]:
     """
     items: list[dict] = []
     if not entry.get("success", True) and entry.get("error"):
-        items.append({
-            "ts": 0.0,
-            "badge": "FAIL",
-            "badge_cls": "fail",
-            "source": "step",
-            "content": entry["error"],
-        })
+        items.append(
+            {
+                "ts": 0.0,
+                "badge": "FAIL",
+                "badge_cls": "fail",
+                "source": "step",
+                "content": entry["error"],
+            }
+        )
     for ev in entry.get("rail_events", []) or []:
         ok = ev.get("success")
-        items.append({
-            "ts": float(ev.get("ts") or 0.0),
-            "badge": "ok" if ok else "FAIL",
-            "badge_cls": "ok" if ok else "fail",
-            "source": f'{ev.get("rail_name", "?")}/{ev.get("kind", "?")}',
-            "content": ev.get("detail", {}) or {},
-        })
+        items.append(
+            {
+                "ts": float(ev.get("ts") or 0.0),
+                "badge": "ok" if ok else "FAIL",
+                "badge_cls": "ok" if ok else "fail",
+                "source": f'{ev.get("rail_name", "?")}/{ev.get("kind", "?")}',
+                "content": ev.get("detail", {}) or {},
+            }
+        )
     for ev in entry.get("log_events", []) or []:
         lvl = ev.get("level", "INFO")
         cls = "fail" if str(lvl).upper() in ("ERROR", "CRITICAL") else "warn"
-        items.append({
-            "ts": float(ev.get("ts") or 0.0),
-            "badge": str(lvl),
-            "badge_cls": cls,
-            "source": ev.get("logger", "?"),
-            "content": ev.get("msg", ""),
-        })
+        items.append(
+            {
+                "ts": float(ev.get("ts") or 0.0),
+                "badge": str(lvl),
+                "badge_cls": cls,
+                "source": ev.get("logger", "?"),
+                "content": ev.get("msg", ""),
+            }
+        )
     # Stable sort by ts: keeps same-timestamp items in insertion order.
     items.sort(key=lambda it: it["ts"])
     return items
@@ -215,10 +221,8 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
     n_fail = len(entries) - n_ok
 
     parts: list[str] = [_HTML_HEAD]
-    parts.append('<header>\n')
-    parts.append(
-        f'<div class="robot"><span class="icon">🤖</span>{_esc_str(robot)}</div>\n'
-    )
+    parts.append("<header>\n")
+    parts.append(f'<div class="robot"><span class="icon">🤖</span>{_esc_str(robot)}</div>\n')
     parts.append(f'<div class="subtitle">conversation <b>{_esc_str(cid)}</b></div>\n')
     if query:
         parts.append(f'<div class="query"><b>query:</b> {_esc_str(query)}</div>\n')
@@ -227,7 +231,7 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
         f'<span class="mark ok">✅ {n_ok}</span>  ·  '
         f'<span class="mark fail">❌ {n_fail}</span></div>\n'
     )
-    parts.append('</header>\n<main>\n')
+    parts.append("</header>\n<main>\n")
     parts.append('<ol class="steps">\n')
 
     # The before-frame for step N: step 1 uses the trace's ``initial_frame_path``
@@ -249,7 +253,7 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
             f'<div class="head"><span class="num">[{step}]</span>'
             f'<span class="mark {cls}">{mark}</span>'
             f'<span class="name">{_esc_str(name)}</span>'
-            f'<code>({_esc(params)})</code>'
+            f"<code>({_esc(params)})</code>"
             f'<span class="dur">dur={dur:.2f}s</span></div>\n'
         )
         parts.append('<div class="body">\n')
@@ -258,16 +262,18 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
         before_uri = _inline_frame(prev_frame_path, trace_dir)
         after_uri = _inline_frame(e.get("frame_path"), trace_dir)
         parts.append('<div class="frames">')
-        for label, uri, raw_path in (("before", before_uri, prev_frame_path),
-                                     ("after", after_uri, e.get("frame_path"))):
+        for label, uri, raw_path in (
+            ("before", before_uri, prev_frame_path),
+            ("after", after_uri, e.get("frame_path")),
+        ):
             parts.append('<div class="frame">')
             parts.append(f'<div class="frame-label">{label}</div>')
             if uri:
                 parts.append(f'<img alt="step {step} {label}" src="{uri}">')
             elif raw_path:
                 parts.append('<div class="missing">frame missing</div>')
-            parts.append('</div>')
-        parts.append('</div>\n')
+            parts.append("</div>")
+        parts.append("</div>\n")
 
         prev_frame_path = e.get("frame_path") or prev_frame_path
 
@@ -293,7 +299,7 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
                 content = it["content"]
                 # dict content (rail detail) → JSON code; string content → plain.
                 if isinstance(content, (dict, list)):
-                    chtml = f'<code>{_esc(content)}</code>'
+                    chtml = f"<code>{_esc(content)}</code>"
                 else:
                     chtml = _esc_str(content)
                 parts.append(
@@ -301,19 +307,19 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
                     f'<span class="source">{_esc_str(it["source"])}</span>'
                     f'<span class="content">{chtml}</span></li>\n'
                 )
-            parts.append('</ul>\n')
+            parts.append("</ul>\n")
         # Output summary pulled out of the event flow into its own labelled row,
         # so it doesn't masquerade as an event among rail/log rows.
         out_sum = e.get("output_summary")
         if out_sum:
             parts.append('<div class="row output"><details><summary>output</summary>')
-            parts.append(f'<pre>{_esc_str(out_sum)}</pre></details></div>\n')
-        parts.append('</div>\n')  # /events
+            parts.append(f"<pre>{_esc_str(out_sum)}</pre></details></div>\n")
+        parts.append("</div>\n")  # /events
 
-        parts.append('</div>\n')  # /body
-        parts.append('</li>\n')
+        parts.append("</div>\n")  # /body
+        parts.append("</li>\n")
 
-    parts.append('</ol>\n')
+    parts.append("</ol>\n")
 
     if trace_log:
         parts.append('<div class="trace-logs">\n<h2>trace-level logs</h2>\n<ul class="timeline">\n')
@@ -325,9 +331,9 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
                 f'<span class="source">{_esc_str(ev.get("logger", "?"))}</span>'
                 f'<span class="content">{_esc_str(ev.get("msg", ""))}</span></li>\n'
             )
-        parts.append('</ul>\n</div>\n')
+        parts.append("</ul>\n</div>\n")
 
-    parts.append('</main>\n')
-    parts.append(f'<footer>{len(entries)} step(s) recorded.</footer>\n')
-    parts.append('</body>\n</html>\n')
+    parts.append("</main>\n")
+    parts.append(f"<footer>{len(entries)} step(s) recorded.</footer>\n")
+    parts.append("</body>\n</html>\n")
     return "".join(parts)

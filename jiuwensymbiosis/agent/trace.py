@@ -3,9 +3,7 @@
 
 """Structured execution-trace recording for agent invocations.
 
-Issue #9: the framework had no built-in way to record / persist / replay an
-agent run, so debugging a failed grasp meant grepping terminal logs. This
-module adds a parallel rail (:class:`TraceRail`) that, when enabled via
+This module adds a parallel rail (:class:`TraceRail`) that, when enabled via
 ``RobotAgentConfig.enable_tracing``, captures each tool call's name / args /
 result / timing / observation snapshot, plus rail events (SafetyRail rejections,
 RecoveryRail recovery, VisualFeedbackRail frame injections) and ``WARNING``+
@@ -71,7 +69,8 @@ class TraceEventSink(Protocol):
         kind: str,
         detail: dict,
         success: bool,
-    ) -> None: ...
+    ) -> None: 
+        ...
 
 
 def _unwrap_robot_control(tool_name: str, tool_args: Any) -> tuple[str, Any]:
@@ -110,7 +109,7 @@ def _json_safe(obj: Any, *, depth: int = 0) -> Any:
     if isinstance(obj, bytes):
         try:
             return base64.b64encode(obj).decode("ascii")
-        except (ValueError, UnicodeDecodeError):
+        except ValueError:
             return "<bytes>"
     if isinstance(obj, dict):
         return {str(k): _json_safe(v, depth=depth + 1) for k, v in obj.items()}
@@ -295,7 +294,7 @@ class ExecutionTrace:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2, default=str)
 
-    def _filename_base(self) -> str:
+    def run_token(self) -> str:
         """Return the run token shared by the JSON file and its frames subdir.
 
         Format: ``{safe_cid}_{stamp}_{usec:06d}_{pid}``. Both the trace JSON
@@ -319,7 +318,7 @@ class ExecutionTrace:
         """
         traces_dir = Path(traces_dir)
         traces_dir.mkdir(parents=True, exist_ok=True)
-        path = traces_dir / f"{self._filename_base()}.json"
+        path = traces_dir / f"{self.run_token()}.json"
         path.write_text(self.to_json(), encoding="utf-8")
         return path
 
@@ -377,7 +376,7 @@ class TraceRail(AgentRail):
         max_entries: Cap on recorded steps (oldest dropped beyond this).
         max_frames: Cap on JPEG frames saved per invoke.
         save_frames: When True, save a JPEG after each motion/grasp step.
-        console: When True, print a one-line per-step dashboard to stderr.
+        console: When True, print a one-line per-step dashboard to stdout.
         jpeg_quality: 1-95 for saved frames.
         capture_loggers: Logger-name prefixes whose ``WARNING``+ records are
             captured into the trace via :class:`TraceLogHandler`.
@@ -492,13 +491,16 @@ class TraceRail(AgentRail):
         if self._trace is None:
             return
         self._trace.record_rail_event(
-            rail_name=rail_name, kind=kind, detail=detail, success=success,
+            rail_name=rail_name,
+            kind=kind,
+            detail=detail,
+            success=success,
         )
 
     def record_log_event(
         self,
         *,
-        logger: str,
+        logger_name: str,
         level: str,
         msg: str,
         ts: float,
@@ -507,7 +509,11 @@ class TraceRail(AgentRail):
         if self._trace is None:
             return
         self._trace.record_log_event(
-            logger_name=logger, level=level, msg=msg, ts=ts, step=step,
+            logger_name=logger_name,
+            level=level,
+            msg=msg,
+            ts=ts,
+            step=step,
         )
 
     # ----------------------------------------------------------------- lifecycle
@@ -527,7 +533,7 @@ class TraceRail(AgentRail):
         # (``frames/{token}/step_NNN.jpg``), not the shared flat ``frames/`` —
         # matching the JSON filename so historical trace ``frame_path`` refs stay
         # valid across runs (no cross-run overwrite of step_NNN.jpg).
-        self._frame_run_token = self._trace._filename_base()
+        self._frame_run_token = self._trace.run_token()
         ctx.extra[_TRACE_RAIL_KEY] = self
         # Capture an "initial" frame at invoke start (before any tool call) so
         # step 1 has a before-frame to pair with its after-frame in replay.
@@ -584,7 +590,11 @@ class TraceRail(AgentRail):
             # success inference: ToolOutput(success=...) if present, else "no error"
             success = True
             if tool_result is not None:
-                success = bool(getattr(tool_result, "success", getattr(tool_result, "ok", True))) if not isinstance(tool_result, (str, bytes)) else True
+                success = (
+                    bool(getattr(tool_result, "success", getattr(tool_result, "ok", True)))
+                    if not isinstance(tool_result, (str, bytes))
+                    else True
+                )
             entry.success = success
         # Observation snapshot (best-effort).
         entry.observation = _observation_snapshot(getattr(self.session, "env", None))
@@ -613,7 +623,9 @@ class TraceRail(AgentRail):
             return
         exc = getattr(ctx, "exception", None)
         entry.success = False
-        entry.error = f"{type(exc).__name__ if exc else 'Exception'}: {exc}" if exc else "tool exception"
+        entry.error = (
+            f"{type(exc).__name__ if exc else 'Exception'}: {exc}" if exc else "tool exception"
+        )
         entry.duration_s = time.time() - entry.started_at
         # Note: a SafetyRail rejection raises ValueError in before_tool_call, so
         # this hook sees it; the rail event itself is pushed by SafetyRail via
@@ -659,7 +671,7 @@ class TraceRail(AgentRail):
             return None
         return self._save_frame(rgb, step)
 
-    def _maybe_save_frame_for_sink(self, rgb: Any) -> Optional[str]:
+    def save_frame_for_sink(self, rgb: Any) -> Optional[str]:
         """Save a caller-provided frame (used by VisualFeedbackRail's frame_sink).
 
         This lets the on-disk trace frame be the *same* frame injected into the

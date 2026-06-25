@@ -129,7 +129,7 @@ class TestRailRegistry:
 
 
 class TestTracingBuild:
-    """build_robot_agent wiring of TraceRail + sinks (Issue #9)."""
+    """build_robot_agent wiring of TraceRail + sinks."""
 
     def _build(self, mock_session, **cfg_kwargs):
         from jiuwensymbiosis.agent.builder import _resolve_rails

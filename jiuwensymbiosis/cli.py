@@ -41,18 +41,13 @@ def piper_watch_pick_place() -> None:
 
 # ---------------------------------------------------------------------------
 # Replay CLI — renders a recorded execution trace.
-# (Issue #9) Usage: ``jiuwensymbiosis replay <trace.json>``
+# Usage: ``jiuwensymbiosis replay <trace.json>``
 #
 # By default a self-contained HTML page is written next to the trace JSON and
 # its path is printed — every step's frame is inlined as base64 so the image
-# and that step's params/error/rail events live in one card. The path is
-# clickable in VSCode's terminal (opens in the built-in webview), which works
-# the same for local and Remote-SSH/MobaXterm workflows without needing a
-# browser on the trace host. ``--open`` additionally launches the OS default
-# browser via ``xdg-open``/``open``/``startfile`` (only useful on a host that
-# actually has a desktop — headless remote dev should rely on the clickable
-# path). ``--text`` falls back to the original plain-text timeline (frames
-# shown as paths only, no popup).
+# and that step's params/error/rail events live in one card. 
+# ``--text`` falls back to the original plain-text timeline (frames shown as 
+# paths only, no popup).
 # ---------------------------------------------------------------------------
 def _fmt_params(params: Any) -> str:
     try:
@@ -66,42 +61,18 @@ def _load_trace(trace_path: str) -> Optional[tuple[dict, Path]]:
     """Load and validate a trace JSON. Returns ``(data, path)`` or None on error.
 
     Shared by the text and HTML replay paths so both surface the same
-    "missing / invalid" diagnostics. Errors are printed to stderr.
+    "missing / invalid" diagnostics. Errors are logged via the module logger.
     """
     path = Path(trace_path)
     if not path.is_file():
-        print(f"trace not found: {path}", file=sys.stderr)
+        logger.error("trace not found: %s", path)
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"invalid trace JSON: {exc}", file=sys.stderr)
+        logger.error("invalid trace JSON: %s", exc)
         return None
     return data, path
-
-
-def _open_in_viewer(path: str) -> bool:
-    """Open ``path`` in the OS default application (image viewer or browser).
-
-    Used by ``replay_html`` to open the generated HTML in the default browser.
-    Uses only stdlib (no optional deps). Linux → ``xdg-open``, macOS → ``open``,
-    Windows → ``os.startfile``. Failures are swallowed (replay must not crash
-    on a missing opener); the caller prints the path either way as a fallback.
-    """
-    import os
-    import platform
-    import subprocess
-
-    try:
-        if platform.system() == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", path])  # nosec - user-supplied path on host
-        else:
-            subprocess.Popen(["xdg-open", path])  # nosec - user-supplied path on host
-        return True
-    except (OSError, FileNotFoundError, ValueError):
-        return False
 
 
 def replay(trace_path: str, *, out=sys.stdout) -> int:
@@ -181,23 +152,16 @@ def replay(trace_path: str, *, out=sys.stdout) -> int:
     return 0
 
 
-def replay_html(trace_path: str, *, open_browser: bool = False, out=sys.stdout) -> int:
+def replay_html(trace_path: str, *, out=sys.stdout) -> int:
     """Render a trace as a self-contained HTML page and print its path.
 
     The HTML is written next to the trace JSON as ``{json_stem}.html`` with
     every step's frame inlined as base64 — so the page is portable and shows
-    each frame beside its params/error/rail events. The written path is
-    printed; in VSCode's terminal it's clickable and opens in the built-in
-    webview, which works identically for local and Remote-SSH/MobaXterm
-    workflows (no browser needed on the trace host). If the trace directory
+    each frame beside its params/error/rail events. If the trace directory
     isn't writable, the file falls back to the system temp directory.
 
     Args:
         trace_path: Path to a ``traces/*.json`` written by ``TraceRail``.
-        open_browser: When False (default), don't launch anything — just write
-            the file and print the path. When True, also call ``xdg-open`` /
-            ``open`` / ``startfile`` on the generated HTML; only useful on a
-            host that has a desktop. Set via the ``--open`` CLI flag.
         out: Output stream for the "wrote …" status line.
 
     Returns:
@@ -221,22 +185,26 @@ def replay_html(trace_path: str, *, open_browser: bool = False, out=sys.stdout) 
         try:
             out_path.write_text(html_str, encoding="utf-8")
         except OSError as exc:
-            print(f"could not write HTML: {exc}", file=sys.stderr)
+            logger.error("could not write HTML: %s", exc)
             return 1
 
     print(f"wrote {out_path}", file=out)
-    if open_browser:
-        print("opening browser…", file=out)
-        if not _open_in_viewer(str(out_path)):
-            print("(could not open browser; path above is clickable)", file=out)
-    else:
-        print("(open the path above in your browser; "
-              "in VSCode it's clickable and opens in the built-in webview)", file=out)
+    print(
+        "(open the path above in your browser; "
+        "in VSCode it's clickable and opens in the built-in webview)",
+        file=out,
+    )
     return 0
 
 
-def replay_main() -> None:
-    """Console-script entry: ``jiuwensymbiosis replay <trace_path>``."""
+def replay_main() -> int:
+    """Console-script entry: ``jiuwensymbiosis replay <trace_path>``.
+
+    Returns a process exit code (0 success, 1 missing/invalid trace) rather
+    than raising ``SystemExit`` — the auto-generated console-script wrapper
+    is the main process entry and owns ``sys.exit(replay_main())``. Any
+    function reachable from library/imports must not trigger process exit.
+    """
     parser = argparse.ArgumentParser(
         prog="jiuwensymbiosis-replay",
         description="Replay a recorded jiuwensymbiosis execution trace.",
@@ -247,14 +215,7 @@ def replay_main() -> None:
         action="store_true",
         help="Print a text timeline instead of generating HTML.",
     )
-    parser.add_argument(
-        "--open",
-        action="store_true",
-        help="Open the generated HTML in the OS default browser. Only useful "
-             "on a host with a desktop; for headless remote dev, rely on the "
-             "clickable path printed instead.",
-    )
     args = parser.parse_args()
     if args.text:
-        raise SystemExit(replay(args.trace_path))
-    raise SystemExit(replay_html(args.trace_path, open_browser=args.open))
+        return replay(args.trace_path)
+    return replay_html(args.trace_path)

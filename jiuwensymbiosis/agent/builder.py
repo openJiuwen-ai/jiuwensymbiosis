@@ -191,9 +191,9 @@ def _inject_trace_sinks(rails: List[Any], trace_rail: Optional[TraceRail]) -> No
             continue
         try:
             if hasattr(rail, "trace_sink"):
-                object.__setattr__(rail, "trace_sink", trace_rail)
+                rail.trace_sink = trace_rail
             if hasattr(rail, "frame_sink"):
-                object.__setattr__(rail, "frame_sink", _make_frame_sink(trace_rail))
+                rail.frame_sink = _make_frame_sink(trace_rail)
         except (AttributeError, TypeError) as exc:
             logger.warning("Failed to inject trace_sink into %r: %s", rail, exc)
 
@@ -202,7 +202,7 @@ def _make_frame_sink(trace_rail: TraceRail):
     """Return a ``(rgb, tool_name) -> path`` callable that saves a trace frame."""
 
     def _sink(rgb: Any, _tool_name: str):
-        return trace_rail._maybe_save_frame_for_sink(rgb)
+        return trace_rail.save_frame_for_sink(rgb)
 
     return _sink
 
@@ -373,7 +373,7 @@ def build_robot_agent(
     # it (typical: ``agent = build_robot_agent(session); with session: ...``).
     # If the session is already connected this is a no-op for this connect cycle.
     session.strict_capabilities = config.strict_capabilities
-    # Centralised logging (Issue #9): one uniform format across all modules,
+    # Centralised logging: one uniform format across all modules,
     # optional file output. Idempotent.
     configure_logging(level=config.log_level, log_dir=config.log_dir)
     model = config.model or build_model(config.model_spec)
@@ -385,7 +385,7 @@ def build_robot_agent(
     sys_prompt = _build_system_prompt(session, config.system_prompt, mode=config.mode)
     workspace = _resolve_workspace(session, config.workspace)
 
-    # Execution trace (Issue #9): prepend TraceRail so it observes every step.
+    # Execution trace: prepend TraceRail so it observes every step.
     trace_rail: Optional[TraceRail] = None
     if config.enable_tracing:
         import logging as _logging
@@ -407,7 +407,7 @@ def build_robot_agent(
             trace_rail, list(config.trace_capture_loggers), _logging.WARNING
         )
         trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
-        session._trace_rail = trace_rail
+        session.attach_trace_rail(trace_rail)
         rails.insert(0, trace_rail)
 
     return create_deep_agent(
