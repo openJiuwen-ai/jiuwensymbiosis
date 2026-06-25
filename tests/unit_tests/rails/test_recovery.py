@@ -58,3 +58,23 @@ class TestRecoveryRail:
         ctx = _FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 300, "r": 0})
         await rail.on_tool_exception(ctx)
         assert "home" in mock_session.api._call_log
+
+
+class TestRecoveryRailTraceSink:
+    @pytest.mark.asyncio
+    async def test_recover_notifies_sink_with_result(self, mock_session):
+        class _Sink:
+            def __init__(self):
+                self.events = []
+
+            def record_rail_event(self, *, rail_name, kind, detail, success):
+                self.events.append((rail_name, kind, detail, success))
+
+        sink = _Sink()
+        rail = RecoveryRail(mock_session, trace_sink=sink)
+        ctx = _FakeCtx(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3})
+        await rail.on_tool_exception(ctx)
+        assert sink.events
+        detail = sink.events[0][2]
+        assert "home_ok" in detail
+        assert sink.events[0][3] is True  # mock home succeeds

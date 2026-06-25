@@ -22,6 +22,7 @@ import logging
 from typing import Any, Optional
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+from jiuwensymbiosis.agent.trace import TraceEventSink
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,14 @@ class RecoveryRail(AgentRail):
         *,
         also_release_grip: bool = True,
         watch_tags: Optional[set[str]] = None,
+        trace_sink: Optional[TraceEventSink] = None,
     ) -> None:
         """Initialize the recovery rail."""
         super().__init__()
         self.session = session
         self.also_release_grip = also_release_grip
         self.watch_tags = frozenset(watch_tags) if watch_tags else frozenset({"motion", "grasp"})
+        self.trace_sink = trace_sink
 
     async def on_tool_exception(self, ctx: Any) -> None:
         """Recover to a safe state after a motion/grasp tool exception."""
@@ -50,6 +53,8 @@ class RecoveryRail(AgentRail):
         if not self._is_watched(tool_name, tool_args=tool_args):
             return
         api = self.session.api
+        released_ok = False
+        home_ok = False
         # Best-effort: each step is independent.
         if self.also_release_grip:
             for stop_method in ("deactivate_suction", "open_gripper"):
@@ -57,6 +62,7 @@ class RecoveryRail(AgentRail):
                 if callable(fn):
                     try:
                         fn()
+                        released_ok = True
                         logger.info("RecoveryRail: %s succeeded", stop_method)
                         break
                     except Exception as exc:  # noqa: BLE001
@@ -65,9 +71,30 @@ class RecoveryRail(AgentRail):
         if callable(home):
             try:
                 home()
+                home_ok = True
                 logger.info("RecoveryRail: home() succeeded")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("RecoveryRail: home() failed: %s", exc)
+        self._notify_recover(tool_name, home_ok=home_ok, released_ok=released_ok)
+
+    def _notify_recover(self, tool_name: str, *, home_ok: bool, released_ok: bool) -> None:
+        sink = self.trace_sink
+        if sink is None:
+            return
+        try:
+            sink.record_rail_event(
+                rail_name="RecoveryRail",
+                kind="recover",
+                detail={
+                    "tool_name": tool_name,
+                    "home_ok": home_ok,
+                    "released_ok": released_ok,
+                },
+                success=home_ok,
+            )
+        except (AttributeError, TypeError, ValueError):
+            # tracing must never break recovery
+            pass
 
     def _is_watched(self, tool_name: str, *, tool_args: Any = None) -> bool:
         """Check whether the given tool triggers recovery.

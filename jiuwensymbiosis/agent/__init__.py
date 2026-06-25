@@ -34,6 +34,12 @@ from jiuwensymbiosis.agent.builder import (
     build_robot_agent_config,
 )
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.agent.trace import (
+    ExecutionTrace,
+    TraceEntry,
+    TraceEventSink,
+    TraceRail,
+)
 from jiuwensymbiosis.utils.proxy import clear_proxy_env
 
 __all__ = [
@@ -57,4 +63,8 @@ __all__ = [
     "RobotSession",
     "ROBOT_PROMPT_TEMPLATE",
     "clear_proxy_env",
+    "ExecutionTrace",
+    "TraceEntry",
+    "TraceEventSink",
+    "TraceRail",
 ]

@@ -129,3 +129,30 @@ class TestSafetyRailRobotControlUnwrap:
         rail = SafetyRail(mock_session)
         z = rail._resolve_z_floor()
         assert z == 0.0
+
+
+class TestSafetyRailTraceSink:
+    @pytest.mark.asyncio
+    async def test_reject_notifies_sink(self, mock_session):
+        class _Sink:
+            def __init__(self):
+                self.events = []
+
+            def record_rail_event(self, *, rail_name, kind, detail, success):
+                self.events.append((rail_name, kind, detail, success))
+
+        sink = _Sink()
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, trace_sink=sink)
+        ctx = _FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 30})
+        with pytest.raises(ValueError):
+            await rail.before_tool_call(ctx)
+        assert sink.events
+        assert sink.events[0][0] == "SafetyRail"
+        assert sink.events[0][3] is False
+
+    @pytest.mark.asyncio
+    async def test_no_sink_does_not_raise(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, trace_sink=None)
+        ctx = _FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 30})
+        with pytest.raises(ValueError):
+            await rail.before_tool_call(ctx)  # no crash with sink=None

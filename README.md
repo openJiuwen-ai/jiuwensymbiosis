@@ -158,7 +158,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
 env/         Hardware abstraction layer (BaseRobotEnv, RobotObservation, MockArmEnv)
 api/         Capability mixins + @robot_tool decorator (MotionMixin, SuctionMixin, VisionMixin...)
 tools/       Tool builder / InProcessCodeTool / RobotControlTool / slot_pick
-agent/       RobotSession + build_robot_agent / build_robot_agent_config + configuration
+agent/       RobotSession + build_robot_agent / build_robot_agent_config + config + MockModel (--mock)
 rails/       Safety policies (SafetyRail, RecoveryRail, VisualFeedbackRail)
 skills/      Built-in skills (visual_pick, visual_place, slot_pick)
 adapters/    Hardware adapter layer (piper/ + _common/ generic builder)

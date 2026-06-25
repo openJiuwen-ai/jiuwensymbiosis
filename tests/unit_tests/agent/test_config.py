@@ -90,3 +90,90 @@ class TestRobotAgentConfig:
 class TestPromptTemplate:
     def test_contains_robot_name_placeholder(self):
         assert "{robot_name}" in ROBOT_PROMPT_TEMPLATE
+
+
+class TestTracingAndLoggingConfig:
+    def test_tracing_defaults_off(self):
+        cfg = RobotAgentConfig()
+        assert cfg.enable_tracing is False
+        assert cfg.trace_max_entries == 200
+        assert cfg.trace_max_frames == 50
+        assert cfg.trace_save_frames is False
+        assert cfg.trace_console is False
+        assert cfg.trace_dir is None
+
+    def test_trace_capture_loggers_default(self):
+        cfg = RobotAgentConfig()
+        assert cfg.trace_capture_loggers == ["jiuwensymbiosis"]
+
+    def test_logging_defaults(self):
+        cfg = RobotAgentConfig()
+        assert cfg.log_level == "INFO"
+        assert cfg.log_dir == "./logs"
+
+    def test_tracing_fields_settable(self):
+        cfg = RobotAgentConfig(
+            enable_tracing=True,
+            trace_max_entries=10,
+            trace_save_frames=True,
+            trace_console=True,
+            trace_dir="/tmp/x",
+            log_level="DEBUG",
+            log_dir="/tmp/logs",
+        )
+        assert cfg.enable_tracing is True
+        assert cfg.trace_max_entries == 10
+        assert cfg.trace_save_frames is True
+        assert cfg.log_level == "DEBUG"
+        assert cfg.log_dir == "/tmp/logs"
+
+    def test_trace_capture_loggers_independent_default(self):
+        # mutable default must not be shared across instances
+        a = RobotAgentConfig()
+        b = RobotAgentConfig()
+        a.trace_capture_loggers.append("custom")
+        assert b.trace_capture_loggers == ["jiuwensymbiosis"]
+
+
+class TestRobotAgentConfigFromDict:
+    """YAML ``agent:`` block → RobotAgentConfig.from_dict (mirrors ModelSpec/PiperConfig)."""
+
+    def test_empty_or_none_returns_defaults(self):
+        assert RobotAgentConfig.from_dict(None).enable_tracing is False
+        assert RobotAgentConfig.from_dict({}).enable_tracing is False
+
+    def test_applies_trace_and_logging_keys(self):
+        cfg = RobotAgentConfig.from_dict(
+            {
+                "enable_tracing": True,
+                "trace_save_frames": True,
+                "trace_console": True,
+                "trace_max_entries": 42,
+                "trace_max_frames": 7,
+                "log_level": "DEBUG",
+                "log_dir": "/tmp/logs",
+            }
+        )
+        assert cfg.enable_tracing is True
+        assert cfg.trace_save_frames is True
+        assert cfg.trace_console is True
+        assert cfg.trace_max_entries == 42
+        assert cfg.trace_max_frames == 7
+        assert cfg.log_level == "DEBUG"
+        assert cfg.log_dir == "/tmp/logs"
+
+    def test_pops_model_keys(self):
+        # model / model_spec are owned by the separate ``model:`` YAML block;
+        # from_dict must drop them so a stray YAML entry doesn't reach __init__
+        # (where ``model`` expects a built instance, not a dict).
+        cfg = RobotAgentConfig.from_dict({"model": {"model_name": "x"}, "model_spec": {"model_name": "x"}})
+        assert cfg.model is None
+        assert cfg.model_spec is None
+
+    def test_unknown_key_raises_typeerror(self):
+        # Catches YAML typos (e.g. ``enable_trace`` vs ``enable_tracing``) at
+        # load time instead of silently ignoring them.
+        import pytest
+
+        with pytest.raises(TypeError):
+            RobotAgentConfig.from_dict({"enable_trace": True})

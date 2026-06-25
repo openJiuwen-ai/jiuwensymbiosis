@@ -24,9 +24,10 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+from jiuwensymbiosis.agent.trace import TraceEventSink
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,19 @@ class VisualFeedbackRail(AgentRail):
         ),
         max_frames_per_invoke: int = 8,
         jpeg_quality: int = 80,
+        trace_sink: Optional[TraceEventSink] = None,
+        frame_sink: Optional[Callable[[Any, str], Optional[str]]] = None,
     ) -> None:
-        """Initialize the visual feedback rail."""
+        """Initialize the visual feedback rail.
+
+        Args:
+            trace_sink: Optional sink notified each time a frame is injected
+                (set by ``build_robot_agent`` when tracing is on).
+            frame_sink: Optional callable ``(rgb_ndarray, tool_name) -> path``
+                that persists the *same* frame being injected, so the on-disk
+                trace frames match what the agent saw. Set by the builder when
+                tracing + ``trace_save_frames`` are both on.
+        """
         super().__init__()
         self.session = session
         self.watch_tools = set(watch_tools) if watch_tools else set()
@@ -86,6 +98,8 @@ class VisualFeedbackRail(AgentRail):
         self.directive_text = directive_text
         self.max_frames_per_invoke = max_frames_per_invoke
         self.jpeg_quality = jpeg_quality
+        self.trace_sink = trace_sink
+        self.frame_sink = frame_sink
 
     # ----------------------------------------------------------- rail callback
     async def after_tool_call(self, ctx: Any) -> None:
@@ -98,11 +112,22 @@ class VisualFeedbackRail(AgentRail):
         n_so_far = len(ctx.extra.get("visual_feedback_injected", []))
         if n_so_far >= self.max_frames_per_invoke:
             return
-        b64 = self._grab_frame_b64()
+        rgb = self._grab_frame_rgb()
+        if rgb is None:
+            return
+        # Persist the same frame the agent will see, if a sink is wired.
+        frame_path: Optional[str] = None
+        if self.frame_sink is not None:
+            try:
+                frame_path = self.frame_sink(rgb, tool_name)
+            except (TypeError, ValueError, OSError) as exc:
+                logger.warning("VisualFeedbackRail: frame_sink failed: %s", exc)
+        b64 = _encode_jpeg_b64(rgb, quality=self.jpeg_quality)
         if b64 is None:
             return
         self._inject(ctx, b64, tool_name)
         ctx.extra.setdefault("visual_feedback_injected", []).append(tool_name)
+        self._notify_inject(tool_name, frame_path)
 
     # ------------------------------------------------------------------ helpers
     def _should_trigger(self, tool_name: str, *, tool_args: Any = None) -> bool:
@@ -133,15 +158,33 @@ class VisualFeedbackRail(AgentRail):
 
     def _grab_frame_b64(self) -> Optional[str]:
         """Capture the latest RGB frame and return it as a base64 JPEG."""
+        rgb = self._grab_frame_rgb()
+        if rgb is None:
+            return None
+        return _encode_jpeg_b64(rgb, quality=self.jpeg_quality)
+
+    def _grab_frame_rgb(self) -> Optional[Any]:
+        """Capture the latest RGB frame as a raw ndarray (or None)."""
         try:
             obs = self.session.env.get_observation()
         except Exception as exc:  # noqa: BLE001
             logger.warning("VisualFeedbackRail: get_observation failed: %s", exc)
             return None
-        rgb = getattr(obs, "rgb", None)
-        if rgb is None:
-            return None
-        return _encode_jpeg_b64(rgb, quality=self.jpeg_quality)
+        return getattr(obs, "rgb", None)
+
+    def _notify_inject(self, tool_name: str, frame_path: Optional[str]) -> None:
+        sink = self.trace_sink
+        if sink is None:
+            return
+        try:
+            sink.record_rail_event(
+                rail_name="VisualFeedback",
+                kind="inject_frame",
+                detail={"tool_name": tool_name, "frame_path": frame_path},
+                success=True,
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
 
     def _inject(self, ctx: Any, b64: str, tool_name: str) -> None:
         """Append a synthetic user message with the image into the model context.

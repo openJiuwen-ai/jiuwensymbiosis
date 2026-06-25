@@ -40,7 +40,7 @@ _GRIPPER_ENABLE = 0x01
 
 # =============================================================================
 # Per-run command log. Persists every ``[Piper]``
-# motion line to ``jiuwen_motion_log/<run-stamp>/commands.log`` so a real-run
+# motion line to ``logs/motion/<run-stamp>/commands.log`` so a real-run
 # failure leaves a motion trace on disk. Disable with ``JIUWEN_PIPER_CMD_LOG=0``.
 # =============================================================================
 _CMD_LOG_RUN_STAMP = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -56,21 +56,22 @@ def _attach_cmd_log_handler() -> Optional[Path]:
     if os.environ.get("JIUWEN_PIPER_CMD_LOG", "") == "0":
         return None
     root = Path(
-        os.environ.get("JIUWEN_PIPER_CMD_LOG_DIR") or os.environ.get("JIUWEN_CMD_LOG_DIR", "./jiuwen_motion_log")
+        os.environ.get("JIUWEN_PIPER_CMD_LOG_DIR") or os.environ.get("JIUWEN_CMD_LOG_DIR", "./logs/motion")
     )
     try:
         log_dir = root / _CMD_LOG_RUN_STAMP
         log_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("JIUWEN_MOTION_LOG_RUN_DIR", str(log_dir))
         path = log_dir / "commands.log"
+        # Centralised logging: uniform format + console, DEBUG so motion lines land.
+        from jiuwensymbiosis.utils.logging import _OWNED_TAG, DEFAULT_FMT, configure_logging
+
+        configure_logging(level="DEBUG", log_dir=None)
+        # Per-run Piper file handler (same uniform format), tagged as owned.
         handler = logging.FileHandler(path, mode="w", encoding="utf-8")
         handler.setLevel(logging.DEBUG)
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
-                datefmt="%H:%M:%S",
-            )
-        )
+        handler.setFormatter(logging.Formatter(DEFAULT_FMT, datefmt="%H:%M:%S"))
+        setattr(handler, _OWNED_TAG, True)
         logger.addHandler(handler)
         if logger.level == logging.NOTSET or logger.level > logging.DEBUG:
             logger.setLevel(logging.DEBUG)

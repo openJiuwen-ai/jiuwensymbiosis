@@ -177,3 +177,50 @@ class TestStrictCapabilities:
         s.connect()
         assert s._connected is True
         s.disconnect()
+
+
+class TestTraceFinalizeOnDisconnect:
+    """disconnect() fully tears down the TraceRail (Issue #9 safety net)."""
+
+    def test_disconnect_calls_close(self):
+        from types import SimpleNamespace
+
+        from tests.mocks.mock_api import MockApi
+
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t")
+        calls = []
+        fake = SimpleNamespace(close=lambda: calls.append(1))
+        s._trace_rail = fake
+        s.connect()
+        s.disconnect()
+        assert calls == [1]
+        # disconnect clears the reference so it isn't left dangling.
+        assert s._trace_rail is None
+
+    def test_disconnect_without_trace_rail_ok(self):
+        from tests.mocks.mock_api import MockApi
+
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t")
+        s._trace_rail = None
+        s.connect()
+        s.disconnect()  # must not raise
+
+    def test_disconnect_idempotent_after_close(self):
+        from types import SimpleNamespace
+
+        from tests.mocks.mock_api import MockApi
+
+        env = MockArmEnv()
+        api = MockApi(env)
+        s = RobotSession(env=env, api=api, name="t")
+        calls = []
+        fake = SimpleNamespace(close=lambda: calls.append(1))
+        s._trace_rail = fake
+        s.connect()
+        s.disconnect()
+        s.disconnect()  # second call: trace_rail already None, must be no-op
+        assert calls == [1]

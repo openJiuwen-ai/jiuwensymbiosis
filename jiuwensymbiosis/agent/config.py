@@ -142,8 +142,24 @@ class RobotAgentConfig:
         max_iterations: Maximum agent loop iterations.
         workspace: Agent workspace directory.
         strict_capabilities: When True, raise on connect if the api declares
-            capabilities the env does not provide (a config error). Defaults to
+            capabilities the env do not provide (a config error). Defaults to
             False (warn only) for backward compatibility.
+        enable_tracing: Attach ``TraceRail`` to record / persist / replay each
+            invoke. Defaults False (zero overhead when off).
+        trace_max_entries / trace_max_frames: Caps on recorded steps / frames.
+        trace_save_frames: Save JPEG frames to ``<workspace>/traces/frames/{run_token}/``.
+        trace_console: Print a one-line per-step dashboard to stderr.
+        trace_dir: Override trace output dir (default ``<workspace>/traces``).
+        trace_capture_loggers: Logger-name prefixes whose WARNING+ records are
+            captured into the trace.
+        log_level / log_dir: Centralised logging level and file dir
+            (see ``jiuwensymbiosis.utils.logging.configure_logging``).
+            ``log_dir`` defaults to ``"./logs"`` so framework logs land at
+            ``logs/jiuwensymbiosis.log``. openjiuwen's own log backend lands
+            under ``logs/logs/`` due to its implementation (a double-join of
+            the relative ``log_path``); the two are independent — jiuwensymbiosis
+            does not configure openjiuwen's log path. Set ``None`` for
+            console-only.
     """
 
     mode: Mode = "hybrid"
@@ -159,3 +175,42 @@ class RobotAgentConfig:
     max_iterations: int = 15
     workspace: Optional[str] = None
     strict_capabilities: bool = False
+    # -- Execution trace — all default OFF for zero overhead. --
+    enable_tracing: bool = False
+    trace_max_entries: int = 200
+    trace_max_frames: int = 50
+    trace_save_frames: bool = False
+    trace_console: bool = False
+    trace_dir: Optional[str] = None  # default <workspace>/traces
+    trace_capture_loggers: list[str] = field(
+        default_factory=lambda: ["jiuwensymbiosis"]
+    )
+    # -- Centralised logging --
+    log_level: str = "INFO"
+    # Default "./logs" so framework logs land at ``logs/jiuwensymbiosis.log``.
+    # openjiuwen's own log backend lands under ``logs/logs/`` due to its
+    # implementation (double-join of relative log_path) — independent of this
+    # setting; jiuwensymbiosis does not touch openjiuwen's log path. Set None
+    # for console-only; override via env or YAML ``agent.log_dir``.
+    log_dir: Optional[str] = "./logs"
+
+    @classmethod
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> "RobotAgentConfig":
+        """Build a ``RobotAgentConfig`` from a YAML ``agent:`` mapping.
+
+        Mirrors how ``model:`` maps to ``ModelSpec(**data)`` and ``env.cfg``
+        maps to ``PiperConfig.from_dict`` — the three top-level YAML blocks
+        (``env`` / ``model`` / ``agent``) each drive their own dataclass.
+
+        ``model`` / ``model_spec`` are deliberately popped: they describe a
+        pre-built model instance / spec, owned by the separate ``model:``
+        block (and the demo's ``_build_model_spec``), not declarable here.
+        The caller assigns ``config.model_spec = spec`` after this call.
+
+        Any unknown key raises ``TypeError`` (catches YAML typos at load
+        time rather than silently ignoring them).
+        """
+        data = dict(data or {})
+        data.pop("model", None)
+        data.pop("model_spec", None)
+        return cls(**data)
