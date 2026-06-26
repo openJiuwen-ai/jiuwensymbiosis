@@ -198,6 +198,8 @@ def axxb_residuals(
         for j in range(i + 1, n):
             ti, tj = stations[i].tf_base_flange, stations[j].tf_base_flange
             ci, cj = stations[i].detection.tf_cam_target, stations[j].detection.tf_cam_target
+            if ci is None or cj is None:
+                continue  # 调用方已过滤；此处仅作类型收窄与防御
             a = invert_transform(ti) @ tj  # 法兰运动
             b = ci @ invert_transform(cj)  # 相机运动
             m = (a @ tf_handeye) @ invert_transform(tf_handeye @ b)  # 理想为单位阵
@@ -263,12 +265,14 @@ def _calibrate_once(
 ) -> np.ndarray:
     r_g2b, t_g2b, r_t2c, t_t2c = [], [], [], []
     for s in stations:
+        c = s.detection.tf_cam_target  # solvePnP 直接给 target-in-cam，不取逆
+        if c is None:
+            continue  # 调用方已过滤；此处仅作类型收窄与防御，保证四列表等长
         t = s.tf_base_flange
         if eye_to_hand:
             t = invert_transform(t)  # eye-to-hand：喂 base->gripper，得 T_base_cam
         r_g2b.append(t[:3, :3])
         t_g2b.append(t[:3, 3].reshape(3, 1))
-        c = s.detection.tf_cam_target  # solvePnP 直接给 target-in-cam，不取逆
         r_t2c.append(c[:3, :3])
         t_t2c.append(c[:3, 3].reshape(3, 1))
     r_x, t_x = cv2.calibrateHandEye(r_g2b, t_g2b, r_t2c, t_t2c, method=method_const)
@@ -292,7 +296,7 @@ def solve_hand_eye(
     if method not in methods:
         raise ValueError(f"未知方法 {method}，可选：{list(methods)}")
 
-    method_const = methods.get(method)
+    method_const = methods[method]  # 上面已校验 method 在 methods 中
     tf_handeye = _calibrate_once(cv2, good, method_const, eye_to_hand)
     frame_field = "T_base_cam" if eye_to_hand else "T_flange_cam"
     reproj_list = [s.detection.reproj_rms_px for s in good if s.detection.reproj_rms_px is not None]
