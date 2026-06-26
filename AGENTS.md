@@ -19,7 +19,7 @@ JiuwenSymbiosis is an embodied agent framework built on `openjiuwen` for robotic
 # override with `make check CONDA_ENV=` to use plain PATH.
 make check        # ruff format --check + ruff check + mypy on staged files (mypy advisory)
 make fix          # ruff format + ruff check --fix on staged files
-make test         # pytest -m unit (no hardware/GPU)
+make test         # pytest tests/unit_tests/ (no hardware/GPU)
 make test-all     # pytest (incl. integration)
 # Use COMMITS=N to check files changed in the last N commits instead of staged.
 
@@ -30,7 +30,7 @@ pip install -e ".[piper]"                                  # + piper hardware SD
 
 # Run tests
 pytest                                                     # all unit tests (no hardware needed)
-pytest -m unit                                             # unit tests only
+pytest tests/unit_tests/                                   # unit tests only (no hardware/GPU)
 pytest -m integration                                      # integration tests (needs hardware/GPU)
 pytest tests/unit_tests/agent/test_builder.py              # single test file
 pytest -k "test_capabilities"                              # filter by test name

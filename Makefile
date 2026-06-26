@@ -8,7 +8,7 @@
 #   make check COMMITS=1 # same, on files changed in last 1 commit
 #   make fix             # ruff format + ruff check --fix (staged files)
 #   make type-check      # mypy only
-#   make test            # pytest -m unit
+#   make test            # pytest tests/unit_tests/
 #   make test-all        # pytest (incl. integration)
 #
 # Tool env: defaults to the conda env "jiuwensymbiosis". Override with:
@@ -57,7 +57,7 @@ help:
 	@echo "  format       ruff format --check (staged files)"
 	@echo "  lint         ruff check (staged files)"
 	@echo "  type-check   mypy (staged files, advisory — does not abort)"
-	@echo "  test         pytest -m unit"
+	@echo "  test         pytest tests/unit_tests/"
 	@echo "  test-all     pytest (incl. integration)"
 	@echo ""
 	@echo "Options:"
@@ -94,7 +94,7 @@ fix: has-staged-changes
 	@$(RUFF) check --fix $(CHANGED_FILES)
 
 test:
-	@$(PYTEST) -m unit
+	@$(PYTEST) tests/unit_tests/
 
 test-all:
 	@$(PYTEST)

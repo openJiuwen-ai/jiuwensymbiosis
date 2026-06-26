@@ -83,7 +83,7 @@ For multi-step tasks, state a brief plan:
 3. [Step] → verify: [check]
 ```
 
-In jiuwensymbiosis context: use `pytest -m unit` for fast deterministic
+In jiuwensymbiosis context: use `pytest tests/unit_tests/` for fast deterministic
 verification (no hardware/GPU). Use `python scripts/validate_adapter.py` and
 `python scripts/smoke_test_adapter.py` to verify adapter compatibility. Use
 `python examples/piper_pick_demo.py --mock` for an end-to-end smoke run

@@ -30,7 +30,7 @@ class TestPiperPick:
 Run only fast tests in CI:
 
 ```bash
-pytest -m unit
+pytest tests/unit_tests/
 ```
 
 Run integration tests on the bench (skipped otherwise):
