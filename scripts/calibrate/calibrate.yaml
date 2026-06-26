@@ -1,0 +1,33 @@
+# Piper 手眼标定配置 —— 供 scripts/calibrate/calibrate_hand_eye.py 使用。
+#
+# 标定只需要：能连 CAN 读法兰位姿 + 能从腕部相机取帧。不需要 detector/VLM，
+# 因此本文件不含 api_servers 与 model 段。
+#
+# 用法：
+#   1) 填好下面的 camera_serial（或导出环境变量 CAMERA_SERIAL）。
+#   2) python scripts/calibrate/calibrate_hand_eye.py --config scripts/calibrate/calibrate.yaml \
+#        --board charuco --squares-x 5 --squares-y 7 --square-size-mm 30 --marker-size-mm 22
+
+env:
+  cfg:
+    low_level:
+      # --- arm（左臂，命名 CAN 接口）
+      can_port: "can_left"
+      move_speed: 20                 # 使用 --auto 自动采集时的移动速度
+      tool_offset_mm: 0.0            # 置 0 时表示标定只读法兰位姿（与工具偏移无关）
+
+      home_use_init_pose: true       # 不需要调整，用于把启动时的位姿设置为 home 位
+      home_pose_xyzrxryrz_mm_deg: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0]  # 不需要调整，用于字段兜底，会被启动位姿覆盖
+      z_min_safe_mm: 50.0            # flange Z 下限（mm）；自动采集前钳制，按现场桌面高度调整
+
+      # --- cartesian 安全盒（mm；EndPoseCtrl 前钳制）
+      x_min_mm: 0.0
+      x_max_mm: 700.0
+      y_min_mm: -500.0
+      y_max_mm: 500.0
+      z_max_mm: 800.0
+
+      # --- camera（腕部 RealSense）—— 标定必须有相机
+      camera_serial: "349622073363"   # 填入你的 realsense 序列号或 export CAMERA_SERIAL=...
+      camera_resolution: [640, 480]
+      camera_fps: 30
