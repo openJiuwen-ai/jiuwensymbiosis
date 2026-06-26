@@ -38,7 +38,7 @@ adapters that support it.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -99,7 +99,10 @@ class JointDriver(Protocol):
         """Return current joint angles as the vendor's JointAngles dataclass."""
 
     def move_joint_blocking(
-        self, q: list[float], *, timeout_s: float = 30.0,
+        self,
+        q: list[float],
+        *,
+        timeout_s: float = 30.0,
     ) -> None:
         """Move to joint configuration ``q``, blocking until reached or ``timeout_s`` elapses."""
 
@@ -109,10 +112,10 @@ class CameraDriver(Protocol):
     """Optional camera surface — typically delegates to ``_common.RealSenseCamera``."""
 
     @property
-    def intrinsics(self) -> Optional[np.ndarray]:
+    def intrinsics(self) -> np.ndarray | None:
         """3x3 camera intrinsics ``K``; ``None`` until the camera has started."""
 
-    def grab_frames(self) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab one aligned ``(rgb_uint8, depth_m_float32)`` pair, or ``None`` if unavailable."""
 
 
@@ -125,7 +128,7 @@ class SuctionDriver(Protocol):
         """Last commanded suction state (True = on)."""
 
     @property
-    def suction_di_last(self) -> Optional[int]:
+    def suction_di_last(self) -> int | None:
         """Last suction digital-input reading, or ``None`` if unread/unsupported."""
 
     def set_suction(self, on: bool) -> None:
@@ -149,11 +152,11 @@ class VisionDriver(Protocol):
     """Optional hand-eye calibration surface for eye-in-hand back-projection."""
 
     @property
-    def tf_flange_cam(self) -> Optional[np.ndarray]:
+    def tf_flange_cam(self) -> np.ndarray | None:
         """4x4 flange→camera extrinsic transform, or None if uncalibrated."""
 
     @property
-    def calibration(self) -> Optional[dict]:
+    def calibration(self) -> dict | None:
         """Loaded hand-eye calibration payload, or None."""
 
 

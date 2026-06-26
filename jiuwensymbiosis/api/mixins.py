@@ -28,9 +28,15 @@ detector client and hand-eye calibration — so they stay abstract and raise
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from jiuwensymbiosis.api.decorators import robot_tool
+
+if TYPE_CHECKING:
+    # Mixins are composed into BaseRobotApi subclasses, which set `self.env`.
+    # Declared here only for type checking; runtime attribute is provided by
+    # the composing class (see BaseRobotApi.__init__).
+    from jiuwensymbiosis.env.base import BaseRobotEnv
 
 
 def _pose_to_dict(pose: Any) -> dict:
@@ -53,6 +59,7 @@ def _pose_to_dict(pose: Any) -> dict:
 class MotionMixin:
     """Cartesian motion capability mixin."""
 
+    env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
     capability = "motion.cartesian"
 
     @robot_tool(desc="Return to the home pose. Always safe.", tags=["motion"])
@@ -77,7 +84,7 @@ class MotionMixin:
         "If r is omitted, current r is preserved.",
         tags=["motion"],
     )
-    def goto_xyzr(self, x: float, y: float, z: float, r: Optional[float] = None) -> None:
+    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
         """Move the tip to an absolute Cartesian pose. Default is a top-down move
         (tip == flange, rx=180, ry=0); override for a tool offset or a tilted tool.
         """
@@ -90,6 +97,7 @@ class MotionMixin:
 class JointMotionMixin:
     """Joint-space motion capability mixin."""
 
+    env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
     capability = "motion.joint"
 
     @robot_tool(desc="Move to a joint configuration q (rad or deg per robot convention).", tags=["motion"])
@@ -104,6 +112,7 @@ class JointMotionMixin:
 class SuctionMixin:
     """Suction grasp capability mixin."""
 
+    env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
     capability = "grasp.suction"
 
     @robot_tool(desc="Turn suction ON. Should be called only after the tip is on/near the target.", tags=["grasp"])
@@ -122,6 +131,7 @@ class SuctionMixin:
 class ParallelGripperMixin:
     """Parallel gripper capability mixin."""
 
+    env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
     capability = "grasp.parallel"
 
     @robot_tool(desc="Open the parallel gripper to width_mm.", tags=["grasp"])
@@ -133,7 +143,7 @@ class ParallelGripperMixin:
         return {"ok": True, "state": "open"}
 
     @robot_tool(desc="Close the parallel gripper, optionally with a target force in N.", tags=["grasp"])
-    def close_gripper(self, force_n: Optional[float] = None) -> dict:
+    def close_gripper(self, force_n: float | None = None) -> dict:
         """Close the gripper (delegates to the Env end-effector verb). ``force_n``
         is accepted for API parity; bodies with force control override this.
         """
@@ -150,6 +160,8 @@ class VisionMixin:
     ``get_image`` has a working default (raw frame grab); the higher-level
     detection methods need the adapter's detector + calibration and stay abstract.
     """
+
+    env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
 
     capability = "vision.detection"
 
@@ -182,7 +194,7 @@ class VisionMixin:
         return self.env.grab_rgb()
 
     @robot_tool(desc="Higher-level scene analysis with prompt grounded on object_name.")
-    def analyze_scene(self, object_name: Optional[str] = None) -> dict:
+    def analyze_scene(self, object_name: str | None = None) -> dict:
         """Scene analysis grounded on ``object_name``.
 
         No generic default: requires the adapter's detector client.

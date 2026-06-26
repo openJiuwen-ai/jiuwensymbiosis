@@ -11,7 +11,7 @@ import logging
 import runpy
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 try:
     from PIL import Image as _PILImage
@@ -45,8 +45,8 @@ def piper_watch_pick_place() -> None:
 #
 # By default a self-contained HTML page is written next to the trace JSON and
 # its path is printed — every step's frame is inlined as base64 so the image
-# and that step's params/error/rail events live in one card. 
-# ``--text`` falls back to the original plain-text timeline (frames shown as 
+# and that step's params/error/rail events live in one card.
+# ``--text`` falls back to the original plain-text timeline (frames shown as
 # paths only, no popup).
 # ---------------------------------------------------------------------------
 def _fmt_params(params: Any) -> str:
@@ -57,7 +57,7 @@ def _fmt_params(params: Any) -> str:
     return s if len(s) <= 120 else s[:117] + "..."
 
 
-def _load_trace(trace_path: str) -> Optional[tuple[dict, Path]]:
+def _load_trace(trace_path: str) -> tuple[dict, Path] | None:
     """Load and validate a trace JSON. Returns ``(data, path)`` or None on error.
 
     Shared by the text and HTML replay paths so both surface the same
@@ -131,8 +131,7 @@ def replay(trace_path: str, *, out=sys.stdout) -> int:
         for ev in e.get("rail_events", []) or []:
             status = "ok" if ev.get("success") else "FAIL"
             print(
-                f"       rail: [{status}] {ev.get('rail_name')}/{ev.get('kind')} "
-                f"{ev.get('detail', {})}",
+                f"       rail: [{status}] {ev.get('rail_name')}/{ev.get('kind')} {ev.get('detail', {})}",
                 file=out,
             )
         for ev in e.get("log_events", []) or []:
@@ -190,8 +189,7 @@ def replay_html(trace_path: str, *, out=sys.stdout) -> int:
 
     print(f"wrote {out_path}", file=out)
     print(
-        "(open the path above in your browser; "
-        "in VSCode it's clickable and opens in the built-in webview)",
+        "(open the path above in your browser)",
         file=out,
     )
     return 0

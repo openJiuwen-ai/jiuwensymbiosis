@@ -15,10 +15,10 @@ Usage::
         print(session.describe())
 """
 
-from jiuwensymbiosis.adapters._common.builder import make_builder
+from jiuwensymbiosis.adapters.xxx.api import XxxApi
 from jiuwensymbiosis.adapters.xxx.config import XxxConfig
 from jiuwensymbiosis.adapters.xxx.env import XxxEnv
-from jiuwensymbiosis.adapters.xxx.api import XxxApi
 
+from jiuwensymbiosis.adapters._common.builder import make_builder
 
 build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi)

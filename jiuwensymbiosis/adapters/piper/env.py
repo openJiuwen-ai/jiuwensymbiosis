@@ -11,7 +11,7 @@ Wraps the driver (``low_level``), exposes ``connect``/``disconnect``/
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -42,16 +42,16 @@ class PiperEnv(BaseRobotEnv):
     def __init__(self, cfg: PiperConfig) -> None:
         """Store config; driver is None until connect()."""
         self.cfg = cfg
-        self._inner: Optional["RobotDriver"] = None  # PiperLowLevel
+        self._inner: RobotDriver | None = None  # PiperLowLevel
         self._connected = False
 
     @property
-    def low_level(self) -> Optional["RobotDriver"]:
+    def low_level(self) -> RobotDriver | None:
         """The underlying low-level driver (PiperLowLevel), or None before connect()."""
         return self._inner
 
     @property
-    def z_min_safe(self) -> Optional[float]:
+    def z_min_safe(self) -> float | None:
         """Tip-frame Z floor (mm): from the live driver if connected, else config."""
         if self._inner is not None:
             return float(self._inner.z_min_safe)
@@ -59,7 +59,7 @@ class PiperEnv(BaseRobotEnv):
         return float(cfg_val) if cfg_val is not None else None
 
     @property
-    def workspace_bounds(self) -> Optional[tuple[float, float, float, float]]:
+    def workspace_bounds(self) -> tuple[float, float, float, float] | None:
         """XY workspace bounds ``(xmin, ymin, xmax, ymax)`` in mm from config, or None."""
         c = self.cfg
         xmin, ymin = getattr(c, "x_min_mm", None), getattr(c, "y_min_mm", None)
@@ -126,7 +126,7 @@ class PiperEnv(BaseRobotEnv):
         if not self._connected:
             return
         try:
-            self._inner.close()
+            self._inner.close()  # type: ignore[union-attr]  # guarded by `_connected` (set True only after `_inner` assigned in connect())
         except Exception as exc:  # noqa: BLE001
             logger.warning("PiperEnv disconnect failed: %s", exc)
         self._inner = None
@@ -137,21 +137,21 @@ class PiperEnv(BaseRobotEnv):
         """Collect RGB, depth, pose, and joint state into a RobotObservation."""
         if self._inner is None:
             return RobotObservation()
-        rgb: Optional[np.ndarray] = None
-        depth: Optional[np.ndarray] = None
+        rgb: np.ndarray | None = None
+        depth: np.ndarray | None = None
         try:
             frames = self._inner.grab_frames()
             if frames is not None:
                 rgb, depth = frames
         except Exception as exc:  # noqa: BLE001
             logger.debug("PiperEnv.grab_frames failed: %s", exc)
-        pose: Optional[dict] = None
+        pose: dict | None = None
         try:
             p = self._inner.get_pose()
             pose = {"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}
         except Exception:  # noqa: BLE001
             pose = None
-        joints: Optional[list[float]] = None
+        joints: list[float] | None = None
         try:
             a = self._inner.get_angles()
             joints = list(a.as_tuple())
@@ -164,9 +164,7 @@ class PiperEnv(BaseRobotEnv):
             depth=depth,
             extra={
                 "z_min_safe": self.z_min_safe,
-                "gripper_state": self._inner.gripper_state
-                if "grasp.parallel" in self.capabilities
-                else None,
+                "gripper_state": self._inner.gripper_state if "grasp.parallel" in self.capabilities else None,
             },
         )
 

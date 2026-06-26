@@ -18,7 +18,7 @@ RPY axis order:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, astuple
+from dataclasses import astuple, dataclass
 
 import numpy as np
 from scipy.spatial.transform import Rotation

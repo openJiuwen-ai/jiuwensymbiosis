@@ -17,7 +17,6 @@ reason=no_camera" fallback chain intact.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -52,10 +51,10 @@ class RealSenseCamera:
         self.fps = int(fps)
         self._log_prefix = log_prefix
 
-        self._pipeline = None        # pyrealsense2.pipeline once started
-        self._align = None           # pyrealsense2.align(rs.stream.color)
+        self._pipeline = None  # pyrealsense2.pipeline once started
+        self._align = None  # pyrealsense2.align(rs.stream.color)
         self._depth_scale: float = 1.0
-        self._intrinsics: Optional[np.ndarray] = None
+        self._intrinsics: np.ndarray | None = None
 
     # ----------------------------------------------------------------- state
     @property
@@ -69,7 +68,7 @@ class RealSenseCamera:
         return self._depth_scale
 
     @property
-    def intrinsics(self) -> Optional[np.ndarray]:
+    def intrinsics(self) -> np.ndarray | None:
         """3x3 K matrix. None until ``start()`` succeeds."""
         return self._intrinsics
 
@@ -86,7 +85,8 @@ class RealSenseCamera:
             import pyrealsense2 as rs
         except ImportError:
             logger.warning(
-                "%s pyrealsense2 not installed — skipping camera.", self._log_prefix,
+                "%s pyrealsense2 not installed — skipping camera.",
+                self._log_prefix,
             )
             return False
         try:
@@ -94,23 +94,23 @@ class RealSenseCamera:
             config = rs.config()
             config.enable_device(self.serial)
             config.enable_stream(
-                rs.stream.color, self.resolution[0], self.resolution[1],
-                rs.format.bgr8, self.fps,
+                rs.stream.color,
+                self.resolution[0],
+                self.resolution[1],
+                rs.format.bgr8,
+                self.fps,
             )
             config.enable_stream(
-                rs.stream.depth, self.resolution[0], self.resolution[1],
-                rs.format.z16, self.fps,
+                rs.stream.depth,
+                self.resolution[0],
+                self.resolution[1],
+                rs.format.z16,
+                self.fps,
             )
             profile = pipeline.start(config)
             self._align = rs.align(rs.stream.color)
-            self._depth_scale = (
-                profile.get_device().first_depth_sensor().get_depth_scale()
-            )
-            color_intr = (
-                profile.get_stream(rs.stream.color)
-                .as_video_stream_profile()
-                .get_intrinsics()
-            )
+            self._depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+            color_intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
             self._intrinsics = np.array(
                 [
                     [color_intr.fx, 0.0, color_intr.ppx],
@@ -127,22 +127,29 @@ class RealSenseCamera:
                     # up; log at debug instead of silently swallowing.
                     logger.debug(
                         "%s warm-up frame grab failed (ignored): %s",
-                        self._log_prefix, e,
+                        self._log_prefix,
+                        e,
                     )
             self._pipeline = pipeline
             logger.info(
-                "%s Camera SN=%s ready (%dx%d@%d). K=[fx=%.1f, fy=%.1f, "
-                "ppx=%.1f, ppy=%.1f], depth_scale=%.5fm/unit.",
-                self._log_prefix, self.serial,
-                self.resolution[0], self.resolution[1], self.fps,
-                color_intr.fx, color_intr.fy, color_intr.ppx, color_intr.ppy,
+                "%s Camera SN=%s ready (%dx%d@%d). K=[fx=%.1f, fy=%.1f, ppx=%.1f, ppy=%.1f], depth_scale=%.5fm/unit.",
+                self._log_prefix,
+                self.serial,
+                self.resolution[0],
+                self.resolution[1],
+                self.fps,
+                color_intr.fx,
+                color_intr.fy,
+                color_intr.ppx,
+                color_intr.ppy,
                 self._depth_scale,
             )
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "%s Camera init failed (%s); continuing without camera.",
-                self._log_prefix, e,
+                self._log_prefix,
+                e,
             )
             self._pipeline = None
             return False
@@ -157,7 +164,7 @@ class RealSenseCamera:
             self._pipeline = None
 
     # -------------------------------------------------------------- frame grab
-    def grab_frames(self) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab one aligned (rgb, depth_m) pair. depth in meters as float32.
 
         Returns None if the camera isn't running or the read failed.

@@ -14,7 +14,8 @@ wrapper, position extraction, and the structured-stop builder.
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

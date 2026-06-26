@@ -12,31 +12,30 @@ plugged into a higher-level agent's ``subagents=[...]`` for multi-robot setups.
 from __future__ import annotations
 
 import importlib
-import logging
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Optional, Set, Dict, List
 from types import ModuleType
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import (
-    create_deep_agent,
-    SubAgentConfig,
     AgentCard,
     SkillUseRail,
+    SubAgentConfig,
+    create_deep_agent,
 )
 from jiuwensymbiosis.agent.config import (
-    Mode,
-    RobotAgentConfig,
     ROBOT_PROMPT_TEMPLATE,
+    Mode,
     RailConfig,
+    RobotAgentConfig,
     build_model,
 )
-
-from jiuwensymbiosis.skills import SKILLS_DIR
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.agent.trace import TraceRail
+from jiuwensymbiosis.skills import SKILLS_DIR
 from jiuwensymbiosis.utils.logging import TraceLogHandler, configure_logging
-from jiuwensymbiosis.agent.trace import TraceRail, TraceEventSink
 
 _JIUWENSYMBIOSIS_SETTINGS = Path.home() / ".jiuwensymbiosis" / "settings.json"
 
@@ -48,7 +47,7 @@ __all__ = [
 ]
 
 
-def _read_settings_workspace() -> Optional[str]:
+def _read_settings_workspace() -> str | None:
     """Read workspace path from ``~/.jiuwensymbiosis/settings.json``."""
     try:
         if _JIUWENSYMBIOSIS_SETTINGS.exists():
@@ -59,7 +58,7 @@ def _read_settings_workspace() -> Optional[str]:
     return None
 
 
-def _resolve_workspace(session: RobotSession, workspace: Optional[str]) -> str:
+def _resolve_workspace(session: RobotSession, workspace: str | None) -> str:
     """Resolve the agent workspace path.
 
     Priority: explicit ``workspace`` argument > ``$JIUWENSYMBIOSIS_WORKSPACE`` >
@@ -101,7 +100,7 @@ class _RailRegistry:
     a rail should be enabled based on current session flags and capabilities.
     """
 
-    _rails: List[RailConfig] = [
+    _rails: list[RailConfig] = [
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.visual_feedback.VisualFeedbackRail",
             required_flags=["enable_visual_feedback"],
@@ -122,10 +121,10 @@ class _RailRegistry:
     @classmethod
     def get_enabled_rails(
         cls,
-        flag_states: Dict[str, bool],
-        session_capabilities: Set[str],
+        flag_states: dict[str, bool],
+        session_capabilities: set[str],
         session: Any,
-    ) -> List[Any]:
+    ) -> list[Any]:
         """Return all rail instances whose activation conditions are met.
 
         Args:
@@ -136,7 +135,7 @@ class _RailRegistry:
         Returns:
             List of instantiated rail objects.
         """
-        enabled_rails: List[Any] = []
+        enabled_rails: list[Any] = []
         for config in cls._rails:
             if cls._should_enable(flag_states, session_capabilities, config):
                 try:
@@ -150,8 +149,8 @@ class _RailRegistry:
     @classmethod
     def _should_enable(
         cls,
-        flag_states: Dict[str, bool],
-        session_capabilities: Set[str],
+        flag_states: dict[str, bool],
+        session_capabilities: set[str],
         config: RailConfig,
     ) -> bool:
         """Check whether a rail's activation conditions are satisfied."""
@@ -173,7 +172,7 @@ class _RailRegistry:
         return getattr(module, class_name)
 
 
-def _inject_trace_sinks(rails: List[Any], trace_rail: Optional[TraceRail]) -> None:
+def _inject_trace_sinks(rails: list[Any], trace_rail: TraceRail | None) -> None:
     """Wire the TraceRail as a ``trace_sink`` on rails that accept one.
 
     SafetyRail / RecoveryRail / VisualFeedbackRail each accept an optional
@@ -207,7 +206,7 @@ def _make_frame_sink(trace_rail: TraceRail):
     return _sink
 
 
-def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: List[str], level: int) -> TraceLogHandler:
+def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: list[str], level: int) -> TraceLogHandler:
     """Attach a TraceLogHandler to each named logger, bound to the TraceRail.
 
     Removes any previously-attached ``TraceLogHandler`` instances first so
@@ -227,12 +226,12 @@ def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: List[str], level:
 
 
 def _resolve_rails(
-    session: "RobotSession",
+    session: RobotSession,
     enable_visual_feedback: bool,
     enable_safety: bool,
     enable_recovery: bool,
-    extra_rails: Optional[List[Any]],
-) -> List[Any]:
+    extra_rails: list[Any] | None,
+) -> list[Any]:
     """Resolve enabled rails based on session capabilities and flags.
 
     Args:
@@ -245,13 +244,13 @@ def _resolve_rails(
     Returns:
         List of enabled rail instances.
     """
-    flag_states: Dict[str, bool] = {
+    flag_states: dict[str, bool] = {
         "enable_visual_feedback": enable_visual_feedback,
         "enable_safety": enable_safety,
         "enable_recovery": enable_recovery,
     }
-    session_capabilities: Set[str] = set(session.env.capabilities)
-    rails: List[Any] = _RailRegistry.get_enabled_rails(
+    session_capabilities: set[str] = set(session.env.capabilities)
+    rails: list[Any] = _RailRegistry.get_enabled_rails(
         flag_states,
         session_capabilities,
         session,
@@ -264,7 +263,7 @@ def _resolve_rails(
 def _build_tools(
     session: RobotSession,
     mode: Mode,
-    extra_tools: Optional[list[Any]],
+    extra_tools: list[Any] | None,
     enable_skill: bool = False,
 ) -> list[Any]:
     """Build tool list for the agent based on operating mode and skill flag.
@@ -312,7 +311,7 @@ def _maybe_append_skill_rail(rails: list[Any], enable_skill: bool) -> list[Any]:
     return rails
 
 
-def _build_system_prompt(session: RobotSession, custom_prompt: Optional[str], mode: Mode = "hybrid") -> str:
+def _build_system_prompt(session: RobotSession, custom_prompt: str | None, mode: Mode = "hybrid") -> str:
     """Render ``ROBOT_PROMPT_TEMPLATE`` for this session.
 
     Only the robot name is interpolated; tool descriptions reach the LLM
@@ -353,7 +352,7 @@ def _render_globals_section(session: RobotSession) -> str:
 
 def build_robot_agent(
     session: RobotSession,
-    config: Optional[RobotAgentConfig] = None,
+    config: RobotAgentConfig | None = None,
 ) -> Any:
     """Build a ready-to-invoke ``DeepAgent`` bound to one robot session.
 
@@ -386,7 +385,7 @@ def build_robot_agent(
     workspace = _resolve_workspace(session, config.workspace)
 
     # Execution trace: prepend TraceRail so it observes every step.
-    trace_rail: Optional[TraceRail] = None
+    trace_rail: TraceRail | None = None
     if config.enable_tracing:
         import logging as _logging
 
@@ -403,9 +402,7 @@ def build_robot_agent(
             traces_dir=Path(trace_dir),
         )
         _inject_trace_sinks(rails, trace_rail)
-        log_handler = _attach_trace_log_handlers(
-            trace_rail, list(config.trace_capture_loggers), _logging.WARNING
-        )
+        log_handler = _attach_trace_log_handlers(trace_rail, list(config.trace_capture_loggers), _logging.WARNING)
         trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
         session.attach_trace_rail(trace_rail)
         rails.insert(0, trace_rail)
@@ -430,9 +427,9 @@ def build_robot_agent(
 def build_robot_agent_config(
     session: RobotSession,
     *,
-    config: Optional[RobotAgentConfig] = None,
-    name: Optional[str] = None,
-    description: Optional[str] = None,
+    config: RobotAgentConfig | None = None,
+    name: str | None = None,
+    description: str | None = None,
 ) -> Any:
     """Return a ``SubAgentConfig`` for multi-robot top-level agents.
 

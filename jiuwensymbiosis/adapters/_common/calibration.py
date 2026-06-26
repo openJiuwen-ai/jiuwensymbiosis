@@ -75,14 +75,14 @@ def load_calibration(
     has_old = legacy_field in payload
 
     if has_new:
-        payload[frame_field]["matrix_4x4"] = np.asarray(
-            payload[frame_field]["matrix_4x4"], dtype=np.float64
-        )
+        payload[frame_field]["matrix_4x4"] = np.asarray(payload[frame_field]["matrix_4x4"], dtype=np.float64)
         if version < CURRENT_SCHEMA_VERSION:
             logger.warning(
                 "[calib] schema_version=%d but %s present; treating as new schema. "
                 "Consider bumping schema_version to %d.",
-                version, frame_field, CURRENT_SCHEMA_VERSION,
+                version,
+                frame_field,
+                CURRENT_SCHEMA_VERSION,
             )
     elif has_old:
         msg = (
@@ -95,19 +95,19 @@ def load_calibration(
         )
         if not allow_legacy:
             raise LegacyCalibrationError(
-                msg + f" (set {env_var}=1 to fall back to the legacy geometry "
-                      "as a degraded path.)"
+                msg + f" (set {env_var}=1 to fall back to the legacy geometry as a degraded path.)"
             )
         logger.warning(
             "%s\n[calib] %s=1 set; remapping %s → %s. Back-projection accuracy "
             "will fall off as the kinematic state drifts from the calibration "
             "snapshot.",
-            msg, env_var, legacy_field, frame_field,
+            msg,
+            env_var,
+            legacy_field,
+            frame_field,
         )
         payload[frame_field] = {
-            "matrix_4x4": np.asarray(
-                payload[legacy_field]["matrix_4x4"], dtype=np.float64
-            ),
+            "matrix_4x4": np.asarray(payload[legacy_field]["matrix_4x4"], dtype=np.float64),
             "_legacy_remap_from": legacy_field,
         }
     else:
@@ -117,7 +117,5 @@ def load_calibration(
         )
 
     payload["intrinsics"] = np.asarray(payload["intrinsics"], dtype=np.float64)
-    payload["object"]["xyz_base_mm"] = np.asarray(
-        payload["object"]["xyz_base_mm"], dtype=np.float64
-    )
+    payload["object"]["xyz_base_mm"] = np.asarray(payload["object"]["xyz_base_mm"], dtype=np.float64)
     return payload

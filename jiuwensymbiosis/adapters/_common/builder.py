@@ -23,11 +23,11 @@ with the three call shapes above. The adapter just does:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Union
 
 from jiuwensymbiosis.agent.session import RobotSession
-
 
 SidecarBuilder = Callable[[Any], Any]
 SessionDecorator = Callable[[RobotSession, Any], None]
@@ -39,7 +39,7 @@ SessionDecorator = Callable[[RobotSession, Any], None]
 ApiKwargsSpec = Union[Callable[[Any], dict], list[str]]
 
 
-def _resolve_api_kwargs(spec: Optional[ApiKwargsSpec], cfg: Any) -> dict:
+def _resolve_api_kwargs(spec: ApiKwargsSpec | None, cfg: Any) -> dict:
     """Turn a kwargs spec into the kwargs dict passed to ``api_cls(env, **kw)``.
 
     * ``None`` → no kwargs.
@@ -78,7 +78,8 @@ def make_detector_sidecar(cfg_attr: str = "detector"):
     Mirrors the field shape of ``DetectorServerConfig``
     (``host/port/device/startup_timeout_s/gdino_model_id/...``).
     """
-    def _build(cfg: Any) -> Optional[Callable]:
+
+    def _build(cfg: Any) -> Callable | None:
         det = getattr(cfg, cfg_attr, None)
         if det is None or not getattr(det, "spawn", False):
             return None
@@ -105,9 +106,9 @@ def make_builder(
     env_cls: type,
     api_cls: type,
     *,
-    api_kwargs_from_cfg: Optional[ApiKwargsSpec] = None,
-    sidecar_builders: Optional[list[SidecarBuilder]] = None,
-    decorate: Optional[SessionDecorator] = None,
+    api_kwargs_from_cfg: ApiKwargsSpec | None = None,
+    sidecar_builders: list[SidecarBuilder] | None = None,
+    decorate: SessionDecorator | None = None,
 ):
     """Build a polymorphic session-factory callable.
 
@@ -130,6 +131,7 @@ def make_builder(
     Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``
     and ``.from_dict(dict)`` as attributes.
     """
+
     def _session_from_cfg(cfg: Any) -> RobotSession:
         env = env_cls(cfg)
         api_kwargs = _resolve_api_kwargs(api_kwargs_from_cfg, cfg)

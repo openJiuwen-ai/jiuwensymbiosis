@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -37,7 +37,7 @@ class MockArmEnv(BaseRobotEnv):
         home_pose: dict | None = None,
         z_min_safe: float = 0.0,
         image_hw: tuple[int, int] = (480, 640),
-        workspace_bounds: Optional[tuple[float, float, float, float]] = None,
+        workspace_bounds: tuple[float, float, float, float] | None = None,
         scene: Any = None,
     ) -> None:
         """Initialize mock arm with given home pose and safety limits.
@@ -59,12 +59,12 @@ class MockArmEnv(BaseRobotEnv):
 
     # ------------------------------------------------ formal hardware contract
     @property
-    def z_min_safe(self) -> Optional[float]:
+    def z_min_safe(self) -> float | None:
         """Tip-frame Z floor (mm). Exposes the ``BaseRobotEnv`` contract property."""
         return self._z_min_safe
 
     @property
-    def workspace_bounds(self) -> Optional[tuple[float, float, float, float]]:
+    def workspace_bounds(self) -> tuple[float, float, float, float] | None:
         """XY workspace bounds, or None. Exposes the ``BaseRobotEnv`` contract property."""
         return self._workspace_bounds
 
@@ -102,7 +102,7 @@ class MockArmEnv(BaseRobotEnv):
         rgb = np.full((h, w, 3), 96, dtype=np.uint8)
         # Draw a marker at center to simulate a detection target.
         cy, cx = h // 2, w // 2
-        rgb[cy - 8: cy + 8, cx - 8: cx + 8] = (255, 255, 255)
+        rgb[cy - 8 : cy + 8, cx - 8 : cx + 8] = (255, 255, 255)
         return RobotObservation(
             pose=dict(self._pose),
             rgb=rgb,

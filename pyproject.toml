@@ -76,5 +76,38 @@ filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
 
-[tool.black]
-line-length = 100
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "B",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade
+    "ASYNC", # flake8-async
+]
+ignore = [
+    "E501",  # line too long (handled by ruff format)
+    "UP009", # keep `# coding: utf-8` declarations (aligns with code template)
+]
+
+[tool.ruff.format]
+# ruff format is a Black-compatible drop-in replacement — one tool does
+# both lint and formatting. Config mirrored from agent-core.
+skip-magic-trailing-comma = false
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true

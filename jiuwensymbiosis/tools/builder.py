@@ -12,7 +12,7 @@ the ``capability`` of the mixin that declares the method. The gate set is
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
 
@@ -26,7 +26,7 @@ def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
     return frozenset(api_caps) & frozenset(env_caps)
 
 
-def _owning_capability(api_type: type, attr_name: str, meta: Any) -> Optional[str]:
+def _owning_capability(api_type: type, attr_name: str, meta: Any) -> str | None:
     """Resolve the capability a tool belongs to.
 
     Explicit ``meta.capability`` wins; otherwise find the mixin in the MRO that
@@ -46,8 +46,8 @@ def build_robot_tools(
     api: Any,
     *,
     env: Any = None,
-    allow: Optional[set[str]] = None,
-    deny: Optional[set[str]] = None,
+    allow: set[str] | None = None,
+    deny: set[str] | None = None,
 ) -> list[Any]:
     """Return a list of `openjiuwen.LocalFunction` Tools bound to the api.
 

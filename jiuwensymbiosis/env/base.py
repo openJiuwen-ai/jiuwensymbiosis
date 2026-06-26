@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -68,10 +68,10 @@ class RobotObservation:
         extra: Anything else (gripper width, force/torque, status flags).
     """
 
-    pose: Optional[dict] = None
-    joints: Optional[list[float]] = None
-    rgb: Optional[np.ndarray] = None
-    depth: Optional[np.ndarray] = None
+    pose: dict | None = None
+    joints: list[float] | None = None
+    rgb: np.ndarray | None = None
+    depth: np.ndarray | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -152,9 +152,9 @@ class BaseRobotEnv(ABC):
     # ``calibration``, ``intrinsics``, ``grab_frames``) and vendor-specific
     # operations may access ``low_level`` directly — but the access is type-
     # constrained by the ``RobotDriver`` (and sibling) Protocol(s).
-    low_level: Optional["RobotDriver"] = None
-    z_min_safe: Optional[float] = None
-    workspace_bounds: Optional[tuple[float, float, float, float]] = None
+    low_level: RobotDriver | None = None
+    z_min_safe: float | None = None
+    workspace_bounds: tuple[float, float, float, float] | None = None
 
     # Robot body constants. Adapters override as @property or set in connect().
     home_pose: Any = None
@@ -162,7 +162,7 @@ class BaseRobotEnv(ABC):
 
     # --- motion / end-effector verbs (default: delegate to low_level) ---
 
-    def _require_driver(self) -> "RobotDriver":
+    def _require_driver(self) -> RobotDriver:
         """Return ``low_level`` or raise if the env is not connected."""
         ll = self.low_level
         if ll is None:
@@ -198,13 +198,12 @@ class BaseRobotEnv(ABC):
             driver.set_suction(engaged)
         else:
             raise NotImplementedError(
-                f"{self.name}: no grasp capability declared "
-                f"(need 'grasp.parallel' or 'grasp.suction')"
+                f"{self.name}: no grasp capability declared (need 'grasp.parallel' or 'grasp.suction')"
             )
 
     # --- sensor convenience ---
 
-    def grab_rgb(self) -> Optional[np.ndarray]:
+    def grab_rgb(self) -> np.ndarray | None:
         """Single-frame RGB grab for vision tools.
 
         Default delegates to ``get_observation().rgb``; override in adapters

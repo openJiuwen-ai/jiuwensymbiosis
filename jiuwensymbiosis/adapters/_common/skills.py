@@ -42,7 +42,11 @@ def move_tip_xy_then_z(api: Any, position: list[float], *, stage: str) -> None:
     home_z = float(home_pose["z"])
     logger.info(
         "[skills] %s: move via home_z %.2f to target=(%.2f, %.2f, %.2f)",
-        stage, home_z, x, y, z,
+        stage,
+        home_z,
+        x,
+        y,
+        z,
     )
     api.goto_xyzr(x=x, y=y, z=home_z)
     api.goto_xyzr(x=x, y=y, z=z)

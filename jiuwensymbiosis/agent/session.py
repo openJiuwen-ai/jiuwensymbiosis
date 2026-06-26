@@ -17,9 +17,10 @@ stops sidecars. Idempotent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.env.base import BaseRobotEnv
@@ -56,14 +57,14 @@ class RobotSession:
     extra_globals: dict[str, Any] = field(default_factory=dict)
     strict_capabilities: bool = False
 
-    _stack: Optional[ExitStack] = field(default=None, init=False, repr=False)
+    _stack: ExitStack | None = field(default=None, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
     # Optional TraceRail (set by build_robot_agent when enable_tracing). Flushed
     # on disconnect as a safety net in case after_invoke didn't fire.
     _trace_rail: Any = field(default=None, init=False, repr=False)
 
     # ----------------------------------------------------------- context manager
-    def __enter__(self) -> "RobotSession":
+    def __enter__(self) -> RobotSession:
         """Enter context: connect and return self."""
         self.connect()
         return self
@@ -105,10 +106,7 @@ class RobotSession:
         if api_only:
             env_cls = type(self.env).__name__
             api_cls = type(self.api).__name__
-            fix_hint = (
-                f"修复指引：在 {env_cls}.capabilities 里加入这些能力，"
-                f"或从 {api_cls} 移除对应的 Mixin。"
-            )
+            fix_hint = f"修复指引：在 {env_cls}.capabilities 里加入这些能力，或从 {api_cls} 移除对应的 Mixin。"
             if self.strict_capabilities:
                 # api declares a capability the hardware does not provide — a
                 # config error (Mixin added without updating env, or hardware

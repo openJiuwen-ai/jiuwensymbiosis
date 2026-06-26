@@ -16,6 +16,8 @@ from typing import Any
 from jiuwensymbiosis.adapters._common.calibration import (
     CURRENT_SCHEMA_VERSION,
     LegacyCalibrationError,
+)
+from jiuwensymbiosis.adapters._common.calibration import (
     load_calibration as _generic_load_calibration,
 )
 

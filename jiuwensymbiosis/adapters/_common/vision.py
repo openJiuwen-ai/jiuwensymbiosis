@@ -26,8 +26,9 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, TypedDict
+from typing import Any, Literal, TypedDict
 
 import numpy as np
 
@@ -122,7 +123,7 @@ def _run_detect_pick_best(
     for i, r in enumerate(results):
         m = r["mask"]
         logger.info(
-            "%s   cand[%d] score=%.3f label=%r mask_shape=%s " "n_pixels=%d coverage=%.1f%% box=%s",
+            "%s   cand[%d] score=%.3f label=%r mask_shape=%s n_pixels=%d coverage=%.1f%% box=%s",
             log_prefix,
             i,
             float(r.get("score", 0.0)),
@@ -158,8 +159,7 @@ def _mask_centroid(
     u = u_mask * scale_x
     v = v_mask * scale_y
     logger.info(
-        "%s centroid: mask=%dx%d (u,v)_mask=(%.1f, %.1f) "
-        "scale=(%.3f, %.3f) (u,v)_img=(%.1f, %.1f)",
+        "%s centroid: mask=%dx%d (u,v)_mask=(%.1f, %.1f) scale=(%.3f, %.3f) (u,v)_img=(%.1f, %.1f)",
         log_prefix,
         mask_w,
         mask_h,
@@ -187,7 +187,7 @@ def _median_depth_window(
     u: float,
     v: float,
     log_prefix: str,
-) -> Optional[float]:
+) -> float | None:
     """Median of valid depths (m) in a 5x5 window around (u, v); None if none."""
     h, w = depth_img_m.shape
     cu, cv, win = int(round(u)), int(round(v)), 5
@@ -196,8 +196,7 @@ def _median_depth_window(
     patch = depth_img_m[y0:y1, x0:x1]
     valid = patch[(patch > 0) & np.isfinite(patch)]
     logger.info(
-        "%s depth window: x=[%d,%d) y=[%d,%d) patch_size=%d "
-        "valid=%d depth_range=[%s, %s] median=%s",
+        "%s depth window: x=[%d,%d) y=[%d,%d) patch_size=%d valid=%d depth_range=[%s, %s] median=%s",
         log_prefix,
         x0,
         x1,
@@ -256,8 +255,7 @@ def detect_and_centroid(
     )
     if (img_w, img_h) != (dep_w, dep_h):
         logger.warning(
-            "%s RGB / depth shapes differ — depth lookup at (u,v) "
-            "assumes the same pixel grid. RGB=%dx%d depth=%dx%d",
+            "%s RGB / depth shapes differ — depth lookup at (u,v) assumes the same pixel grid. RGB=%dx%d depth=%dx%d",
             log_prefix,
             img_w,
             img_h,
@@ -308,8 +306,8 @@ def detect_and_centroid(
 def apply_xy_correction(
     xyz_raw: np.ndarray,
     *,
-    xy_transform: Optional[dict] = None,
-    xy_correction_mm: Optional[list[float]] = None,
+    xy_transform: dict | None = None,
+    xy_correction_mm: list[float] | None = None,
 ) -> tuple[np.ndarray, str]:
     """Apply a 2D linear xy correction to a back-projected base-frame XYZ.
 
@@ -365,7 +363,7 @@ def apply_xy_correction(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_intrinsics(ll: Any) -> Optional[np.ndarray]:
+def _resolve_intrinsics(ll: Any) -> np.ndarray | None:
     """Intrinsics from calibration (preferred) else live camera."""
     calib = getattr(ll, "calibration", None)
     intrinsics = calib.get("intrinsics") if calib is not None else None
@@ -412,7 +410,7 @@ def default_get_grasp_info_simple(
     api: Any,
     object_name: str,
     *,
-    seg_fn: Optional[Callable[..., list[dict]]],
+    seg_fn: Callable[..., list[dict]] | None,
     pose_to_tf: Callable[[Any], np.ndarray],
     z_correction_mm: float = 0.0,
     grasp_z_offset_mm: float = -25.0,
@@ -460,9 +458,7 @@ def default_get_grasp_info_simple(
         return det
 
     if ll.tf_flange_cam is None:
-        raise RuntimeError(
-            "get_grasp_info_simple needs a loaded calibration (set calib_path in YAML)."
-        )
+        raise RuntimeError("get_grasp_info_simple needs a loaded calibration (set calib_path in YAML).")
     intrinsics = _resolve_intrinsics(ll)
     if intrinsics is None:
         raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
@@ -470,18 +466,12 @@ def default_get_grasp_info_simple(
     u, v, depth_m = det["u"], det["v"], det["depth_m"]
     tf_base_flange = pose_to_tf(api.env.get_flange_pose())
     tf_base_cam = tf_base_flange @ ll.tf_flange_cam
-    xyz_raw = apply_transform(
-        tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics)
-    )
+    xyz_raw = apply_transform(tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics))
 
     calib = getattr(ll, "calibration", None)
     xy_transform = calib.get("xy_transform") if calib is not None else None
-    xy_corr = (
-        calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
-    )
-    xyz_final, _corr_desc = apply_xy_correction(
-        xyz_raw, xy_transform=xy_transform, xy_correction_mm=xy_corr
-    )
+    xy_corr = calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
+    xyz_final, _corr_desc = apply_xy_correction(xyz_raw, xy_transform=xy_transform, xy_correction_mm=xy_corr)
     if z_correction_mm:
         xyz_final = np.asarray(xyz_final, dtype=np.float64).copy()
         xyz_final[2] += z_correction_mm
@@ -621,11 +611,7 @@ def _overlay_slot_surface(pil_img, draw, surface_mask):
 
 def _draw_core_markers(draw, core_metrics: dict, img_height: int) -> None:
     """Draw the cyan core box, orange raw-centroid dot, and the legend text."""
-    core_box = (
-        core_metrics.get("surface_box")
-        or core_metrics.get("dumbbell_box")
-        or core_metrics.get("core_box")
-    )
+    core_box = core_metrics.get("surface_box") or core_metrics.get("dumbbell_box") or core_metrics.get("core_box")
     if isinstance(core_box, (list, tuple)) and len(core_box) >= 4:
         cx1, cy1, cx2, cy2 = (int(round(float(b))) for b in core_box[:4])
         draw.rectangle([cx1, cy1, cx2, cy2], outline=(0, 220, 255), width=3)
@@ -639,7 +625,7 @@ def _draw_core_markers(draw, core_metrics: dict, img_height: int) -> None:
         )
     draw.text(
         (4, img_height - 18),
-        ("red=detector mask  cyan=slot surface used  yellow=place uv  " "orange=raw center/status"),
+        ("red=detector mask  cyan=slot surface used  yellow=place uv  orange=raw center/status"),
         fill=(0, 220, 255),
     )
 
@@ -740,9 +726,7 @@ def dump_grasp_debug(
             "xyz_final_mm": [float(c) for c in xyz_final],
         }
         if extra_info:
-            info.update(
-                {key: value for key, value in extra_info.items() if key != "slot_surface_mask"}
-            )
+            info.update({key: value for key, value in extra_info.items() if key != "slot_surface_mask"})
         info_path = debug_dir / f"info_{idx:03d}.json"
         info_path.write_text(json.dumps(info, indent=2, ensure_ascii=False))
         logger.info(

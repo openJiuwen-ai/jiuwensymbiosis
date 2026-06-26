@@ -9,7 +9,7 @@ import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -44,27 +44,27 @@ class PiperConfig:
     tool_offset_mm: float = 135.8
 
     # --- workspace constants
-    calib_path: Optional[str] = None
+    calib_path: str | None = None
     home_lift_mm: float = 250.0
     z_safe_margin_mm: float = -10.0
     # 6-DoF home pose used only when no calib_path is given (mm/deg, FLANGE frame).
     home_pose_xyzrxryrz_mm_deg: list[float] = field(default_factory=lambda: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0])
     # Calibration anchor object pose (used only when no calib_path).
-    calib_object_xyzrxryrz_mm_deg: Optional[list[float]] = None
+    calib_object_xyzrxryrz_mm_deg: list[float] | None = None
     z_min_safe_mm: float = 50.0
     home_use_init_pose: bool = False
 
     # --- cartesian workspace box (mm). Clamped before
     #     every EndPoseCtrl so the firmware-chosen IK solution can't wander out
     #     of the front hemisphere. None on a side disables that bound.
-    x_min_mm: Optional[float] = 0.0
-    x_max_mm: Optional[float] = 700.0
-    y_min_mm: Optional[float] = -500.0
-    y_max_mm: Optional[float] = 500.0
-    z_max_mm: Optional[float] = 800.0
+    x_min_mm: float | None = 0.0
+    x_max_mm: float | None = 700.0
+    y_min_mm: float | None = -500.0
+    y_max_mm: float | None = 500.0
+    z_max_mm: float | None = 800.0
 
     # --- camera (optional; None disables)
-    camera_serial: Optional[str] = None
+    camera_serial: str | None = None
     camera_resolution: tuple[int, int] = (640, 480)
     camera_fps: int = 30
 
@@ -101,12 +101,12 @@ class PiperConfig:
 
     # --- task knobs
     detector: DetectorServerConfig = field(default_factory=DetectorServerConfig)
-    task_prompt: Optional[str] = None
+    task_prompt: str | None = None
     name: str = "piper"
 
     # ----------------------------------------------------------------- loaders
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PiperConfig":
+    def from_dict(cls, data: dict[str, Any]) -> PiperConfig:
         """Accept either a flat dict OR an ``env.cfg.low_level.*`` dict.
 
         Honors ``env.cfg.prompt`` and ``api_servers``, so YAMLs port across with minimal churn.
@@ -133,7 +133,7 @@ class PiperConfig:
         return cls(**clean)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "PiperConfig":
+    def from_yaml(cls, path: str | Path) -> PiperConfig:
         """Load config from a YAML file, resolving relative calib_path."""
         path = Path(path).resolve()
         with path.open("r", encoding="utf-8") as f:

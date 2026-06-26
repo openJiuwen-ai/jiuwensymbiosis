@@ -54,9 +54,7 @@ def _rot_z(deg: float) -> np.ndarray:
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
-def pixel_and_depth_to_camera_xyz(
-    uv: tuple[float, float], depth_m: float, intrinsics: np.ndarray
-) -> np.ndarray:
+def pixel_and_depth_to_camera_xyz(uv: tuple[float, float], depth_m: float, intrinsics: np.ndarray) -> np.ndarray:
     """Back-project a single pixel + metric depth to camera-frame XYZ (in mm).
 
     Note: ``depth_m`` is in meters; output is in mm to match some robot's base-frame

@@ -29,7 +29,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Optional, Protocol, Union
+from typing import Protocol, Union
 
 DEFAULT_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -49,9 +49,8 @@ class _TraceSinkLike(Protocol):
         level: str,
         msg: str,
         ts: float,
-        step: Optional[int] = ...,
-    ) -> None:
-        ...
+        step: int | None = ...,
+    ) -> None: ...
 
 
 def _to_level(level: LevelLike) -> int:
@@ -83,11 +82,11 @@ class TraceLogHandler(logging.Handler):
     constructed eagerly without a trace.
     """
 
-    def __init__(self, *, sink: Optional[_TraceSinkLike], level: int = logging.WARNING) -> None:
+    def __init__(self, *, sink: _TraceSinkLike | None, level: int = logging.WARNING) -> None:
         super().__init__(level=level)
         self._sink = sink
 
-    def set_sink(self, sink: Optional[_TraceSinkLike]) -> None:
+    def set_sink(self, sink: _TraceSinkLike | None) -> None:
         """Swap the bound sink (e.g. per invoke)."""
         self._sink = sink
 
@@ -133,7 +132,7 @@ class _FrameworkFilter(logging.Filter):
 def configure_logging(
     level: LevelLike = "INFO",
     *,
-    log_dir: Optional[Union[str, Path]] = None,
+    log_dir: str | Path | None = None,
     fmt: str = DEFAULT_FMT,
 ) -> None:
     """Idempotently configure the root logger with a uniform format.
@@ -165,9 +164,7 @@ def configure_logging(
 
     # File handler: attach once if requested, detach if previously attached but
     # no longer requested.
-    has_file = any(
-        isinstance(h, RotatingFileHandler) and getattr(h, _OWNED_TAG, False) for h in root.handlers
-    )
+    has_file = any(isinstance(h, RotatingFileHandler) and getattr(h, _OWNED_TAG, False) for h in root.handlers)
     if log_dir and not has_file:
         log_path = Path(log_dir)
         log_path.mkdir(parents=True, exist_ok=True)
@@ -196,7 +193,7 @@ def configure_logging(
                     pass
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """Return a logger.
 
     Equivalent to ``logging.getLogger(name or __name__)``; centralised so future

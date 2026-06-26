@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -33,58 +33,58 @@ class XxxConfig:
     name: str = "xxx"
 
     # ==================== 硬件连接 [必填] ====================
-    can_port: str = "can0"              # CAN / 串口 / 网络 端口
+    can_port: str = "can0"  # CAN / 串口 / 网络 端口
     # TODO: Replace with your actual connection parameters
     # Examples: serial_port: str, ip_address: str, usb_vid_pid: str
-    move_speed: int = 50                # [选填] 运动速度百分比 (0-100)
+    move_speed: int = 50  # [选填] 运动速度百分比 (0-100)
 
     # ==================== 运动学 [选填] ====================
-    tool_offset_mm: float = 0.0         # 法兰 → 工具末端 的 Z 向偏移 (mm)
+    tool_offset_mm: float = 0.0  # 法兰 → 工具末端 的 Z 向偏移 (mm)
     home_pose_xyzrxryrz_mm_deg: list[float] = field(
         default_factory=lambda: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0]
-    )                                   # [选填] Home 位姿 (x,y,z,rx,ry,rz)
-    home_use_init_pose: bool = False    # [选填] 是否用当前位置作为 home 位姿
+    )  # [选填] Home 位姿 (x,y,z,rx,ry,rz)
+    home_use_init_pose: bool = False  # [选填] 是否用当前位置作为 home 位姿
 
     # ==================== 安全边界 [选填] ====================
-    z_min_safe_mm: float = 50.0         # Z 向安全下限 (SafetyRail 读取)
-    x_min_mm: Optional[float] = 0.0     # X 向工作空间下界 (None=不限制)
-    x_max_mm: Optional[float] = 700.0   # X 向工作空间上界
-    y_min_mm: Optional[float] = -500.0  # Y 向工作空间下界
-    y_max_mm: Optional[float] = 500.0   # Y 向工作空间上界
-    z_max_mm: Optional[float] = 800.0   # Z 向工作空间上界 (None=不限制)
+    z_min_safe_mm: float = 50.0  # Z 向安全下限 (SafetyRail 读取)
+    x_min_mm: float | None = 0.0  # X 向工作空间下界 (None=不限制)
+    x_max_mm: float | None = 700.0  # X 向工作空间上界
+    y_min_mm: float | None = -500.0  # Y 向工作空间下界
+    y_max_mm: float | None = 500.0  # Y 向工作空间上界
+    z_max_mm: float | None = 800.0  # Z 向工作空间上界 (None=不限制)
 
     # ==================== 夹爪/吸盘 [选填-仅 grasp.*] ====================
-    gripper_open_mm: float = 70.0       # [选填-仅 grasp.parallel] 打开宽度 (mm)
-    gripper_effort: int = 1000          # [选填-仅 grasp.parallel] 夹持力 (驱动单位)
+    gripper_open_mm: float = 70.0  # [选填-仅 grasp.parallel] 打开宽度 (mm)
+    gripper_effort: int = 1000  # [选填-仅 grasp.parallel] 夹持力 (驱动单位)
 
     # ==================== 相机 [选填-仅 vision.*] ====================
-    camera_serial: Optional[str] = None # [选填-仅 vision.camera] 相机序列号
+    camera_serial: str | None = None  # [选填-仅 vision.camera] 相机序列号
     camera_resolution: tuple[int, int] = (640, 480)  # [选填-仅 vision.camera]
-    camera_fps: int = 30                # [选填-仅 vision.camera]
+    camera_fps: int = 30  # [选填-仅 vision.camera]
 
     # ==================== 检测校正 [选填-仅 vision.detection] ====================
-    z_correction_mm: float = 0.0        # Z 方向常值校正 (添加到手眼反投影结果)
-    grasp_z_offset_mm: float = -25.0    # 抓取点相对于检测物体顶面的偏移 (负数=下方)
-    chip_thickness_mm: float = 75.0     # 堆叠放置偏移 (被放置物体的 tip→bottom 距离)
+    z_correction_mm: float = 0.0  # Z 方向常值校正 (添加到手眼反投影结果)
+    grasp_z_offset_mm: float = -25.0  # 抓取点相对于检测物体顶面的偏移 (负数=下方)
+    chip_thickness_mm: float = 75.0  # 堆叠放置偏移 (被放置物体的 tip→bottom 距离)
 
     # ==================== 检测服务 [选填-仅 vision.detection] ====================
-    detector_spawn: bool = True         # 是否自动启动检测子进程
+    detector_spawn: bool = True  # 是否自动启动检测子进程
     detector_url: str = "http://127.0.0.1:8114"
     detector_host: str = "127.0.0.1"
     detector_port: int = 8114
 
     # ==================== 标定 [选填-仅 vision.detection] ====================
-    calib_path: Optional[str] = None    # 手眼标定文件路径 (JSON)
+    calib_path: str | None = None  # 手眼标定文件路径 (JSON)
 
     # ==================== 任务 [选填] ====================
-    task_prompt: Optional[str] = None   # 自定义任务提示词
+    task_prompt: str | None = None  # 自定义任务提示词
 
     # ========================================================================
     #  Loaders — do NOT modify (framework contract)
     # ========================================================================
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "XxxConfig":
+    def from_dict(cls, data: dict[str, Any]) -> XxxConfig:
         """Construct config from a flat dictionary.
 
         Only keys matching dataclass field names are used; extra keys
@@ -97,7 +97,7 @@ class XxxConfig:
         return cls(**clean)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "XxxConfig":
+    def from_yaml(cls, path: str | Path) -> XxxConfig:
         """Load config from a YAML file."""
         path = Path(path).resolve()
         with path.open("r", encoding="utf-8") as f:

@@ -14,9 +14,9 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass, astuple
+from dataclasses import astuple, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -45,19 +45,17 @@ _GRIPPER_ENABLE = 0x01
 # =============================================================================
 _CMD_LOG_RUN_STAMP = time.strftime("%Y-%m-%d_%H-%M-%S")
 _CMD_LOG_ATTACHED = False
-_CMD_LOG_PATH: Optional[Path] = None
+_CMD_LOG_PATH: Path | None = None
 
 
-def _attach_cmd_log_handler() -> Optional[Path]:
+def _attach_cmd_log_handler() -> Path | None:
     global _CMD_LOG_ATTACHED, _CMD_LOG_PATH
     if _CMD_LOG_ATTACHED:
         return _CMD_LOG_PATH
     _CMD_LOG_ATTACHED = True
     if os.environ.get("JIUWEN_PIPER_CMD_LOG", "") == "0":
         return None
-    root = Path(
-        os.environ.get("JIUWEN_PIPER_CMD_LOG_DIR") or os.environ.get("JIUWEN_CMD_LOG_DIR", "./logs/motion")
-    )
+    root = Path(os.environ.get("JIUWEN_PIPER_CMD_LOG_DIR") or os.environ.get("JIUWEN_CMD_LOG_DIR", "./logs/motion"))
     try:
         log_dir = root / _CMD_LOG_RUN_STAMP
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -145,22 +143,22 @@ class PiperLowLevel:
         move_speed: int = 50,
         tool_offset_mm: float = 0.0,
         # Calibration (preferred): tf_flange_cam + intrinsics + object anchor.
-        calib_path: Optional[str] = None,
+        calib_path: str | None = None,
         home_lift_mm: float = 250.0,
         z_safe_margin_mm: float = -10.0,
         # Fallback when no calibration is provided.
-        home_pose_xyzrxryrz_mm_deg: Optional[list[float]] = None,
-        calib_object_xyzrxryrz_mm_deg: Optional[list[float]] = None,
-        z_min_safe_mm: Optional[float] = None,
+        home_pose_xyzrxryrz_mm_deg: list[float] | None = None,
+        calib_object_xyzrxryrz_mm_deg: list[float] | None = None,
+        z_min_safe_mm: float | None = None,
         home_use_init_pose: bool = False,
         # Cartesian workspace box (mm). None disables that bound.
-        x_min_mm: Optional[float] = None,
-        x_max_mm: Optional[float] = None,
-        y_min_mm: Optional[float] = None,
-        y_max_mm: Optional[float] = None,
-        z_max_mm: Optional[float] = None,
+        x_min_mm: float | None = None,
+        x_max_mm: float | None = None,
+        y_min_mm: float | None = None,
+        y_max_mm: float | None = None,
+        z_max_mm: float | None = None,
         # Camera (optional).
-        camera_serial: Optional[str] = None,
+        camera_serial: str | None = None,
         camera_resolution: tuple[int, int] = (640, 480),
         camera_fps: int = 30,
         # Gripper.
@@ -227,8 +225,8 @@ class PiperLowLevel:
         logger.info("[Piper] CAN %s connected + arm/gripper enabled.", can_port)
 
         # --- calibration / workspace anchor
-        self._calib: Optional[dict[str, Any]] = None
-        self._tf_flange_cam: Optional[np.ndarray] = None
+        self._calib: dict[str, Any] | None = None
+        self._tf_flange_cam: np.ndarray | None = None
         if calib_path is not None:
             self._calib = load_calibration(calib_path)
             self._tf_flange_cam = self._calib["T_flange_cam"]["matrix_4x4"]
@@ -327,7 +325,7 @@ class PiperLowLevel:
 
         # --- camera (optional)
         self._camera_serial = camera_serial
-        self._camera: Optional[RealSenseCamera] = None
+        self._camera: RealSenseCamera | None = None
         if camera_serial:
             self._camera = RealSenseCamera(
                 serial=camera_serial,
@@ -379,7 +377,7 @@ class PiperLowLevel:
         return self._bounds.tool_offset_mm
 
     @property
-    def tf_flange_cam(self) -> Optional[np.ndarray]:
+    def tf_flange_cam(self) -> np.ndarray | None:
         """4x4 calibration matrix: camera pose in flange frame, or None."""
         return self._tf_flange_cam
 
@@ -389,17 +387,17 @@ class PiperLowLevel:
         return self._calib is not None
 
     @property
-    def calibration(self) -> Optional[dict[str, Any]]:
+    def calibration(self) -> dict[str, Any] | None:
         """Raw calibration dict, or None."""
         return self._calib
 
     @property
-    def intrinsics(self) -> Optional[np.ndarray]:
+    def intrinsics(self) -> np.ndarray | None:
         """Camera intrinsics matrix (3x3) from live camera or None."""
         return self._camera.intrinsics if self._camera is not None else None
 
     @property
-    def camera_serial(self) -> Optional[str]:
+    def camera_serial(self) -> str | None:
         """Configured camera serial number, or None."""
         return self._camera_serial
 
@@ -423,7 +421,7 @@ class PiperLowLevel:
             raise RuntimeError("[Piper] failed to read joint angles")
         return a
 
-    def grab_frames(self) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab (rgb, depth_m) from the camera, or None if no camera."""
         return self._camera.grab_frames() if self._camera is not None else None
 
@@ -431,7 +429,7 @@ class PiperLowLevel:
     def move_to_pose_blocking(
         self,
         pose: FlangePose,
-        sync_timeout_s: Optional[float] = None,
+        sync_timeout_s: float | None = None,
         joint: bool = False,
     ) -> None:
         """Move to absolute pose in mm/deg (FLANGE) via EndPoseCtrl.
@@ -470,7 +468,7 @@ class PiperLowLevel:
     def move_joint_blocking(
         self,
         q: list[float],
-        sync_timeout_s: Optional[float] = None,
+        sync_timeout_s: float | None = None,
     ) -> None:
         """Move to joint configuration ``q`` (6 angles in deg) via MOVE J + JointCtrl."""
         if len(q) != 6:
@@ -499,7 +497,7 @@ class PiperLowLevel:
         self.set_gripper_width(0.0 if closed else self._gripper_open_mm)
         self._gripper_state = bool(closed)
 
-    def set_gripper_width(self, width_mm: float, effort: Optional[int] = None) -> None:
+    def set_gripper_width(self, width_mm: float, effort: int | None = None) -> None:
         """Command an explicit gripper width (mm) + force (0.001 N·m units)."""
         width_int = max(0, round(float(width_mm) * _FACTOR))
         eff = int(effort) if effort is not None else self._gripper_effort
@@ -531,7 +529,7 @@ class PiperLowLevel:
         logger.info("[Piper] Closed.")
 
     # ============================================================== private helpers
-    def _read_pose(self) -> Optional[PiperPose]:
+    def _read_pose(self) -> PiperPose | None:
         """Thread-safe read of the arm end-pose from CAN; returns None on failure."""
         try:
             with self._lock:
@@ -548,7 +546,7 @@ class PiperLowLevel:
             logger.warning("[Piper] GetArmEndPoseMsgs failed: %s", exc)
             return None
 
-    def _read_angles(self) -> Optional[PiperJointAngles]:
+    def _read_angles(self) -> PiperJointAngles | None:
         """Thread-safe read of joint angles from CAN; returns None on failure."""
         try:
             with self._lock:
@@ -629,7 +627,7 @@ class PiperLowLevel:
         # controller often keeps the prior REACH_TARGET_POS_SUCCESSFULLY flag —
         # so we key the fast-abort on "the pose never changed".
         start_far = (
-            sx is not None and math.sqrt((tx - sx) ** 2 + (ty - sy) ** 2 + (tz - sz) ** 2) > self._reach_tol_mm + 5.0
+            sx is not None and math.sqrt((tx - sx) ** 2 + (ty - sy) ** 2 + (tz - sz) ** 2) > self._reach_tol_mm + 5.0  # type: ignore[operator]  # sx/sy/sz guarded by `sx is not None` short-circuit (same-source tuple)
         )
         t0 = time.time()
         in_tol_count = 0
@@ -650,7 +648,7 @@ class PiperLowLevel:
                 else:
                     in_tol_count = 0
                 if not moved and sx is not None:
-                    if math.sqrt((p.x - sx) ** 2 + (p.y - sy) ** 2 + (p.z - sz) ** 2) > 3.0:
+                    if math.sqrt((p.x - sx) ** 2 + (p.y - sy) ** 2 + (p.z - sz) ** 2) > 3.0:  # type: ignore[operator]  # sx/sy/sz guarded above
                         moved = True
             elapsed = time.time() - t0
             # PRIMARY unreachable signal: the firmware sets Arm Status =
@@ -709,7 +707,7 @@ class PiperLowLevel:
         while True:
             a = self._read_angles()
             if a is not None:
-                err = max(abs(_ang_diff_deg(c, t)) for c, t in zip(a.as_tuple(), target_q))
+                err = max(abs(_ang_diff_deg(c, t)) for c, t in zip(a.as_tuple(), target_q, strict=True))
                 if err <= tol_deg:
                     in_tol_count += 1
                     if in_tol_count >= settle_polls:

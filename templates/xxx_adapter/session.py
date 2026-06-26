@@ -15,11 +15,11 @@ See docs/hardware-porting-guide.md Step 6 for wiring details.
 
 from __future__ import annotations
 
-from jiuwensymbiosis.adapters._common.builder import make_builder
+from jiuwensymbiosis.adapters.xxx.api import XxxApi
 from jiuwensymbiosis.adapters.xxx.config import XxxConfig
 from jiuwensymbiosis.adapters.xxx.env import XxxEnv
-from jiuwensymbiosis.adapters.xxx.api import XxxApi
 
+from jiuwensymbiosis.adapters._common.builder import make_builder
 
 # ============================================================================
 # Basic wiring — use this if your Api and Env don't need extra setup.

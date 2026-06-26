@@ -19,7 +19,7 @@ Notes:
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
@@ -35,8 +35,8 @@ class RecoveryRail(AgentRail):
         session: Any,
         *,
         also_release_grip: bool = True,
-        watch_tags: Optional[set[str]] = None,
-        trace_sink: Optional[TraceEventSink] = None,
+        watch_tags: set[str] | None = None,
+        trace_sink: TraceEventSink | None = None,
     ) -> None:
         """Initialize the recovery rail."""
         super().__init__()

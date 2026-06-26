@@ -149,14 +149,17 @@ def _normalize_prompt(text_prompt: str) -> str:
 
 def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.ndarray]:
     """Return (boxes_xyxy_pixels[N,4], scores[N]) for the caption ``text``."""
-    inputs = _GDINO_PROCESSOR(images=pil_image, text=text, return_tensors="pt").to(_DEVICE)
+    # _GDINO_PROCESSOR / _GDINO_MODEL are module-level import-guard objects
+    # (Any | None); this function runs only after server startup has loaded
+    # them, so they are non-None here.
+    inputs = _GDINO_PROCESSOR(images=pil_image, text=text, return_tensors="pt").to(_DEVICE)  # type: ignore[misc]
     with torch.no_grad():
-        outputs = _GDINO_MODEL(**inputs)
+        outputs = _GDINO_MODEL(**inputs)  # type: ignore[misc]
     target_sizes = [(pil_image.height, pil_image.width)]  # (h, w)
     # transformers renamed ``box_threshold`` -> ``threshold`` across versions;
     # try the modern kwarg first, fall back to the legacy one.
     try:
-        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(
+        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(  # type: ignore[union-attr]
             outputs,
             inputs["input_ids"],
             threshold=_BOX_THR,
@@ -164,7 +167,7 @@ def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.nda
             target_sizes=target_sizes,
         )[0]
     except TypeError:
-        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(
+        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(  # type: ignore[union-attr]
             outputs,
             inputs["input_ids"],
             box_threshold=_BOX_THR,
@@ -193,13 +196,17 @@ def _sam2_masks(pil_image: Image.Image, boxes: np.ndarray) -> list[np.ndarray]:
     ``boxes`` is (N, 4) xyxy in pixels. Returns N boolean HxW masks (original
     image size).
     """
+    # _SAM2_PROCESSOR / _SAM2_MODEL are module-level import-guard objects
+    # (Any | None); this function runs only after server startup has loaded
+    # them (and only when --no-sam2 is not set). Per-line type: ignore rather
+    # than assert — assert is reserved for tests (`python -O` strips it).
     input_boxes = [[[float(x) for x in b] for b in boxes]]  # (batch=1, N, 4)
-    inputs = _SAM2_PROCESSOR(images=pil_image, input_boxes=input_boxes, return_tensors="pt").to(_DEVICE)
+    inputs = _SAM2_PROCESSOR(images=pil_image, input_boxes=input_boxes, return_tensors="pt").to(_DEVICE)  # type: ignore[misc]
     ctx = torch.autocast(_DEVICE, dtype=torch.bfloat16) if "cuda" in _DEVICE else torch.autocast("cpu")
     with torch.inference_mode(), ctx:
-        outputs = _SAM2_MODEL(**inputs)
+        outputs = _SAM2_MODEL(**inputs)  # type: ignore[misc]
     # Upsample low-res logits back to the original image size.
-    masks = _SAM2_PROCESSOR.post_process_masks(outputs.pred_masks, inputs["original_sizes"])[0]
+    masks = _SAM2_PROCESSOR.post_process_masks(outputs.pred_masks, inputs["original_sizes"])[0]  # type: ignore[union-attr]
     masks = _to_numpy(masks)  # (N, M, H, W) — M masks per box
     iou = getattr(outputs, "iou_scores", None)
     iou = _to_numpy(iou) if iou is not None else None
@@ -240,7 +247,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> SegmentResponse:
     t_seg = time.perf_counter() - t1
 
     items: list[MaskData] = []
-    for b, s, m in zip(boxes, scores, masks):
+    for b, s, m in zip(boxes, scores, masks, strict=True):
         if not m.any():
             continue
         items.append(
@@ -341,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("SAM2 disabled (--no-sam2): box rectangle used as mask.")
 
     logger.info(
-        "GroundingDINO%s ready on %s; serving at http://%s:%d " "(box_thr=%.2f text_thr=%.2f)",
+        "GroundingDINO%s ready on %s; serving at http://%s:%d (box_thr=%.2f text_thr=%.2f)",
         "+SAM2" if _USE_SAM2 else "",
         _DEVICE,
         args.host,
