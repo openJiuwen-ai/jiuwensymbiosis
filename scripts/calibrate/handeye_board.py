@@ -101,6 +101,8 @@ def _chessboard_image(board: BoardSpec, *, dpi: int = 300, margin_px: int = 40) 
 def _imread_rgb(path) -> np.ndarray:
     cv2 = _require_cv2()
     bgr = cv2.imread(str(path))
+    if bgr is None:
+        raise FileNotFoundError(f"无法读取图像（文件不存在或格式不支持）：{path}")
     return bgr[:, :, ::-1].copy()
 
 
@@ -169,6 +171,10 @@ def _fill_pose(cv2, det: ViewDetection, intrinsics: np.ndarray, dist: Optional[n
     """对已检测到角点的 view，用 solvePnP 填 T_cam_target 与重投影误差。"""
     if dist is None:
         dist = np.zeros(5, dtype=np.float64)
+    if det.object_points is None or det.image_points is None:
+        det.ok = False
+        det.reason = "缺少角点（object_points / image_points 为空）"
+        return
     objp = det.object_points.astype(np.float64)
     imgp = det.image_points.astype(np.float64)
     try:
@@ -211,8 +217,12 @@ def calibrate_intrinsics_from_views(
     ]
     if len(objpoints) < 3:
         raise ValueError("内参标定需要 ≥3 个有效视图")
+    # 不带 CALIB_USE_INTRINSIC_GUESS 时 cameraMatrix/distCoeffs 会被忽略并从零重估，
+    # 传占位空矩阵等价于传 None（opencv 存根把这两个入参误标为必填非空）。
+    init_k = np.eye(3, dtype=np.float64)
+    init_d = np.zeros((5, 1), dtype=np.float64)
     rms, intrinsics, dist, _r, _t = cv2.calibrateCamera(
-        objpoints, imgpoints, image_size, None, None
+        objpoints, imgpoints, image_size, init_k, init_d
     )
     return (
         np.asarray(intrinsics, dtype=np.float64),

@@ -195,8 +195,8 @@ def _resolve_module(module_str: Optional[str], path_str: Optional[str]) -> str:
     return ""
 
 
-def _load_builder(module_str: str):
-    """import 适配器包并返回其 ``build_*_session`` 可调用对象。"""
+def _load_builder(module_str: str) -> Any:
+    """import 适配器包并返回其 ``build_*_session`` 可调用对象（带 from_yaml/from_dict）。"""
     import importlib
 
     module = importlib.import_module(module_str)
@@ -972,7 +972,10 @@ def do_selftest(args) -> int:
     # 离群检测：篡改一帧应被 outlier_mask 单独标出，且不误伤其余（中位偏差仍≈0，即非系统性）
     bad = list(stations)
     s0 = bad[0]
-    t_bad = s0.detection.tf_cam_target.copy()
+    tf0 = s0.detection.tf_cam_target
+    if tf0 is None:
+        raise AssertionError("selftest 失败: station 缺少 tf_cam_target")
+    t_bad = tf0.copy()
     t_bad[:3, 3] += np.array([50.0, 0.0, 0.0])
     bad[0] = Station(
         s0.tf_base_flange, ViewDetection(ok=True, tf_cam_target=t_bad, reproj_rms_px=0.0)
