@@ -86,9 +86,7 @@ model:
 # 这里默认整段注释掉；想记录执行轨迹时，取消注释相关行即可，CLI 参数仍可覆盖。
 agent:
   # log_level / log_dir: 由 build_robot_agent → configure_logging 统一接管。
-  # log_dir 默认 "./logs"，框架日志落 logs/jiuwensymbiosis.log；openjiuwen 自有日志后端
-  # 因实现原因落在 logs/logs/ 下，彼此独立、互不干扰。
-  # 设为 null（或省略）则仅控制台输出。--debug 时 log_level 被强制为 DEBUG。
+  # log_dir 默认 "./logs"，框架日志落 logs/jiuwensymbiosis.log；
   log_level: INFO
   log_dir: ./logs
   # enable_tracing: true        # 开启 TraceRail，记录每轮工具调用到 traces/{run_token}.json

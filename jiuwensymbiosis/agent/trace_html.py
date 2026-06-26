@@ -44,20 +44,51 @@ def _esc_str(value: Any) -> str:
     return html.escape(str(value))
 
 
+def _resolve_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> Optional[Path]:
+    """Resolve a stored ``frame_path`` to an existing file, or ``None``.
+
+    Frame paths land in the JSON in one of three forms depending on how the
+    recording run was configured:
+
+    * **absolute** — when ``trace_dir`` was absolute (the default
+      ``<workspace>/traces``); used as-is.
+    * **JSON-dir relative** (``frames/{token}/step.jpg``) — the portable form,
+      resolves against ``trace_dir`` (the directory the JSON lives in).
+    * **workspace/cwd relative** (``traces/frames/{token}/step.jpg``) — what a
+      relative ``trace_dir`` override (e.g. ``trace_dir: ./traces``) yields,
+      since the path then carries its own ``traces/`` segment. The JSON sits in
+      ``<base>/traces/`` so this resolves against ``trace_dir.parent`` (the
+      workspace root), and lastly against the current working directory.
+
+    Anchors are tried in that order; the first existing file wins. Returns
+    ``None`` when nothing resolves so the caller renders a placeholder.
+    """
+    if not frame_path:
+        return None
+    p = Path(frame_path)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    candidates: list[Path] = []
+    if trace_dir is not None:
+        candidates.append(trace_dir / p)         # JSON-dir relative (portable form)
+        candidates.append(trace_dir.parent / p)  # workspace relative (JSON in <ws>/traces)
+    candidates.append(p)                          # cwd relative (last resort)
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 def _inline_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> str:
     """Return a ``data:image/jpeg;base64,...`` URI for a saved frame, or ``""``.
 
-    ``frame_path`` may be absolute or relative; relative paths resolve against
-    ``trace_dir`` (the directory the trace JSON lives in). Any read/decode
-    failure → ``""`` so the caller renders a "frame missing" placeholder.
+    Resolves ``frame_path`` via :func:`_resolve_frame`. Any unresolved path or
+    read/decode failure → ``""`` so the caller renders a "frame missing"
+    placeholder.
     """
-    if not frame_path:
+    p = _resolve_frame(frame_path, trace_dir)
+    if p is None:
         return ""
-    p = Path(frame_path)
-    if not p.is_absolute():
-        if trace_dir is None:
-            return ""
-        p = trace_dir / p
     try:
         data = p.read_bytes()
     except (OSError, ValueError):

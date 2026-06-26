@@ -101,6 +101,23 @@ class TestRenderTraceHtml:
         expected = "data:image/jpeg;base64," + base64.b64encode(b"img-bytes").decode()
         assert expected in html
 
+    def test_workspace_relative_frame_resolves_against_trace_parent(self, tmp_path):
+        # Reproduces the `trace_dir: ./traces` case: frame_path carries its own
+        # `traces/` segment (workspace/cwd-relative), and the JSON lives in
+        # <base>/traces/. The frame must resolve against trace_dir.parent, not
+        # trace_dir (which would double the prefix → traces/traces/...).
+        traces_dir = tmp_path / "traces"
+        frame = traces_dir / "frames" / "run-1" / "step_001.jpg"
+        frame.parent.mkdir(parents=True)
+        frame.write_bytes(b"ws-rel-bytes")
+        t = _sample_trace()
+        t["entries"][0]["frame_path"] = "traces/frames/run-1/step_001.jpg"
+        trace_json = traces_dir / "trace.json"
+        html = render_trace_html(t, trace_path=trace_json)
+        expected = "data:image/jpeg;base64," + base64.b64encode(b"ws-rel-bytes").decode()
+        assert expected in html
+        assert "frame missing" not in html
+
     def test_relative_frame_without_trace_dir_no_crash(self):
         # Relative frame but no trace_path → can't resolve → placeholder, no raise.
         t = _sample_trace()
