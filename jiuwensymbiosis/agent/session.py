@@ -58,6 +58,9 @@ class RobotSession:
 
     _stack: Optional[ExitStack] = field(default=None, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
+    # Optional TraceRail (set by build_robot_agent when enable_tracing). Flushed
+    # on disconnect as a safety net in case after_invoke didn't fire.
+    _trace_rail: Any = field(default=None, init=False, repr=False)
 
     # ----------------------------------------------------------- context manager
     def __enter__(self) -> "RobotSession":
@@ -131,6 +134,16 @@ class RobotSession:
         """Disconnect the env and stop all sidecars. Idempotent."""
         if not self._connected:
             return
+        # Full trace teardown: flush any pending trace (safety net; the rail
+        # normally finalizes in its after_invoke hook) AND detach the log
+        # handler so it isn't left dangling on long-lived loggers. Uses close()
+        # rather than finalize() so the handler doesn't leak across builds.
+        if self._trace_rail is not None:
+            try:
+                self._trace_rail.close()
+            except (OSError, TypeError, ValueError, AttributeError) as exc:
+                logger.warning("RobotSession[%s] trace close failed: %s", self.name, exc)
+            self._trace_rail = None
         try:
             self.env.disconnect()
         except Exception as exc:  # noqa: BLE001
@@ -142,6 +155,15 @@ class RobotSession:
         logger.info("RobotSession[%s] disconnected", self.name)
 
     # ------------------------------------------------------------------- globals
+    def attach_trace_rail(self, trace_rail: Any) -> None:
+        """Bind a TraceRail so ``disconnect`` flushes + detaches it on teardown.
+
+        Set by ``build_robot_agent`` when tracing is enabled. Safe to overwrite
+        a prior rail (the old one is dropped — ``disconnect`` finalizes the
+        currently-attached one).
+        """
+        self._trace_rail = trace_rail
+
     def globals_provider(self) -> dict[str, Any]:
         """Return the dict that ``InProcessCodeTool`` injects on every run.
 

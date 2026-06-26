@@ -55,6 +55,7 @@ calib = [
 [project.scripts]
 piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"
 piper-watch-pick-place = "jiuwensymbiosis.cli:piper_watch_pick_place"
+jiuwensymbiosis-replay = "jiuwensymbiosis.cli:replay_main"
 
 [tool.setuptools.packages.find]
 include = ["jiuwensymbiosis*"]

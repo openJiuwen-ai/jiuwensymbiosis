@@ -66,3 +66,37 @@ class TestGrabFrameB64:
         rail = VisualFeedbackRail(mock_session)
         result = rail._grab_frame_b64()
         assert result is not None
+
+
+class TestVisualFeedbackTraceSink:
+    @pytest.mark.asyncio
+    async def test_inject_notifies_sink(self, mock_session):
+        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
+        from unittest.mock import MagicMock
+
+        class _Sink:
+            def __init__(self):
+                self.events = []
+
+            def record_rail_event(self, *, rail_name, kind, detail, success):
+                self.events.append((rail_name, kind, detail, success))
+
+        sink = _Sink()
+        rail = VisualFeedbackRail(mock_session, trace_sink=sink)
+        inputs = MagicMock()
+        inputs.tool_name = "goto_xyzr"
+        inputs.tool_args = {}
+        ctx = MagicMock()
+        ctx.inputs = inputs
+        ctx.extra = {}
+        ctx.context = None
+        await rail.after_tool_call(ctx)
+        assert sink.events
+        assert sink.events[0][0] == "VisualFeedback"
+
+    def test_grab_frame_b64_still_works(self, mock_session):
+        # regression: refactor kept the public helper
+        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
+
+        rail = VisualFeedbackRail(mock_session)
+        assert rail._grab_frame_b64() is not None

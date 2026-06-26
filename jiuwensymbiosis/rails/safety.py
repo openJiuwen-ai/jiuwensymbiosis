@@ -26,6 +26,7 @@ import logging
 from typing import Any, Optional
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+from jiuwensymbiosis.agent.trace import TraceEventSink
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,15 @@ class SafetyRail(AgentRail):
         xy_bounds_mm: Optional[tuple[float, float, float, float]] = None,  # (xmin, ymin, xmax, ymax)
         watch_tools: Optional[set[str]] = None,
         enforce_xy_from_env: bool = True,
+        trace_sink: Optional[TraceEventSink] = None,
     ) -> None:
         """Initialize the safety rail with optional bounds.
 
         When ``xy_bounds_mm`` is not given, XY bounds fall back to the env's
         ``workspace_bounds`` property unless ``enforce_xy_from_env`` is False.
+
+        ``trace_sink`` (optional) receives a structured event when this rail
+        rejects a call — injected by ``build_robot_agent`` when tracing is on.
         """
         super().__init__()
         self.session = session
@@ -54,6 +59,22 @@ class SafetyRail(AgentRail):
         self.enforce_xy_from_env = enforce_xy_from_env
         # Default: only intercept cartesian moves. ``home`` is always safe.
         self.watch_tools = set(watch_tools) if watch_tools else {"goto_xyzr", "goto_pose"}
+        self.trace_sink = trace_sink
+
+    def _notify_reject(self, tool_name: str, reason: str) -> None:
+        sink = self.trace_sink
+        if sink is None:
+            return
+        try:
+            sink.record_rail_event(
+                rail_name="SafetyRail",
+                kind="reject",
+                detail={"tool_name": tool_name, "reason": reason},
+                success=False,
+            )
+        except (AttributeError, TypeError, ValueError):
+            # tracing must never break safety enforcement
+            pass
 
     async def before_tool_call(self, ctx: Any) -> None:
         """Reject unsafe motion tool calls before execution.
@@ -83,8 +104,10 @@ class SafetyRail(AgentRail):
         z = args.get("z")
         z_floor = self._resolve_z_floor()
         if z is not None and z_floor is not None and float(z) < float(z_floor):
+            reason = f"z={z} below z_floor={z_floor}"
+            self._notify_reject(tool_name, reason)
             raise ValueError(
-                f"SafetyRail: refusing {tool_name}: z={z} below z_floor={z_floor}. "
+                f"SafetyRail: refusing {tool_name}: {reason}. "
                 "Either raise z, or call home() first."
             )
 
@@ -93,9 +116,13 @@ class SafetyRail(AgentRail):
             xmin, ymin, xmax, ymax = xy_bounds
             x, y = args.get("x"), args.get("y")
             if x is not None and not xmin <= float(x) <= xmax:
-                raise ValueError(f"SafetyRail: refusing {tool_name}: x={x} out of bounds [{xmin}, {xmax}].")
+                reason = f"x={x} out of bounds [{xmin}, {xmax}]"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
             if y is not None and not ymin <= float(y) <= ymax:
-                raise ValueError(f"SafetyRail: refusing {tool_name}: y={y} out of bounds [{ymin}, {ymax}].")
+                reason = f"y={y} out of bounds [{ymin}, {ymax}]"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
 
     def _resolve_z_floor(self) -> Optional[float]:
         """Z floor: explicit ``z_floor``, else the env's ``z_min_safe``, else None."""

@@ -35,6 +35,8 @@ from jiuwensymbiosis.agent.config import (
 
 from jiuwensymbiosis.skills import SKILLS_DIR
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.utils.logging import TraceLogHandler, configure_logging
+from jiuwensymbiosis.agent.trace import TraceRail, TraceEventSink
 
 _JIUWENSYMBIOSIS_SETTINGS = Path.home() / ".jiuwensymbiosis" / "settings.json"
 
@@ -169,6 +171,59 @@ class _RailRegistry:
         module_path, class_name = rail_class_path.rsplit(".", 1)
         module: ModuleType = importlib.import_module(module_path)
         return getattr(module, class_name)
+
+
+def _inject_trace_sinks(rails: List[Any], trace_rail: Optional[TraceRail]) -> None:
+    """Wire the TraceRail as a ``trace_sink`` on rails that accept one.
+
+    SafetyRail / RecoveryRail / VisualFeedbackRail each accept an optional
+    ``trace_sink`` constructor arg, but the registry builds them with just
+    ``session``. We set the attribute post-hoc when tracing is on. Missing the
+    attribute or a None TraceRail → no-op (fully backward compatible).
+
+    VisualFeedbackRail additionally takes a ``frame_sink`` so the JPEG it
+    injects into the agent context is *also* saved to the trace frames dir.
+    """
+    if trace_rail is None:
+        return
+    for rail in rails:
+        if rail is trace_rail:
+            continue
+        try:
+            if hasattr(rail, "trace_sink"):
+                rail.trace_sink = trace_rail
+            if hasattr(rail, "frame_sink"):
+                rail.frame_sink = _make_frame_sink(trace_rail)
+        except (AttributeError, TypeError) as exc:
+            logger.warning("Failed to inject trace_sink into %r: %s", rail, exc)
+
+
+def _make_frame_sink(trace_rail: TraceRail):
+    """Return a ``(rgb, tool_name) -> path`` callable that saves a trace frame."""
+
+    def _sink(rgb: Any, _tool_name: str):
+        return trace_rail.save_frame_for_sink(rgb)
+
+    return _sink
+
+
+def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: List[str], level: int) -> TraceLogHandler:
+    """Attach a TraceLogHandler to each named logger, bound to the TraceRail.
+
+    Removes any previously-attached ``TraceLogHandler`` instances first so
+    repeated ``build_robot_agent`` calls don't accumulate no-op handlers.
+    """
+    import logging as _logging
+
+    handler = TraceLogHandler(sink=trace_rail, level=level)
+    for name in loggers:
+        lg = _logging.getLogger(name)
+        # Purge any stale TraceLogHandler instances (from a prior build).
+        for h in list(lg.handlers):
+            if isinstance(h, TraceLogHandler):
+                lg.removeHandler(h)
+        lg.addHandler(handler)
+    return handler
 
 
 def _resolve_rails(
@@ -318,6 +373,9 @@ def build_robot_agent(
     # it (typical: ``agent = build_robot_agent(session); with session: ...``).
     # If the session is already connected this is a no-op for this connect cycle.
     session.strict_capabilities = config.strict_capabilities
+    # Centralised logging: one uniform format across all modules,
+    # optional file output. Idempotent.
+    configure_logging(level=config.log_level, log_dir=config.log_dir)
     model = config.model or build_model(config.model_spec)
     tools = _build_tools(session, config.mode, config.extra_tools, enable_skill=config.enable_skill)
     rails = _resolve_rails(
@@ -326,6 +384,31 @@ def build_robot_agent(
     rails = _maybe_append_skill_rail(rails, config.enable_skill)
     sys_prompt = _build_system_prompt(session, config.system_prompt, mode=config.mode)
     workspace = _resolve_workspace(session, config.workspace)
+
+    # Execution trace: prepend TraceRail so it observes every step.
+    trace_rail: Optional[TraceRail] = None
+    if config.enable_tracing:
+        import logging as _logging
+
+        trace_dir = config.trace_dir or str(Path(workspace) / "traces")
+        trace_rail = TraceRail(
+            session,
+            workspace=workspace,
+            max_entries=config.trace_max_entries,
+            max_frames=config.trace_max_frames,
+            save_frames=config.trace_save_frames,
+            console=config.trace_console,
+            capture_loggers=tuple(config.trace_capture_loggers),
+            capture_log_level=_logging.WARNING,
+            traces_dir=Path(trace_dir),
+        )
+        _inject_trace_sinks(rails, trace_rail)
+        log_handler = _attach_trace_log_handlers(
+            trace_rail, list(config.trace_capture_loggers), _logging.WARNING
+        )
+        trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
+        session.attach_trace_rail(trace_rail)
+        rails.insert(0, trace_rail)
 
     return create_deep_agent(
         model=model,

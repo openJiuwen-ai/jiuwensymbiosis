@@ -5,9 +5,18 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import runpy
+import sys
 from pathlib import Path
+from typing import Any, Optional
+
+try:
+    from PIL import Image as _PILImage
+except ImportError:
+    _PILImage = None
 
 logger = logging.getLogger(__name__)
 
@@ -28,3 +37,185 @@ def piper_pick_demo() -> None:
 
 def piper_watch_pick_place() -> None:
     _run_example("piper_watch_pick_place.py")
+
+
+# ---------------------------------------------------------------------------
+# Replay CLI — renders a recorded execution trace.
+# Usage: ``jiuwensymbiosis replay <trace.json>``
+#
+# By default a self-contained HTML page is written next to the trace JSON and
+# its path is printed — every step's frame is inlined as base64 so the image
+# and that step's params/error/rail events live in one card. 
+# ``--text`` falls back to the original plain-text timeline (frames shown as 
+# paths only, no popup).
+# ---------------------------------------------------------------------------
+def _fmt_params(params: Any) -> str:
+    try:
+        s = json.dumps(params, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = repr(params)
+    return s if len(s) <= 120 else s[:117] + "..."
+
+
+def _load_trace(trace_path: str) -> Optional[tuple[dict, Path]]:
+    """Load and validate a trace JSON. Returns ``(data, path)`` or None on error.
+
+    Shared by the text and HTML replay paths so both surface the same
+    "missing / invalid" diagnostics. Errors are logged via the module logger.
+    """
+    path = Path(trace_path)
+    if not path.is_file():
+        logger.error("trace not found: %s", path)
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("invalid trace JSON: %s", exc)
+        return None
+    return data, path
+
+
+def replay(trace_path: str, *, out=sys.stdout) -> int:
+    """Print a recorded execution trace as a text timeline.
+
+    Args:
+        trace_path: Path to a ``traces/*.json`` written by ``TraceRail``.
+        out: Output stream (defaults to stdout).
+
+    Returns:
+        Process exit code (0 on success, 1 if the file is missing/invalid).
+    """
+    loaded = _load_trace(trace_path)
+    if loaded is None:
+        return 1
+    data, path = loaded
+
+    cid = data.get("conversation_id", "?")
+    robot = data.get("robot_name", "?")
+    query = data.get("query")
+    entries = data.get("entries", [])
+    trace_log = data.get("trace_log", [])
+
+    print(f"=== Execution Trace: {path.name} ===", file=out)
+    print(f"robot={robot}  conversation={cid}", file=out)
+    if query:
+        print(f"query: {query}", file=out)
+    print("", file=out)
+
+    if not entries:
+        print("(no tool-call steps recorded)", file=out)
+    for e in entries:
+        step = e.get("step", "?")
+        name = e.get("tool_name", "?")
+        params = e.get("input_params", {})
+        success = e.get("success", True)
+        dur = e.get("duration_s", 0.0)
+        mark = "✅" if success else "❌"
+        print(f"[{step:>3}] {mark} {name}({_fmt_params(params)})", file=out)
+        print(f"       dur={dur:.2f}s", file=out)
+        if e.get("error"):
+            print(f"       error: {e['error']}", file=out)
+        obs = e.get("observation")
+        if obs and obs.get("pose"):
+            print(f"       pose: {obs['pose']}", file=out)
+        if e.get("frame_path"):
+            fp = e["frame_path"]
+            extra = ""
+            if _PILImage is not None:
+                try:
+                    with _PILImage.open(fp) as img:
+                        extra = f" ({img.size[0]}x{img.size[1]})"
+                except (OSError, ValueError):
+                    pass
+            print(f"       frame: {fp}{extra}", file=out)
+        for ev in e.get("rail_events", []) or []:
+            status = "ok" if ev.get("success") else "FAIL"
+            print(
+                f"       rail: [{status}] {ev.get('rail_name')}/{ev.get('kind')} "
+                f"{ev.get('detail', {})}",
+                file=out,
+            )
+        for ev in e.get("log_events", []) or []:
+            print(
+                f"       log:  [{ev.get('level')}] {ev.get('logger')}: {ev.get('msg')}",
+                file=out,
+            )
+
+    if trace_log:
+        print("\n--- trace-level logs ---", file=out)
+        for ev in trace_log:
+            print(
+                f"  [{ev.get('level')}] {ev.get('logger')}: {ev.get('msg')}",
+                file=out,
+            )
+    print(f"\n{len(entries)} step(s) recorded.", file=out)
+    return 0
+
+
+def replay_html(trace_path: str, *, out=sys.stdout) -> int:
+    """Render a trace as a self-contained HTML page and print its path.
+
+    The HTML is written next to the trace JSON as ``{json_stem}.html`` with
+    every step's frame inlined as base64 — so the page is portable and shows
+    each frame beside its params/error/rail events. If the trace directory
+    isn't writable, the file falls back to the system temp directory.
+
+    Args:
+        trace_path: Path to a ``traces/*.json`` written by ``TraceRail``.
+        out: Output stream for the "wrote …" status line.
+
+    Returns:
+        Process exit code (0 on success, 1 if the trace is missing/invalid).
+    """
+    loaded = _load_trace(trace_path)
+    if loaded is None:
+        return 1
+    data, path = loaded
+
+    from jiuwensymbiosis.agent.trace_html import render_trace_html
+
+    html_str = render_trace_html(data, trace_path=path)
+    out_path = path.with_suffix(".html")
+    try:
+        out_path.write_text(html_str, encoding="utf-8")
+    except OSError:
+        import tempfile
+
+        out_path = Path(tempfile.gettempdir()) / out_path.name
+        try:
+            out_path.write_text(html_str, encoding="utf-8")
+        except OSError as exc:
+            logger.error("could not write HTML: %s", exc)
+            return 1
+
+    print(f"wrote {out_path}", file=out)
+    print(
+        "(open the path above in your browser; "
+        "in VSCode it's clickable and opens in the built-in webview)",
+        file=out,
+    )
+    return 0
+
+
+def replay_main() -> int:
+    """Console-script entry: ``jiuwensymbiosis replay <trace_path>``.
+
+    Returns a process exit code (0 success, 1 missing/invalid trace) rather
+    than raising ``SystemExit`` — the auto-generated console-script wrapper
+    is the main process entry and owns ``sys.exit(replay_main())``. Any
+    function reachable from library/imports must not trigger process exit.
+    """
+    parser = argparse.ArgumentParser(
+        prog="jiuwensymbiosis-replay",
+        description="Replay a recorded jiuwensymbiosis execution trace.",
+    )
+    parser.add_argument("trace_path", help="Path to a traces/*.json file")
+    parser.add_argument(
+        "--text",
+        action="store_true",
+        help="Print a text timeline instead of generating HTML.",
+    )
+    args = parser.parse_args()
+    if args.text:
+        return replay(args.trace_path)
+    return replay_html(args.trace_path)

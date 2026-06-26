@@ -45,7 +45,7 @@ class _TraceSinkLike(Protocol):
     def record_log_event(
         self,
         *,
-        logger: str,
+        logger_name: str,
         level: str,
         msg: str,
         ts: float,
@@ -98,7 +98,7 @@ class TraceLogHandler(logging.Handler):
         try:
             msg = record.getMessage()
             sink.record_log_event(
-                logger=record.name,
+                logger_name=record.name,
                 level=record.levelname,
                 msg=msg,
                 ts=record.created,

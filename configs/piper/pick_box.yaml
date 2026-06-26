@@ -81,3 +81,19 @@ model:
   model_name: "deepseek-ai/DeepSeek-V3.2"
   temperature: 0.3
   max_tokens: 2048
+
+# agent（可选）：agent 行为开关，全部缺省即维持现状（trace/日志默认关闭）。
+# 这里默认整段注释掉；想记录执行轨迹时，取消注释相关行即可，CLI 参数仍可覆盖。
+agent:
+  # log_level / log_dir: 由 build_robot_agent → configure_logging 统一接管。
+  # log_dir 默认 "./logs"，框架日志落 logs/jiuwensymbiosis.log；
+  log_level: INFO
+  log_dir: ./logs
+  # enable_tracing: true        # 开启 TraceRail，记录每轮工具调用到 traces/{run_token}.json
+  # trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/step_NNN.jpg
+  # trace_console: true         # 运行时实时打印逐轮缩略图到 stderr
+  # trace_max_entries: 200      # 最多记录步数（超出丢最旧）
+  # trace_max_frames: 50        # 每次 invoke 最多保存帧数
+  # # trace_dir: ./traces       # 覆盖 trace 目录（默认 <workspace>/traces）
+  # # trace_capture_loggers: ["jiuwensymbiosis"]  # TraceLogHandler 捕获哪些 logger 的 WARNING+
+

@@ -193,10 +193,6 @@ def main() -> int:
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
     cfg_path = Path(args.config).resolve()
     raw = _load_yaml(cfg_path)
@@ -220,17 +216,28 @@ def main() -> int:
     logger.info("")
 
     with session:
-        agent = build_robot_agent(
-            session,
-            config=RobotAgentConfig(
-                mode=args.mode,
-                model_spec=spec,
-                enable_visual_feedback=not args.no_visual_feedback,
-                enable_skill=not args.no_skill,
-                max_iterations=args.max_iter,
-                workspace=args.workspace,
-            ),
-        )
+        # YAML ``agent:`` block is the declarative base (trace/logging/mode
+        # knobs live there); CLI flags override on top. ``model_spec`` is owned
+        # by the ``model:`` block (via ``_build_model_spec``) and assigned here.
+        agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))
+        agent_cfg.model_spec = spec
+        # --mock: drive the agent with an offline model so the YAML placeholder
+        # api_key/api_base are never validated against a real client (mirrors
+        # MockArmEnv for the LLM side). build_robot_agent then short-circuits
+        # on config.model and skips build_model entirely.
+        if args.mock:
+            from jiuwensymbiosis.agent.mock_model import build_mock_model
+
+            agent_cfg.model = build_mock_model()
+        agent_cfg.mode = args.mode
+        agent_cfg.enable_visual_feedback = not args.no_visual_feedback
+        agent_cfg.enable_skill = not args.no_skill
+        agent_cfg.max_iterations = args.max_iter
+        if args.debug:
+            agent_cfg.log_level = "DEBUG"
+        if args.workspace:
+            agent_cfg.workspace = args.workspace
+        agent = build_robot_agent(session, config=agent_cfg)
         conv_id = f"piper-demo-{uuid.uuid4().hex[:8]}"
         result = asyncio.run(agent.invoke({"query": query, "conversation_id": conv_id}))
 

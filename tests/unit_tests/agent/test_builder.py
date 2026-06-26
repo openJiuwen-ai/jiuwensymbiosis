@@ -126,3 +126,68 @@ class TestRailRegistry:
         flags = {"enable_recovery": True, "enable_safety": True}
         caps = {"grasp.parallel"}
         assert _RailRegistry._should_enable(flags, caps, cfg) is True
+
+
+class TestTracingBuild:
+    """build_robot_agent wiring of TraceRail + sinks."""
+
+    def _build(self, mock_session, **cfg_kwargs):
+        from jiuwensymbiosis.agent.builder import _resolve_rails
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        cfg = RobotAgentConfig(enable_tracing=True, **cfg_kwargs)
+        rails = _resolve_rails(
+            mock_session, cfg.enable_visual_feedback, cfg.enable_safety,
+            cfg.enable_recovery, cfg.extra_rails,
+        )
+        # replicate builder sink injection when tracing is on
+        from jiuwensymbiosis.agent.trace import TraceRail
+
+        trace_rail = TraceRail(mock_session, workspace="/tmp/trace_test")
+        from jiuwensymbiosis.agent.builder import _inject_trace_sinks
+
+        _inject_trace_sinks(rails, trace_rail)
+        return trace_rail, rails
+
+    def test_trace_rail_prepended_when_enabled(self, mock_session, tmp_path):
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.trace import TraceRail
+
+        cfg = RobotAgentConfig(enable_tracing=True, workspace=str(tmp_path))
+        agent = build_robot_agent(mock_session, cfg)
+        # The agent's rails include a TraceRail; inspect via the session ref.
+        assert isinstance(mock_session._trace_rail, TraceRail)
+        mock_session.disconnect()
+
+    def test_no_trace_rail_when_disabled(self, mock_session, tmp_path):
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.agent.builder import build_robot_agent
+
+        cfg = RobotAgentConfig(enable_tracing=False, workspace=str(tmp_path))
+        build_robot_agent(mock_session, cfg)
+        assert mock_session._trace_rail is None
+
+    def test_safety_rail_gets_trace_sink(self, mock_session):
+        from jiuwensymbiosis.rails.safety import SafetyRail
+
+        trace_rail, rails = self._build(mock_session, enable_safety=True)
+        safety = next(r for r in rails if isinstance(r, SafetyRail))
+        assert safety.trace_sink is trace_rail
+
+    def test_recovery_rail_gets_trace_sink(self, mock_session):
+        from jiuwensymbiosis.rails.recovery import RecoveryRail
+
+        trace_rail, rails = self._build(mock_session, enable_recovery=True)
+        recovery = next(r for r in rails if isinstance(r, RecoveryRail))
+        assert recovery.trace_sink is trace_rail
+
+    def test_visual_feedback_rail_gets_frame_sink(self, mock_session):
+        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
+
+        # mock env has vision.camera → visual feedback enabled
+        trace_rail, rails = self._build(mock_session, enable_visual_feedback=True)
+        vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
+        assert vf.trace_sink is trace_rail
+        assert vf.frame_sink is not None
+
