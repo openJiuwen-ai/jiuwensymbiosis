@@ -1,6 +1,7 @@
 **__pycache__**
+**_cache**
 *.pyc
 *.egg-info/
 logs/
-AGENTS.md
 *.local.yaml
+.codegraph
