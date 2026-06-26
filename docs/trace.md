@@ -33,7 +33,7 @@
 agent:
   enable_tracing: true        # 总开关（默认 False）
   trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/
-  trace_console: true         # 运行时实时打印逐轮缩略图到 stderr
+  trace_console: true         # 运行时实时打印逐轮缩略图到 stdout
   trace_max_entries: 200      # 最多记录步数（超出丢最旧）
   trace_max_frames: 50        # 每次 invoke 最多保存帧数
   # log_level: INFO           # 日志级别（见 logging.md）
@@ -130,7 +130,7 @@ query: pick the red box
 | `trace_max_entries` | `200` | 最多记录步数（超则丢最旧） |
 | `trace_max_frames` | `50` | 每次 invoke 最多保存帧数 |
 | `trace_save_frames` | `False` | 是否保存 JPEG 帧到 `frames/{run_token}/` |
-| `trace_console` | `False` | 是否打印逐轮 dashboard 到 stderr |
+| `trace_console` | `False` | 是否打印逐轮 dashboard 到 stdout |
 | `trace_dir` | `None` | 覆盖 trace 目录（默认 `<workspace>/traces`） |
 | `trace_capture_loggers` | `["jiuwensymbiosis"]` | `TraceLogHandler` 挂哪些 logger 前缀 |
 | `log_level` | `"INFO"` | 日志级别（见 [logging.md](logging.md)） |

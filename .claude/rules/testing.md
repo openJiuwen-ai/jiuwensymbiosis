@@ -75,7 +75,7 @@ async def test_tool_emits_for_capability():
 
 ## Running Tests
 
-- Run all unit tests: `pytest -m unit`
+- Run all unit tests: `pytest tests/unit_tests/`
 - Run a single file: `pytest tests/unit_tests/tools/test_build_robot_tools.py`
 - Filter by name: `pytest -k "test_capabilities"`
 - Run the full suite (incl. integration, usually skipped): `pytest`
