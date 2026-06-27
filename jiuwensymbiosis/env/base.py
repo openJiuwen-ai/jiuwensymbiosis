@@ -60,8 +60,8 @@ class RobotObservation:
 
     Attributes:
         pose: Cartesian pose dict, schema is robot-specific but conventional
-            keys are {"x","y","z","r"} for SCARA and {"x","y","z","qx","qy",
-            "qz","qw"} for 6-DOF.
+            keys are {"x","y","z","r"} for SCARA and {"x","y","z","rx","ry",
+            "rz"} (Euler, deg) for 6-DOF.
         joints: Joint angles in rad or deg (per-robot convention).
         rgb: HxWx3 uint8 image, base-of-robot camera or wrist camera.
         depth: HxW float32 depth in meters, aligned to ``rgb`` if both present.

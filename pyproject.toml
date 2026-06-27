@@ -44,7 +44,7 @@ full = [
 ]
 piper = ["piper_sdk>=0.6.1"]
 calib = [
-    # 手眼标定脚本 scripts/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
+    # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。
     # ChArUco 自 OpenCV 4.7/4.8 起在 cv2.aruco 主模块（无需 opencv-contrib）；棋盘格任意 4.x 可用。
     "opencv-python>=4.8",
