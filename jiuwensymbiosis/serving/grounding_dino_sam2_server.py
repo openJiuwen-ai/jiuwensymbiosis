@@ -102,9 +102,11 @@ def _to_numpy(tensor: Any) -> np.ndarray:
         t = tensor.detach().cpu()
         if t.dtype == torch.bfloat16:
             t = t.float()
-        return t.numpy()
+        # torch stubs return Any; ndarray at runtime
+        return t.numpy()  # type: ignore[no-any-return]
     if hasattr(tensor, "numpy"):
-        return tensor.numpy()
+        # tensor is Any (duck-typed); numpy() returns ndarray
+        return tensor.numpy()  # type: ignore[no-any-return]
     return np.asarray(tensor)
 
 
@@ -201,12 +203,18 @@ def _sam2_masks(pil_image: Image.Image, boxes: np.ndarray) -> list[np.ndarray]:
     # them (and only when --no-sam2 is not set). Per-line type: ignore rather
     # than assert — assert is reserved for tests (`python -O` strips it).
     input_boxes = [[[float(x) for x in b] for b in boxes]]  # (batch=1, N, 4)
-    inputs = _SAM2_PROCESSOR(images=pil_image, input_boxes=input_boxes, return_tensors="pt").to(_DEVICE)  # type: ignore[misc]
+    inputs = _SAM2_PROCESSOR(
+        images=pil_image,
+        input_boxes=input_boxes,
+        return_tensors="pt",  # type: ignore[misc]
+    ).to(_DEVICE)
     ctx = torch.autocast(_DEVICE, dtype=torch.bfloat16) if "cuda" in _DEVICE else torch.autocast("cpu")
     with torch.inference_mode(), ctx:
         outputs = _SAM2_MODEL(**inputs)  # type: ignore[misc]
     # Upsample low-res logits back to the original image size.
-    masks = _SAM2_PROCESSOR.post_process_masks(outputs.pred_masks, inputs["original_sizes"])[0]  # type: ignore[union-attr]
+    masks = _SAM2_PROCESSOR.post_process_masks(  # type: ignore[union-attr]
+        outputs.pred_masks, inputs["original_sizes"]
+    )[0]
     masks = _to_numpy(masks)  # (N, M, H, W) — M masks per box
     iou = getattr(outputs, "iou_scores", None)
     iou = _to_numpy(iou) if iou is not None else None
@@ -342,7 +350,8 @@ def main(argv: list[str] | None = None) -> int:
     if _USE_SAM2:
         logger.info("Loading SAM2: %s", args.sam2_model_id)
         _SAM2_PROCESSOR = Sam2Processor.from_pretrained(args.sam2_model_id)
-        _SAM2_MODEL = Sam2Model.from_pretrained(args.sam2_model_id).to(_DEVICE)
+        # transformers stub mis-infers the str arg as PreTrainedModel
+        _SAM2_MODEL = Sam2Model.from_pretrained(args.sam2_model_id).to(_DEVICE)  # type: ignore[arg-type]
         _SAM2_MODEL.eval()
     else:
         logger.info("SAM2 disabled (--no-sam2): box rectangle used as mask.")

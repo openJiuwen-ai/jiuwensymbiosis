@@ -55,7 +55,8 @@ def _post_with_retries(
         try:
             resp = requests.post(url, json=payload, timeout=timeout_s)
             resp.raise_for_status()
-            return resp.json()
+            data: dict = resp.json()
+            return data
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < max_attempts:

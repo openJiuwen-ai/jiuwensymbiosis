@@ -68,7 +68,7 @@ def load_calibration(
       env_var: Environment variable whose presence (truthy value) opts the
         user into loading legacy files with degraded-accuracy geometry.
     """
-    payload = json.loads(Path(path).read_text())
+    payload: dict[str, Any] = json.loads(Path(path).read_text())
     version = int(payload.get("schema_version", 1))
     allow_legacy = os.environ.get(env_var, "") not in ("", "0", "false", "False")
     has_new = frame_field in payload

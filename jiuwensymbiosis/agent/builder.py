@@ -52,7 +52,8 @@ def _read_settings_workspace() -> str | None:
     try:
         if _JIUWENSYMBIOSIS_SETTINGS.exists():
             data = json.loads(_JIUWENSYMBIOSIS_SETTINGS.read_text(encoding="utf-8"))
-            return data.get("workspace")
+            # json.loads returns Any; value is str|None at runtime
+            return data.get("workspace")  # type: ignore[no-any-return]
     except (json.JSONDecodeError, OSError):
         pass
     return None

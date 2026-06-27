@@ -626,8 +626,15 @@ class PiperLowLevel:
         # / out of envelope). motion_status is NOT a reliable signal here — the
         # controller often keeps the prior REACH_TARGET_POS_SUCCESSFULLY flag —
         # so we key the fast-abort on "the pose never changed".
+        # sx/sy/sz come from one tuple; the `sx is not None` short-circuit
+        # guards them, but mypy can't track same-source narrowing, so the
+        # operator error below is suppressed.
         start_far = (
-            sx is not None and math.sqrt((tx - sx) ** 2 + (ty - sy) ** 2 + (tz - sz) ** 2) > self._reach_tol_mm + 5.0  # type: ignore[operator]  # sx/sy/sz guarded by `sx is not None` short-circuit (same-source tuple)
+            sx is not None
+            and math.sqrt(
+                (tx - sx) ** 2 + (ty - sy) ** 2 + (tz - sz) ** 2  # type: ignore[operator]
+            )
+            > self._reach_tol_mm + 5.0
         )
         t0 = time.time()
         in_tol_count = 0
@@ -648,7 +655,9 @@ class PiperLowLevel:
                 else:
                     in_tol_count = 0
                 if not moved and sx is not None:
-                    if math.sqrt((p.x - sx) ** 2 + (p.y - sy) ** 2 + (p.z - sz) ** 2) > 3.0:  # type: ignore[operator]  # sx/sy/sz guarded above
+                    # sx/sy/sz guarded by the `sx is not None` check above
+                    # (same-source tuple); mypy can't track it — see line ~630.
+                    if math.sqrt((p.x - sx) ** 2 + (p.y - sy) ** 2 + (p.z - sz) ** 2) > 3.0:  # type: ignore[operator]
                         moved = True
             elapsed = time.time() - t0
             # PRIMARY unreachable signal: the firmware sets Arm Status =

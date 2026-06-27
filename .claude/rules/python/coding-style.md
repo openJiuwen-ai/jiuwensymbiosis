@@ -72,5 +72,17 @@ subclassed with additional fields. See `skills/python-patterns`.
   In rail / motion code, catch `ValueError` for safety rejections so the LLM
   can self-correct; re-raise everything else.
 - **`print()` in library code** — use `get_logger(name)`.
+- **`# type: ignore`** — discouraged; last resort, not a quick mute
+  (`pyproject.toml` sets `warn_unused_ignores = true`). First fix at the
+  source: narrow with `isinstance()` / `typing.cast()`, or refactor (e.g.
+  `tuple(gen)` → `x, y, z, r = gen; return (x, y, z, r)`). Do **not** use
+  `assert` to narrow in library code — tests only (`python -O` strips it).
+  If unavoidable, use a scoped form with the error code **and** a reason
+  comment, keep the line ≤120 cols (move the reason above / wrap the
+  expression if needed), and never use a bare `# type: ignore`.
+- **`# noqa`** — same discipline as `# type: ignore`: discouraged, last
+  resort. First fix the lint issue. If justified, use the scoped form with
+  the rule code **and** a reason — `# noqa: C408  # ...` — never a bare
+  `# noqa` (hides unrelated violations). Keep ≤120 cols.
 
 See `skills/python-patterns` for correct patterns and detailed examples.

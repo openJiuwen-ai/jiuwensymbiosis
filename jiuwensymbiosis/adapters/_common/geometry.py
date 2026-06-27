@@ -33,8 +33,10 @@ def apply_transform(transform: np.ndarray, p: np.ndarray) -> np.ndarray:
     """Apply a 4x4 SE(3) transform to a (3,) point or (N,3) array of points."""
     p = np.asarray(p)
     if p.ndim == 1:
-        return transform[:3, :3] @ p + transform[:3, 3]
-    return p @ transform[:3, :3].T + transform[:3, 3]
+        result: np.ndarray = transform[:3, :3] @ p + transform[:3, 3]
+        return result
+    result = p @ transform[:3, :3].T + transform[:3, 3]
+    return result
 
 
 def invert_transform(transform: np.ndarray) -> np.ndarray:

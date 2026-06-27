@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 from jiuwensymbiosis.agent.session import RobotSession
 
@@ -36,7 +36,7 @@ SessionDecorator = Callable[[RobotSession, Any], None]
 #   "cfg_field"          → pass cfg.cfg_field as api kwarg of the same name
 #   "cfg_field:api_kwarg" → pass cfg.cfg_field as api kwarg "api_kwarg"
 # A plain callable is also accepted (backward compat).
-ApiKwargsSpec = Union[Callable[[Any], dict], list[str]]
+ApiKwargsSpec = Callable[[Any], dict] | list[str]
 
 
 def _resolve_api_kwargs(spec: ApiKwargsSpec | None, cfg: Any) -> dict:
@@ -85,17 +85,17 @@ def make_detector_sidecar(cfg_attr: str = "detector"):
             return None
         from jiuwensymbiosis.adapters._common.detector_sidecar import detector_subprocess
 
-        kwargs = dict(
-            host=det.host,
-            port=det.port,
-            device=det.device,
-            startup_timeout_s=det.startup_timeout_s,
-            gdino_model_id=det.gdino_model_id,
-            sam2_model_id=det.sam2_model_id,
-            box_threshold=det.box_threshold,
-            text_threshold=det.text_threshold,
-            use_sam2=det.use_sam2,
-        )
+        kwargs = {
+            "host": det.host,
+            "port": det.port,
+            "device": det.device,
+            "startup_timeout_s": det.startup_timeout_s,
+            "gdino_model_id": det.gdino_model_id,
+            "sam2_model_id": det.sam2_model_id,
+            "box_threshold": det.box_threshold,
+            "text_threshold": det.text_threshold,
+            "use_sam2": det.use_sam2,
+        }
         return lambda: detector_subprocess(**kwargs)
 
     return _build
@@ -149,7 +149,8 @@ def make_builder(
                 if callable(cm_or_lambda):
                     sidecar_starters.append(cm_or_lambda)
                 else:
-                    sidecar_starters.append(lambda cm=cm_or_lambda: cm)
+                    # bridge cm→zero-arg factory; list typed list[Callable[[],Any]]
+                    sidecar_starters.append(lambda cm=cm_or_lambda: cm)  # type: ignore[misc]
 
         session = RobotSession(
             env=env,
@@ -167,12 +168,15 @@ def make_builder(
 
     def from_yaml(path: str | Path) -> RobotSession:
         """Build a session from a YAML config file at ``path``."""
-        return _session_from_cfg(cfg_cls.from_yaml(path))
+        # cfg_cls is a config dataclass w/ from_yaml classmethod (factory contract)
+        return _session_from_cfg(cfg_cls.from_yaml(path))  # type: ignore[attr-defined]
 
     def from_dict(data: dict[str, Any]) -> RobotSession:
         """Build a session from an in-memory config ``dict``."""
-        return _session_from_cfg(cfg_cls.from_dict(data))
+        # cfg_cls is a config dataclass w/ from_dict classmethod (factory contract)
+        return _session_from_cfg(cfg_cls.from_dict(data))  # type: ignore[attr-defined]
 
-    build.from_yaml = from_yaml
-    build.from_dict = from_dict
+    # function-attribute attachment pattern; mypy can't model fn.__dict__
+    build.from_yaml = from_yaml  # type: ignore[attr-defined]
+    build.from_dict = from_dict  # type: ignore[attr-defined]
     return build

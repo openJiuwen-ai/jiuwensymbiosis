@@ -119,11 +119,13 @@ class GripperStrategy:
     # ----------------------------------------------------------------- grasp
     def grasp(self) -> dict:
         """Acquire the object by closing the parallel gripper."""
-        return self._api.close_gripper()
+        # _api Any (duck-typed); close_gripper returns dict
+        return self._api.close_gripper()  # type: ignore[no-any-return]
 
     def release(self) -> dict:
         """Release the object by opening the parallel gripper."""
-        return self._api.open_gripper()
+        # _api Any (duck-typed); open_gripper returns dict
+        return self._api.open_gripper()  # type: ignore[no-any-return]
 
     def z_min_safe(self) -> float | None:
         """Lowest safe TIP-frame z advertised by the body, or None."""

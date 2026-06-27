@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import MISSING, dataclass, fields
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 from jiuwensymbiosis.agent import Tool, ToolCard, ToolOutput
 from jiuwensymbiosis.tools.slot_pick.detect import (
@@ -411,6 +411,8 @@ def _do_slot_detection(
     Returns ``{ok: True, slot_detection, slot_xyz, slot_refine, refined_detection}``
     on success, or a stop-dict on failure."""
     slot_observe = state.slot_observe
+    if slot_observe is None:
+        raise RuntimeError("slot_observe pose must be set before _do_slot_observe")
     state.stage_setter(f"cycle_{state.idx}_slot_observe")
     strategy.goto_transit(slot_observe.x, slot_observe.y, slot_observe.z, slot_observe.r)
     state.stage_setter(f"cycle_{state.idx}_detect_slot")
@@ -466,6 +468,8 @@ def _do_chip_detection(
     Returns ``{ok: True, chip_detection, chip_xyz, approach}``
     on success, or a stop-dict on failure."""
     chip_observe = state.chip_observe
+    if chip_observe is None:
+        raise RuntimeError("chip_observe pose must be set before _do_chip_observe")
     pick_r = state.pick_r
     state.stage_setter(f"cycle_{state.idx}_chip_observe")
     strategy.goto_transit(chip_observe.x, chip_observe.y, chip_observe.z, chip_observe.r)
@@ -511,13 +515,17 @@ def _do_pick(
 ) -> dict[str, Any] | None:
     """Open gripper, approach, descend, grasp, lift.
     Returns None on success, or a stop-dict on failure."""
+    slot_detection = state.slot_detection
+    chip_detection = state.chip_detection
+    if slot_detection is None or chip_detection is None:
+        raise RuntimeError("slot/chip detection must be set before _do_pick")
     return _execute_grasp_sequence(
         strategy,
         config,
         approach,
         stage_prefix=f"cycle_{state.idx}",
-        slot_detection=state.slot_detection,
-        chip_detection=state.chip_detection,
+        slot_detection=slot_detection,
+        chip_detection=chip_detection,
         extra_stop_kwargs={"cycles_done": len(state.cycles), "cycles": state.cycles},
     )
 
@@ -577,9 +585,9 @@ def run_slot_pick(
             chip_xyz = r["chip_xyz"]
             approach = r["approach"]
 
-            r = _do_pick(strategy, config, approach, state)
-            if r is not None:
-                return r
+            pick_result = _do_pick(strategy, config, approach, state)
+            if pick_result is not None:
+                return pick_result
 
             stage = f"cycle_{cycle_idx}_place"
             placed = _place_held_object(
@@ -713,7 +721,7 @@ def geometric_completion_judge(api: Any, config: SlotPickConfig) -> bool:
     """
     obj = _detect_object(api, config.chip_object_name)
     target = _detect_object(api, config.slot_object_name)
-    return _watch_decision(obj, target, config.place_done_radius_mm)[1] == "already_done"
+    return bool(_watch_decision(obj, target, config.place_done_radius_mm)[1] == "already_done")
 
 
 def run_watch_pick_place(
@@ -778,6 +786,7 @@ def run_watch_pick_place(
                 action, payload = _watch_decision(obj, target, config.place_done_radius_mm)
             result: dict[str, Any] | None = None
             if action == "act":
+                payload = cast("tuple[tuple[float, float, float], tuple[float, float, float]]", payload)
                 (ox, oy, oz), (tx, ty, tz) = payload
                 pick_r = home_r + config.chip_pick_r_offset_deg
                 place_r = pick_r + config.place_r_delta_deg

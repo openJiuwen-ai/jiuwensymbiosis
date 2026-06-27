@@ -29,7 +29,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Protocol, Union
+from typing import Protocol
 
 DEFAULT_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -38,7 +38,7 @@ _LOG_FILE_NAME = "jiuwensymbiosis.log"
 # own handlers on a repeat call and avoid stacking them.
 _OWNED_TAG = "_jiuwensymbiosis_owned"
 
-LevelLike = Union[int, str]
+LevelLike = int | str
 
 
 class _TraceSinkLike(Protocol):
@@ -50,7 +50,9 @@ class _TraceSinkLike(Protocol):
         msg: str,
         ts: float,
         step: int | None = ...,
-    ) -> None: ...
+    ) -> None:
+        """Forward one log record (WARNING+ by default) into the active execution trace."""
+        ...
 
 
 def _to_level(level: LevelLike) -> int:

@@ -75,7 +75,9 @@ class TraceEventSink(Protocol):
         kind: str,
         detail: dict,
         success: bool,
-    ) -> None: ...
+    ) -> None:
+        """Push one structured rail event (e.g. kind="reject"/"recovery"/"frame") into the trace."""
+        ...
 
 
 def _unwrap_robot_control(tool_name: str, tool_args: Any) -> tuple[str, Any]:
@@ -605,8 +607,9 @@ class TraceRail(AgentRail):
             if frame_path is not None:
                 entry.frame_path = str(frame_path)
         # Enforce max_entries: drop oldest beyond cap.
-        if len(self._trace.entries) > self.max_entries:
-            self._trace.entries = self._trace.entries[-self.max_entries :]
+        cap = self.max_entries
+        if len(self._trace.entries) > cap:
+            self._trace.entries = self._trace.entries[-cap:]
         ctx.extra.pop(_TRACE_CURRENT_KEY, None)
         if self.console:
             mark = "✅" if entry.success else "❌"

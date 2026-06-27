@@ -227,7 +227,7 @@ class PiperApi(
         ll = self._ll()
         frames = ll.grab_frames()
         if frames is None:
-            return {"ok": False, "reason": "no_camera"}
+            return {"ok": False, "reason": "no_camera", "object": object_name}
         rgb, depth_img_m = frames
 
         tcp_at_grab = self.env.get_flange_pose()
@@ -240,7 +240,8 @@ class PiperApi(
             tcp_at_grab=_PoseShim(tcp_at_grab),
         )
         if not det.get("ok"):
-            return det
+            # detect_and_centroid returns plain dict; structurally a GraspFailure
+            return det  # type: ignore[return-value]
 
         u, v, depth_m = det["u"], det["v"], det["depth_m"]
         best = det["best"]

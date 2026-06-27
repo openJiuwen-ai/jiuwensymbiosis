@@ -13,10 +13,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_PILImage: Any = None
 try:
     from PIL import Image as _PILImage
 except ImportError:
-    _PILImage = None
+    pass
 
 logger = logging.getLogger(__name__)
 

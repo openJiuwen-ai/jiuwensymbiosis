@@ -49,8 +49,8 @@ class MockArmEnv(BaseRobotEnv):
         """
         self._home = home_pose or {"x": 200.0, "y": 0.0, "z": 250.0, "r": 0.0}
         self._pose = dict(self._home)
-        self._z_min_safe = z_min_safe
-        self._workspace_bounds = workspace_bounds
+        self.z_min_safe = z_min_safe
+        self.workspace_bounds = workspace_bounds
         self._suction = False
         self._connected = False
         self._image_hw = image_hw
@@ -58,15 +58,8 @@ class MockArmEnv(BaseRobotEnv):
         self._scene = scene
 
     # ------------------------------------------------ formal hardware contract
-    @property
-    def z_min_safe(self) -> float | None:
-        """Tip-frame Z floor (mm). Exposes the ``BaseRobotEnv`` contract property."""
-        return self._z_min_safe
-
-    @property
-    def workspace_bounds(self) -> tuple[float, float, float, float] | None:
-        """XY workspace bounds, or None. Exposes the ``BaseRobotEnv`` contract property."""
-        return self._workspace_bounds
+    # z_min_safe / workspace_bounds are plain instance attributes set in
+    # __init__ (BaseRobotEnv declares them as writeable attributes).
 
     # -------------------------------------------------------------- lifecycle
     def connect(self) -> None:
@@ -96,24 +89,25 @@ class MockArmEnv(BaseRobotEnv):
                 pose=dict(self._pose),
                 rgb=self._scene.render_rgb(),
                 depth=self._scene.render_depth_m(),
-                extra={"suction": self._suction, "z_min_safe": self._z_min_safe},
+                extra={"suction": self._suction, "z_min_safe": self.z_min_safe},
             )
         h, w = self._image_hw
         rgb = np.full((h, w, 3), 96, dtype=np.uint8)
         # Draw a marker at center to simulate a detection target.
         cy, cx = h // 2, w // 2
-        rgb[cy - 8 : cy + 8, cx - 8 : cx + 8] = (255, 255, 255)
+        rgb[cy - 8: cy + 8, cx - 8: cx + 8] = (255, 255, 255)  # fmt: skip
         return RobotObservation(
             pose=dict(self._pose),
             rgb=rgb,
-            extra={"suction": self._suction, "z_min_safe": self._z_min_safe},
+            extra={"suction": self._suction, "z_min_safe": self.z_min_safe},
         )
 
     # ------------------------------------------------------------------ ops
     def move(self, x: float, y: float, z: float, r: float | None = None) -> None:
         """Move to an absolute Cartesian pose. Raises if z below safe floor."""
-        if z < self._z_min_safe:
-            raise RuntimeError(f"z={z} below z_min_safe={self._z_min_safe}")
+        z_min = self.z_min_safe
+        if z_min is not None and z < z_min:
+            raise RuntimeError(f"z={z} below z_min_safe={z_min}")
         self._pose["x"] = float(x)
         self._pose["y"] = float(y)
         self._pose["z"] = float(z)
@@ -131,10 +125,9 @@ class MockArmEnv(BaseRobotEnv):
         """Return a copy of the home pose."""
         return dict(self._home)
 
-    @property
-    def tool_offset_mm(self) -> float:
-        """Mock tool offset — zero for a simple arm."""
-        return 0.0
+    @home_pose.setter
+    def home_pose(self, _: Any) -> None:
+        raise AttributeError("MockArmEnv.home_pose is read-only (returns a copy of self._home)")
 
     def grab_rgb(self):
         """Override: return the observation RGB directly (avoids full snapshot)."""

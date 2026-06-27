@@ -217,7 +217,7 @@ def detect_and_centroid(
     *,
     rgb: np.ndarray,
     depth_img_m: np.ndarray,
-    seg_fn: Callable[..., list[dict]],
+    seg_fn: Callable[..., list[dict]] | None,
     object_name: str,
     tcp_at_grab: Any,
     score_threshold: float = 0.05,
@@ -549,9 +549,10 @@ def _composite_red_mask(pil_img, mask: np.ndarray):
     """Composite a red translucent detector mask onto ``pil_img`` (returns a new image)."""
     from PIL import Image
 
+    # PIL stub omits legacy module-level NEAREST constant (value 0); runtime-correct
     mask_pil = Image.fromarray(mask.astype(np.uint8)).resize(
         pil_img.size,
-        Image.NEAREST,
+        Image.NEAREST,  # type: ignore[attr-defined]
     )
     overlay = Image.new("RGB", pil_img.size, (255, 0, 0))
     return Image.composite(overlay, pil_img, mask_pil.point(lambda p: int(p * 128)))

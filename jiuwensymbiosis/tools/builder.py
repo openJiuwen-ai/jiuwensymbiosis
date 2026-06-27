@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
+from jiuwensymbiosis.api.decorators import ToolMeta
 
 
 def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
@@ -26,7 +27,7 @@ def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
     return frozenset(api_caps) & frozenset(env_caps)
 
 
-def _owning_capability(api_type: type, attr_name: str, meta: Any) -> str | None:
+def _owning_capability(api_type: type, attr_name: str, meta: ToolMeta) -> str | None:
     """Resolve the capability a tool belongs to.
 
     Explicit ``meta.capability`` wins; otherwise find the mixin in the MRO that

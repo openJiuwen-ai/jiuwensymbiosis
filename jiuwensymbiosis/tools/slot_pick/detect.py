@@ -61,7 +61,8 @@ def _coerce_pose(value: Any, field: str = "slot_observe_pose_xyzr") -> tuple[flo
     """Coerce a 4-element [x, y, z, r] sequence; raise ValueError on failure."""
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         raise ValueError(f"slot_pick.{field} must be [x, y, z, r]")
-    return tuple(_coerce_float(v, field) for v in value)  # type: ignore[return-value]
+    x, y, z, r = (_coerce_float(v, field) for v in value)
+    return (x, y, z, r)
 
 
 def _coerce_optional_pose(
@@ -73,7 +74,8 @@ def _coerce_optional_pose(
         return None
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         raise ValueError(f"slot_pick.{field} must be [x, y, z, r]")
-    return tuple(_coerce_float(v, field) for v in value)  # type: ignore[return-value]
+    x, y, z, r = (_coerce_float(v, field) for v in value)
+    return (x, y, z, r)
 
 
 # =============================================================================
