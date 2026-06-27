@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Callable, Optional, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,11 @@ class SlotPickStrategy(Protocol):
     def release(self) -> dict:
         """Release the object (gripper open / suction off). Returns an ``ok`` dict."""
 
-    def z_min_safe(self) -> Optional[float]:
+    def z_min_safe(self) -> float | None:
         """Lowest safe TIP-frame z the body advertises, or None if unknown."""
 
 
-def _api_z_min_safe(api: Any) -> Optional[float]:
+def _api_z_min_safe(api: Any) -> float | None:
     """Lowest safe TIP-frame z from ``api.env.z_min_safe``, or None if unset."""
     env = getattr(api, "env", None)
     z_min = getattr(env, "z_min_safe", None) if env is not None else None
@@ -107,7 +108,7 @@ class GripperStrategy:
         *,
         max_reach_radius_mm: float = 0.0,
         safe_travel_z_min_mm: float = 0.0,
-        error_clearer: Optional[Callable[[], None]] = None,
+        error_clearer: Callable[[], None] | None = None,
     ) -> None:
         """Store the api reference and motion guard constants."""
         self._api = api
@@ -118,13 +119,15 @@ class GripperStrategy:
     # ----------------------------------------------------------------- grasp
     def grasp(self) -> dict:
         """Acquire the object by closing the parallel gripper."""
-        return self._api.close_gripper()
+        # _api Any (duck-typed); close_gripper returns dict
+        return self._api.close_gripper()  # type: ignore[no-any-return]
 
     def release(self) -> dict:
         """Release the object by opening the parallel gripper."""
-        return self._api.open_gripper()
+        # _api Any (duck-typed); open_gripper returns dict
+        return self._api.open_gripper()  # type: ignore[no-any-return]
 
-    def z_min_safe(self) -> Optional[float]:
+    def z_min_safe(self) -> float | None:
         """Lowest safe TIP-frame z advertised by the body, or None."""
         return _api_z_min_safe(self._api)
 
@@ -199,7 +202,7 @@ class GripperStrategy:
             # Binary-search t in [0, 1] for the farthest reachable point along the
             # segment current -> (clamped) target; end parked at that point.
             lo, hi = 0.0, 1.0
-            best: Optional[tuple[float, float, float]] = None
+            best: tuple[float, float, float] | None = None
             for _ in range(6):
                 t = (lo + hi) / 2.0
                 tx = ax + t * (cx - ax)

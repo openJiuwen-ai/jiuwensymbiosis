@@ -24,7 +24,8 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
@@ -34,11 +35,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TRIGGER_TAGS = frozenset({"motion", "grasp"})
 
 
-def _encode_jpeg_b64(rgb_bgr_or_rgb: Any, quality: int = 80) -> Optional[str]:
+def _encode_jpeg_b64(rgb_bgr_or_rgb: Any, quality: int = 80) -> str | None:
     """Best-effort JPEG encode + base64. Returns None on failure."""
     try:
-        from PIL import Image
         import numpy as np
+        from PIL import Image
 
         arr = rgb_bgr_or_rgb
         if not isinstance(arr, np.ndarray):
@@ -71,15 +72,15 @@ class VisualFeedbackRail(AgentRail):
         self,
         session: Any,
         *,
-        watch_tools: Optional[set[str]] = None,
-        trigger_tags: Optional[set[str]] = None,
+        watch_tools: set[str] | None = None,
+        trigger_tags: set[str] | None = None,
         directive_text: str = (
-            "Frame captured after the previous action. Verify the action " "succeeded, then decide the next step."
+            "Frame captured after the previous action. Verify the action succeeded, then decide the next step."
         ),
         max_frames_per_invoke: int = 8,
         jpeg_quality: int = 80,
-        trace_sink: Optional[TraceEventSink] = None,
-        frame_sink: Optional[Callable[[Any, str], Optional[str]]] = None,
+        trace_sink: TraceEventSink | None = None,
+        frame_sink: Callable[[Any, str], str | None] | None = None,
     ) -> None:
         """Initialize the visual feedback rail.
 
@@ -116,7 +117,7 @@ class VisualFeedbackRail(AgentRail):
         if rgb is None:
             return
         # Persist the same frame the agent will see, if a sink is wired.
-        frame_path: Optional[str] = None
+        frame_path: str | None = None
         if self.frame_sink is not None:
             try:
                 frame_path = self.frame_sink(rgb, tool_name)
@@ -156,14 +157,14 @@ class VisualFeedbackRail(AgentRail):
             return False
         return bool(set(meta.tags) & self.trigger_tags)
 
-    def _grab_frame_b64(self) -> Optional[str]:
+    def _grab_frame_b64(self) -> str | None:
         """Capture the latest RGB frame and return it as a base64 JPEG."""
         rgb = self._grab_frame_rgb()
         if rgb is None:
             return None
         return _encode_jpeg_b64(rgb, quality=self.jpeg_quality)
 
-    def _grab_frame_rgb(self) -> Optional[Any]:
+    def _grab_frame_rgb(self) -> Any | None:
         """Capture the latest RGB frame as a raw ndarray (or None)."""
         try:
             obs = self.session.env.get_observation()
@@ -172,7 +173,7 @@ class VisualFeedbackRail(AgentRail):
             return None
         return getattr(obs, "rgb", None)
 
-    def _notify_inject(self, tool_name: str, frame_path: Optional[str]) -> None:
+    def _notify_inject(self, tool_name: str, frame_path: str | None) -> None:
         sink = self.trace_sink
         if sink is None:
             return

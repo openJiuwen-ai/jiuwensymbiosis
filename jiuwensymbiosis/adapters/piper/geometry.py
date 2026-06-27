@@ -18,7 +18,7 @@ RPY axis order:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, astuple
+from dataclasses import astuple, dataclass
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -40,7 +40,7 @@ _RPY_AXES = "xyz"
 
 def rpy_deg_to_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> np.ndarray:
     """RPY (degrees) → 3x3 rotation matrix using ``_RPY_AXES``."""
-    return Rotation.from_euler(_RPY_AXES, [rx_deg, ry_deg, rz_deg], degrees=True).as_matrix()
+    return np.asarray(Rotation.from_euler(_RPY_AXES, [rx_deg, ry_deg, rz_deg], degrees=True).as_matrix())
 
 
 @dataclass(frozen=True, slots=True)

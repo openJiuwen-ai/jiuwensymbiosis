@@ -38,7 +38,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -57,7 +57,7 @@ from jiuwensymbiosis.tools.slot_pick import (
 logger = logging.getLogger("piper_watch")
 
 
-def _build_vlm_judge(config_path: str, args) -> Optional[Any]:
+def _build_vlm_judge(config_path: str, args) -> Any | None:
     """Build a VLM completion judge from the YAML's ``model`` block (+ CLI overrides),
     falling back to the geometric judge when the VLM is unreachable / unclear."""
     with Path(config_path).open("r", encoding="utf-8") as f:

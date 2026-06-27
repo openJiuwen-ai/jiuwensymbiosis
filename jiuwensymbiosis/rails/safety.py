@@ -23,7 +23,7 @@ tool-exception event the LLM sees and reasons about.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
@@ -38,11 +38,11 @@ class SafetyRail(AgentRail):
         self,
         session: Any,
         *,
-        z_floor_mm: Optional[float] = None,
-        xy_bounds_mm: Optional[tuple[float, float, float, float]] = None,  # (xmin, ymin, xmax, ymax)
-        watch_tools: Optional[set[str]] = None,
+        z_floor_mm: float | None = None,
+        xy_bounds_mm: tuple[float, float, float, float] | None = None,  # (xmin, ymin, xmax, ymax)
+        watch_tools: set[str] | None = None,
         enforce_xy_from_env: bool = True,
-        trace_sink: Optional[TraceEventSink] = None,
+        trace_sink: TraceEventSink | None = None,
     ) -> None:
         """Initialize the safety rail with optional bounds.
 
@@ -106,10 +106,7 @@ class SafetyRail(AgentRail):
         if z is not None and z_floor is not None and float(z) < float(z_floor):
             reason = f"z={z} below z_floor={z_floor}"
             self._notify_reject(tool_name, reason)
-            raise ValueError(
-                f"SafetyRail: refusing {tool_name}: {reason}. "
-                "Either raise z, or call home() first."
-            )
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}. Either raise z, or call home() first.")
 
         xy_bounds = self._resolve_xy_bounds()
         if xy_bounds is not None:
@@ -124,7 +121,7 @@ class SafetyRail(AgentRail):
                 self._notify_reject(tool_name, reason)
                 raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
 
-    def _resolve_z_floor(self) -> Optional[float]:
+    def _resolve_z_floor(self) -> float | None:
         """Z floor: explicit ``z_floor``, else the env's ``z_min_safe``, else None."""
         if self.z_floor is not None:
             return self.z_floor
@@ -137,7 +134,7 @@ class SafetyRail(AgentRail):
         except (TypeError, ValueError):
             return None
 
-    def _resolve_xy_bounds(self) -> Optional[tuple[float, float, float, float]]:
+    def _resolve_xy_bounds(self) -> tuple[float, float, float, float] | None:
         """XY bounds: explicit ``xy_bounds``, else the env's ``workspace_bounds``."""
         if self.xy_bounds is not None:
             return self.xy_bounds

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Union, get_args, get_origin, get_type_hints
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class ToolMeta:
     name: str
     description: str
     input_params: dict[str, Any]
-    capability: Optional[str] = None
+    capability: str | None = None
     tags: list[str] = field(default_factory=list)
 
 
@@ -135,13 +136,13 @@ def _schema_from_signature(func: Callable) -> dict[str, Any]:
 
 
 def robot_tool(
-    _func: Optional[Callable] = None,
+    _func: Callable | None = None,
     *,
-    name: Optional[str] = None,
-    desc: Optional[str] = None,
-    capability: Optional[str] = None,
-    input_params: Optional[dict[str, Any]] = None,
-    tags: Optional[list[str]] = None,
+    name: str | None = None,
+    desc: str | None = None,
+    capability: str | None = None,
+    input_params: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
 ):
     """Decorate an api method to make it discoverable by ``build_robot_tools``.
 
@@ -160,7 +161,8 @@ def robot_tool(
     def _wrap(f: Callable) -> Callable:
         """Attach ``ToolMeta`` metadata to the decorated function."""
         first_doc_line = (f.__doc__ or "").strip().split("\n", 1)[0]
-        f.__robot_tool__ = ToolMeta(
+        # decorator attaches attr at runtime; mypy can't model fn.__dict__
+        f.__robot_tool__ = ToolMeta(  # type: ignore[attr-defined]
             name=name or f.__name__,
             description=desc or first_doc_line or f.__name__,
             input_params=input_params or _schema_from_signature(f),

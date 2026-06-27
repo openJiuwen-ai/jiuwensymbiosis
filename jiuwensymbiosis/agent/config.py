@@ -10,7 +10,7 @@ are defined here, keeping ``builder.py`` focused on pure construction logic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Literal, Optional
+from typing import Any, Literal
 
 from jiuwensymbiosis.agent.abstractions import (
     Model,
@@ -73,7 +73,7 @@ class ModelSpec:
     extra_request_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def build_model(spec: Optional[ModelSpec] = None) -> Any:
+def build_model(spec: ModelSpec | None = None) -> Any:
     """Construct an openjiuwen ``Model`` from a ``ModelSpec``.
 
     Args:
@@ -112,9 +112,9 @@ class RailConfig:
     """
 
     rail_class_path: str
-    required_flags: List[str]
-    required_capabilities: Optional[List[str]] = None
-    any_capabilities: Optional[List[str]] = None
+    required_flags: list[str]
+    required_capabilities: list[str] | None = None
+    any_capabilities: list[str] | None = None
 
     def __post_init__(self) -> None:
         """Normalize empty capability lists to ``None``."""
@@ -148,7 +148,7 @@ class RobotAgentConfig:
             invoke. Defaults False (zero overhead when off).
         trace_max_entries / trace_max_frames: Caps on recorded steps / frames.
         trace_save_frames: Save JPEG frames to ``<workspace>/traces/frames/{run_token}/``.
-        trace_console: Print a one-line per-step dashboard to stderr.
+        trace_console: Print a one-line per-step dashboard to stdout.
         trace_dir: Override trace output dir (default ``<workspace>/traces``).
         trace_capture_loggers: Logger-name prefixes whose WARNING+ records are
             captured into the trace.
@@ -164,16 +164,16 @@ class RobotAgentConfig:
 
     mode: Mode = "hybrid"
     model: Any = None
-    model_spec: Optional[ModelSpec] = None
-    system_prompt: Optional[str] = None
+    model_spec: ModelSpec | None = None
+    system_prompt: str | None = None
     enable_visual_feedback: bool = True
     enable_safety: bool = True
     enable_recovery: bool = True
     enable_skill: bool = False
-    extra_tools: Optional[list[Any]] = None
-    extra_rails: Optional[list[Any]] = None
+    extra_tools: list[Any] | None = None
+    extra_rails: list[Any] | None = None
     max_iterations: int = 15
-    workspace: Optional[str] = None
+    workspace: str | None = None
     strict_capabilities: bool = False
     # -- Execution trace — all default OFF for zero overhead. --
     enable_tracing: bool = False
@@ -181,10 +181,8 @@ class RobotAgentConfig:
     trace_max_frames: int = 50
     trace_save_frames: bool = False
     trace_console: bool = False
-    trace_dir: Optional[str] = None  # default <workspace>/traces
-    trace_capture_loggers: list[str] = field(
-        default_factory=lambda: ["jiuwensymbiosis"]
-    )
+    trace_dir: str | None = None  # default <workspace>/traces
+    trace_capture_loggers: list[str] = field(default_factory=lambda: ["jiuwensymbiosis"])
     # -- Centralised logging --
     log_level: str = "INFO"
     # Default "./logs" so framework logs land at ``logs/jiuwensymbiosis.log``.
@@ -192,10 +190,10 @@ class RobotAgentConfig:
     # implementation (double-join of relative log_path) — independent of this
     # setting; jiuwensymbiosis does not touch openjiuwen's log path. Set None
     # for console-only; override via env or YAML ``agent.log_dir``.
-    log_dir: Optional[str] = "./logs"
+    log_dir: str | None = "./logs"
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]]) -> "RobotAgentConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> RobotAgentConfig:
         """Build a ``RobotAgentConfig`` from a YAML ``agent:`` mapping.
 
         Mirrors how ``model:`` maps to ``ModelSpec(**data)`` and ``env.cfg``

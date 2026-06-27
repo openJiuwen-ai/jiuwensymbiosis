@@ -20,7 +20,7 @@ you declare. The Env verbs delegate here:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any
 
 
 class XxxDriver:
@@ -33,12 +33,21 @@ class XxxDriver:
     def __init__(self) -> None:
         # [必填] 内部位姿状态 (替换为真实硬件状态读取)
         self._pose: dict[str, float] = {
-            "x": 200.0, "y": 0.0, "z": 250.0,
-            "rx": 0.0, "ry": 90.0, "rz": 0.0,
+            "x": 200.0,
+            "y": 0.0,
+            "z": 250.0,
+            "rx": 0.0,
+            "ry": 90.0,
+            "rz": 0.0,
         }
         # [必填] home 位姿对象 (get_pose 返回同类型)
         self.home_pose = SimpleNamespace(
-            x=200.0, y=0.0, z=250.0, rx=0.0, ry=90.0, rz=0.0,
+            x=200.0,
+            y=0.0,
+            z=250.0,
+            rx=0.0,
+            ry=90.0,
+            rz=0.0,
         )
         # [必填-仅 motion.*] 工具末端偏移 mm (flange → tip)
         self.tool_offset_mm: float = 0.0
@@ -67,16 +76,19 @@ class XxxDriver:
         # TODO: Read real pose from hardware
         p = self._pose
         return SimpleNamespace(
-            x=p["x"], y=p["y"], z=p["z"],
-            rx=p["rx"], ry=p["ry"], rz=p["rz"],
+            x=p["x"],
+            y=p["y"],
+            z=p["z"],
+            rx=p["rx"],
+            ry=p["ry"],
+            rz=p["rz"],
         )
 
     def home(self) -> None:
         """Execute homing sequence. Blocking."""
         # TODO: Send home command to hardware
         hp = self.home_pose
-        self._pose = {"x": hp.x, "y": hp.y, "z": hp.z,
-                      "rx": hp.rx, "ry": hp.ry, "rz": hp.rz}
+        self._pose = {"x": hp.x, "y": hp.y, "z": hp.z, "rx": hp.rx, "ry": hp.ry, "rz": hp.rz}
 
     def move_to_pose_blocking(self, pose: Any) -> None:
         """Blocking Cartesian move to <pose>. pose has x,y,z,rx,ry,rz attributes."""
@@ -105,7 +117,7 @@ class XxxDriver:
 
     # ============================== 传感器 [选填-仅 vision.*] ==============================
 
-    def grab_frames(self) -> Optional[tuple]:
+    def grab_frames(self) -> tuple | None:
         """Grab one RGB + depth frame pair.
         Returns (rgb: HxWx3 uint8 ndarray, depth: HxW float32 ndarray) or None.
         """

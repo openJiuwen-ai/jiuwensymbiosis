@@ -244,8 +244,6 @@ agent:
 - [piper-demo-…1743847.html](../examples/sample_trace/piper-demo-77816242_20260626_113438_033124_1743847.html) —— `jiuwensymbiosis-replay` 生成的自包含 HTML 回放
 - [frames/…/step_NNN.jpg](../examples/sample_trace/frames/piper-demo-77816242_20260626_113438_033124_1743847/) —— 每步动作后帧 + `step_000.jpg` 首帧
 
-**怎么产生的**：把 `configs/piper/pick_box.yaml` 的 `agent:` 块里 trace 三行解开（`enable_tracing` + `trace_save_frames` + `trace_console`），跑一次真机 demo（`python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml`），产物落在 `<workspace>/traces/`（默认 `~/.jiuwensymbiosis/piper_workspace/traces/`），再拷进 `examples/sample_trace/`。`run_token`（文件名 `piper-demo-77816242_20260626_113438_033124_1743847`）= `{conversation_id}_{时间戳}_{微秒}_{pid}`，JSON 与帧子目录同名，因此 HTML 里引用的帧路径永久有效。
-
 **这份 trace 演示了什么**（query「把黑盒子放到白盒子上面」，共 30 步）：
 
 | 步 | 动作 | 看点 |

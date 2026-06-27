@@ -23,11 +23,11 @@ with the three call shapes above. The adapter just does:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 from jiuwensymbiosis.agent.session import RobotSession
-
 
 SidecarBuilder = Callable[[Any], Any]
 SessionDecorator = Callable[[RobotSession, Any], None]
@@ -36,10 +36,10 @@ SessionDecorator = Callable[[RobotSession, Any], None]
 #   "cfg_field"          → pass cfg.cfg_field as api kwarg of the same name
 #   "cfg_field:api_kwarg" → pass cfg.cfg_field as api kwarg "api_kwarg"
 # A plain callable is also accepted (backward compat).
-ApiKwargsSpec = Union[Callable[[Any], dict], list[str]]
+ApiKwargsSpec = Callable[[Any], dict] | list[str]
 
 
-def _resolve_api_kwargs(spec: Optional[ApiKwargsSpec], cfg: Any) -> dict:
+def _resolve_api_kwargs(spec: ApiKwargsSpec | None, cfg: Any) -> dict:
     """Turn a kwargs spec into the kwargs dict passed to ``api_cls(env, **kw)``.
 
     * ``None`` → no kwargs.
@@ -78,23 +78,24 @@ def make_detector_sidecar(cfg_attr: str = "detector"):
     Mirrors the field shape of ``DetectorServerConfig``
     (``host/port/device/startup_timeout_s/gdino_model_id/...``).
     """
-    def _build(cfg: Any) -> Optional[Callable]:
+
+    def _build(cfg: Any) -> Callable | None:
         det = getattr(cfg, cfg_attr, None)
         if det is None or not getattr(det, "spawn", False):
             return None
         from jiuwensymbiosis.adapters._common.detector_sidecar import detector_subprocess
 
-        kwargs = dict(
-            host=det.host,
-            port=det.port,
-            device=det.device,
-            startup_timeout_s=det.startup_timeout_s,
-            gdino_model_id=det.gdino_model_id,
-            sam2_model_id=det.sam2_model_id,
-            box_threshold=det.box_threshold,
-            text_threshold=det.text_threshold,
-            use_sam2=det.use_sam2,
-        )
+        kwargs = {
+            "host": det.host,
+            "port": det.port,
+            "device": det.device,
+            "startup_timeout_s": det.startup_timeout_s,
+            "gdino_model_id": det.gdino_model_id,
+            "sam2_model_id": det.sam2_model_id,
+            "box_threshold": det.box_threshold,
+            "text_threshold": det.text_threshold,
+            "use_sam2": det.use_sam2,
+        }
         return lambda: detector_subprocess(**kwargs)
 
     return _build
@@ -105,9 +106,9 @@ def make_builder(
     env_cls: type,
     api_cls: type,
     *,
-    api_kwargs_from_cfg: Optional[ApiKwargsSpec] = None,
-    sidecar_builders: Optional[list[SidecarBuilder]] = None,
-    decorate: Optional[SessionDecorator] = None,
+    api_kwargs_from_cfg: ApiKwargsSpec | None = None,
+    sidecar_builders: list[SidecarBuilder] | None = None,
+    decorate: SessionDecorator | None = None,
 ):
     """Build a polymorphic session-factory callable.
 
@@ -130,6 +131,7 @@ def make_builder(
     Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``
     and ``.from_dict(dict)`` as attributes.
     """
+
     def _session_from_cfg(cfg: Any) -> RobotSession:
         env = env_cls(cfg)
         api_kwargs = _resolve_api_kwargs(api_kwargs_from_cfg, cfg)
@@ -147,7 +149,8 @@ def make_builder(
                 if callable(cm_or_lambda):
                     sidecar_starters.append(cm_or_lambda)
                 else:
-                    sidecar_starters.append(lambda cm=cm_or_lambda: cm)
+                    # bridge cm→zero-arg factory; list typed list[Callable[[],Any]]
+                    sidecar_starters.append(lambda cm=cm_or_lambda: cm)  # type: ignore[misc]
 
         session = RobotSession(
             env=env,
@@ -165,12 +168,15 @@ def make_builder(
 
     def from_yaml(path: str | Path) -> RobotSession:
         """Build a session from a YAML config file at ``path``."""
-        return _session_from_cfg(cfg_cls.from_yaml(path))
+        # cfg_cls is a config dataclass w/ from_yaml classmethod (factory contract)
+        return _session_from_cfg(cfg_cls.from_yaml(path))  # type: ignore[attr-defined]
 
     def from_dict(data: dict[str, Any]) -> RobotSession:
         """Build a session from an in-memory config ``dict``."""
-        return _session_from_cfg(cfg_cls.from_dict(data))
+        # cfg_cls is a config dataclass w/ from_dict classmethod (factory contract)
+        return _session_from_cfg(cfg_cls.from_dict(data))  # type: ignore[attr-defined]
 
-    build.from_yaml = from_yaml
-    build.from_dict = from_dict
+    # function-attribute attachment pattern; mypy can't model fn.__dict__
+    build.from_yaml = from_yaml  # type: ignore[attr-defined]
+    build.from_dict = from_dict  # type: ignore[attr-defined]
     return build

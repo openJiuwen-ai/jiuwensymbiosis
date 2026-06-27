@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -60,18 +60,18 @@ class RobotObservation:
 
     Attributes:
         pose: Cartesian pose dict, schema is robot-specific but conventional
-            keys are {"x","y","z","r"} for SCARA and {"x","y","z","qx","qy",
-            "qz","qw"} for 6-DOF.
+            keys are {"x","y","z","r"} for SCARA and {"x","y","z","rx","ry",
+            "rz"} (Euler, deg) for 6-DOF.
         joints: Joint angles in rad or deg (per-robot convention).
         rgb: HxWx3 uint8 image, base-of-robot camera or wrist camera.
         depth: HxW float32 depth in meters, aligned to ``rgb`` if both present.
         extra: Anything else (gripper width, force/torque, status flags).
     """
 
-    pose: Optional[dict] = None
-    joints: Optional[list[float]] = None
-    rgb: Optional[np.ndarray] = None
-    depth: Optional[np.ndarray] = None
+    pose: dict | None = None
+    joints: list[float] | None = None
+    rgb: np.ndarray | None = None
+    depth: np.ndarray | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -142,7 +142,9 @@ class BaseRobotEnv(ABC):
 
     # --- optional hardware contract (default None; adapters set or override) ---
     # Assign in connect() (e.g. ``self.low_level = XxxDriver()``) or override as a
-    # @property. ``z_min_safe`` / ``workspace_bounds`` are the safety envelope
+    # read-only @property (re-declare the @property *and* a setter that raises
+    # AttributeError — mypy forbids a read-only property overriding a read-write
+    # one). ``z_min_safe`` / ``workspace_bounds`` are the safety envelope
     # SafetyRail reads. ``home_pose`` / ``tool_offset_mm`` are robot body constants
     # the api layer needs for coordinate math.
     #
@@ -152,17 +154,56 @@ class BaseRobotEnv(ABC):
     # ``calibration``, ``intrinsics``, ``grab_frames``) and vendor-specific
     # operations may access ``low_level`` directly — but the access is type-
     # constrained by the ``RobotDriver`` (and sibling) Protocol(s).
-    low_level: Optional["RobotDriver"] = None
-    z_min_safe: Optional[float] = None
-    workspace_bounds: Optional[tuple[float, float, float, float]] = None
+    _low_level: RobotDriver | None = None
+    _z_min_safe: float | None = None
+    _workspace_bounds: tuple[float, float, float, float] | None = None
+    _home_pose: Any = None
+    _tool_offset_mm: float = 0.0
+
+    @property
+    def low_level(self) -> RobotDriver | None:
+        return self._low_level
+
+    @low_level.setter
+    def low_level(self, value: RobotDriver | None) -> None:
+        self._low_level = value
+
+    @property
+    def z_min_safe(self) -> float | None:
+        return self._z_min_safe
+
+    @z_min_safe.setter
+    def z_min_safe(self, value: float | None) -> None:
+        self._z_min_safe = value
+
+    @property
+    def workspace_bounds(self) -> tuple[float, float, float, float] | None:
+        return self._workspace_bounds
+
+    @workspace_bounds.setter
+    def workspace_bounds(self, value: tuple[float, float, float, float] | None) -> None:
+        self._workspace_bounds = value
 
     # Robot body constants. Adapters override as @property or set in connect().
-    home_pose: Any = None
-    tool_offset_mm: float = 0.0
+    @property
+    def home_pose(self) -> Any:
+        return self._home_pose
+
+    @home_pose.setter
+    def home_pose(self, value: Any) -> None:
+        self._home_pose = value
+
+    @property
+    def tool_offset_mm(self) -> float:
+        return self._tool_offset_mm
+
+    @tool_offset_mm.setter
+    def tool_offset_mm(self, value: float) -> None:
+        self._tool_offset_mm = value
 
     # --- motion / end-effector verbs (default: delegate to low_level) ---
 
-    def _require_driver(self) -> "RobotDriver":
+    def _require_driver(self) -> RobotDriver:
         """Return ``low_level`` or raise if the env is not connected."""
         ll = self.low_level
         if ll is None:
@@ -183,7 +224,8 @@ class BaseRobotEnv(ABC):
 
     def move_joint(self, q: list[float]) -> None:
         """Move to a joint-space configuration (blocking)."""
-        self._require_driver().move_joint_blocking(q)
+        # JointDriver sibling protocol; motion.joint-capability-gated
+        self._require_driver().move_joint_blocking(q)  # type: ignore[attr-defined]
 
     def set_end_effector(self, engaged: bool) -> None:
         """Engage (True) / release (False) the end effector.
@@ -193,18 +235,19 @@ class BaseRobotEnv(ABC):
         """
         driver = self._require_driver()
         if "grasp.parallel" in self.capabilities:
-            driver.set_gripper(engaged)
+            # GripperDriver sibling protocol; grasp.parallel-capability-gated
+            driver.set_gripper(engaged)  # type: ignore[attr-defined]
         elif "grasp.suction" in self.capabilities:
-            driver.set_suction(engaged)
+            # SuctionDriver sibling protocol; grasp.suction-capability-gated
+            driver.set_suction(engaged)  # type: ignore[attr-defined]
         else:
             raise NotImplementedError(
-                f"{self.name}: no grasp capability declared "
-                f"(need 'grasp.parallel' or 'grasp.suction')"
+                f"{self.name}: no grasp capability declared (need 'grasp.parallel' or 'grasp.suction')"
             )
 
     # --- sensor convenience ---
 
-    def grab_rgb(self) -> Optional[np.ndarray]:
+    def grab_rgb(self) -> np.ndarray | None:
         """Single-frame RGB grab for vision tools.
 
         Default delegates to ``get_observation().rgb``; override in adapters

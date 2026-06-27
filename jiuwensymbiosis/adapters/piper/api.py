@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, Any, Callable, Optional, cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -78,7 +79,7 @@ class PiperApi(
         """Initialize PiperApi with env, detector service URL, and grasp geometry constants."""
         super().__init__(env)
         self._detector_service_url = detector_service_url
-        self._seg_fn: Optional[Callable[..., list[dict[str, Any]]]] = None
+        self._seg_fn: Callable[..., list[dict[str, Any]]] | None = None
         self._default_object = default_object_name
         # Constant base-frame Z correction added to detections (see PiperConfig).
         self._z_correction_mm = float(z_correction_mm)
@@ -130,7 +131,7 @@ class PiperApi(
         ),
         tags=["motion"],
     )
-    def goto_xyzr(self, x: float, y: float, z: float, r: Optional[float] = None) -> None:
+    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
         if r is None:
             r = self.env.get_flange_pose().rz
         # Tilted tool (ry=_TOOL_DOWN_RY): the tip sits tool_offset_mm along the tool
@@ -193,7 +194,7 @@ class PiperApi(
 
     # ============================================================  Vision
     @robot_tool(
-        desc="Pixel (u,v) at depth_m (meters) → base-frame XYZ in mm. " "Requires a loaded calibration.",
+        desc="Pixel (u,v) at depth_m (meters) → base-frame XYZ in mm. Requires a loaded calibration.",
     )
     def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
         ll = self._ll()
@@ -226,7 +227,7 @@ class PiperApi(
         ll = self._ll()
         frames = ll.grab_frames()
         if frames is None:
-            return {"ok": False, "reason": "no_camera"}
+            return {"ok": False, "reason": "no_camera", "object": object_name}
         rgb, depth_img_m = frames
 
         tcp_at_grab = self.env.get_flange_pose()
@@ -239,7 +240,8 @@ class PiperApi(
             tcp_at_grab=_PoseShim(tcp_at_grab),
         )
         if not det.get("ok"):
-            return det
+            # detect_and_centroid returns plain dict; structurally a GraspFailure
+            return det  # type: ignore[return-value]
 
         u, v, depth_m = det["u"], det["v"], det["depth_m"]
         best = det["best"]
@@ -260,7 +262,7 @@ class PiperApi(
         tcp_at_proj = self.env.get_flange_pose()
         if tcp_at_proj.as_tuple() != tcp_at_grab.as_tuple():
             logger.warning(
-                "[grasp-debug] flange pose moved between frame grab and projection! " "grab=%s proj=%s",
+                "[grasp-debug] flange pose moved between frame grab and projection! grab=%s proj=%s",
                 tcp_at_grab.as_tuple(),
                 tcp_at_proj.as_tuple(),
             )
@@ -375,7 +377,7 @@ class PiperApi(
         desc="Run a higher-level scene analysis grounded on object_name. "
         "Returns detection counts + top scores; useful for quick sanity checks."
     )
-    def analyze_scene(self, object_name: Optional[str] = None) -> dict:
+    def analyze_scene(self, object_name: str | None = None) -> dict:
         target = object_name or self._default_object
         rgb = self.get_image()
         if rgb is None:
@@ -396,7 +398,7 @@ class PiperApi(
         }
 
     # ---------------------------------------------------------------- helpers
-    def _ll(self) -> "PiperFullDriver":
+    def _ll(self) -> PiperFullDriver:
         """The vendor driver, for vision/calibration reads only (motion/gripper go via ``self.env``).
 
         The returned object satisfies RobotDriver + JointDriver + CameraDriver +

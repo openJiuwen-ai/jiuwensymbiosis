@@ -196,21 +196,6 @@ The adapter template (`templates/xxx_adapter/`) provides a complete skeleton wit
 - `session.py` — one-line session factory via `make_builder()`
 - `config_template.yaml` — YAML template with Chinese annotations
 
-Run the validation tool to check compatibility before connecting real hardware:
-
-```bash
-$ python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
-=================================================================
- jiuwensymbiosis adapter compatibility validation
- target: jiuwensymbiosis.adapters.my_robot
-=================================================================
- ✓ Config class MyConfig found
- ✓ Config has from_yaml / from_dict
- ...
- Result: ALL PASS — compatibility 100%
-=================================================================
-```
-
 ## Features
 
 ### Situational Awareness Loop

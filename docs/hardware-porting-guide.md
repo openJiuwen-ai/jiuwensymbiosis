@@ -243,7 +243,7 @@ class MyApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
 
 驱动**不强制继承**任何基类，但应满足 `jiuwensymbiosis/adapters/_common/protocol.py`
 里的结构化 Protocol（`typing.Protocol`，按能力拆分）。`validate_adapter` 的 D-14
-用 `isinstance(driver, RobotDriver)` 校验，缺方法会报 ERROR。
+按 `CAPABILITY_DRIVER_MEMBERS` 表用 `hasattr` 逐成员校验驱动类——声明了某能力却缺对应 Protocol 成员会报 ERROR。
 
 | Protocol | 何时需要 | 成员 |
 |---|---|---|
@@ -331,7 +331,7 @@ class XxxDriver:
 
 在没有真实硬件时，可以先编写一个 Mock 驱动用于验证框架集成。
 
-参考 `jiuwensymbiosis/env/mock.py:MockArmEnv`（~90 行）——它维护内存中的位姿状态，`connect()` 只设标志，`move()` 记录调用日志。
+参考 `jiuwensymbiosis/env/mock.py:MockArmEnv`（~150 行）——它维护内存中的位姿状态，`connect()` 只设标志，`move()` 记录调用日志。
 
 ```python
 class MockXxxDriver:
@@ -601,7 +601,7 @@ def goto_xyzr(self, x, y, z, r=None) -> None:
     ...
 ```
 
-> **重要**：`capability` 属性和 `tags` 会从 Mixin 继承。如果你重新装饰但**未指定** `tags`，将使用装饰器默认值（`None`），而非继承 Mixin 的 tags。建议重新装饰时显式指定 `tags`。
+> **重要**：`capability` 属性和 `tags` 会从 Mixin 继承。如果你重新装饰但**未指定** `tags`，将使用装饰器默认值（空列表 `[]`），而非继承 Mixin 的 tags。建议重新装饰时显式指定 `tags`。
 
 **规则 4 — 新增独有工具**：如果硬件支持 Mixin 未定义的独有功能，可以独立声明 `@robot_tool` 方法（如 Piper 的 `goto_pose` 6-DOF 全位姿运动）。
 
@@ -1477,13 +1477,13 @@ class MyApi(MobileNavigationMixin, MotionMixin, BaseRobotApi):
 | 步骤 4 | Api 实现 | `adapters/piper/api.py` | PiperApi 类（home/move_joint/夹爪/get_image 继承 Mixin 默认委托） |
 | 步骤 5 | Config | `adapters/piper/config.py` | PiperConfig + DetectorServerConfig |
 | 步骤 6 | Session | `adapters/piper/session.py` | make_builder 接线 |
-| 步骤 6 | 检测 Sidecar | `adapters/piper/session.py` | _detector_sidecar_from_cfg |
+| 步骤 6 | 检测 Sidecar | `adapters/piper/session.py` | `make_detector_sidecar()` 接线 |
 
 **Piper 特定复杂度（你的适配器可能不需要）**：
 
 | 特性 | 说明 | 是否需要 |
 |------|------|---------|
-| 倾斜工具补偿 (`_TOOL_DOWN_RX/RY`) | Piper 的末端工具需约 30° 倾斜才能可达，`goto_xyzr` 因此覆写 | 按需 |
+| 倾斜工具补偿 (`_TOOL_DOWN_RX/RY`) | Piper 末端工具需倾斜才能可达：`_TOOL_DOWN_RX=180`（工具朝下取向）+ `_TOOL_DOWN_RY=30`（30° 倾斜），`goto_xyzr` 因此覆写 | 按需 |
 | Z 方向常值校正 (`z_correction_mm`) | 手眼标定未重新标定前的临时补丁 | 按需 |
 | 嵌套 YAML 兼容 (`env.cfg.low_level.*`) | 历史遗留的 YAML 兼容层 | ❌ 新适配器无需 |
 | 抓取 debug dumping | 保存检测结果到磁盘供离线分析 | 按需 |

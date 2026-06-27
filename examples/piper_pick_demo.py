@@ -121,6 +121,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
         return RobotSession(env=env, api=api, name="piper_mock")
 
     from jiuwensymbiosis.adapters.piper import build_piper_session
+
     return build_piper_session.from_yaml(args.config)
 
 
@@ -192,7 +193,6 @@ def main() -> int:
     )
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
-
 
     cfg_path = Path(args.config).resolve()
     raw = _load_yaml(cfg_path)

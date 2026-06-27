@@ -25,7 +25,7 @@ import base64
 import html
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 __all__ = ["render_trace_html"]
 
@@ -44,7 +44,7 @@ def _esc_str(value: Any) -> str:
     return html.escape(str(value))
 
 
-def _resolve_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> Optional[Path]:
+def _resolve_frame(frame_path: str | None, trace_dir: Path | None) -> Path | None:
     """Resolve a stored ``frame_path`` to an existing file, or ``None``.
 
     Frame paths land in the JSON in one of three forms depending on how the
@@ -70,16 +70,16 @@ def _resolve_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> Opti
         return p if p.is_file() else None
     candidates: list[Path] = []
     if trace_dir is not None:
-        candidates.append(trace_dir / p)         # JSON-dir relative (portable form)
+        candidates.append(trace_dir / p)  # JSON-dir relative (portable form)
         candidates.append(trace_dir.parent / p)  # workspace relative (JSON in <ws>/traces)
-    candidates.append(p)                          # cwd relative (last resort)
+    candidates.append(p)  # cwd relative (last resort)
     for c in candidates:
         if c.is_file():
             return c
     return None
 
 
-def _inline_frame(frame_path: Optional[str], trace_dir: Optional[Path]) -> str:
+def _inline_frame(frame_path: str | None, trace_dir: Path | None) -> str:
     """Return a ``data:image/jpeg;base64,...`` URI for a saved frame, or ``""``.
 
     Resolves ``frame_path`` via :func:`_resolve_frame`. Any unresolved path or
@@ -127,7 +127,7 @@ def _step_timeline(entry: dict) -> list[dict]:
                 "ts": float(ev.get("ts") or 0.0),
                 "badge": "ok" if ok else "FAIL",
                 "badge_cls": "ok" if ok else "fail",
-                "source": f'{ev.get("rail_name", "?")}/{ev.get("kind", "?")}',
+                "source": f"{ev.get('rail_name', '?')}/{ev.get('kind', '?')}",
                 "content": ev.get("detail", {}) or {},
             }
         )
@@ -228,7 +228,7 @@ _HTML_HEAD = """<!doctype html>
 """
 
 
-def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
+def render_trace_html(data: dict, *, trace_path: Path | None = None) -> str:
     """Render a trace dict as a self-contained HTML page.
 
     Args:
@@ -313,15 +313,11 @@ def render_trace_html(data: dict, *, trace_path: Optional[Path] = None) -> str:
         # Highlighted error callout for failed steps — quick "what went wrong".
         if not success and e.get("error"):
             parts.append(
-                f'<div class="error-callout"><span class="label">❌ ERROR</span>'
-                f'{_esc_str(e["error"])}</div>\n'
+                f'<div class="error-callout"><span class="label">❌ ERROR</span>{_esc_str(e["error"])}</div>\n'
             )
         obs = e.get("observation")
         if obs and obs.get("pose"):
-            parts.append(
-                f'<div class="pose"><span class="label">pose</span> '
-                f'<code>{_esc(obs["pose"])}</code></div>\n'
-            )
+            parts.append(f'<div class="pose"><span class="label">pose</span> <code>{_esc(obs["pose"])}</code></div>\n')
         # Unified chronological timeline: step failure + rail + log events.
         timeline = _step_timeline(e)
         if timeline:

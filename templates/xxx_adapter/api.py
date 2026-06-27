@@ -21,8 +21,6 @@ Key patterns shown here:
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.decorators import robot_tool
 from jiuwensymbiosis.api.mixins import (
@@ -64,28 +62,33 @@ class XxxApi(
         p = self.env.get_flange_pose()
         tool_off = self.env.tool_offset_mm
         return {
-            "x": p.x, "y": p.y, "z": p.z - tool_off,
-            "rx": p.rx, "ry": p.ry, "rz": p.rz,
+            "x": p.x,
+            "y": p.y,
+            "z": p.z - tool_off,
+            "rx": p.rx,
+            "ry": p.ry,
+            "rz": p.rz,
         }
 
     @robot_tool(desc="Get the home pose constants (read-only).")
     def get_home_pose(self) -> dict:
         """Get home pose constants (read-only)."""
         return {
-            "x": self.env.home_pose.x, "y": self.env.home_pose.y,
+            "x": self.env.home_pose.x,
+            "y": self.env.home_pose.y,
             "z": self.env.home_pose.z,
-            "rx": self.env.home_pose.rx, "ry": self.env.home_pose.ry,
+            "rx": self.env.home_pose.rx,
+            "ry": self.env.home_pose.ry,
             "rz": self.env.home_pose.rz,
         }
 
     @robot_tool(
         desc=(
-            "Move the TIP to absolute (x, y, z[, r]) in mm/deg, base frame. "
-            "If r is omitted, current r is preserved."
+            "Move the TIP to absolute (x, y, z[, r]) in mm/deg, base frame. If r is omitted, current r is preserved."
         ),
         tags=["motion"],
     )
-    def goto_xyzr(self, x: float, y: float, z: float, r: Optional[float] = None) -> None:
+    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
         """Move tip to target Cartesian pose. tip↔flange geometry stays in the api layer."""
         if r is None:
             r = self.env.get_flange_pose().rz

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ _POSITIVE = ("yes", "是", "已")
 _NEGATIVE = ("no", "否", "没", "未")
 
 
-def _encode_jpeg_b64(image: Any) -> Optional[str]:
+def _encode_jpeg_b64(image: Any) -> str | None:
     """RGB HxWx3 numpy (``api.get_image()``) → base64 JPEG string, or None."""
     try:
         import cv2
@@ -52,7 +53,7 @@ def _ask_vlm_yesno(
     api_key: str,
     model_name: str,
     timeout_s: float = 20.0,
-) -> Optional[bool]:
+) -> bool | None:
     """Ask the VLM ``question`` about ``image``; return True/False, or None if the
     call fails or the answer is unclear."""
     import httpx
@@ -100,8 +101,8 @@ def make_vlm_completion_judge(
     api_key: str,
     model_name: str,
     timeout_s: float = 20.0,
-    question_template: Optional[str] = None,
-    fallback: Optional[Callable[[Any, Any], bool]] = None,
+    question_template: str | None = None,
+    fallback: Callable[[Any, Any], bool] | None = None,
 ) -> Callable[[Any, Any], bool]:
     """Build an ``is_task_complete(api, config) -> bool`` that asks a VLM, from the
     live camera image (``api.get_image()``), whether the pick object is already on
@@ -115,7 +116,7 @@ def make_vlm_completion_judge(
         "not complete" (the arm will then act only if the pick object is detected).
     """
     tmpl = question_template or (
-        "这是机器人腕部相机看到的画面。「{chip}」是否已经放到「{slot}」上面 / 里面了？" "只回答 yes 或 no。"
+        "这是机器人腕部相机看到的画面。「{chip}」是否已经放到「{slot}」上面 / 里面了？只回答 yes 或 no。"
     )
 
     def _judge(api: Any, config: Any) -> bool:

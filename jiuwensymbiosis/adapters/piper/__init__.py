@@ -6,6 +6,7 @@
 Public entry point::
 
     from jiuwensymbiosis.adapters.piper import build_piper_session
+
     session = build_piper_session.from_yaml("configs/piper/<task>.yaml")
     with session:
         ...

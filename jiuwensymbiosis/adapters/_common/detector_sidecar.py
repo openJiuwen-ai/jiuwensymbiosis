@@ -19,8 +19,8 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,12 @@ def detector_subprocess(
     device: str = "cuda",
     startup_timeout_s: float = 300.0,
     log_stdout: bool = True,
-    gdino_model_id: Optional[str] = None,
-    sam2_model_id: Optional[str] = None,
+    gdino_model_id: str | None = None,
+    sam2_model_id: str | None = None,
     box_threshold: float = 0.35,
     text_threshold: float = 0.25,
     use_sam2: bool = True,
-) -> Iterator[Optional[subprocess.Popen]]:
+) -> Iterator[subprocess.Popen | None]:
     """Start (or attach to) the GroundingDINO(+SAM2) detection server.
 
     Yields the ``Popen`` we spawned, or ``None`` if we attached to an external
@@ -69,12 +69,18 @@ def detector_subprocess(
 
     cmd = [
         sys.executable,
-        "-m", "jiuwensymbiosis.serving.grounding_dino_sam2_server",
-        "--host", host,
-        "--port", str(port),
-        "--device", device,
-        "--box-threshold", str(box_threshold),
-        "--text-threshold", str(text_threshold),
+        "-m",
+        "jiuwensymbiosis.serving.grounding_dino_sam2_server",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--device",
+        device,
+        "--box-threshold",
+        str(box_threshold),
+        "--text-threshold",
+        str(text_threshold),
     ]
     if gdino_model_id:
         cmd += ["--gdino-model-id", gdino_model_id]
@@ -90,9 +96,7 @@ def detector_subprocess(
 
     try:
         if not _wait_for_port(host, port, startup_timeout_s):
-            raise RuntimeError(
-                f"detector server did not start on {host}:{port} within {startup_timeout_s}s"
-            )
+            raise RuntimeError(f"detector server did not start on {host}:{port} within {startup_timeout_s}s")
         logger.info("detector ready at %s:%d (pid=%d)", host, port, proc.pid)
         yield proc
     finally:

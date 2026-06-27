@@ -36,11 +36,17 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+
+if TYPE_CHECKING:
+    # TraceLogHandler is defined in utils.logging; imported only for type
+    # checking to avoid a runtime cycle. It is received via
+    # attach_log_handler(), never instantiated here.
+    from jiuwensymbiosis.utils.logging import TraceLogHandler
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +75,8 @@ class TraceEventSink(Protocol):
         kind: str,
         detail: dict,
         success: bool,
-    ) -> None: 
+    ) -> None:
+        """Push one structured rail event (e.g. kind="reject"/"recovery"/"frame") into the trace."""
         ...
 
 
@@ -118,11 +125,7 @@ def _json_safe(obj: Any, *, depth: int = 0) -> Any:
     # Objects with __dict__ (dataclasses, plain objects) — best effort.
     if hasattr(obj, "__dict__"):
         try:
-            return {
-                k: _json_safe(v, depth=depth + 1)
-                for k, v in vars(obj).items()
-                if not k.startswith("_")
-            }
+            return {k: _json_safe(v, depth=depth + 1) for k, v in vars(obj).items() if not k.startswith("_")}
         except (TypeError, AttributeError, RecursionError):
             return repr(obj)[:_MAX_OUTPUT_SUMMARY]
     return repr(obj)[:_MAX_OUTPUT_SUMMARY]
@@ -150,11 +153,11 @@ class TraceEntry:
     tool_name: str = ""
     input_params: dict = field(default_factory=dict)
     success: bool = True
-    error: Optional[str] = None
+    error: str | None = None
     started_at: float = 0.0
     duration_s: float = 0.0
-    observation: Optional[dict] = None  # pose/joints/extra (no raw rgb/depth)
-    frame_path: Optional[str] = None
+    observation: dict | None = None  # pose/joints/extra (no raw rgb/depth)
+    frame_path: str | None = None
     output_summary: str = ""
     rail_events: list[dict] = field(default_factory=list)
     log_events: list[dict] = field(default_factory=list)
@@ -182,7 +185,7 @@ class ExecutionTrace:
 
     conversation_id: str = ""
     robot_name: str = ""
-    query: Optional[str] = None
+    query: str | None = None
     started_at: float = field(default_factory=time.time)
     entries: list[TraceEntry] = field(default_factory=list)
     trace_log: list[dict] = field(default_factory=list)  # log events with no active step
@@ -192,7 +195,7 @@ class ExecutionTrace:
     # pair per step: step N's before-frame is step N-1's after-frame, and step
     # 1's before-frame is this ``initial_frame_path``. Set only when
     # ``save_frames`` is on and the first observation is available.
-    initial_frame_path: Optional[str] = None
+    initial_frame_path: str | None = None
     # Pending rail/log events that arrived before any step started (rare: rails
     # firing in before_invoke). Flushed into the next entry or trace_log.
     _pending_events: list[dict] = field(default_factory=list, repr=False)
@@ -232,7 +235,7 @@ class ExecutionTrace:
         kind: str,
         detail: dict,
         success: bool,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         event = {
             "rail_name": rail_name,
@@ -254,7 +257,7 @@ class ExecutionTrace:
         level: str,
         msg: str,
         ts: float,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         event = {
             "logger": logger_name,
@@ -268,10 +271,10 @@ class ExecutionTrace:
         else:
             self.trace_log.append(event)
 
-    def _current_entry(self) -> Optional[TraceEntry]:
+    def _current_entry(self) -> TraceEntry | None:
         return self.entries[-1] if self.entries else None
 
-    def _find_entry(self, step: Optional[int]) -> Optional[TraceEntry]:
+    def _find_entry(self, step: int | None) -> TraceEntry | None:
         if step is None:
             return self._current_entry()
         for e in self.entries:
@@ -310,7 +313,7 @@ class ExecutionTrace:
         safe_cid = "".join(c if c.isalnum() or c in "-_" else "_" for c in cid)[:64]
         return f"{safe_cid}_{stamp}_{usec:06d}_{os.getpid()}"
 
-    def save(self, traces_dir: Path, *, frames_dir: Optional[Path] = None) -> Path:
+    def save(self, traces_dir: Path, *, frames_dir: Path | None = None) -> Path:
         """Write the trace JSON to ``traces_dir``. Returns the file path.
 
         ``frames_dir`` is accepted for symmetry but frames are written
@@ -323,7 +326,7 @@ class ExecutionTrace:
         return path
 
 
-def _encode_jpeg(rgb: Any, quality: int = 80) -> Optional[bytes]:
+def _encode_jpeg(rgb: Any, quality: int = 80) -> bytes | None:
     """Best-effort JPEG encode of an RGB ndarray. Returns raw bytes (not b64)."""
     try:
         from PIL import Image
@@ -341,7 +344,7 @@ def _encode_jpeg(rgb: Any, quality: int = 80) -> Optional[bytes]:
         return None
 
 
-def _observation_snapshot(env: Any) -> Optional[dict]:
+def _observation_snapshot(env: Any) -> dict | None:
     """Capture pose/joints/extra from the env, dropping raw rgb/depth arrays."""
     try:
         obs = env.get_observation()
@@ -397,7 +400,7 @@ class TraceRail(AgentRail):
         jpeg_quality: int = 80,
         capture_loggers: tuple[str, ...] = _DEFAULT_CAPTURE_LOGGERS,
         capture_log_level: int = _DEFAULT_CAPTURE_LOG_LEVEL,
-        traces_dir: Optional[Path] = None,
+        traces_dir: Path | None = None,
     ) -> None:
         super().__init__()
         self.session = session
@@ -410,7 +413,7 @@ class TraceRail(AgentRail):
         self.capture_loggers = tuple(capture_loggers)
         self.capture_log_level = capture_log_level
 
-        self._trace: Optional[ExecutionTrace] = None
+        self._trace: ExecutionTrace | None = None
         self._frames_saved = 0
         self._traces_dir = Path(traces_dir) if traces_dir else Path(workspace) / "traces"
         # Base frames dir; each invoke writes into its own run-named subdir (see
@@ -418,13 +421,13 @@ class TraceRail(AgentRail):
         # never overwrites another run's frames — the trace JSON's frame_path
         # references must stay valid for replay of historical traces.
         self._frames_base_dir = self._traces_dir / "frames"
-        self._frame_run_token: Optional[str] = None
-        self._log_handler: Optional["TraceLogHandler"] = None  # set by builder
+        self._frame_run_token: str | None = None
+        self._log_handler: TraceLogHandler | None = None  # set by builder
         self._log_handler_loggers: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------ accessors
     @property
-    def trace(self) -> Optional[ExecutionTrace]:
+    def trace(self) -> ExecutionTrace | None:
         """The in-progress (or completed) trace. None until before_invoke."""
         return self._trace
 
@@ -439,7 +442,7 @@ class TraceRail(AgentRail):
     def traces_dir(self) -> Path:
         return self._traces_dir
 
-    def attach_log_handler(self, handler: "TraceLogHandler", loggers: tuple[str, ...]) -> None:
+    def attach_log_handler(self, handler: TraceLogHandler, loggers: tuple[str, ...]) -> None:
         """Bind a TraceLogHandler to forward captured log lines here.
 
         ``loggers`` records which loggers the handler was attached to so
@@ -504,7 +507,7 @@ class TraceRail(AgentRail):
         level: str,
         msg: str,
         ts: float,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         if self._trace is None:
             return
@@ -604,8 +607,9 @@ class TraceRail(AgentRail):
             if frame_path is not None:
                 entry.frame_path = str(frame_path)
         # Enforce max_entries: drop oldest beyond cap.
-        if len(self._trace.entries) > self.max_entries:
-            self._trace.entries = self._trace.entries[-self.max_entries:]
+        cap = self.max_entries
+        if len(self._trace.entries) > cap:
+            self._trace.entries = self._trace.entries[-cap:]
         ctx.extra.pop(_TRACE_CURRENT_KEY, None)
         if self.console:
             mark = "✅" if entry.success else "❌"
@@ -623,9 +627,7 @@ class TraceRail(AgentRail):
             return
         exc = getattr(ctx, "exception", None)
         entry.success = False
-        entry.error = (
-            f"{type(exc).__name__ if exc else 'Exception'}: {exc}" if exc else "tool exception"
-        )
+        entry.error = f"{type(exc).__name__ if exc else 'Exception'}: {exc}" if exc else "tool exception"
         entry.duration_s = time.time() - entry.started_at
         # Note: a SafetyRail rejection raises ValueError in before_tool_call, so
         # this hook sees it; the rail event itself is pushed by SafetyRail via
@@ -634,7 +636,7 @@ class TraceRail(AgentRail):
             print(f"[trace]   └ ❌ {entry.error}", flush=True)
 
     # ------------------------------------------------------------------ finalize
-    def finalize(self) -> Optional[Path]:
+    def finalize(self) -> Path | None:
         """Flush the trace JSON to disk. Safe to call multiple times.
 
         Returns the written path, or None if no trace was started / already
@@ -656,7 +658,7 @@ class TraceRail(AgentRail):
         except (OSError, TypeError, ValueError) as exc:
             logger.warning("TraceRail: finalize failed: %s", exc)
 
-    def _maybe_save_frame(self, step: int) -> Optional[Path]:
+    def _maybe_save_frame(self, step: int) -> Path | None:
         """Grab + save a frame for the given step (used by after_tool_call)."""
         env = getattr(self.session, "env", None)
         if env is None:
@@ -671,7 +673,7 @@ class TraceRail(AgentRail):
             return None
         return self._save_frame(rgb, step)
 
-    def save_frame_for_sink(self, rgb: Any) -> Optional[str]:
+    def save_frame_for_sink(self, rgb: Any) -> str | None:
         """Save a caller-provided frame (used by VisualFeedbackRail's frame_sink).
 
         This lets the on-disk trace frame be the *same* frame injected into the
@@ -685,7 +687,7 @@ class TraceRail(AgentRail):
         result = self._save_frame(rgb, step)
         return str(result) if result is not None else None
 
-    def _save_frame(self, rgb: Any, step: int) -> Optional[Path]:
+    def _save_frame(self, rgb: Any, step: int) -> Path | None:
         data = _encode_jpeg(rgb, quality=self.jpeg_quality)
         if data is None:
             return None

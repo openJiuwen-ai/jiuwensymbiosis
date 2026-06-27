@@ -44,7 +44,7 @@ full = [
 ]
 piper = ["piper_sdk>=0.6.1"]
 calib = [
-    # 手眼标定脚本 scripts/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
+    # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。
     # ChArUco 自 OpenCV 4.7/4.8 起在 cv2.aruco 主模块（无需 opencv-contrib）；棋盘格任意 4.x 可用。
     "opencv-python>=4.8",
@@ -76,5 +76,38 @@ filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
 
-[tool.black]
-line-length = 100
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "B",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade
+    "ASYNC", # flake8-async
+]
+ignore = [
+    "E501",  # line too long (handled by ruff format)
+    "UP009", # keep `# coding: utf-8` declarations (aligns with code template)
+]
+
+[tool.ruff.format]
+# ruff format is a Black-compatible drop-in replacement — one tool does
+# both lint and formatting. Config mirrored from agent-core.
+skip-magic-trailing-comma = false
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true

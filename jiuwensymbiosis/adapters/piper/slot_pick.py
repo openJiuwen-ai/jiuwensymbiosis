@@ -14,7 +14,8 @@ Usage::
 
     from jiuwensymbiosis.adapters.piper import build_piper_session
     from jiuwensymbiosis.adapters.piper.slot_pick import (
-        load_piper_slot_pick_config, build_piper_slot_pick_tool,
+        load_piper_slot_pick_config,
+        build_piper_slot_pick_tool,
     )
 
     session = build_piper_session.from_yaml("configs/piper/slot_pick.yaml")
@@ -27,7 +28,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -57,7 +58,7 @@ def build_piper_slot_pick_tool(
     cfg: SlotPickConfig,
     *,
     name: str = "slot_pick",
-    agent_id: Optional[str] = None,
+    agent_id: str | None = None,
 ) -> Any:
     """Build the openjiuwen ``slot_pick`` Tool bound to a piper api."""
     strategy = build_piper_slot_pick_strategy(api, cfg)

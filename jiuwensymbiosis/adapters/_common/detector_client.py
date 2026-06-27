@@ -13,7 +13,8 @@ import base64
 import io
 import logging
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import requests
@@ -49,18 +50,23 @@ def _post_with_retries(
     backoff_s: float = 1.0,
 ) -> dict:
     """POST JSON with simple retry/backoff. Raises on the final failure."""
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(url, json=payload, timeout=timeout_s)
             resp.raise_for_status()
-            return resp.json()
+            data: dict = resp.json()
+            return data
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < max_attempts:
                 logger.warning(
                     "detector POST %s attempt %d/%d failed: %s; retrying in %.1fs",
-                    url, attempt, max_attempts, exc, backoff_s,
+                    url,
+                    attempt,
+                    max_attempts,
+                    exc,
+                    backoff_s,
                 )
                 time.sleep(backoff_s * attempt)
     raise RuntimeError(f"detector POST {url} failed after {max_attempts} attempts: {last_exc}")
@@ -75,13 +81,14 @@ def init_detector(
 
     Each result is::
 
-        {"mask": np.ndarray[bool], "box": [x1,y1,x2,y2], "score": float, "label": str}
+        {"mask": np.ndarray[bool], "box": [x1, y1, x2, y2], "score": float, "label": str}
 
     The callable is stateless; it makes one HTTP POST per call to
     ``{service_url}/segment``. If the server is unreachable, returns ``[]``
     and logs a warning rather than raising — the caller (xxxApi) treats
     "no detection" as a recoverable outcome.
     """
+
     def segment_fn(
         image: np.ndarray | Image.Image,
         text_prompt: str,
@@ -91,20 +98,18 @@ def init_detector(
             "text_prompt": text_prompt,
         }
         try:
-            data = _post_with_retries(
-                f"{service_url}/segment", payload, timeout_s=timeout_s
-            )
+            data = _post_with_retries(f"{service_url}/segment", payload, timeout_s=timeout_s)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "detector service at %s unreachable: %s", service_url, exc,
+                "detector service at %s unreachable: %s",
+                service_url,
+                exc,
             )
             return []
 
         results_data = data.get("results") or []
         if not results_data:
-            logger.info(
-                "detector returned no results for prompt: %r", text_prompt
-            )
+            logger.info("detector returned no results for prompt: %r", text_prompt)
             return []
 
         results: list[dict[str, Any]] = []

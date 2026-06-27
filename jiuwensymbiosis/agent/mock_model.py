@@ -22,7 +22,8 @@ fallback (used for any provider not in ``ProviderType``) picks it up for
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, List, Optional, Union
+from collections.abc import AsyncIterator
+from typing import Any
 
 from openjiuwen.core.foundation.llm.model_clients.base_model_client import (
     BaseModelClient,
@@ -58,32 +59,32 @@ class MockModelClient(BaseModelClient):
 
     async def invoke(
         self,
-        messages: Union[str, List[Any], List[dict]],
+        messages: str | list[Any] | list[dict],
         *,
-        tools: Optional[List[Any]] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        stop: Optional[str] = None,
-        output_parser: Optional[Any] = None,
-        timeout: Optional[float] = None,
+        tools: list[Any] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        stop: str | None = None,
+        output_parser: Any | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> AssistantMessage:
         return AssistantMessage(content=_MOCK_REPLY)
 
     async def stream(
         self,
-        messages: Union[str, List[Any], List[dict]],
+        messages: str | list[Any] | list[dict],
         *,
-        tools: Optional[List[Any]] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        stop: Optional[str] = None,
-        output_parser: Optional[Any] = None,
-        timeout: Optional[float] = None,
+        tools: list[Any] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        stop: str | None = None,
+        output_parser: Any | None = None,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[AssistantMessageChunk]:
         # Agent loop uses invoke(); streaming is not exercised under --mock.

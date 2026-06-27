@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from typing import Any, AsyncIterator, Callable, Dict, Optional
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import Tool, ToolCard, ToolOutput
 
 
-def _build_action_index(api: Any) -> Dict[str, Callable[..., Any]]:
+def _build_action_index(api: Any) -> dict[str, Callable[..., Any]]:
     """扫描 ``type(api).__mro__`` 收集 ``@robot_tool`` 标注的方法，按 ``meta.name`` 索引。
 
     与 ``builder.py`` 的扫描策略一致：
@@ -42,7 +43,7 @@ def _build_action_index(api: Any) -> Dict[str, Callable[..., Any]]:
     返回 ``{action_name: bound_method}``。
     """
     api_caps = getattr(api, "capabilities", None) or frozenset()
-    index: Dict[str, Callable[..., Any]] = {}
+    index: dict[str, Callable[..., Any]] = {}
     seen: set[str] = set()
     for cls in type(api).__mro__:
         for attr_name, attr_value in cls.__dict__.items():
@@ -69,7 +70,7 @@ def _default_description() -> str:
     )
 
 
-def _default_input_params() -> Dict[str, Any]:
+def _default_input_params() -> dict[str, Any]:
     """Return the default JSON-Schema input params for RobotControlTool."""
     return {
         "type": "object",
@@ -99,11 +100,11 @@ class RobotControlTool(Tool):
         api: Any,
         *,
         name: str = "robot_control",
-        description: Optional[str] = None,
-        agent_id: Optional[str] = None,
+        description: str | None = None,
+        agent_id: str | None = None,
     ) -> None:
         self._api = api
-        self._action_index: Dict[str, Callable[..., Any]] = _build_action_index(api)
+        self._action_index: dict[str, Callable[..., Any]] = _build_action_index(api)
         tool_id = f"{name}_{agent_id}" if agent_id else f"{name}_{uuid.uuid4().hex}"
         card = ToolCard(
             id=tool_id,
@@ -118,7 +119,7 @@ class RobotControlTool(Tool):
         """Return sorted list of available action names."""
         return sorted(self._action_index.keys())
 
-    async def invoke(self, inputs: Dict[str, Any], **kwargs: Any) -> ToolOutput:
+    async def invoke(self, inputs: dict[str, Any], **kwargs: Any) -> ToolOutput:
         """Dispatch an action to the corresponding api method."""
         payload = inputs or {}
         action = payload.get("action")
@@ -137,7 +138,7 @@ class RobotControlTool(Tool):
         if method is None:
             return ToolOutput(
                 success=False,
-                error=(f"unknown action '{action}'; " f"available={self.available_actions}"),
+                error=(f"unknown action '{action}'; available={self.available_actions}"),
             )
         try:
             result = method(**params)
@@ -158,7 +159,7 @@ class RobotControlTool(Tool):
                 error=f"{type(exc).__name__}: {exc}",
             )
 
-    async def stream(self, inputs: Dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:
+    async def stream(self, inputs: dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:
         """Stream stub — kept as async-generator for openjiuwen meta-class compat."""
         if False:
             yield None

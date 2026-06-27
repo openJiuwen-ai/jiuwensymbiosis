@@ -13,12 +13,10 @@ See docs/hardware-porting-guide.md Step 3 for details.
 
 from __future__ import annotations
 
-from typing import Optional
-
-from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
-
 # TODO: Replace with your actual driver
 from jiuwensymbiosis.adapters.xxx.lowlevel import XxxDriver
+
+from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 
 class XxxEnv(BaseRobotEnv):
@@ -29,21 +27,23 @@ class XxxEnv(BaseRobotEnv):
     Add capabilities your hardware supports; remove those it doesn't.
     """
 
-    capabilities = frozenset({
-        "motion.cartesian",     # Cartesian end-effector commands
-        # "motion.joint",       # [选填] Joint-space commands
-        # "grasp.suction",      # [选填] Suction cup
-        # "grasp.parallel",     # [选填] Parallel gripper
-        # "vision.camera",      # [选填] RGB image stream
-        # "vision.depth",       # [选填] Depth stream
-        # "vision.detection",   # [选填] Object detection (needs detector service)
-    })
+    capabilities = frozenset(
+        {
+            "motion.cartesian",  # Cartesian end-effector commands
+            # "motion.joint",       # [选填] Joint-space commands
+            # "grasp.suction",      # [选填] Suction cup
+            # "grasp.parallel",     # [选填] Parallel gripper
+            # "vision.camera",      # [选填] RGB image stream
+            # "vision.depth",       # [选填] Depth stream
+            # "vision.detection",   # [选填] Object detection (needs detector service)
+        }
+    )
     name: str = "xxx"
 
     def __init__(self, cfg) -> None:
         """Store config reference; do NOT connect yet (deferred to connect())."""
         self._cfg = cfg
-        self.low_level: Optional[XxxDriver] = None  # ← driver delegate
+        self.low_level: XxxDriver | None = None  # ← driver delegate
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -75,10 +75,14 @@ class XxxEnv(BaseRobotEnv):
         # Pose
         try:
             p = ll.get_pose()
-            pose = {"x": p.x, "y": p.y, "z": p.z,
-                    "rx": getattr(p, "rx", 0.0),
-                    "ry": getattr(p, "ry", 0.0),
-                    "rz": getattr(p, "rz", 0.0)}
+            pose = {
+                "x": p.x,
+                "y": p.y,
+                "z": p.z,
+                "rx": getattr(p, "rx", 0.0),
+                "ry": getattr(p, "ry", 0.0),
+                "rz": getattr(p, "rz", 0.0),
+            }
         except Exception:
             pose = None
 
@@ -115,7 +119,7 @@ class XxxEnv(BaseRobotEnv):
         return float(self._cfg.z_min_safe_mm)
 
     @property
-    def workspace_bounds(self) -> Optional[tuple]:
+    def workspace_bounds(self) -> tuple | None:
         """XY workspace bounds or None. SafetyRail reads this automatically."""
         cfg = self._cfg
         if cfg.x_min_mm is not None:
