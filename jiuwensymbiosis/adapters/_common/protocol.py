@@ -108,6 +108,20 @@ class JointDriver(Protocol):
 
 
 @runtime_checkable
+class ServoDriver(Protocol):
+    """Optional non-blocking streaming-motion surface for the real-time servo loop.
+
+    Unlike ``move_to_pose_blocking`` (which polls to completion), ``servo_to_pose``
+    fires a FLANGE-frame pose command and returns immediately, so a ``control_hz``
+    loop can stream small slew-limited steps toward a moving target. ``pose`` is a
+    mapping with ``x/y/z`` (mm) and optional ``rx/ry/rz``/``r`` (deg).
+    """
+
+    def servo_to_pose(self, pose: Any) -> None:
+        """Issue a non-blocking FLANGE-frame pose command (returns immediately)."""
+
+
+@runtime_checkable
 class CameraDriver(Protocol):
     """Optional camera surface — typically delegates to ``_common.RealSenseCamera``."""
 

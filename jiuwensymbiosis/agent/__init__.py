@@ -33,6 +33,7 @@ from jiuwensymbiosis.agent.config import (
     RobotAgentConfig,
     build_model,
 )
+from jiuwensymbiosis.agent.run import run_fast_task, run_robot_task
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import (
     ExecutionTrace,
@@ -59,6 +60,8 @@ __all__ = [
     "build_model",
     "build_robot_agent",
     "build_robot_agent_config",
+    "run_robot_task",
+    "run_fast_task",
     "RobotAgentConfig",
     "RobotSession",
     "ROBOT_PROMPT_TEMPLATE",

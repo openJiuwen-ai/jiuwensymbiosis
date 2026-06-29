@@ -11,7 +11,7 @@ Wraps the driver (``low_level``), exposes ``connect``/``disconnect``/
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -31,6 +31,7 @@ class PiperEnv(BaseRobotEnv):
         {
             "motion.cartesian",
             "motion.joint",
+            "motion.servo",
             "grasp.parallel",
             "vision.camera",
             "vision.depth",
@@ -78,7 +79,7 @@ class PiperEnv(BaseRobotEnv):
         )
         if any(v is None for v in raw):
             return None
-        return tuple(float(v) for v in raw)  # type: ignore[return-value]
+        return cast("tuple[float, float, float, float]", raw)
 
     @workspace_bounds.setter
     def workspace_bounds(self, _: tuple[float, float, float, float] | None) -> None:
@@ -153,7 +154,7 @@ class PiperEnv(BaseRobotEnv):
             # `_inner` is non-None here: `_connected` is set True only after
             # `_inner` is assigned in connect(); mypy can't track the invariant.
             self._inner.close()  # type: ignore[union-attr]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - disconnect is best-effort
             logger.warning("PiperEnv disconnect failed: %s", exc)
         self._inner = None
         self._connected = False
@@ -169,19 +170,19 @@ class PiperEnv(BaseRobotEnv):
             frames = self._inner.grab_frames()  # type: ignore[attr-defined]  # CameraDriver sibling protocol
             if frames is not None:
                 rgb, depth = frames
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - camera read best-effort
             logger.debug("PiperEnv.grab_frames failed: %s", exc)
         pose: dict | None = None
         try:
             p = self._inner.get_pose()
             pose = {"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - pose read best-effort
             pose = None
         joints: list[float] | None = None
         try:
             a = self._inner.get_angles()  # type: ignore[attr-defined]  # JointDriver sibling protocol
             joints = list(a.as_tuple())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - joint read best-effort
             joints = None
         return RobotObservation(
             pose=pose,

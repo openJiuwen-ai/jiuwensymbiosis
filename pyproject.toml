@@ -90,11 +90,16 @@ select = [
     "C4",    # flake8-comprehensions
     "UP",    # pyupgrade
     "ASYNC", # flake8-async
+    "SLF",   # flake8-self (flag cross-object private-member access, e.g. agent._react_agent)
 ]
 ignore = [
     "E501",  # line too long (handled by ruff format)
     "UP009", # keep `# coding: utf-8` declarations (aligns with code template)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# White-box tests legitimately reach into the internals of objects under test.
+"tests/**" = ["SLF001"]
 
 [tool.ruff.format]
 # ruff format is a Black-compatible drop-in replacement — one tool does

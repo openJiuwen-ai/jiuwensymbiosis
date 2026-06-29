@@ -35,4 +35,18 @@ def clear_proxy_env() -> dict[str, str]:
             popped[k] = v
     os.environ.setdefault("NO_PROXY", "*")
     os.environ.setdefault("no_proxy", "*")
+    # Stash a popped proxy so EXTERNAL calls that genuinely need it (e.g. the
+    # cloud LLM planner reaching api.siliconflow.cn) can opt back into it, while
+    # local services (detector / local vLLM on 127.0.0.1) stay OFF the proxy via
+    # NO_PROXY=*. Consumers read ``JIUWEN_LLM_PROXY`` and pass it explicitly.
+    proxy = (
+        popped.get("https_proxy")
+        or popped.get("HTTPS_PROXY")
+        or popped.get("http_proxy")
+        or popped.get("HTTP_PROXY")
+        or popped.get("all_proxy")
+        or popped.get("ALL_PROXY")
+    )
+    if proxy:
+        os.environ.setdefault("JIUWEN_LLM_PROXY", proxy)
     return popped
