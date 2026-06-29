@@ -13,6 +13,8 @@ from jiuwensymbiosis.agent import (
     build_model,
     build_robot_agent_config,
     clear_proxy_env,
+    run_fast_task,
+    run_robot_task,
 )
 from jiuwensymbiosis.agent.builder import build_robot_agent
 from jiuwensymbiosis.agent.session import RobotSession
@@ -44,6 +46,8 @@ __all__ = [
     "RobotSession",
     "build_robot_agent",
     "build_robot_agent_config",
+    "run_robot_task",
+    "run_fast_task",
     "AgentRail",
     "Tool",
     "ToolCard",

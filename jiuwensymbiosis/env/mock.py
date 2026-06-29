@@ -25,6 +25,7 @@ class MockArmEnv(BaseRobotEnv):
     capabilities = frozenset(
         {
             "motion.cartesian",
+            "motion.servo",
             "grasp.parallel",
             "vision.camera",
             "vision.detection",
@@ -115,13 +116,31 @@ class MockArmEnv(BaseRobotEnv):
             self._pose["r"] = float(r)
         self._move_log.append(dict(self._pose))
 
+    def servo_to_flange(self, pose: Any) -> None:
+        """Non-blocking pose command for the real-time servo loop.
+
+        On the mock arm tip == flange and motion is instantaneous, so this just
+        sets the pose (no settle wait). Accepts a mapping or attr-object with
+        ``x/y/z`` and optional ``r``. The Z floor is still enforced.
+        """
+
+        def _get(key: str, default: float) -> float:
+            v = pose.get(key) if isinstance(pose, dict) else getattr(pose, key, None)
+            return float(v) if v is not None else float(default)
+
+        x = _get("x", self._pose["x"])
+        y = _get("y", self._pose["y"])
+        z = _get("z", self._pose["z"])
+        r = _get("r", _get("rz", self._pose.get("r", 0.0)))
+        self.move(x, y, z, r)
+
     def home(self) -> None:
         """Return to the home pose."""
         self._pose = dict(self._home)
         self._move_log.append(dict(self._pose))
 
     @property
-    def home_pose(self):
+    def home_pose(self) -> dict[str, float]:
         """Return a copy of the home pose."""
         return dict(self._home)
 

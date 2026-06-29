@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation, KNOWN_CAPABILITIES
+from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES, BaseRobotEnv, RobotObservation
 
 
 class TestKnownCapabilities:
@@ -15,6 +15,7 @@ class TestKnownCapabilities:
         expected = {
             "motion.cartesian",
             "motion.joint",
+            "motion.servo",
             "grasp.suction",
             "grasp.parallel",
             "vision.camera",

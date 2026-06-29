@@ -40,6 +40,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
     {
         "motion.cartesian",  # XYZ(R) end-effector commands in base frame
         "motion.joint",  # joint-space commands
+        "motion.servo",  # non-blocking streaming pose commands (real-time servo loop)
         "grasp.suction",  # suction on/off
         "grasp.parallel",  # parallel gripper open/close
         "vision.camera",  # raw image stream available
@@ -226,6 +227,25 @@ class BaseRobotEnv(ABC):
         """Move to a joint-space configuration (blocking)."""
         # JointDriver sibling protocol; motion.joint-capability-gated
         self._require_driver().move_joint_blocking(q)  # type: ignore[attr-defined]
+
+    def servo_to_flange(self, pose: Any) -> None:
+        """Issue a NON-BLOCKING FLANGE-frame pose command (returns immediately).
+
+        This is the streaming-motion primitive the real-time servo loop drives
+        at ``control_hz``: it commands a small step toward a target and returns
+        without waiting for the arm to settle (unlike ``move_to_flange``, which
+        polls to completion). ``pose`` is a mapping with keys ``x/y/z`` (mm) and
+        optional ``rx/ry/rz`` or ``r`` (deg), base frame.
+
+        Default delegates to the driver's ``servo_to_pose`` when present; envs
+        that declare ``motion.servo`` must provide it (override or driver). Raises
+        otherwise.
+        """
+        driver = self._require_driver()
+        servo = getattr(driver, "servo_to_pose", None)
+        if servo is None:
+            raise NotImplementedError(f"{self.name}: driver has no servo_to_pose (declare/implement 'motion.servo').")
+        servo(pose)
 
     def set_end_effector(self, engaged: bool) -> None:
         """Engage (True) / release (False) the end effector.

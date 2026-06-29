@@ -25,22 +25,22 @@ For a dry run without hardware (mock arm + gripper), pass ``--mock``.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
-from jiuwensymbiosis.utils.proxy import clear_proxy_env  # noqa: E402
+from jiuwensymbiosis.utils.proxy import clear_proxy_env  # noqa: E402 - call it before the package imports below
 
 clear_proxy_env()
 
-from jiuwensymbiosis import RobotSession, build_robot_agent
-from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig
+from jiuwensymbiosis import RobotSession, run_robot_task  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
+from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,10 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
         class _MockPiperApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
             """无硬件环境下的 Piper 机械臂模拟 API。"""
 
+            # Narrow the base ``env`` (BaseRobotEnv) to the mock subtype so the
+            # selftest tools can see ``move`` / ``set_suction`` / ``home_pose``.
+            env: MockArmEnv
+
             @robot_tool(desc="home", tags=["motion"])
             def home(self) -> None:
                 """回归机械臂初始位姿。"""
@@ -79,7 +83,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
             @robot_tool
             def get_home_pose(self) -> dict:
                 """获取初始位姿。"""
-                return self.env.home_pose()
+                return self.env.home_pose
 
             @robot_tool(tags=["motion"])
             def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
@@ -101,7 +105,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
             @robot_tool
             def get_grasp_info_simple(self, object_name: str) -> dict:
                 """获取抓取目标的位姿信息（返回模拟值）。"""
-                hp = self.env.home_pose()
+                hp = self.env.home_pose
                 return {
                     "ok": True,
                     "position": [hp["x"] + 30, hp["y"], hp["z"] - 200],
@@ -113,7 +117,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
             @robot_tool
             def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
                 """将像素坐标 + 深度转换为基坐标系下的三维坐标（返回模拟值）。"""
-                hp = self.env.home_pose()
+                hp = self.env.home_pose
                 return {"x": hp["x"] + 30, "y": hp["y"], "z": hp["z"] - 200}
 
         env = MockArmEnv()
@@ -122,7 +126,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
 
     from jiuwensymbiosis.adapters.piper import build_piper_session
 
-    return build_piper_session.from_yaml(args.config)
+    return cast(RobotSession, build_piper_session.from_yaml(args.config))
 
 
 def _build_model_spec(raw: dict[str, Any], args: argparse.Namespace) -> ModelSpec:
@@ -133,18 +137,21 @@ def _build_model_spec(raw: dict[str, Any], args: argparse.Namespace) -> ModelSpe
         spec.api_base = args.server_url.rstrip("/").removesuffix("/chat/completions")
     if args.model:
         spec.model_name = args.model
+    # Key priority: --api-key > $OPENJIUWEN_API_KEY > YAML model.api_key.
     if args.api_key:
         spec.api_key = args.api_key
+    elif os.environ.get("OPENJIUWEN_API_KEY"):
+        spec.api_key = os.environ["OPENJIUWEN_API_KEY"]
     return spec
 
 
 def _resolve_query(raw: dict[str, Any], args: argparse.Namespace) -> str:
     """解析用户查询：优先取 --query 参数，其次 YAML 中的 prompt 字段，最后返回默认值。"""
     if args.query:
-        return args.query
+        return cast(str, args.query)
     body = (raw.get("env", {}).get("cfg", {}) or {}).get("prompt")
     if body:
-        return body
+        return cast(str, body)
     return "Run the configured pick-box task to completion."
 
 
@@ -181,6 +188,33 @@ def main() -> int:
     p.add_argument(
         "--no-visual-feedback", action="store_true", help="Disable VisualFeedbackRail (use a non-VLM model)."
     )
+    p.add_argument(
+        "--fast",
+        action="store_true",
+        help="Fast path (exec_mode=fast): plan once with the LLM (selecting "
+        "skills), then run an in-process real-time Perceive+Act servo loop with "
+        "NO LLM per step. Default: the per-step LLM agent (slow).",
+    )
+    p.add_argument(
+        "--pick-object",
+        default=None,
+        help="Fast path only: pick object name. With both --pick-object and "
+        "--place-object set, the planner LLM is skipped entirely (zero-LLM).",
+    )
+    p.add_argument("--place-object", default=None, help="Fast path only: place target object name.")
+    # --- fast-path tuning (real-time servo tracking) ---
+    p.add_argument(
+        "--control-hz",
+        type=float,
+        default=10.0,
+        help="Fast path: servo control-loop rate (Hz). Start low on the Piper (firmware EndPoseCtrl).",
+    )
+    p.add_argument(
+        "--servo-step-mm",
+        type=float,
+        default=5.0,
+        help="Fast path: max linear move per servo tick (mm, slew limit).",
+    )
     p.add_argument("--max-iter", type=int, default=30)
     p.add_argument(
         "--workspace",
@@ -215,6 +249,20 @@ def main() -> int:
     logger.info("  query : %s", query[:120] + ("..." if len(query) > 120 else ""))
     logger.info("")
 
+    logger.info("  exec  : %s", "FAST (plan-once + real-time servo loop)" if args.fast else "AGENT (per-step LLM)")
+    exec_config = None
+    if args.fast:
+        from jiuwensymbiosis.agent.fast import SkillExecConfig
+        from jiuwensymbiosis.agent.fast.realtime import ServoConfig
+
+        exec_config = SkillExecConfig(
+            servo=ServoConfig(control_hz=args.control_hz, max_lin_step_mm=args.servo_step_mm),
+        )
+        logger.info(
+            "  loop  : SKILL.md workflow + tracking (no approach/lift offsets; control_hz=%.1f, step=%.1fmm)",
+            args.control_hz,
+            args.servo_step_mm,
+        )
     with session:
         # YAML ``agent:`` block is the declarative base (trace/logging/mode
         # knobs live there); CLI flags override on top. ``model_spec`` is owned
@@ -237,9 +285,12 @@ def main() -> int:
             agent_cfg.log_level = "DEBUG"
         if args.workspace:
             agent_cfg.workspace = args.workspace
-        agent = build_robot_agent(session, config=agent_cfg)
+        agent_cfg.exec_mode = "fast" if args.fast else "agent"
+        agent_cfg.fast_pick_object = args.pick_object
+        agent_cfg.fast_place_object = args.place_object
+        agent_cfg.exec_config = exec_config
         conv_id = f"piper-demo-{uuid.uuid4().hex[:8]}"
-        result = asyncio.run(agent.invoke({"query": query, "conversation_id": conv_id}))
+        result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
 
     logger.info("=== Agent result ===")
     if isinstance(result, dict):

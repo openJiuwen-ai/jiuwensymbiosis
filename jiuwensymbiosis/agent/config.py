@@ -20,8 +20,15 @@ from jiuwensymbiosis.agent.abstractions import (
 
 Mode = Literal["tool", "code", "hybrid"]
 
+# Execution mechanism (the speed switch):
+#   "agent" — per-step LLM orchestration (current default; many LLM round-trips).
+#   "fast"  — plan once (one LLM inference selecting skills), then run an
+#             in-process Perceive+Act real-time loop with NO LLM in the loop.
+ExecMode = Literal["agent", "fast"]
+
 __all__ = [
     "Mode",
+    "ExecMode",
     "ModelSpec",
     "RailConfig",
     "RobotAgentConfig",
@@ -191,6 +198,14 @@ class RobotAgentConfig:
     # setting; jiuwensymbiosis does not touch openjiuwen's log path. Set None
     # for console-only; override via env or YAML ``agent.log_dir``.
     log_dir: str | None = "./logs"
+
+    # --- speed switch (fast path) ---
+    # exec_mode: "agent" (per-step LLM, current) or "fast" agent (plan-once + real-time
+    #   Perceive+Act loop with no LLM in the loop). See ExecMode.
+    exec_mode: ExecMode = "agent"
+    fast_pick_object: str | None = None
+    fast_place_object: str | None = None
+    exec_config: Any = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> RobotAgentConfig:

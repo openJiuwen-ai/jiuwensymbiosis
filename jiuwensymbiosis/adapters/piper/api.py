@@ -155,6 +155,37 @@ class PiperApi(
         )
         self.env.move_to_flange(FlangePose(flange_x, y, flange_z, _TOOL_DOWN_RX, _TOOL_DOWN_RY, float(r)))
 
+    def servo_to_tip(self, pose: dict) -> None:
+        """NON-BLOCKING servo command toward a TIP-frame pose (real-time loop).
+
+        Mirrors ``goto_xyzr``'s tip→flange conversion (tilted tool ``ry``, tool
+        offset) but issues the command via the env's non-blocking
+        ``servo_to_flange`` instead of the blocking ``move_to_flange``. The
+        real-time ``ServoController`` calls this each tick; ``get_pose`` (also
+        TIP frame) is its matching pose reader, so the loop stays frame-
+        consistent. ``pose`` keys: ``x/y/z`` (mm) + optional ``r``/``rz`` (deg).
+        """
+        x = float(pose["x"])
+        y = float(pose["y"])
+        z = float(pose["z"])
+        r = pose.get("r", pose.get("rz"))
+        if r is None:
+            r = self.env.get_flange_pose().rz
+        tool_offset_mm = self.env.tool_offset_mm
+        ry_rad = math.radians(_TOOL_DOWN_RY)
+        flange_x = x + tool_offset_mm * math.sin(ry_rad)
+        flange_z = z + tool_offset_mm * math.cos(ry_rad)
+        self.env.servo_to_flange(
+            {
+                "x": flange_x,
+                "y": y,
+                "z": flange_z,
+                "rx": _TOOL_DOWN_RX,
+                "ry": _TOOL_DOWN_RY,
+                "rz": float(r),
+            }
+        )
+
     @robot_tool(
         desc="Full 6-DoF move (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg). "
         "z is FLANGE frame (no tool-offset compensation).",
@@ -387,7 +418,7 @@ class PiperApi(
             return {"ok": False, "reason": "detector_unavailable"}
         try:
             results = self._seg_fn(rgb, text_prompt=target)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - surface detector failure as ok=False
             return {"ok": False, "reason": str(exc)}
         scores = sorted((float(r.get("score", 0.0)) for r in results), reverse=True)
         return {
@@ -418,7 +449,7 @@ class PiperApi(
         try:
             self._seg_fn = init_detector(self._detector_service_url)
             logger.info("[PiperApi] detector client bound to %s", self._detector_service_url)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - detector init best-effort; tools degrade
             logger.warning(
                 "[PiperApi] detector init failed (%s); detection tools will return ok=False.",
                 exc,

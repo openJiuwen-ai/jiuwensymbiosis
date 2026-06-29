@@ -342,7 +342,7 @@ class PiperLowLevel:
         """Ensure close() is called on garbage collection."""
         try:
             self.close()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - __del__ cleanup must never raise
             pass
 
     # ============================================================== properties
@@ -465,6 +465,49 @@ class PiperLowLevel:
             label="EndPose",
         )
 
+    def servo_to_pose(self, pose: Any) -> None:
+        """NON-BLOCKING FLANGE-frame pose command for the real-time servo loop.
+
+        Sends one ``EndPoseCtrl`` (MOVE_P) toward the target and returns
+        immediately — no ``_wait_pose_reached`` poll. The control loop is
+        responsible for slew-limiting and for re-issuing toward the latest
+        target each tick. Workspace clamp + Z floor are still enforced (a servo
+        loop must not be able to drive the tip through the floor).
+
+        ``pose`` is a mapping (``x/y/z`` mm + optional ``rx/ry/rz`` deg) or any
+        object exposing those attributes; missing orientation falls back to the
+        live flange orientation.
+        """
+
+        def _get(key: str, default: float) -> float:
+            if isinstance(pose, dict):
+                v = pose.get(key)
+            else:
+                v = getattr(pose, key, None)
+            return float(v) if v is not None else float(default)
+
+        cur = self._read_pose()
+        rx0, ry0, rz0 = (cur.rx, cur.ry, cur.rz) if cur is not None else (0.0, 0.0, 0.0)
+        x = _get("x", cur.x if cur is not None else 0.0)
+        y = _get("y", cur.y if cur is not None else 0.0)
+        z = _get("z", cur.z if cur is not None else 0.0)
+        rx = _get("rx", rx0)
+        ry = _get("ry", ry0)
+        # accept either rz or r for the wrist angle
+        rz = _get("rz", _get("r", rz0))
+
+        x, y, z = self._clamp_xy_box(x, y, z)
+        self._bounds.check_flange_z(z)
+        for v, name in ((x, "x"), (y, "y"), (z, "z"), (rx, "rx"), (ry, "ry"), (rz, "rz")):
+            if not math.isfinite(v):
+                raise ValueError(f"[Piper] servo non-finite {name}={v}")
+        x_int, y_int, z_int = round(x * _FACTOR), round(y * _FACTOR), round(z * _FACTOR)
+        rx_int, ry_int, rz_int = round(rx * _FACTOR), round(ry * _FACTOR), round(rz * _FACTOR)
+        with self._lock:
+            self._arm.MotionCtrl_2(_CTRL_CAN, _MOVE_P, self._move_speed, 0x00)
+            self._arm.EndPoseCtrl(x_int, y_int, z_int, rx_int, ry_int, rz_int)
+        # Intentionally NO wait: return immediately so the servo loop keeps its rate.
+
     def move_joint_blocking(
         self,
         q: list[float],
@@ -514,7 +557,7 @@ class PiperLowLevel:
         try:
             if self._camera is not None:
                 self._camera.stop()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - best-effort camera teardown
             pass
         # Leave the arm ENERGIZED and holding its pose: do NOT DisableArm
         # (that makes it go limp and drop whatever it is holding) and do NOT
@@ -523,7 +566,7 @@ class PiperLowLevel:
         # explicitly disabled.
         try:
             self._arm.DisconnectPort()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - best-effort CAN disconnect
             pass
         self._closed = True
         logger.info("[Piper] Closed.")
@@ -542,7 +585,7 @@ class PiperLowLevel:
                 ry=msg.RY_axis / _FACTOR,
                 rz=msg.RZ_axis / _FACTOR,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - CAN read may fail; return None
             logger.warning("[Piper] GetArmEndPoseMsgs failed: %s", exc)
             return None
 
@@ -559,7 +602,7 @@ class PiperLowLevel:
                 j5=js.joint_5 / _FACTOR,
                 j6=js.joint_6 / _FACTOR,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - CAN read may fail; return None
             logger.warning("[Piper] GetArmJointMsgs failed: %s", exc)
             return None
 
@@ -699,7 +742,7 @@ class PiperLowLevel:
         """
         try:
             return "EXCEEDS_LIMIT" in str(self._arm.GetArmStatus().arm_status.arm_status)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - status read best-effort; assume not exceeded
             return False
 
     def _wait_joints_reached(
