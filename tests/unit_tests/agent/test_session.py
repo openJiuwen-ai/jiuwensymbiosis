@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.api.mixins import JointMotionMixin
 from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.agent.session import RobotSession
-
 from tests.mocks.mock_api import MockApi
 
 

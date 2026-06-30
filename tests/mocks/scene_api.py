@@ -19,8 +19,6 @@ the same frames the pipeline consumes.
 
 from __future__ import annotations
 
-from typing import Any
-
 from jiuwensymbiosis.adapters._common.geometry import (
     apply_transform,
     pixel_and_depth_to_camera_xyz,
@@ -56,7 +54,7 @@ class SceneMockApi(MockApi):
         scene = getattr(env, "_scene", None)
         if scene is None:
             raise ValueError(
-                "SceneMockApi requires env to have a scene; " "construct MockArmEnv(scene=MockScene(...)) first."
+                "SceneMockApi requires env to have a scene; construct MockArmEnv(scene=MockScene(...)) first."
             )
         self._scene: MockScene = scene
         self._grasp_z_offset_mm = grasp_z_offset_mm

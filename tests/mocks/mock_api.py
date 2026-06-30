@@ -47,7 +47,14 @@ class MockApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
         hp = self.env.home_pose
         if isinstance(hp, dict):
             return hp
-        return {"x": hp.x, "y": hp.y, "z": hp.z, "rx": getattr(hp, "rx", 0), "ry": getattr(hp, "ry", 0), "rz": getattr(hp, "rz", 0)}
+        return {
+            "x": hp.x,
+            "y": hp.y,
+            "z": hp.z,
+            "rx": getattr(hp, "rx", 0),
+            "ry": getattr(hp, "ry", 0),
+            "rz": getattr(hp, "rz", 0),
+        }
 
     @robot_tool(tags=["motion"])
     def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:

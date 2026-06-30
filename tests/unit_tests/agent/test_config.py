@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 from jiuwensymbiosis.agent.config import (
+    ROBOT_PROMPT_TEMPLATE,
     ModelSpec,
     RailConfig,
     RobotAgentConfig,
-    ROBOT_PROMPT_TEMPLATE,
     build_model,
 )
 

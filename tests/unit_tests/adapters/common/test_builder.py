@@ -9,10 +9,10 @@ import inspect
 
 import yaml
 
-from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.adapters._common.builder import make_builder
 from jiuwensymbiosis.adapters.piper.config import PiperConfig
+from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.env.mock import MockArmEnv
 from tests.mocks.mock_api import MockApi
 
 
@@ -93,7 +93,9 @@ class _FlatConfig:
 class TestApiKwargsFromCfgList:
     def test_same_name_passthrough(self):
         builder = make_builder(
-            _FlatConfig, _TestEnv, _RecordingApi,
+            _FlatConfig,
+            _TestEnv,
+            _RecordingApi,
             api_kwargs_from_cfg=["a", "b"],
         )
         cfg = _FlatConfig(a=1, b="two", deep_url="x")
@@ -103,7 +105,9 @@ class TestApiKwargsFromCfgList:
     def test_rename_mapping(self):
         # "cfg_attr:api_kwarg" maps cfg.deep_url → api_kwarg "url".
         builder = make_builder(
-            _FlatConfig, _TestEnv, _RecordingApi,
+            _FlatConfig,
+            _TestEnv,
+            _RecordingApi,
             api_kwargs_from_cfg=["a", "deep_url:url"],
         )
         cfg = _FlatConfig(a=1, b="x", deep_url="http://d")
@@ -116,7 +120,9 @@ class TestApiKwargsFromCfgList:
             return {"a": cfg.a, "b": cfg.b}
 
         builder = make_builder(
-            _FlatConfig, _TestEnv, _RecordingApi,
+            _FlatConfig,
+            _TestEnv,
+            _RecordingApi,
             api_kwargs_from_cfg=_kw,
         )
         cfg = _FlatConfig(a=7, b="z", deep_url="x")
@@ -129,9 +135,16 @@ class TestMakeDetectorSidecar:
         from types import SimpleNamespace
 
         det = SimpleNamespace(
-            spawn=spawn, host="127.0.0.1", port=8114, device="cpu",
-            startup_timeout_s=1.0, gdino_model_id="m1", sam2_model_id="m2",
-            box_threshold=0.3, text_threshold=0.2, use_sam2=True,
+            spawn=spawn,
+            host="127.0.0.1",
+            port=8114,
+            device="cpu",
+            startup_timeout_s=1.0,
+            gdino_model_id="m1",
+            sam2_model_id="m2",
+            box_threshold=0.3,
+            text_threshold=0.2,
+            use_sam2=True,
             url="http://127.0.0.1:8114",
         )
         return SimpleNamespace(detector=det, name="t")

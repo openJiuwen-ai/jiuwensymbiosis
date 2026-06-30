@@ -68,9 +68,9 @@ class TestPiperApiDelegatesThroughEnv:
     """Motion/gripper route api -> env public method -> driver (not via _ll)."""
 
     def _build(self):
+        from jiuwensymbiosis.adapters.piper.api import PiperApi
         from jiuwensymbiosis.adapters.piper.config import PiperConfig
         from jiuwensymbiosis.adapters.piper.env import PiperEnv
-        from jiuwensymbiosis.adapters.piper.api import PiperApi
 
         env = PiperEnv(PiperConfig())
         driver = _SpyDriver()

@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from jiuwensymbiosis.tools.inproc_code import InProcessCodeExec, InProcessCodeTool, make_inproc_code_tool
 from jiuwensymbiosis.agent.abstractions import LocalFunction
+from jiuwensymbiosis.tools.inproc_code import InProcessCodeExec, InProcessCodeTool, make_inproc_code_tool
 
 
 def _provider():

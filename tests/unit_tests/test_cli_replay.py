@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 
 from jiuwensymbiosis.cli import replay, replay_html
 
@@ -40,18 +39,20 @@ def _sample_trace() -> dict:
                 "observation": None,
                 "frame_path": None,
                 "rail_events": [
-                    {"rail_name": "RecoveryRail", "kind": "recover",
-                     "detail": {"home_ok": True}, "success": True},
+                    {"rail_name": "RecoveryRail", "kind": "recover", "detail": {"home_ok": True}, "success": True},
                 ],
                 "log_events": [
-                    {"logger": "jiuwensymbiosis.rails.recovery",
-                     "level": "WARNING", "msg": "home() retried", "ts": 0.0},
+                    {
+                        "logger": "jiuwensymbiosis.rails.recovery",
+                        "level": "WARNING",
+                        "msg": "home() retried",
+                        "ts": 0.0,
+                    },
                 ],
             },
         ],
         "trace_log": [
-            {"logger": "jiuwensymbiosis.detector", "level": "WARNING",
-             "msg": "detector unreachable", "ts": 0.0},
+            {"logger": "jiuwensymbiosis.detector", "level": "WARNING", "msg": "detector unreachable", "ts": 0.0},
         ],
     }
 

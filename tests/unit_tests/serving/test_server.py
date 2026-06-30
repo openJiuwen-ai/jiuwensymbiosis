@@ -12,11 +12,11 @@ import pytest
 
 try:
     from jiuwensymbiosis.serving.grounding_dino_sam2_server import (
-        app,
         SegmentRequest,
-        _normalize_prompt,
-        _encode_mask,
         _box_to_mask,
+        _encode_mask,
+        _normalize_prompt,
+        app,
     )
 
     HAS_TORCH = True
@@ -70,7 +70,7 @@ class TestBoxToMask:
 class TestEndpoints:
     @pytest.mark.asyncio
     async def test_health(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -81,7 +81,7 @@ class TestEndpoints:
 
     @pytest.mark.asyncio
     async def test_segment_missing_fields(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

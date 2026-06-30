@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 from jiuwensymbiosis.api.mixins import (
-    MotionMixin,
     JointMotionMixin,
-    SuctionMixin,
+    MotionMixin,
     ParallelGripperMixin,
+    SuctionMixin,
     VisionMixin,
 )
 

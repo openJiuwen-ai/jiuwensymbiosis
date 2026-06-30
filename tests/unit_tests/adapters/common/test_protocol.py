@@ -8,14 +8,13 @@ from __future__ import annotations
 import inspect
 
 from jiuwensymbiosis.adapters._common.protocol import (
-    RobotDriver,
-    JointDriver,
     CameraDriver,
-    SuctionDriver,
     GripperDriver,
+    JointDriver,
+    RobotDriver,
+    SuctionDriver,
     VisionDriver,
 )
-
 from tests.mocks.mock_driver import MockPiperDriver
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.tools.slot_pick.skill import (
     SlotPickConfig,
     geometric_completion_judge,
@@ -14,7 +15,6 @@ from jiuwensymbiosis.tools.slot_pick.skill import (
 )
 from jiuwensymbiosis.tools.slot_pick.strategy import GripperStrategy
 from tests.mocks.mock_api import MockApi
-from jiuwensymbiosis.env.mock import MockArmEnv
 
 
 class TestSlotPickConfig:

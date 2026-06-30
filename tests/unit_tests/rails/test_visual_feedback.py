@@ -8,9 +8,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail, _encode_jpeg_b64
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.env.mock import MockArmEnv
+from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail, _encode_jpeg_b64
 from tests.mocks.mock_api import MockApi
 
 
@@ -71,8 +71,9 @@ class TestGrabFrameB64:
 class TestVisualFeedbackTraceSink:
     @pytest.mark.asyncio
     async def test_inject_notifies_sink(self, mock_session):
-        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
         from unittest.mock import MagicMock
+
+        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
 
         class _Sink:
             def __init__(self):

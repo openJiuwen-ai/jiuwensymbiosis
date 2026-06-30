@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 
 from jiuwensymbiosis.adapters._common.calibration import (
-    load_calibration,
     LegacyCalibrationError,
+    load_calibration,
 )
 
 
