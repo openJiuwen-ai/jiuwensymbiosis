@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-from jiuwensymbiosis.env.mock import MockArmEnv
-from tests.mocks.mock_api import MockApi
-
 from jiuwensymbiosis.adapters._common.skills import (
     move_tip_xy_then_z,
     pick_object_to_suction,
     place_suction_to_target,
 )
+from jiuwensymbiosis.env.mock import MockArmEnv
+from tests.mocks.mock_api import MockApi
 
 
 class TestMoveTipXyThenZ:

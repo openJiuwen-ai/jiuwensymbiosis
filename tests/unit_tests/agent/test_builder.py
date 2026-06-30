@@ -8,14 +8,13 @@ from __future__ import annotations
 import pytest
 
 from jiuwensymbiosis.agent.builder import (
-    _resolve_workspace,
-    _format_tool_list,
     _build_system_prompt,
+    _format_tool_list,
     _RailRegistry,
+    _resolve_workspace,
 )
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
-
+from jiuwensymbiosis.env.mock import MockArmEnv
 from tests.mocks.mock_api import MockApi
 
 
@@ -137,8 +136,11 @@ class TestTracingBuild:
 
         cfg = RobotAgentConfig(enable_tracing=True, **cfg_kwargs)
         rails = _resolve_rails(
-            mock_session, cfg.enable_visual_feedback, cfg.enable_safety,
-            cfg.enable_recovery, cfg.extra_rails,
+            mock_session,
+            cfg.enable_visual_feedback,
+            cfg.enable_safety,
+            cfg.enable_recovery,
+            cfg.extra_rails,
         )
         # replicate builder sink injection when tracing is on
         from jiuwensymbiosis.agent.trace import TraceRail
@@ -150,8 +152,8 @@ class TestTracingBuild:
         return trace_rail, rails
 
     def test_trace_rail_prepended_when_enabled(self, mock_session, tmp_path):
-        from jiuwensymbiosis.agent.config import RobotAgentConfig
         from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
         from jiuwensymbiosis.agent.trace import TraceRail
 
         cfg = RobotAgentConfig(enable_tracing=True, workspace=str(tmp_path))
@@ -161,8 +163,8 @@ class TestTracingBuild:
         mock_session.disconnect()
 
     def test_no_trace_rail_when_disabled(self, mock_session, tmp_path):
-        from jiuwensymbiosis.agent.config import RobotAgentConfig
         from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         cfg = RobotAgentConfig(enable_tracing=False, workspace=str(tmp_path))
         build_robot_agent(mock_session, cfg)
@@ -190,4 +192,3 @@ class TestTracingBuild:
         vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
         assert vf.trace_sink is trace_rail
         assert vf.frame_sink is not None
-

@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -30,7 +31,7 @@ def make_mock_seg_fn(
             return []
         mask = np.zeros(mask_shape, dtype=bool)
         cy, cx = mask_shape[0] // 2, mask_shape[1] // 2
-        mask[cy - 10: cy + 10, cx - 10: cx + 10] = True
+        mask[cy - 10 : cy + 10, cx - 10 : cx + 10] = True
         return [
             {
                 "mask": mask,

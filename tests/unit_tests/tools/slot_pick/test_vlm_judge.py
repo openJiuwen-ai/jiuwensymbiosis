@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 
 from jiuwensymbiosis.tools.slot_pick.vlm_judge import (
-    make_vlm_completion_judge,
     _encode_jpeg_b64,
+    make_vlm_completion_judge,
 )
 
 

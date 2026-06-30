@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
+from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.tools.slot_pick.strategy import (
     GripperStrategy,
     SlotPickStrategy,
-    _clamp_radius,
     _api_z_min_safe,
+    _clamp_radius,
 )
 from tests.mocks.mock_api import MockApi
-from jiuwensymbiosis.env.mock import MockArmEnv
 
 
 class TestClampRadius:

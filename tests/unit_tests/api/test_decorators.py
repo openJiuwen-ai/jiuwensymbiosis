@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-from typing import Optional, Literal, List
+from typing import Literal, Optional
 
 from jiuwensymbiosis.api.decorators import (
     ToolMeta,
-    robot_tool,
     _annotation_to_schema,
     _schema_from_signature,
-    _resolve_hints,
+    robot_tool,
 )
 
 
@@ -71,7 +70,7 @@ class TestSchemaFromSignature:
         assert "x" in schema["required"]
 
     def test_default_values(self):
-        def f(x: int, y: float = 1.0, z: Optional[str] = None):
+        def f(x: int, y: float = 1.0, z: str | None = None):
             pass
 
         schema = _schema_from_signature(f)

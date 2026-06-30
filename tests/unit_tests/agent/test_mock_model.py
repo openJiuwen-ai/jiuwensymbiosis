@@ -47,8 +47,6 @@ class TestMockModelClientValidateNoop:
 
         client = MockModelClient(
             model_config=ModelRequestConfig(model_name="mock"),
-            model_client_config=ModelClientConfig(
-                client_provider="mock", api_key="mock", api_base="mock"
-            ),
+            model_client_config=ModelClientConfig(client_provider="mock", api_key="mock", api_base="mock"),
         )
         assert client._validate_config() is None

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, _build_action_index
 from jiuwensymbiosis.agent.abstractions import ToolOutput
+from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, _build_action_index
 
 
 class TestBuildActionIndex:

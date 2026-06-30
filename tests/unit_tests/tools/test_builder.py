@@ -5,11 +5,10 @@
 
 from __future__ import annotations
 
-from jiuwensymbiosis.tools.builder import build_robot_tools, list_tool_meta
 from jiuwensymbiosis.agent.abstractions import LocalFunction
-
-from tests.mocks.mock_api import MockApi
 from jiuwensymbiosis.env.mock import MockArmEnv
+from jiuwensymbiosis.tools.builder import build_robot_tools, list_tool_meta
+from tests.mocks.mock_api import MockApi
 
 
 class TestListToolMeta:
@@ -85,15 +84,15 @@ class TestEnvIntersectionGating:
         # MockApi declares motion.cartesian + grasp.parallel + vision.detection.
         api = MockApi(env)
         names = {t.card.name for t in build_robot_tools(api, env=env)}
-        assert "home" in names and "goto_xyzr" in names         # motion kept
-        assert "close_gripper" not in names                     # grasp.parallel gated out
+        assert "home" in names and "goto_xyzr" in names  # motion kept
+        assert "close_gripper" not in names  # grasp.parallel gated out
         assert "open_gripper" not in names
-        assert "get_grasp_info_simple" not in names             # vision.detection gated out
+        assert "get_grasp_info_simple" not in names  # vision.detection gated out
 
     def test_without_env_keeps_all_api_tools(self):
         env = self._motion_only_env()
         api = MockApi(env)
-        names = {t.card.name for t in build_robot_tools(api)}    # no env → api caps only
+        names = {t.card.name for t in build_robot_tools(api)}  # no env → api caps only
         assert "close_gripper" in names
         assert "get_grasp_info_simple" in names
 

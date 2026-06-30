@@ -10,11 +10,10 @@ which made the check always return an empty list.
 
 from __future__ import annotations
 
+import scripts.validate_adapter as va
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.decorators import robot_tool
 from jiuwensymbiosis.api.mixins import MotionMixin
-
-import scripts.validate_adapter as va
 from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES as BASE_KNOWN_CAPABILITIES
 
 

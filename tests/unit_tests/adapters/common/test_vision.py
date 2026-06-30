@@ -115,7 +115,10 @@ class TestDetectAndCentroidReasonContract:
     def test_no_seg_fn_yields_detector_unavailable(self):
         rgb, depth = self._frame()
         det = detect_and_centroid(
-            rgb=rgb, depth_img_m=depth, seg_fn=None, object_name="box",
+            rgb=rgb,
+            depth_img_m=depth,
+            seg_fn=None,
+            object_name="box",
             tcp_at_grab=type("P", (), {"x": 0, "y": 0, "z": 0, "r": 0})(),
         )
         assert det["ok"] is False
@@ -123,10 +126,15 @@ class TestDetectAndCentroidReasonContract:
 
     def test_no_detection_reason(self):
         rgb, depth = self._frame()
+
         def _seg(rgb, text_prompt):
             return []  # nothing detected
+
         det = detect_and_centroid(
-            rgb=rgb, depth_img_m=depth, seg_fn=_seg, object_name="box",
+            rgb=rgb,
+            depth_img_m=depth,
+            seg_fn=_seg,
+            object_name="box",
             tcp_at_grab=type("P", (), {"x": 0, "y": 0, "z": 0, "r": 0})(),
         )
         assert det["ok"] is False
@@ -177,8 +185,7 @@ class _StubApi:
     """Minimal api-like object: exposes ``env`` + the geometry constants the
     eye-in-hand helpers read, plus a detector seg_fn slot."""
 
-    def __init__(self, env, seg_fn, *, z_correction_mm=0.0,
-                 grasp_z_offset_mm=-25.0, chip_thickness_mm=75.0):
+    def __init__(self, env, seg_fn, *, z_correction_mm=0.0, grasp_z_offset_mm=-25.0, chip_thickness_mm=75.0):
         self.env = env
         self._seg_fn = seg_fn
         self._z_correction_mm = z_correction_mm
@@ -215,11 +222,23 @@ class TestDefaultEyeInHandHelpers:
 
         api = self._setup()
         result = default_get_grasp_info_simple(
-            api, "box", seg_fn=api._seg_fn, pose_to_tf=_identity_pose_to_tf,
+            api,
+            "box",
+            seg_fn=api._seg_fn,
+            pose_to_tf=_identity_pose_to_tf,
         )
         assert result["ok"] is True
         assert result["object"] == "box"
-        for key in ("position", "grasp_z", "grasp_position", "place_z", "place_position", "score", "pixel_uv", "depth_m"):
+        for key in (
+            "position",
+            "grasp_z",
+            "grasp_position",
+            "place_z",
+            "place_position",
+            "score",
+            "pixel_uv",
+            "depth_m",
+        ):
             assert key in result
         assert result["position"][2] == result["depth_m"] * 1000.0  # identity tf, mm
 
@@ -229,7 +248,10 @@ class TestDefaultEyeInHandHelpers:
         # detected top at 500mm; z_min_safe 600mm → grasp_z clamped up to 600.
         api = self._setup(depth_m=0.5, z_min_safe=600.0)
         result = default_get_grasp_info_simple(
-            api, "box", seg_fn=api._seg_fn, pose_to_tf=_identity_pose_to_tf,
+            api,
+            "box",
+            seg_fn=api._seg_fn,
+            pose_to_tf=_identity_pose_to_tf,
         )
         assert result["ok"] is True
         assert result["grasp_z"] >= 600.0
@@ -242,7 +264,10 @@ class TestDefaultEyeInHandHelpers:
         api.env.low_level._rgb = None
         api.env.low_level.grab_frames = lambda: None
         result = default_get_grasp_info_simple(
-            api, "box", seg_fn=api._seg_fn, pose_to_tf=_identity_pose_to_tf,
+            api,
+            "box",
+            seg_fn=api._seg_fn,
+            pose_to_tf=_identity_pose_to_tf,
         )
         assert result["ok"] is False
         assert result["reason"] == "no_camera"
@@ -255,7 +280,10 @@ class TestDefaultEyeInHandHelpers:
         # Empty detection → detect_and_centroid returns ok=False reason=no_detection.
         api._seg_fn = make_mock_seg_fn(returns_empty=True)
         result = default_get_grasp_info_simple(
-            api, "box", seg_fn=api._seg_fn, pose_to_tf=_identity_pose_to_tf,
+            api,
+            "box",
+            seg_fn=api._seg_fn,
+            pose_to_tf=_identity_pose_to_tf,
         )
         assert result["ok"] is False
         assert result["reason"] == "no_detection"
@@ -268,7 +296,10 @@ class TestDefaultEyeInHandHelpers:
         api.env.low_level._K = None
         with np.testing.assert_raises(RuntimeError):
             default_get_grasp_info_simple(
-                api, "box", seg_fn=api._seg_fn, pose_to_tf=_identity_pose_to_tf,
+                api,
+                "box",
+                seg_fn=api._seg_fn,
+                pose_to_tf=_identity_pose_to_tf,
             )
 
     def test_pixel_to_base_xyz_returns_xyz(self):

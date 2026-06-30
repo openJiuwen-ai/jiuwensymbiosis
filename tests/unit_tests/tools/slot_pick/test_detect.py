@@ -8,15 +8,15 @@ from __future__ import annotations
 import pytest
 
 from jiuwensymbiosis.tools.slot_pick.detect import (
+    _call_ok,
+    _coerce_bool,
     _coerce_float,
     _coerce_int,
-    _coerce_bool,
-    _coerce_pose,
     _coerce_optional_pose,
-    _stop,
-    _call_ok,
-    _position_from_detection,
+    _coerce_pose,
     _detect_object,
+    _position_from_detection,
+    _stop,
 )
 
 

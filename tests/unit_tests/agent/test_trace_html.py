@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 
 from jiuwensymbiosis.agent.trace_html import render_trace_html
 
@@ -26,7 +25,7 @@ def _sample_trace() -> dict:
                 "error": None,
                 "observation": {"pose": {"x": 150, "y": 0, "z": 80}},
                 "frame_path": None,
-                "output_summary": "{\"ok\": true}",
+                "output_summary": '{"ok": true}',
                 "rail_events": [],
                 "log_events": [],
             },
@@ -40,18 +39,20 @@ def _sample_trace() -> dict:
                 "observation": None,
                 "frame_path": None,
                 "rail_events": [
-                    {"rail_name": "RecoveryRail", "kind": "recover",
-                     "detail": {"home_ok": True}, "success": True},
+                    {"rail_name": "RecoveryRail", "kind": "recover", "detail": {"home_ok": True}, "success": True},
                 ],
                 "log_events": [
-                    {"logger": "jiuwensymbiosis.rails.recovery",
-                     "level": "WARNING", "msg": "home() retried", "ts": 0.0},
+                    {
+                        "logger": "jiuwensymbiosis.rails.recovery",
+                        "level": "WARNING",
+                        "msg": "home() retried",
+                        "ts": 0.0,
+                    },
                 ],
             },
         ],
         "trace_log": [
-            {"logger": "jiuwensymbiosis.detector", "level": "WARNING",
-             "msg": "detector unreachable", "ts": 0.0},
+            {"logger": "jiuwensymbiosis.detector", "level": "WARNING", "msg": "detector unreachable", "ts": 0.0},
         ],
     }
 
@@ -148,7 +149,7 @@ class TestRenderTraceHtml:
 
     def test_output_summary_collapsed(self):
         t = _sample_trace()
-        t["entries"][0]["output_summary"] = "{\"ok\": true, \"n\": 3}"
+        t["entries"][0]["output_summary"] = '{"ok": true, "n": 3}'
         html = render_trace_html(t)
         assert "<details><summary>output</summary>" in html
         assert "{&quot;ok&quot;: true, &quot;n&quot;: 3}" in html
@@ -196,17 +197,18 @@ class TestRenderTraceHtml:
         f2 = tmp_path / "step_002.jpg"
         f2.write_bytes(b"FRAME2JPEG")
         t = {
-            "conversation_id": "conv-x", "robot_name": "piper",
-            "query": "q", "initial_frame_path": str(init_frame),
+            "conversation_id": "conv-x",
+            "robot_name": "piper",
+            "query": "q",
+            "initial_frame_path": str(init_frame),
             "entries": [
-                {"step": 1, "tool_name": "goto_xyzr", "input_params": {"x": 1},
-                 "success": True, "frame_path": str(f1)},
-                {"step": 2, "tool_name": "close_gripper", "input_params": {},
-                 "success": True, "frame_path": str(f2)},
+                {"step": 1, "tool_name": "goto_xyzr", "input_params": {"x": 1}, "success": True, "frame_path": str(f1)},
+                {"step": 2, "tool_name": "close_gripper", "input_params": {}, "success": True, "frame_path": str(f2)},
             ],
         }
         html = render_trace_html(t)
         import base64 as _b64
+
         assert "data:image/jpeg;base64," + _b64.b64encode(b"INITJPEG").decode() in html
         assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME1JPEG").decode() in html
         assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME2JPEG").decode() in html
@@ -222,13 +224,14 @@ class TestRenderTraceHtml:
         f1 = tmp_path / "step_001.jpg"
         f1.write_bytes(b"FRAME1JPEG")
         t = {
-            "conversation_id": "conv-x", "robot_name": "piper",
+            "conversation_id": "conv-x",
+            "robot_name": "piper",
             "entries": [
-                {"step": 1, "tool_name": "goto_xyzr", "input_params": {},
-                 "success": True, "frame_path": str(f1)},
+                {"step": 1, "tool_name": "goto_xyzr", "input_params": {}, "success": True, "frame_path": str(f1)},
             ],
         }
         html = render_trace_html(t)
         assert "frame missing" not in html  # no raw before-path → no placeholder
         import base64 as _b64
+
         assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME1JPEG").decode() in html

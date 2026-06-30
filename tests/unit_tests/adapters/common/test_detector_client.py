@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.detector_client import init_detector, _encode_image
+from jiuwensymbiosis.adapters._common.detector_client import _encode_image, init_detector
 
 
 class TestInitDetector:

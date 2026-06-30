@@ -69,8 +69,8 @@ class TestSmokeTestApi:
 
     def test_unfillable_required_param_skipped(self, smoke):
         # A tool with a required param we have no heuristic for → skipped, not crashed.
-        from jiuwensymbiosis.api.decorators import robot_tool
         from jiuwensymbiosis.api.base import BaseRobotApi
+        from jiuwensymbiosis.api.decorators import robot_tool
 
         class _AwkwardApi(BaseRobotApi):
             @robot_tool
@@ -85,8 +85,8 @@ class TestSmokeTestApi:
         assert "mysterious_param" in r["reason"]
 
     def test_crashing_tool_recorded_as_fail(self, smoke):
-        from jiuwensymbiosis.api.decorators import robot_tool
         from jiuwensymbiosis.api.base import BaseRobotApi
+        from jiuwensymbiosis.api.decorators import robot_tool
 
         class _CrashingApi(BaseRobotApi):
             @robot_tool

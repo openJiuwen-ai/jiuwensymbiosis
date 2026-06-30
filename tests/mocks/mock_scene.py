@@ -26,12 +26,13 @@ Camera model (top-down, fixed, NOT eye-in-hand):
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.geometry import apply_transform, make_transform
+from jiuwensymbiosis.adapters._common.geometry import make_transform
 
 
 @dataclass

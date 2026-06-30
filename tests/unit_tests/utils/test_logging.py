@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from jiuwensymbiosis.utils.logging import (
-    DEFAULT_FMT,
     TraceLogHandler,
     configure_logging,
     get_logger,
@@ -54,7 +53,8 @@ class TestConfigureLogging:
         # Filter to OUR owned stream handler (pytest injects its own
         # LogCaptureHandler, which must not be mistaken for ours).
         ours = [
-            h for h in root.handlers
+            h
+            for h in root.handlers
             if isinstance(h, logging.StreamHandler)
             and not isinstance(h, logging.FileHandler)
             and getattr(h, "_jiuwensymbiosis_owned", False)
@@ -110,7 +110,13 @@ class TestTraceLogHandler:
         handler = TraceLogHandler(sink=None)
         handler.setLevel(logging.WARNING)
         record = logging.LogRecord(
-            "x", logging.WARNING, __file__, 1, "msg", None, None,
+            "x",
+            logging.WARNING,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
         handler.emit(record)  # must not raise
 
@@ -124,7 +130,13 @@ class TestTraceLogHandler:
         handler = TraceLogHandler(sink=_BadSink())
         handler.setLevel(logging.WARNING)
         record = logging.LogRecord(
-            "x", logging.WARNING, __file__, 1, "msg", None, None,
+            "x",
+            logging.WARNING,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
         handler.emit(record)  # must not raise
 

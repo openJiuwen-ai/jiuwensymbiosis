@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jiuwensymbiosis.rails.safety import SafetyRail
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.env.mock import MockArmEnv
+from jiuwensymbiosis.rails.safety import SafetyRail
 from tests.mocks.mock_api import MockApi
 
 
@@ -129,6 +129,72 @@ class TestSafetyRailRobotControlUnwrap:
         rail = SafetyRail(mock_session)
         z = rail._resolve_z_floor()
         assert z == 0.0
+
+
+class TestSafetyRailStringToolArgs:
+    """openjiuwen delivers tool_args as a JSON *string* (ToolCall.arguments is
+    typed str) — the dict only materialises inside the tool's invoke, *after*
+    rails run. SafetyRail must parse the string itself or its z/XY checks
+    silently no-op (the bug these tests pin down)."""
+
+    @pytest.mark.asyncio
+    async def test_direct_goto_string_args_z_below_floor_raises(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        ctx = _FakeCtx(
+            tool_name="goto_xyzr",
+            tool_args='{"x": 100, "y": 0, "z": 30, "r": 0}',
+        )
+        with pytest.raises(ValueError, match="below z_floor"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_direct_goto_string_args_x_out_of_bounds_raises(self, mock_session):
+        rail = SafetyRail(mock_session, xy_bounds_mm=(0, -300, 500, 300))
+        ctx = _FakeCtx(
+            tool_name="goto_xyzr",
+            tool_args='{"x": 600, "y": 0, "z": 200, "r": 0}',
+        )
+        with pytest.raises(ValueError, match="out of bounds"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_robot_control_string_args_unwrap_and_reject(self, mock_session):
+        """The fast path + skill path both dispatch via robot_control with a
+        string arguments payload — SafetyRail must unwrap + check it."""
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        ctx = _FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 30, "r": 0}}',
+        )
+        with pytest.raises(ValueError, match="below z_floor"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_robot_control_string_args_xy_rejected(self, mock_session):
+        rail = SafetyRail(mock_session, xy_bounds_mm=(0, -300, 500, 300))
+        ctx = _FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 600, "y": 0, "z": 200, "r": 0}}',
+        )
+        with pytest.raises(ValueError, match="out of bounds"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_safe_string_args_passes(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, xy_bounds_mm=(0, -300, 500, 300))
+        ctx = _FakeCtx(
+            tool_name="goto_xyzr",
+            tool_args='{"x": 250, "y": 0, "z": 200, "r": 0}',
+        )
+        await rail.before_tool_call(ctx)  # in-bounds, above floor → no rejection
+
+    @pytest.mark.asyncio
+    async def test_malformed_string_args_does_not_raise(self, mock_session):
+        """A malformed JSON string degrades to {} (no params → no rejection),
+        never a false positive and never a crash — same behaviour as a non-dict."""
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        ctx = _FakeCtx(tool_name="goto_xyzr", tool_args="not-json{")
+        await rail.before_tool_call(ctx)
 
 
 class TestSafetyRailTraceSink:

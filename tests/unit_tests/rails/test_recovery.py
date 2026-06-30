@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jiuwensymbiosis.rails.recovery import RecoveryRail
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.env.mock import MockArmEnv
+from jiuwensymbiosis.rails.recovery import RecoveryRail
 from tests.mocks.mock_api import MockApi
 
 

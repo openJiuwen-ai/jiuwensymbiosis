@@ -6,20 +6,13 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from jiuwensymbiosis.agent.trace import (
-    ExecutionTrace,
-    TraceEntry,
-    TraceRail,
-    _unwrap_robot_control,
-)
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.agent.trace import TraceRail, _unwrap_robot_control
+from jiuwensymbiosis.env.mock import MockArmEnv
 from tests.mocks.mock_api import MockApi
 
 
@@ -70,11 +63,33 @@ class TestUnwrapRobotControl:
         assert args == {"x": 1, "y": 2, "z": 3}
 
     def test_robot_control_unwrap(self):
-        name, args = _unwrap_robot_control(
-            "robot_control", {"action": "goto_xyzr", "params": {"x": 1}}
-        )
+        name, args = _unwrap_robot_control("robot_control", {"action": "goto_xyzr", "params": {"x": 1}})
         assert name == "goto_xyzr"
         assert args == {"x": 1}
+
+    def test_robot_control_unwrap_string_args(self):
+        """openjiuwen delivers tool_args as a JSON string at before_tool_call
+        time; the unwrap must parse it so the trace shows the real action."""
+        name, args = _unwrap_robot_control(
+            "robot_control",
+            '{"action": "goto_xyzr", "params": {"x": 1, "y": 2, "z": 3}}',
+        )
+        assert name == "goto_xyzr"
+        assert args == {"x": 1, "y": 2, "z": 3}
+
+    def test_plain_tool_string_args_passthrough(self):
+        """A non-robot_control tool with string args is parsed to a dict so the
+        trace entry's input_params are readable (not the raw JSON string)."""
+        name, args = _unwrap_robot_control("goto_xyzr", '{"x": 1, "y": 2, "z": 3}')
+        assert name == "goto_xyzr"
+        assert args == {"x": 1, "y": 2, "z": 3}
+
+    def test_malformed_string_args_passthrough_unchanged(self):
+        """Malformed JSON passes through unchanged — the trace still shows
+        something honest rather than crashing or faking a parse."""
+        name, args = _unwrap_robot_control("goto_xyzr", "not-json{")
+        assert name == "goto_xyzr"
+        assert args == "not-json{"
 
 
 class TestBeforeAfterToolCall:
@@ -96,10 +111,12 @@ class TestBeforeAfterToolCall:
     @pytest.mark.asyncio
     async def test_robot_control_entry_unwraps_action(self, trace_rail):
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c2")))
-        ctx = _FakeCtx(_FakeInputs(
-            tool_name="robot_control",
-            tool_args={"action": "close_gripper", "params": {"force_n": 10}},
-        ))
+        ctx = _FakeCtx(
+            _FakeInputs(
+                tool_name="robot_control",
+                tool_args={"action": "close_gripper", "params": {"force_n": 10}},
+            )
+        )
         await trace_rail.before_tool_call(ctx)
         entry = ctx.extra["trace_current_step"]
         assert entry.tool_name == "close_gripper"
@@ -111,8 +128,7 @@ class TestBeforeAfterToolCall:
         ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3, "r": 0}))
         await trace_rail.before_tool_call(ctx)
         await trace_rail.after_tool_call(ctx)
-        entry = ctx.extra.get("trace_current_step")
-        # after_tool_call pops the key, so read from trace
+        # after_tool_call pops the ctx.extra key, so read from trace
         last = trace_rail.trace.entries[-1]
         assert last.observation is not None
         assert "pose" in last.observation
@@ -182,7 +198,8 @@ class TestRailEventSink:
         ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3}))
         await trace_rail.before_tool_call(ctx)
         trace_rail.record_rail_event(
-            rail_name="SafetyRail", kind="reject",
+            rail_name="SafetyRail",
+            kind="reject",
             detail={"tool_name": "goto_xyzr", "reason": "z below floor"},
             success=False,
         )
@@ -193,8 +210,10 @@ class TestRailEventSink:
     async def test_event_before_any_step_goes_pending(self, trace_rail):
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c7")))
         trace_rail.record_rail_event(
-            rail_name="RecoveryRail", kind="recover",
-            detail={"home_ok": True}, success=True,
+            rail_name="RecoveryRail",
+            kind="recover",
+            detail={"home_ok": True},
+            success=True,
         )
         # No entry yet → pending, then flushed into the first entry created next.
         ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={}))
@@ -211,7 +230,9 @@ class TestLogCapture:
         await trace_rail.before_tool_call(ctx)
         trace_rail.record_log_event(
             logger_name="jiuwensymbiosis.rails.recovery",
-            level="WARNING", msg="home() failed", ts=0.0,
+            level="WARNING",
+            msg="home() failed",
+            ts=0.0,
         )
         last = trace_rail.trace.entries[-1]
         assert any("home() failed" in e["msg"] for e in last.log_events)
@@ -220,8 +241,10 @@ class TestLogCapture:
     async def test_log_without_step_goes_trace_log(self, trace_rail):
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c9")))
         trace_rail.record_log_event(
-            logger_name="jiuwensymbiosis.detector", level="WARNING",
-            msg="detector unreachable", ts=0.0,
+            logger_name="jiuwensymbiosis.detector",
+            level="WARNING",
+            msg="detector unreachable",
+            ts=0.0,
         )
         assert any("detector unreachable" in e["msg"] for e in trace_rail.trace.trace_log)
 
