@@ -22,6 +22,7 @@ tool-exception event the LLM sees and reasons about.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -29,6 +30,28 @@ from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_tool_args(value: Any) -> dict[str, Any]:
+    """Normalise ``tool_args`` to a dict, parsing a JSON string if needed.
+
+    openjiuwen's ``ToolCall.arguments`` (and thus ``ctx.inputs.tool_args`` at
+    ``before_tool_call`` time) is a **JSON string**, not a dict — the dict only
+    appears inside the tool's ``invoke`` *after* rails run. Without this parse,
+    a string ``tool_args`` would be dropped to ``{}`` and every motion-param
+    check (z floor, XY bounds) would silently no-op. Returns ``{}`` for ``None``,
+    non-dict, or unparseable input — never raises, so safety enforcement degrades
+    to "no params → no rejection" (the prior behaviour) rather than crashing.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 class SafetyRail(AgentRail):
@@ -83,12 +106,16 @@ class SafetyRail(AgentRail):
         and the actual action / params live inside ``tool_args``.  We unwrap
         this so that motion actions dispatched through the single entry point
         are still safety-checked.
+
+        openjiuwen delivers ``tool_args`` as a **JSON string** (``ToolCall.arguments``
+        is typed ``str``), not a dict — the dict only materialises inside the
+        tool's ``invoke`` *after* rails run. So we parse the string here;
+        unparseable / non-dict args fall back to ``{}`` (→ no motion params →
+        no rejection, same as before, never a false positive).
         """
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
-        args = getattr(inputs, "tool_args", None) or {}
-        if not isinstance(args, dict):
-            args = {}
+        args = _coerce_tool_args(getattr(inputs, "tool_args", None))
 
         # Unwrap robot_control dispatch: tool_name="robot_control", action inside args
         if tool_name == "robot_control":

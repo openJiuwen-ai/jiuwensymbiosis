@@ -87,7 +87,19 @@ def _unwrap_robot_control(tool_name: str, tool_args: Any) -> tuple[str, Any]:
     entry with ``{action, params}``; the other rails unpack this, so the trace
     should too (a trace entry named ``goto_xyzr`` is far more useful than one
     named ``robot_control``).
+
+    openjiuwen delivers ``tool_args`` as a **JSON string** (``ToolCall.arguments``
+    is typed ``str``) at ``before_tool_call`` time; parse it first so the unwrap
+    sees the dict. Unparseable / non-dict input passes through unchanged (the
+    trace then shows ``robot_control(<raw>)``, which is still honest).
     """
+    if isinstance(tool_args, str) and tool_args:
+        try:
+            parsed = json.loads(tool_args)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            tool_args = parsed
     if tool_name == "robot_control" and isinstance(tool_args, dict):
         action = tool_args.get("action", "")
         params = tool_args.get("params", {})
