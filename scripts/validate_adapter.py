@@ -38,36 +38,21 @@ from typing import Any, Optional
 # ``__init_subclass__`` gate in env/base.py can never drift out of sync.
 from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES
 
+# Capability → contract maps, single-sourced in the package so the validator
+# (checker) and scripts/new_adapter (generator) share one definition.
+from jiuwensymbiosis.adapters._common.capability_spec import (
+    CAPABILITY_DRIVER_MEMBERS,
+    MIXIN_ABSTRACT_METHODS,
+)
+
 # Dedicated logger — configured in main() with a raw-message handler so the
 # report keeps its visual layout, while third-party INFO logs (e.g. openjiuwen)
 # are suppressed via the root logger level.
 logger = logging.getLogger("validate_adapter")
 
-# ---------------------------------------------------------------------------
-# Known capabilities — single-sourced from jiuwensymbiosis.env.base above.
-# (Previously a hand-copied frozenset with a "keep in sync" comment — a
-# silent drift hazard; the E-04 check now reads the same set env/base enforces.)
-# ---------------------------------------------------------------------------
-
-# Mapping of abstract methods per Mixin (from api/mixins.py).
-# Only methods that still `raise NotImplementedError` belong here — the rest
-# (home / get_pose / goto_xyzr / move_joint / gripper / suction / get_image)
-# ship working default implementations that delegate to the Env verbs, so
-# NOT overriding them is normal and must not be reported as a WARN.
-MIXIN_ABSTRACT_METHODS: dict[str, list[str]] = {
-    "VisionMixin": ["get_grasp_info_simple", "pixel_to_base_xyz", "analyze_scene"],
-}
-
-# Capability → low-level driver members the Env/Api delegate to (structural
-# driver contract, mirrors adapters/_common/protocol.py). Used by [D-14].
-CAPABILITY_DRIVER_MEMBERS: dict[str, list[str]] = {
-    "motion.cartesian": ["home", "get_pose", "move_to_pose_blocking"],
-    "motion.joint": ["move_joint_blocking"],
-    "grasp.parallel": ["set_gripper"],
-    "grasp.suction": ["set_suction"],
-    "vision.camera": ["grab_frames"],
-    "vision.detection": ["grab_frames"],
-}
+# ``KNOWN_CAPABILITIES`` (E-04), ``MIXIN_ABSTRACT_METHODS`` (A-10) and
+# ``CAPABILITY_DRIVER_MEMBERS`` (D-14) are all imported above from the package
+# so this checker and the generator stay single-sourced.
 
 # ---------------------------------------------------------------------------
 # Helpers
