@@ -48,25 +48,30 @@ logger = logging.getLogger(__name__)
 def _ros_to_rgb(msg: Any) -> np.ndarray | None:
     """Convert a sensor_msgs/Image (bgr8/rgb8/rgba8/bgra8) to HxWx3 RGB uint8.
 
-    Returns None for unrecognized encodings.
+    Returns None for unrecognized encodings or malformed messages (missing
+    attributes, byte length not matching ``height*width*channels``). Never raises.
     """
     enc = str(getattr(msg, "encoding", "")).lower()
-    h = int(msg.height)
-    w = int(msg.width)
     try:
+        h = int(msg.height)
+        w = int(msg.width)
         arr = np.frombuffer(msg.data, dtype=np.uint8)
-    except AttributeError:  # pragma: no cover - defensive
+    except (AttributeError, TypeError, ValueError):
         return None
-    if enc == "rgb8":
-        return arr.reshape(h, w, 3).copy()
-    if enc == "bgr8":
-        bgr = arr.reshape(h, w, 3)
-        return bgr[:, :, ::-1].copy()  # match RealSenseCamera's BGR→RGB
-    if enc in ("rgba8", "bgra8"):
-        ch = arr.reshape(h, w, 4)[:, :, :3]  # drop alpha
-        if enc == "bgra8":
-            return ch[:, :, ::-1].copy()
-        return ch.copy()
+    try:
+        if enc == "rgb8":
+            return arr.reshape(h, w, 3).copy()
+        if enc == "bgr8":
+            bgr = arr.reshape(h, w, 3)
+            return bgr[:, :, ::-1].copy()  # match RealSenseCamera's BGR→RGB
+        if enc in ("rgba8", "bgra8"):
+            ch = arr.reshape(h, w, 4)[:, :, :3]  # drop alpha
+            if enc == "bgra8":
+                return ch[:, :, ::-1].copy()
+            return ch.copy()
+    except ValueError:
+        # Buffer length doesn't match h*w*channels — malformed frame, skip it.
+        return None
     return None
 
 
@@ -75,18 +80,20 @@ def _ros_to_depth_m(msg: Any, depth_scale_m: float) -> np.ndarray | None:
 
     Handles ``16uc1`` (integer depth; multiply by ``depth_scale_m`` — typically
     0.001 for millimetre devices like RealSense) and ``32fc1`` (already meters).
-    Returns None for unrecognized encodings.
+    Returns None for unrecognized encodings or malformed messages. Never raises.
     """
     enc = str(getattr(msg, "encoding", "")).lower()
-    h = int(msg.height)
-    w = int(msg.width)
     try:
+        h = int(msg.height)
+        w = int(msg.width)
+        scale = float(depth_scale_m)
         if enc == "16uc1":
             raw = np.frombuffer(msg.data, dtype=np.uint16).reshape(h, w)
-            return raw.astype(np.float32) * float(depth_scale_m)
+            return raw.astype(np.float32) * scale
         if enc == "32fc1":
             return np.frombuffer(msg.data, dtype=np.float32).reshape(h, w).copy()
-    except AttributeError:  # pragma: no cover - defensive
+    except (AttributeError, TypeError, ValueError):
+        # Missing attribute, non-numeric scale, or buffer/shape mismatch.
         return None
     return None
 
@@ -118,17 +125,28 @@ class Ros2Camera:
         *,
         depth_scale_m: float = 0.001,
         camera_info_topic: str | None = None,
-        intrinsics: np.ndarray | None = None,
+        intrinsics: list[float] | np.ndarray | None = None,
         log_prefix: str = "[ROS2]",
     ) -> None:
         self._rgb_topic = rgb_topic
         self._depth_topic = depth_topic
         self._depth_scale_m = float(depth_scale_m)
         self._camera_info_topic = camera_info_topic
-        self._intrinsics: np.ndarray | None = (
-            np.asarray(intrinsics, dtype=np.float64).reshape(3, 3) if intrinsics is not None else None
-        )
         self._log_prefix = log_prefix
+        self._intrinsics: np.ndarray | None = None
+        if intrinsics is not None:
+            # Construction must never raise (parity with RealSenseCamera): a malformed
+            # intrinsics (len != 9) degrades to None + warning rather than ValueError.
+            try:
+                self._intrinsics = np.asarray(intrinsics, dtype=np.float64).reshape(3, 3)
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    "%s ignoring malformed intrinsics (expected 9 elements, got %s): %s",
+                    self._log_prefix,
+                    np.asarray(intrinsics, dtype=object).shape,
+                    e,
+                )
+                self._intrinsics = None
 
         self._node: Any = None  # rclpy.node.Node once started
         self._executor: Any = None  # SingleThreadedExecutor once started
@@ -194,7 +212,7 @@ class Ros2Camera:
                 self._camera_info_topic or "(none)",
             )
             return True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(
                 "%s ROS2 camera init failed (%s); continuing without camera.",
                 self._log_prefix,
@@ -255,14 +273,14 @@ class Ros2Camera:
         if self._executor is not None:
             try:
                 self._executor.shutdown()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         if self._spin_thread is not None and self._spin_thread.is_alive():
             self._spin_thread.join(timeout=2.0)
         if self._node is not None:
             try:
                 self._node.destroy_node()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         if self._owns_rclpy:
             try:
@@ -270,7 +288,7 @@ class Ros2Camera:
 
                 if rclpy.ok():
                     rclpy.shutdown()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._owns_rclpy = False
         self._node = None

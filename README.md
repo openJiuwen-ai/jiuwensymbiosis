@@ -39,6 +39,32 @@ pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu12
 pip install -e ".[piper]"
 ```
 
+> **ROS2 camera backend (optional).** The `camera_source: ros2` backend reads
+> RGBD from ROS2 `sensor_msgs/Image` topics instead of a USB RealSense. Its
+> dependencies — `rclpy` and `sensor_msgs` — are **not on PyPI** (they ship
+> with ROS2 itself), so they are deliberately omitted from the `[ros2]`-style
+> extras above. Install and activate them from the ROS apt source:
+>
+> ```bash
+> # 1. Install ROS2 (Humble recommended) per https://docs.ros.org/en/humble/Installation.html
+> #    This brings in rclpy + sensor_msgs.
+> #    Or, minimal packages only:
+> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-std-msgs
+>
+> # 2. Activate the ROS environment in EVERY shell that runs the framework
+> #    (so Python can import rclpy). Best added to your ~/.bashrc or venv activate.
+> source /opt/ros/humble/setup.bash
+>
+> # 3. Then point your Piper YAML at the ROS2 topics (see configs/piper/*.yaml):
+> #       camera_source: ros2
+> #       ros2_rgb_topic: /camera/color/image_raw
+> #       ros2_depth_topic: /camera/aligned_depth_to_color/image_raw
+> ```
+>
+> If `rclpy` is not importable at runtime, `Ros2Camera` degrades gracefully:
+> `start()` returns `False`, `grab_frames()` returns `None`, and the pipeline
+> runs without vision — same failure mode as a missing RealSense.
+
 Or install from the pinned requirements file for reproducibility:
 
 ```bash

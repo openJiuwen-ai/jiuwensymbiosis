@@ -89,6 +89,15 @@ class TestRosToRgb:
         msg = types.SimpleNamespace(encoding="yuv422", height=2, width=2, data=b"\x00" * 8)
         assert _ros_to_rgb(msg) is None
 
+    def test_missing_attributes_returns_none(self):
+        # No .height/.width/.data — must not raise, just return None.
+        assert _ros_to_rgb(types.SimpleNamespace(encoding="rgb8")) is None
+
+    def test_buffer_shape_mismatch_returns_none(self):
+        # 2x2 rgb8 needs 12 bytes; give 5 → reshape fails → None, no raise.
+        msg = types.SimpleNamespace(encoding="rgb8", height=2, width=2, data=b"\x00" * 5)
+        assert _ros_to_rgb(msg) is None
+
 
 class TestRosToDepthM:
     def test_16uc1_applies_scale(self):
@@ -117,6 +126,19 @@ class TestRosToDepthM:
 
     def test_unknown_encoding_returns_none(self):
         msg = types.SimpleNamespace(encoding="mono8", height=1, width=1, data=b"\x00")
+        assert _ros_to_depth_m(msg, depth_scale_m=0.001) is None
+
+    def test_missing_attributes_returns_none(self):
+        assert _ros_to_depth_m(types.SimpleNamespace(encoding="16UC1"), depth_scale_m=0.001) is None
+
+    def test_invalid_scale_returns_none(self):
+        # Non-numeric scale must not raise; degrade to None.
+        msg = types.SimpleNamespace(encoding="16UC1", height=1, width=1, data=b"\x00\x00")
+        assert _ros_to_depth_m(msg, depth_scale_m="not-a-number") is None  # type: ignore[arg-type]
+
+    def test_buffer_shape_mismatch_returns_none(self):
+        # 2x2 16UC1 needs 8 bytes; give 3 → reshape fails → None, no raise.
+        msg = types.SimpleNamespace(encoding="16UC1", height=2, width=2, data=b"\x00" * 3)
         assert _ros_to_depth_m(msg, depth_scale_m=0.001) is None
 
 
@@ -149,6 +171,14 @@ class TestRos2CameraConstructAndDegrade:
         assert intr[0, 2] == 320.0
         assert intr[1, 1] == 615.0
         assert intr[1, 2] == 240.0
+
+    def test_malformed_intrinsics_does_not_raise(self):
+        # "Construction never raises" — a list with len != 9 must degrade to
+        # None + warning, NOT raise ValueError.
+        cam = Ros2Camera(rgb_topic="/x/image_raw", intrinsics=[1.0, 2.0, 3.0])
+        assert cam.intrinsics is None
+        assert cam.is_running is False
+        assert cam.grab_frames() is None
 
     def test_camera_info_callback_sets_intrinsics(self):
         cam = Ros2Camera(rgb_topic="/x/image_raw")
@@ -185,7 +215,11 @@ class TestRos2CameraConstructAndDegrade:
         assert cam.grab_frames() is None
 
     def test_rgb_callback_ignores_unknown_encoding(self):
-        cam = Ros2Camera(rgb_topic="/x/image_raw")
+        # Provide a depth_topic + a valid depth frame so grab_frames() can only
+        # return None if the RGB frame was genuinely dropped for unknown encoding
+        # (not because depth is missing). This avoids a vacuous assertion.
+        cam = Ros2Camera(rgb_topic="/x/image_raw", depth_topic="/x/depth")
         cam._on_rgb(types.SimpleNamespace(encoding="yuv422", height=2, width=2, data=b"\x00" * 8))
-        # No frame stored → grab_frames stays None.
+        cam._on_depth(_img_msg("16UC1", 2, 2, dtype="uint16", fill=1000))
+        # RGB was ignored → no RGB frame → grab_frames stays None despite depth.
         assert cam.grab_frames() is None

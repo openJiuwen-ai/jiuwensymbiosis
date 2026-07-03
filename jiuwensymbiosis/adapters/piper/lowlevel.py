@@ -170,7 +170,7 @@ class PiperLowLevel:
         ros2_depth_topic: str | None = None,
         ros2_depth_scale_m: float = 0.001,
         ros2_camera_info_topic: str | None = None,
-        ros2_intrinsics: np.ndarray | None = None,
+        ros2_intrinsics: list[float] | None = None,
         # Gripper.
         gripper_open_mm: float = 70.0,
         gripper_effort: int = 1000,
