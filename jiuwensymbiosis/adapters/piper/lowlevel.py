@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from jiuwensymbiosis.adapters._common.camera import RealSenseCamera
+from jiuwensymbiosis.adapters._common.ros2_camera import Ros2Camera
 from jiuwensymbiosis.adapters._common.safety import WorkspaceBounds
 from jiuwensymbiosis.adapters.piper._calibration import load_calibration
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose
@@ -161,6 +162,15 @@ class PiperLowLevel:
         camera_serial: str | None = None,
         camera_resolution: tuple[int, int] = (640, 480),
         camera_fps: int = 30,
+        # Camera backend: "realsense" (USB via pyrealsense2) or "ros2" (subscribe
+        # to sensor_msgs/Image topics via Ros2Camera). When "ros2", the ros2_*
+        # fields below are used and ``camera_serial`` is ignored.
+        camera_source: str = "realsense",
+        ros2_rgb_topic: str | None = None,
+        ros2_depth_topic: str | None = None,
+        ros2_depth_scale_m: float = 0.001,
+        ros2_camera_info_topic: str | None = None,
+        ros2_intrinsics: np.ndarray | None = None,
         # Gripper.
         gripper_open_mm: float = 70.0,
         gripper_effort: int = 1000,
@@ -325,8 +335,20 @@ class PiperLowLevel:
 
         # --- camera (optional)
         self._camera_serial = camera_serial
-        self._camera: RealSenseCamera | None = None
-        if camera_serial:
+        self._camera: RealSenseCamera | Ros2Camera | None = None
+        if camera_source == "ros2":
+            if not ros2_rgb_topic:
+                raise ValueError("[Piper] camera_source='ros2' requires ros2_rgb_topic to be set.")
+            self._camera = Ros2Camera(
+                rgb_topic=ros2_rgb_topic,
+                depth_topic=ros2_depth_topic,
+                depth_scale_m=ros2_depth_scale_m,
+                camera_info_topic=ros2_camera_info_topic,
+                intrinsics=ros2_intrinsics,
+                log_prefix="[Piper]",
+            )
+            self._camera.start()
+        elif camera_serial:
             self._camera = RealSenseCamera(
                 serial=camera_serial,
                 resolution=camera_resolution,

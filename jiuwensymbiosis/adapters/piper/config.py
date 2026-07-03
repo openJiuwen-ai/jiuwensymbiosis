@@ -67,6 +67,18 @@ class PiperConfig:
     camera_serial: str | None = None
     camera_resolution: tuple[int, int] = (640, 480)
     camera_fps: int = 30
+    # Camera backend selector: "realsense" (default, USB) or "ros2" (subscribe
+    # to sensor_msgs/Image topics). When "ros2", the ros2_* fields below feed
+    # ``Ros2Camera``; ``camera_serial`` is ignored.
+    camera_source: str = "realsense"
+    ros2_rgb_topic: str | None = None
+    ros2_depth_topic: str | None = None
+    ros2_depth_scale_m: float = 0.001  # 16UC1 raw unit → meters (RealSense default = 1 mm)
+    ros2_camera_info_topic: str | None = None
+    # Explicit 3x3 intrinsics (row-major 9-list) for ROS2 when no camera_info
+    # topic is available — e.g. copied from a calibration file. ``Ros2Camera``
+    # accepts the list directly and wraps it in a 3x3 ndarray.
+    ros2_intrinsics: list[float] | None = None
 
     # --- gripper (parallel; piper supports width + force, 0.001mm / 0.001 N·m).
     gripper_open_mm: float = 70.0  # commanded width when "open"

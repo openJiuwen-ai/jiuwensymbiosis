@@ -9,7 +9,7 @@ version = "0.1.0"
 description = "Robotics agent framework on top of openjiuwen"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.10,<3.14"
 
 dependencies = [
     "openjiuwen>=0.1.13",

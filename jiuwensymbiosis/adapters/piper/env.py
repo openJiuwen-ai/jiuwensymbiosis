@@ -141,6 +141,13 @@ class PiperEnv(BaseRobotEnv):
             kwargs["z_min_safe_mm"] = self.cfg.z_min_safe_mm
         if self.cfg.camera_serial:
             kwargs["camera_serial"] = self.cfg.camera_serial
+        if getattr(self.cfg, "camera_source", "realsense") == "ros2":
+            kwargs["camera_source"] = "ros2"
+            kwargs["ros2_rgb_topic"] = self.cfg.ros2_rgb_topic
+            kwargs["ros2_depth_topic"] = self.cfg.ros2_depth_topic
+            kwargs["ros2_depth_scale_m"] = self.cfg.ros2_depth_scale_m
+            kwargs["ros2_camera_info_topic"] = self.cfg.ros2_camera_info_topic
+            kwargs["ros2_intrinsics"] = self.cfg.ros2_intrinsics
 
         self._inner = PiperLowLevel(**kwargs)
         self._connected = True
