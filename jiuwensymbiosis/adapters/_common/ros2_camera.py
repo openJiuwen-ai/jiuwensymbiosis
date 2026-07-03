@@ -273,23 +273,23 @@ class Ros2Camera:
         if self._executor is not None:
             try:
                 self._executor.shutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("%s executor.shutdown failed during teardown: %s", self._log_prefix, e)
         if self._spin_thread is not None and self._spin_thread.is_alive():
             self._spin_thread.join(timeout=2.0)
         if self._node is not None:
             try:
                 self._node.destroy_node()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("%s destroy_node failed during teardown: %s", self._log_prefix, e)
         if self._owns_rclpy:
             try:
                 import rclpy
 
                 if rclpy.ok():
                     rclpy.shutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("%s rclpy.shutdown failed during teardown: %s", self._log_prefix, e)
             self._owns_rclpy = False
         self._node = None
         self._executor = None
