@@ -611,6 +611,10 @@ class TraceRail(AgentRail):
                     else True
                 )
             entry.success = success
+            if not success and tool_result is not None and not isinstance(tool_result, (str, bytes)):
+                er = getattr(tool_result, "error", None)
+                if er:
+                    entry.error = str(er)
         # Observation snapshot (best-effort).
         entry.observation = _observation_snapshot(getattr(self.session, "env", None))
         # Frame save (best-effort, capped).
