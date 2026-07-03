@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from jiuwensymbiosis.agent.abstractions import ToolOutput
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import TraceRail, _unwrap_robot_control
 from jiuwensymbiosis.env.mock import MockArmEnv
@@ -189,6 +190,29 @@ class TestOnToolException:
         assert last.success is False
         assert "SafetyRail" in (last.error or "")
         assert last.duration_s >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_catch_path_backfills_error_from_tool_output(self, trace_rail):
+        # Regression: when a tool swallows its exception into ToolOutput
+        # (success=False, error=...) — the RobotControlTool catch-path —
+        # ON_TOOL_EXCEPTION does NOT fire, so on_tool_exception never sets
+        # entry.error. after_tool_call must backfill entry.error from the
+        # ToolOutput so a failed step doesn't record error=None (which makes
+        # the trace JSON + replay HTML's "❌ ERROR" callout empty and forces
+        # consumers to dig through output_summary).
+        await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c-catch")))
+        ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3}))
+        await trace_rail.before_tool_call(ctx)
+        # No on_tool_exception fires (catch-path). after_tool_call sees the
+        # failed ToolOutput directly.
+        ctx.inputs.tool_result = ToolOutput(success=False, error="bad params for 'goto_xyzr': missing 3 args")
+        await trace_rail.after_tool_call(ctx)
+
+        last = trace_rail.trace.entries[-1]
+        assert last.success is False
+        assert last.error is not None, "error must be backfilled, not None"
+        assert "bad params" in last.error
+        assert "missing 3 args" in last.error
 
 
 class TestRailEventSink:
