@@ -124,3 +124,34 @@ class TestEnvVarOverrides:
         monkeypatch.setenv("CAMERA_SERIAL", "999999999999")
         cfg = PiperConfig.from_dict({})
         assert cfg.camera_serial == "999999999999"
+
+    def test_ros2_fields_passthrough_from_yaml(self):
+        data = {
+            "env": {
+                "cfg": {
+                    "low_level": {
+                        "camera_source": "ros2",
+                        "ros2_rgb_topic": "/camera/color/image_raw",
+                        "ros2_depth_topic": "/camera/aligned_depth_to_color/image_raw",
+                        "ros2_depth_scale_m": 0.001,
+                        "ros2_camera_info_topic": "/camera/color/camera_info",
+                        "ros2_intrinsics": [615.0, 0.0, 320.0, 0.0, 615.0, 240.0, 0.0, 0.0, 1.0],
+                    }
+                }
+            }
+        }
+        cfg = PiperConfig.from_dict(data)
+        assert cfg.camera_source == "ros2"
+        assert cfg.ros2_rgb_topic == "/camera/color/image_raw"
+        assert cfg.ros2_depth_topic == "/camera/aligned_depth_to_color/image_raw"
+        assert cfg.ros2_depth_scale_m == 0.001
+        assert cfg.ros2_camera_info_topic == "/camera/color/camera_info"
+        # intrinsics kept as a list; Ros2Camera wraps it in a 3x3 ndarray.
+        assert cfg.ros2_intrinsics[0] == 615.0
+        assert cfg.ros2_intrinsics[4] == 615.0
+        assert cfg.ros2_intrinsics[8] == 1.0
+
+    def test_camera_source_defaults_to_realsense(self):
+        cfg = PiperConfig.from_dict({})
+        assert cfg.camera_source == "realsense"
+        assert cfg.ros2_rgb_topic is None

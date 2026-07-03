@@ -67,6 +67,45 @@ class PiperConfig:
     camera_serial: str | None = None
     camera_resolution: tuple[int, int] = (640, 480)
     camera_fps: int = 30
+    # Camera backend selector: "realsense" (default, USB) or "ros2" (subscribe
+    # to sensor_msgs/Image topics). When "ros2", the ros2_* fields below feed
+    # ``Ros2Camera``; ``camera_serial`` is ignored.
+    camera_source: str = "realsense"
+    ros2_rgb_topic: str | None = None
+    ros2_depth_topic: str | None = None
+    ros2_depth_scale_m: float = 0.001  # 16UC1 raw unit → meters (RealSense default = 1 mm)
+    ros2_camera_info_topic: str | None = None
+    # Explicit 3x3 intrinsics (row-major 9-list) for ROS2 when no camera_info
+    # topic is available — e.g. copied from a calibration file. ``Ros2Camera``
+    # accepts the list directly and wraps it in a 3x3 ndarray.
+    ros2_intrinsics: list[float] | None = None
+    #
+    # --- ROS2 camera YAML example (under env.cfg.low_level) --------------------
+    #   # 1) Switch the backend from USB RealSense to ROS2 topics:
+    #   camera_source: ros2
+    #   # 2) RGB + aligned depth image topics (depth must be in the SAME frame as
+    #   #    RGB — use RealSense's /camera/aligned_depth_to_color/image_raw).
+    #   ros2_rgb_topic: /camera/color/image_raw
+    #   ros2_depth_topic: /camera/aligned_depth_to_color/image_raw
+    #   # 3) Depth scale: 16UC1 raw value × this = meters. 0.001 for RealSense
+    #   #    (1 mm/unit); 0.0001 if your driver emits 0.1 mm units. Leave as-is
+    #   #    for 32FC1 (already meters, scale is ignored).
+    #   ros2_depth_scale_m: 0.001
+    #   # 4a) Preferred: subscribe to CameraInfo for live intrinsics (overrides
+    #   #    ros2_intrinsics below when the first message arrives):
+    #   ros2_camera_info_topic: /camera/color/camera_info
+    #   # 4b) Fallback when no camera_info topic is published: paste the 3x3 K
+    #   #    matrix row-major (fx 0 cx, 0 fy cy, 0 0 1) from a calibration file:
+    #   # ros2_intrinsics: [615.0, 0.0, 320.0, 0.0, 615.0, 240.0, 0.0, 0.0, 1.0]
+    #   #
+    #   # Notes:
+    #   # - When camera_source: ros2, camera_serial is ignored.
+    #   # - rclpy + sensor_msgs are NOT on PyPI — install ROS2 (Humble) via apt
+    #   #   (sudo apt install ros-humble-rclpy ros-humble-sensor-msgs) and
+    #   #   `source /opt/ros/humble/setup.bash` in every shell that runs the
+    #   #   framework. See README "ROS2 camera backend" for full steps.
+    #   # - ``Ros2Camera`` degrades gracefully: if rclpy is missing or init
+    #   #   fails, grab_frames() returns None and the pipeline runs without vision.
 
     # --- gripper (parallel; piper supports width + force, 0.001mm / 0.001 N·m).
     gripper_open_mm: float = 70.0  # commanded width when "open"
