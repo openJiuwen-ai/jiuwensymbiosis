@@ -37,6 +37,7 @@ from jiuwensymbiosis.agent.run import run_fast_task, run_robot_task
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import (
     ExecutionTrace,
+    StepAwareTraceEventSink,
     TraceEntry,
     TraceEventSink,
     TraceRail,
@@ -69,5 +70,6 @@ __all__ = [
     "ExecutionTrace",
     "TraceEntry",
     "TraceEventSink",
+    "StepAwareTraceEventSink",
     "TraceRail",
 ]

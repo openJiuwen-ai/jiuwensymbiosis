@@ -167,6 +167,13 @@ class RobotAgentConfig:
             the relative ``log_path``); the two are independent — jiuwensymbiosis
             does not configure openjiuwen's log path. Set ``None`` for
             console-only.
+        parallel_tool_calls: Whether the agent loop may dispatch multiple tool
+            calls concurrently. Defaults **False** (sequential) — robot motion
+            is inherently sequential, and openjiuwen's per-tool ``ctx.extra``
+            is a shared dict, so parallel dispatch races every rail that
+            locates the "current step" via ``ctx.extra`` or
+            ``trace.entries[-1]`` (TraceRail / VisualFeedbackRail). Set True
+            only with non-motion parallel tools after auditing the rail stack.
     """
 
     mode: Mode = "hybrid"
@@ -198,6 +205,7 @@ class RobotAgentConfig:
     # setting; jiuwensymbiosis does not touch openjiuwen's log path. Set None
     # for console-only; override via env or YAML ``agent.log_dir``.
     log_dir: str | None = "./logs"
+    parallel_tool_calls: bool = False
 
     # --- speed switch (fast path) ---
     # exec_mode: "agent" (per-step LLM, current) or "fast" agent (plan-once + real-time

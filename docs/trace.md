@@ -248,25 +248,41 @@ handler 的 attach/detach 必须区分"invoke 之间"与"session 终点"。
 
 ### 机制 1：`TraceEventSink` 通知钩子（结构化、精确）
 
-定义一个 Protocol，让其它 rail 主动推送**真实结果**：
+定义两个 Protocol，让其它 rail 主动推送**真实结果**：**基础** `TraceEventSink`（必选，归入当前 entry）+ **step-aware** `StepAwareTraceEventSink`（继承基础，归入指定 entry）。拆成两个 Protocol 是因为 `@runtime_checkable` 把 body 里声明的方法都当结构必选——若 `record_rail_event_at_step` 和基础方法同在一个 Protocol 里，只实现 4 参接口的旧 sink 的 `isinstance(..., TraceEventSink)` 会变 `False`，mypy 也会拒：
 
 ```python
 @runtime_checkable
 class TraceEventSink(Protocol):
+    # 基础接口（必选）：归入当前 entry（entries[-1]）
     def record_rail_event(
         self, *, rail_name: str, kind: str, detail: dict, success: bool,
     ) -> None: ...
+
+@runtime_checkable
+class StepAwareTraceEventSink(TraceEventSink, Protocol):
+    # step-aware 接口（可选）：归入指定 step 的 entry
+    def record_rail_event_at_step(
+        self, *, rail_name: str, kind: str, detail: dict, success: bool, step: int,
+    ) -> None: ...
 ```
+
+`TraceRail` 同时实现两者（满足 `StepAwareTraceEventSink`）。调用方按能力分发：sink 有 `record_rail_event_at_step` 且事件带 step → 走 step-aware；否则回退基础接口。**向后兼容**：自定义 sink 只实现基础 `TraceEventSink`（4 参）也能收到所有事件——调用方 duck-type 探测 `record_rail_event_at_step`，缺席就回退，不会因未知 `step` kwarg 抛 `TypeError` 丢事件。
 
 其他 rail 各加 `trace_sink` 构造参数，在关键点调用：
 
-| Rail | 触发点 | 推送内容 |
-|------|--------|---------|
-| `SafetyRail` | 拒绝（抛 ValueError 前） | `("SafetyRail", "reject", {tool_name, reason}, success=False)` |
-| `RecoveryRail` | 恢复后 | `("RecoveryRail", "recover", {tool_name, home_ok, released_ok}, success=home_ok)` |
-| `VisualFeedbackRail` | 注入帧后 | `("VisualFeedback", "inject_frame", {tool_name, frame_path}, success=True)` |
+| Rail | 触发点 | 推送内容 | 走哪个接口 |
+|------|--------|---------|-----------|
+| `SafetyRail` | 拒绝（抛 ValueError 前） | `("SafetyRail", "reject", {tool_name, reason}, success=False)` | 基础（同步，当前 entry） |
+| `RecoveryRail` | 恢复后 | `("RecoveryRail", "recover", {tool_name, home_ok, released_ok}, success=home_ok)` | 基础（同步，当前 entry） |
+| `VisualFeedbackRail` | flush 帧后（`before_model_call`） | `("VisualFeedback", "inject_frame", {tool_name, frame_path}, success, step)` | step-aware（带暂存 step） |
+
+> **`step` 精确定位**：VisualFeedbackRail 延迟到 `before_model_call` 才 flush，此时 `entries[-1]` 可能已是后续步——所以它在 `after_tool_call` 暂存当时的 `trace_step`（`_PendingFrame.trace_step`），flush 时若 sink 支持 step-aware 就显式传回，事件落到正确的 entry（多 tool calls 一轮迭代也能分别对位）；若 sink 是旧 4 参实现则回退基础接口（归入 `entries[-1]`，精度退化但不丢事件）。同步 rail（Safety/Recovery）不发 step、走基础接口，事件归当前 entry（正确）。
+
+显式指定的 `step` 若已不存在（已被 `trace_max_entries` 淘汰，或尚未创建）则丢弃该事件；只有未指定 step 且当前尚无 entry 的事件才进入 pending、等待首个 entry。这样不会把迟到或无效目标的事件误挂到后续步骤，`trace_log` 也继续只承载其既有日志 schema。
 
 `trace_sink=None` 时零开销。`build_robot_agent` 在 tracing + 对应 rail 都启用时把 TraceRail 注入为 sink。
+
+> **TraceRail 与并行互斥**：`build_robot_agent` / `build_robot_agent_config` 在 `parallel_tool_calls=True` 且 `enable_tracing=True` 时直接 `raise ValueError`。TraceRail 用共享 `ctx.extra` 的 `_TRACE_CURRENT_KEY` 定位当前步、用 `entries[-1]` 兼容旧 sink，两者在并行下都会把事件钉到错步。需要并行就用顺序 trace（关 tracing），需要 trace 就别开并行。
 
 ### 机制 2：`TraceLogHandler` 日志捕获
 
@@ -351,7 +367,7 @@ session._trace_rail = trace_rail  # session.disconnect 时调 close()
 rails.insert(0, trace_rail)  # priority=0 最先执行
 ```
 
-**frame_sink 注入**：当 `VisualFeedbackRail` 启用时，`_make_frame_sink(trace_rail)` 返回一个 `(rgb, tool_name) -> path` 的 callable，让 VisualFeedbackRail 注入到 agent 上下文的帧**同时**落盘到 trace 的 `frames/`——保证注入帧与落盘帧是**同一帧**。
+**frame_sink 注入**：当 `VisualFeedbackRail` 启用**且** `trace_save_frames=True` 时，`_make_frame_sink(trace_rail)` 返回一个 `(rgb, tool_name) -> path` 的 callable，让 VisualFeedbackRail 注入到 agent 上下文的帧**同时**落盘到 trace 的 `frames/`——保证注入帧与落盘帧是**同一帧**。`trace_save_frames=False`（默认）时**不安装** `frame_sink`（且显式置 `None` 防复用残留），`TraceRail.save_frame_for_sink` 自身也再判一次 `save_frames`——双层防护，确保用户关掉帧落盘就不会有 JPEG 写盘。
 
 ---
 
