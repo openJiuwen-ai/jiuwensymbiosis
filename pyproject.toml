@@ -51,6 +51,14 @@ calib = [
     # RealSense 出厂内参 + 取帧；非 RealSense 相机可用棋盘格离线图 + --intrinsics 跳过本依赖。
     "pyrealsense2>=2.57",
 ]
+unitree = [
+    # Unitree Go2 底盘运动依赖（unitree_sdk2py 经 Cyclone DDS 连接机器人）。
+    # 仅底盘 motion.cartesian 能力需要；图像/里程计走 ROS2（见 README "ROS2 camera/odometry backend"），
+    # 不装本 extra 也能用 vision/odom —— 只是底盘不能动。
+    # 注意：unitree_sdk2py 依赖 cyclonedds==0.10.2，该 PyPI 包在 Linux 上常需先编译
+    # eclipse-cyclonedds 0.10.x 并设 CYCLONEDDS_HOME（见 README "Unitree Go2 chassis SDK"）。
+    "unitree_sdk2py>=1.0.1",
+]
 
 [project.scripts]
 piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"

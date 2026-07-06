@@ -37,6 +37,9 @@ pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu12
 
 # Piper hardware (installs piper_sdk)
 pip install -e ".[piper]"
+
+# Unitree Go2 chassis (installs unitree_sdk2py — needs Cyclone DDS, see below)
+pip install -e ".[unitree]"
 ```
 
 > **ROS2 camera backend (optional).** The `camera_source: ros2` backend reads
@@ -64,6 +67,87 @@ pip install -e ".[piper]"
 > If `rclpy` is not importable at runtime, `Ros2Camera` degrades gracefully:
 > `start()` returns `False`, `grab_frames()` returns `None`, and the pipeline
 > runs without vision — same failure mode as a missing RealSense.
+
+> **ROS2 odometry backend (optional).** The optional `ros2_odom_topic` field
+> subscribes to a pose-carrying ROS2 topic (`nav_msgs/Odometry`,
+> `geometry_msgs/PoseStamped`, or `PoseWithCovarianceStamped` — chosen via
+> `ros2_odom_msg_kind`) and exposes the latest position via
+> `Ros2Odom.grab_pose()` / `RobotObservation.extra["odom"]`. Its dependencies
+> — `rclpy` and `nav_msgs` / `geometry_msgs` — are **not on PyPI** (they ship
+> with ROS2 itself), so they are deliberately omitted from the extras above,
+> exactly like the camera backend. Install and activate them from the ROS apt
+> source. Odometry is **optional** — leave `ros2_odom_topic` unset to disable.
+> Note the pose is returned in **raw ROS units** (meters + quaternion xyzw +
+> a convenience `yaw_deg`); it is not auto-converted to the arm flange frame.
+>
+> ⚠️ The framework is a **pure consumer** of the odom topic — it does NOT run
+> any SLAM / localization / mapping itself. The pose published on that topic
+> must be produced on the **robot side** by a SLAM / odometry stack you deploy
+> alongside the framework: a LiDAR SLAM node (cartographer, slam_toolbox,
+> FAST-LIO, LIO-SAM), visual-inertial odometry (VINS-Fusion, ORB-SLAM3,
+> RTAB-Map), or a wheel-encoder + IMU EKF (robot_localization). Bring that
+> stack up and let it converge BEFORE pointing `ros2_odom_topic` at the topic
+> it publishes. If SLAM isn't running or hasn't converged, no message is
+> published and `grab_pose()` returns `None` — the framework keeps working,
+> just without an external pose feed (same "no data" fallback as a missing
+> camera).
+>
+> ```bash
+> # 1. Install ROS2 (Humble recommended) — reuses the rclpy install from the
+> #    camera backend above; this step only adds the pose message packages:
+> sudo apt install ros-humble-nav-msgs ros-humble-geometry-msgs
+> #    (If you skipped the camera backend, also install rclpy itself:
+> #     sudo apt install ros-humble-rclpy)
+>
+> # 2. Activate the ROS environment in EVERY shell that runs the framework
+> #    (so Python can import rclpy + nav_msgs/geometry_msgs). Same step as the
+> #    camera backend — best added to your ~/.bashrc or venv activate.
+> source /opt/ros/humble/setup.bash
+>
+> # 3. Start your SLAM / odometry stack on the robot side and let it converge,
+> #    then point your Piper YAML at the topic it publishes (see configs/piper/*.yaml):
+> #       ros2_odom_topic: /odom
+> #       ros2_odom_msg_kind: odometry   # or pose_stamped / pose_with_covariance_stamped
+> ```
+>
+> If `rclpy` is not importable at runtime (or no SLAM node is publishing),
+> `Ros2Odom` degrades gracefully: `start()` returns `False`, `grab_pose()`
+> returns `None`, and the pipeline runs without an external pose feed — same
+> failure mode as a missing odom source.
+
+> **Unitree Go2 chassis SDK (optional).** The `unitree_go2` adapter drives the
+> Go2 chassis through the official `unitree_sdk2py` (installed via the
+> `[unitree]` extra above), which speaks Cyclone DDS over the robot's network.
+> `unitree_sdk2py` depends on `cyclonedds==0.10.2`, whose PyPI wheel on Linux
+> usually **won't build without a pre-installed Cyclone DDS** — so the install
+> is two layers:
+>
+> ```bash
+> # 1. Build & install Cyclone DDS 0.10.x (the version unitree_sdk2py pins).
+> #    The PyPI `cyclonedds` package needs this at build time (set CYCLONEDDS_HOME).
+> git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
+> cd cyclonedds && mkdir build install && cd build
+> cmake -DCMAKE_INSTALL_PREFIX=../install ..
+> cmake --build . --target install
+> export CYCLONEDDS_HOME="$(pwd)/../install"   # remember this path for step 2
+>
+> # 2. Install the framework with the [unitree] extra (pulls unitree_sdk2py + cyclonedds):
+> pip install -e ".[unitree]"
+> #    If step 1 was skipped, pip fails with "Could not locate cyclonedds.
+> #    Try to set CYCLONEDDS_HOME or CMAKE_PREFIX_PATH" — go back and do step 1.
+> #    (Pre-built binaries exist for some platforms; see
+> #     https://pypi.org/project/cyclonedds/#installing-with-pre-built-binaries)
+>
+> # 3. Pick the host NIC on the Go2 subnet (Go2 ships 192.168.123.x/24) and tell
+> #    the SDK to use it. Either set it in the framework YAML:
+> #       network_interface: "eth0"   # passed to ChannelFactoryInitialize(0, <nic>)
+> #    or let the SDK/DDS pick the default interface (network_interface: null).
+> ```
+>
+> If `unitree_sdk2py` is not importable at runtime, the driver's `connect()`
+> raises `RuntimeError` with install guidance — motion is unavailable (the base
+> can't move). Images + odometry still work via the ROS2 backends above
+> (independent of the SDK), so vision/odom degrade separately, not together.
 
 Or install from the pinned requirements file for reproducibility:
 

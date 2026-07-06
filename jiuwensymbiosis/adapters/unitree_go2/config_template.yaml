@@ -1,0 +1,69 @@
+# Unitree Go2 四足机器人(移动底盘形态)配置模板
+# 复制此文件到 configs/unitree_go2/default.yaml
+# 标注: [必填] / [选填] / [选填-仅xxx能力需要]
+#
+# 形态说明: 本适配器把 Go2 建模为纯移动底盘 —— 底盘运动走 unitree_sdk2py 官方 SDK,
+# 图像与里程计走 ROS2 topic(复用 Ros2Camera / Ros2Odom)。无机械臂/夹爪。
+
+# ==================== 基本信息 [必填] ====================
+name: "unitree_go2"
+
+# ==================== 底盘运动 (官方 SDK) [必填-仅 motion.cartesian] ====================
+# 底盘运动走 unitree_sdk2py 官方 SDK(Cyclone DDS)。安装(两层):
+#   # 1. 编译安装 Cyclone DDS 0.10.x(unitree_sdk2py 依赖 cyclonedds==0.10.2,Linux 上常需先装)
+#   git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
+#   cd cyclonedds && mkdir build install && cd build && cmake -DCMAKE_INSTALL_PREFIX=../install .. && cmake --build . --target install
+#   export CYCLONEDDS_HOME="$(pwd)/../install"
+#   # 2. 装框架 [unitree] extra(拉 unitree_sdk2py + cyclonedds)
+#   pip install -e ".[unitree]"
+# 详见 README "Unitree Go2 chassis SDK"。未装 SDK 时 connect() 会 raise RuntimeError。
+# network_interface 是主机上处于 Go2 子网的网卡名(如 "eth0");留空用 SDK 默认。
+# network_interface: "eth0"        # [选填] 主机网卡名
+max_linear_speed_mps: 1.0          # [选填] 线速度上限 m/s
+max_angular_speed_radps: 1.5      # [选填] 角速度上限 rad/s
+# home_xy_yaw_m_deg: [0.0, 0.0, 0.0]  # [选填] Home 位姿 (x_m, y_m, yaw_deg) — 2D 平面
+
+# ==================== ROS2 相机 (复用 Ros2Camera) [选填-仅 vision.*] ====================
+# Go2 默认走 ROS2 发布图像。下面是 Go2 常见 topic 名,按你的命名空间改。
+# 注意: camera_source: ros2 时,若 ros2_rgb_topic 留空(None),相机不会启动
+# (lowlevel.py 判断 camera_source=="ros2" and ros2_rgb_topic)。所以要么填上
+# topic,要么把 camera_source 改成别的(如 "realsense" USB 路径,需自行实现)。
+camera_source: "ros2"
+ros2_rgb_topic: /go2/camera/color/image_raw
+ros2_depth_topic: /go2/camera/aligned_depth_to_color/image_raw
+ros2_depth_scale_m: 0.001           # 16UC1 原始单位 → 米(RealSense 默认 1mm)
+ros2_camera_info_topic: /go2/camera/color/camera_info
+# ros2_intrinsics: null             # [选填] 无 camera_info topic 时,填行优先 9 元素 3x3 K 矩阵
+#                                   # 例: [615.0, 0.0, 320.0, 0.0, 615.0, 240.0, 0.0, 0.0, 1.0]
+
+# ==================== ROS2 里程计 (复用 Ros2Odom) [选填] ====================
+# 框架只是 odom topic 的消费者 —— 本身不跑 SLAM。pose 必须由机器人端的
+# SLAM/里程计栈发布(LiDAR SLAM / VIO / wheel+IMU EKF)。先起 SLAM 并收敛,
+# 再把 ros2_odom_topic 指向它发布的 topic。留空则禁用 odom(底盘仍能动,
+# 但 get_pose 退化为 home 位姿,get_observation().extra["odom"] 为 None)。
+ros2_odom_topic: /odom
+ros2_odom_msg_kind: odometry        # 或 pose_stamped / pose_with_covariance_stamped
+
+# ==================== 安全边界 [选填] ====================
+# 底盘是 2D 平面运动,不上下移动。z_min_safe 保持 0.0(SafetyRail 契约要求,
+# 底盘形态下永不触发)。x/y 边界限制底盘活动范围(米,非机械臂的 mm)。
+z_min_safe_mm: 0.0
+x_min_mm: -5.0                     # [选填] X 向活动下界 (米)
+x_max_mm: 5.0                      # [选填] X 向活动上界 (米)
+y_min_mm: -5.0                     # [选填] Y 向活动下界 (米)
+y_max_mm: 5.0                      # [选填] Y 向活动上界 (米)
+# z_max_mm: null                    # [选填] 底盘不动 Z,无上限
+
+# ==================== 检测校正 [选填-仅 vision.detection] ====================
+# z_correction_mm: 0.0
+# grasp_z_offset_mm: -25.0
+# chip_thickness_mm: 75.0
+
+# ==================== 检测服务 [选填-仅 vision.detection] ====================
+# detector_url: "http://127.0.0.1:8114"
+
+# ==================== 标定 [选填-仅 vision.detection] ====================
+# calib_path: "calib.json"          # 手眼标定文件 (JSON)
+
+# ==================== 任务 [选填] ====================
+# task_prompt: ""                   # 自定义任务提示词

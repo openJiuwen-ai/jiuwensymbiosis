@@ -107,6 +107,51 @@ class PiperConfig:
     #   # - ``Ros2Camera`` degrades gracefully: if rclpy is missing or init
     #   #   fails, grab_frames() returns None and the pipeline runs without vision.
 
+    # --- ROS2 odometry (optional; None disables). Subscribe to a pose-carrying
+    #     topic and expose the latest position via ``Ros2Odom.grab_pose()``.
+    #     Surfaced into ``RobotObservation.extra["odom"]``. Mirrors the ROS2
+    #     camera backend: same lazy-rclpy / never-raise / degrade-to-None contract.
+    ros2_odom_topic: str | None = None
+    # Pose-carrying message type. One of:
+    #   "odometry"                     → nav_msgs/msg/Odometry        (pose.pose)
+    #   "pose_stamped"                 → geometry_msgs/msg/PoseStamped   (pose)
+    #   "pose_with_covariance_stamped" → geometry_msgs/msg/PoseWithCovarianceStamped
+    # Add more kinds in ``Ros2Odom._MSG_KINDS``. An unknown value degrades to
+    # "odometry" + a warning (construction never raises).
+    ros2_odom_msg_kind: str = "odometry"
+    #
+    # --- ROS2 odometry YAML example (under env.cfg.low_level) ------------------
+    #   # 1) Pick the topic publishing the robot / base pose:
+    #   ros2_odom_topic: /odom
+    #   # 2) Pick the message type — must match what the topic publishes:
+    #   #      "odometry"                     for nav_msgs/msg/Odometry
+    #   #      "pose_stamped"                 for geometry_msgs/msg/PoseStamped
+    #   #      "pose_with_covariance_stamped" for geometry_msgs/msg/PoseWithCovarianceStamped
+    #   ros2_odom_msg_kind: odometry
+    #   #
+    #   # Notes:
+    #   # - Odometry is OPTIONAL — leave ros2_odom_topic unset to disable it.
+    #   # - The framework is a pure CONSUMER of the odom topic. It does NOT run
+    #   #   any localization/mapping itself — the pose must be produced on the
+    #   #   robot side by a SLAM / odometry stack you deploy alongside the
+    #   #   framework (LiDAR SLAM: cartographer / slam_toolbox / FAST-LIO; VIO:
+    #   #   VINS-Fusion / ORB-SLAM3 / RTAB-Map; or wheel+IMU EKF via
+    #   #   robot_localization). Bring that stack up and let it converge BEFORE
+    #   #   pointing ros2_odom_topic at the topic it publishes. If SLAM isn't
+    #   #   running or hasn't converged, no message is published and
+    #   #   grab_pose() returns None (pipeline keeps running, just without an
+    #   #   external pose feed).
+    #   # - ``Ros2Odom`` returns RAW ROS units: position in meters, orientation
+    #   #   as a quaternion (qx,qy,qz,qw), plus a convenience ``yaw_deg``. It is
+    #   #   NOT auto-converted to the arm flange frame (mm/deg) — odom and arm
+    #   #   flange are different frames; convert in your skill / task code if needed.
+    #   # - rclpy + nav_msgs/geometry_msgs are NOT on PyPI — install ROS2
+    #   #   (Humble) via apt (sudo apt install ros-humble-rclpy
+    #   #   ros-humble-nav-msgs ros-humble-geometry-msgs) and `source
+    #   #   /opt/ros/humble/setup.bash` in every shell that runs the framework.
+    #   # - ``Ros2Odom`` degrades gracefully: if rclpy is missing or init
+    #   #   fails, grab_pose() returns None and the pipeline runs without odom.
+
     # --- gripper (parallel; piper supports width + force, 0.001mm / 0.001 N·m).
     gripper_open_mm: float = 70.0  # commanded width when "open"
     gripper_effort: int = 1000  # 0.001 N·m units (=1 N·m)

@@ -1,0 +1,189 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""``UnitreeGo2Env`` — adapter from ``BaseRobotEnv`` to ``UnitreeGo2Driver``.
+
+Mobile-base form factor: capabilities = ``motion.cartesian`` (chassis x/y/yaw)
++ ``vision.camera`` / ``vision.depth`` (ROS2 images) + ``vision.detection``.
+No ``motion.joint`` / ``grasp.*`` — a quadruped base has no arm or gripper.
+
+Odometry is surfaced into ``RobotObservation.extra["odom"]`` (raw ROS units:
+meters + quaternion + ``yaw_deg``), mirroring the piper ROS2-odom pattern.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any, cast
+
+import numpy as np
+
+from jiuwensymbiosis.adapters.unitree_go2.config import UnitreeGo2Config
+from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+
+if TYPE_CHECKING:
+    from jiuwensymbiosis.adapters._common.protocol import RobotDriver
+
+logger = logging.getLogger(__name__)
+
+
+class UnitreeGo2Env(BaseRobotEnv):
+    """Unitree Go2 quadruped mobile base + ROS2 camera + odometry."""
+
+    capabilities = frozenset(
+        {
+            "motion.cartesian",  # chassis x/y/yaw via unitree_sdk2py
+            "vision.camera",  # ROS2 RGB stream via Ros2Camera
+            "vision.depth",  # ROS2 depth stream
+            "vision.detection",  # open-vocab detection (detector sidecar)
+        }
+    )
+    name = "unitree_go2"
+
+    def __init__(self, cfg: UnitreeGo2Config) -> None:
+        """Store config; driver is None until connect()."""
+        self.cfg = cfg
+        self._inner: RobotDriver | None = None  # UnitreeGo2Driver
+        self._connected = False
+
+    @property
+    def low_level(self) -> RobotDriver | None:
+        """The underlying low-level driver (UnitreeGo2Driver), or None before connect()."""
+        return self._inner
+
+    @low_level.setter
+    def low_level(self, _: RobotDriver | None) -> None:
+        raise AttributeError("UnitreeGo2Env.low_level is read-only (binds to self._inner via connect/disconnect)")
+
+    @property
+    def z_min_safe(self) -> float | None:
+        """Z floor (mm): 0.0 for a planar base (never triggers; SafetyRail contract)."""
+        if self._inner is not None:
+            return 0.0
+        return float(getattr(self.cfg, "z_min_safe_mm", 0.0))
+
+    @z_min_safe.setter
+    def z_min_safe(self, _: float | None) -> None:
+        raise AttributeError("UnitreeGo2Env.z_min_safe is read-only (planar base, fixed at 0.0)")
+
+    @property
+    def workspace_bounds(self) -> tuple[float, float, float, float] | None:
+        """XY workspace bounds ``(xmin, ymin, xmax, ymax)`` from config (meters), or None."""
+        c = self.cfg
+        raw = (
+            getattr(c, "x_min_mm", None),
+            getattr(c, "y_min_mm", None),
+            getattr(c, "x_max_mm", None),
+            getattr(c, "y_max_mm", None),
+        )
+        if any(v is None for v in raw):
+            return None
+        return cast("tuple[float, float, float, float]", raw)
+
+    @workspace_bounds.setter
+    def workspace_bounds(self, _: tuple[float, float, float, float] | None) -> None:
+        raise AttributeError("UnitreeGo2Env.workspace_bounds is read-only (computed from config)")
+
+    @property
+    def home_pose(self):
+        """Home pose (vendor Pose object) from the driver, or None before connect."""
+        if self._inner is not None:
+            return self._inner.home_pose
+        return None
+
+    @home_pose.setter
+    def home_pose(self, _: Any) -> None:
+        raise AttributeError("UnitreeGo2Env.home_pose is read-only (read from driver)")
+
+    @property
+    def tool_offset_mm(self) -> float:
+        """Flange-to-tip offset (mm): always 0.0 for a mobile base."""
+        return 0.0
+
+    @tool_offset_mm.setter
+    def tool_offset_mm(self, _: float) -> None:
+        raise AttributeError("UnitreeGo2Env.tool_offset_mm is read-only (planar base, fixed at 0.0)")
+
+    # ----------------------------------------------------------------- connect
+    def connect(self) -> None:
+        """Instantiate and connect the UnitreeGo2Driver from config."""
+        if self._connected:
+            return
+        from jiuwensymbiosis.adapters.unitree_go2.lowlevel import UnitreeGo2Driver
+
+        kwargs: dict[str, Any] = dict(  # mutable builder, conditionally extended below
+            network_interface=self.cfg.network_interface,
+            max_linear_speed_mps=self.cfg.max_linear_speed_mps,
+            max_angular_speed_radps=self.cfg.max_angular_speed_radps,
+            home_xy_yaw_m_deg=self.cfg.home_xy_yaw_m_deg,
+            camera_source=self.cfg.camera_source,
+            ros2_rgb_topic=self.cfg.ros2_rgb_topic,
+            ros2_depth_topic=self.cfg.ros2_depth_topic,
+            ros2_depth_scale_m=self.cfg.ros2_depth_scale_m,
+            ros2_camera_info_topic=self.cfg.ros2_camera_info_topic,
+            ros2_intrinsics=self.cfg.ros2_intrinsics,
+            ros2_odom_topic=self.cfg.ros2_odom_topic,
+            ros2_odom_msg_kind=self.cfg.ros2_odom_msg_kind,
+        )
+        self._inner = UnitreeGo2Driver(**kwargs)
+        self._inner.connect()
+        self._connected = True
+        logger.info("UnitreeGo2Env connected (interface=%s)", self.cfg.network_interface or "(default)")
+
+    def disconnect(self) -> None:
+        """Close the low-level driver and mark as disconnected."""
+        if not self._connected:
+            return
+        try:
+            # _inner is RobotDriver|None here; close() is on the concrete driver
+            self._inner.close()  # type: ignore[union-attr]
+        except Exception as exc:  # disconnect is best-effort
+            logger.warning("UnitreeGo2Env disconnect failed: %s", exc)
+        self._inner = None
+        self._connected = False
+
+    # -------------------------------------------------------------- observation
+    def get_observation(self) -> RobotObservation:
+        """Collect base pose, RGB, depth, and odometry into a RobotObservation."""
+        if self._inner is None:
+            return RobotObservation()
+        rgb: np.ndarray | None = None
+        depth: np.ndarray | None = None
+        try:
+            frames = self._inner.grab_frames()  # type: ignore[attr-defined]  # CameraDriver sibling protocol
+            if frames is not None:
+                rgb, depth = frames
+        except Exception as exc:  # camera read best-effort
+            logger.debug("UnitreeGo2Env.grab_frames failed: %s", exc)
+        pose: dict | None = None
+        try:
+            p = self._inner.get_pose()
+            pose = {
+                "x": p.x,
+                "y": p.y,
+                "z": p.z,
+                "rx": p.rx,
+                "ry": p.ry,
+                "rz": p.rz,
+            }
+        except Exception:  # pose read best-effort
+            pose = None
+        return RobotObservation(
+            pose=pose,
+            rgb=rgb,
+            depth=depth,
+            extra={
+                "z_min_safe": self.z_min_safe,
+                # Optional ROS2 odometry (meters + quaternion + yaw_deg); None when
+                # no odom backend configured or no message has arrived yet.
+                # ``_inner`` is typed ``RobotDriver`` (the base Protocol), but
+                # ``get_odom_pose`` is a ``UnitreeGo2Driver``-specific method with
+                # no sibling Protocol — same pattern as piper's odom call, suppressed
+                # for the same reason (see piper/env.py:get_observation).
+                "odom": (
+                    self._inner.get_odom_pose()  # type: ignore[attr-defined]
+                    if getattr(self.cfg, "ros2_odom_topic", None)
+                    else None
+                ),
+            },
+        )

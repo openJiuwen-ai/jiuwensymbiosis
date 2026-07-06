@@ -22,6 +22,7 @@ import numpy as np
 
 from jiuwensymbiosis.adapters._common.camera import RealSenseCamera
 from jiuwensymbiosis.adapters._common.ros2_camera import Ros2Camera
+from jiuwensymbiosis.adapters._common.ros2_odom import Ros2Odom
 from jiuwensymbiosis.adapters._common.safety import WorkspaceBounds
 from jiuwensymbiosis.adapters.piper._calibration import load_calibration
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose
@@ -171,6 +172,12 @@ class PiperLowLevel:
         ros2_depth_scale_m: float = 0.001,
         ros2_camera_info_topic: str | None = None,
         ros2_intrinsics: list[float] | None = None,
+        # ROS2 odometry (optional). When ``ros2_odom_topic`` is set, a
+        # ``Ros2Odom`` subscription is started and the latest pose is exposed
+        # via ``get_odom_pose()``. ``ros2_odom_msg_kind`` selects the message
+        # type (odometry / pose_stamped / pose_with_covariance_stamped).
+        ros2_odom_topic: str | None = None,
+        ros2_odom_msg_kind: str = "odometry",
         # Gripper.
         gripper_open_mm: float = 70.0,
         gripper_effort: int = 1000,
@@ -357,6 +364,16 @@ class PiperLowLevel:
             )
             self._camera.start()
 
+        # --- odometry (optional; mirrors camera start above)
+        self._odom: Ros2Odom | None = None
+        if ros2_odom_topic:
+            self._odom = Ros2Odom(
+                odom_topic=ros2_odom_topic,
+                msg_kind=ros2_odom_msg_kind,
+                log_prefix="[Piper]",
+            )
+            self._odom.start()
+
         self._closed = False
 
     # ============================================================== special methods
@@ -446,6 +463,13 @@ class PiperLowLevel:
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab (rgb, depth_m) from the camera, or None if no camera."""
         return self._camera.grab_frames() if self._camera is not None else None
+
+    def get_odom_pose(self) -> dict | None:
+        """Latest ROS2 odometry pose, or None if no odom backend / no message yet.
+
+        Raw ROS units (meters + quaternion xyzw + ``yaw_deg``); see ``Ros2Odom``.
+        """
+        return self._odom.grab_pose() if self._odom is not None else None
 
     # =================================================================== move
     def move_to_pose_blocking(
@@ -581,6 +605,11 @@ class PiperLowLevel:
                 self._camera.stop()
         except Exception:  # noqa: BLE001 - best-effort camera teardown
             pass
+        try:
+            if self._odom is not None:
+                self._odom.stop()
+        except Exception as e:  # best-effort odom teardown; log + continue to CAN disconnect
+            logger.debug("[Piper] odom stop failed during teardown: %s", e)
         # Leave the arm ENERGIZED and holding its pose: do NOT DisableArm
         # (that makes it go limp and drop whatever it is holding) and do NOT
         # force standby. Just drop the CAN connection — the firmware keeps the

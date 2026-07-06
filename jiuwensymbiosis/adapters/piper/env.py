@@ -148,6 +148,9 @@ class PiperEnv(BaseRobotEnv):
             kwargs["ros2_depth_scale_m"] = self.cfg.ros2_depth_scale_m
             kwargs["ros2_camera_info_topic"] = self.cfg.ros2_camera_info_topic
             kwargs["ros2_intrinsics"] = self.cfg.ros2_intrinsics
+        if getattr(self.cfg, "ros2_odom_topic", None):
+            kwargs["ros2_odom_topic"] = self.cfg.ros2_odom_topic
+            kwargs["ros2_odom_msg_kind"] = self.cfg.ros2_odom_msg_kind
 
         self._inner = PiperLowLevel(**kwargs)
         self._connected = True
@@ -202,6 +205,17 @@ class PiperEnv(BaseRobotEnv):
                 "gripper_state": (
                     self._inner.gripper_state  # type: ignore[attr-defined]
                     if "grasp.parallel" in self.capabilities
+                    else None
+                ),
+                # Optional ROS2 odometry (meters + quaternion + yaw_deg); None when
+                # no odom backend configured or no message has arrived yet.
+                "odom": (
+                    # ``_inner`` is typed ``RobotDriver`` (the base Protocol), but
+                    # ``get_odom_pose`` is a ``PiperLowLevel``-specific method with no
+                    # sibling Protocol — same pattern as the grab_frames / get_angles
+                    # sibling-protocol calls above, suppressed here for the same reason.
+                    self._inner.get_odom_pose()  # type: ignore[attr-defined]
+                    if getattr(self.cfg, "ros2_odom_topic", None)
                     else None
                 ),
             },

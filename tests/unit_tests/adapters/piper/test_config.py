@@ -155,3 +155,23 @@ class TestEnvVarOverrides:
         cfg = PiperConfig.from_dict({})
         assert cfg.camera_source == "realsense"
         assert cfg.ros2_rgb_topic is None
+
+    def test_ros2_odom_fields_passthrough_from_yaml(self):
+        data = {
+            "env": {
+                "cfg": {
+                    "low_level": {
+                        "ros2_odom_topic": "/odom",
+                        "ros2_odom_msg_kind": "pose_stamped",
+                    }
+                }
+            }
+        }
+        cfg = PiperConfig.from_dict(data)
+        assert cfg.ros2_odom_topic == "/odom"
+        assert cfg.ros2_odom_msg_kind == "pose_stamped"
+
+    def test_ros2_odom_defaults(self):
+        cfg = PiperConfig.from_dict({})
+        assert cfg.ros2_odom_topic is None
+        assert cfg.ros2_odom_msg_kind == "odometry"

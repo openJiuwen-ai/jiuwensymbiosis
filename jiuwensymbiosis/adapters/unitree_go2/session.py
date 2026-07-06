@@ -1,0 +1,43 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""``build_unitree_go2_session`` — one call from YAML to a ready-to-connect session.
+
+Wires the detector-server (GroundingDINO + SAM2) sidecar lifecycle and passes
+the detector URL + geometry constants into the Api, so the user just does::
+
+    session = build_unitree_go2_session.from_yaml("configs/unitree_go2/default.yaml")
+    with session:
+        agent = build_robot_agent(session)
+        ...
+"""
+
+from __future__ import annotations
+
+from jiuwensymbiosis.adapters._common.builder import make_builder, make_detector_sidecar
+from jiuwensymbiosis.adapters.unitree_go2.api import UnitreeGo2Api
+from jiuwensymbiosis.adapters.unitree_go2.config import UnitreeGo2Config
+from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+
+
+def _attach_unitree_go2_cfg(session, cfg: UnitreeGo2Config) -> None:
+    """Expose the config to InProcessCodeTool-executed code."""
+    session.extra_globals["unitree_go2_cfg"] = cfg
+
+
+build_unitree_go2_session = make_builder(
+    UnitreeGo2Config,
+    UnitreeGo2Env,
+    UnitreeGo2Api,
+    # Declarative field mapping: cfg attr → UnitreeGo2Api __init__ kwarg.
+    # ``detector_url:detector_service_url`` renames on the way to the Api;
+    # the rest pass through unchanged.
+    api_kwargs_from_cfg=[
+        "detector_url:detector_service_url",
+        "z_correction_mm",
+        "grasp_z_offset_mm",
+        "chip_thickness_mm",
+    ],
+    sidecar_builders=[make_detector_sidecar()],
+    decorate=_attach_unitree_go2_cfg,
+)

@@ -1,0 +1,33 @@
+# Unitree Go2 默认配置(移动底盘 + ROS2 相机 + 里程计)
+# 形态: 纯移动底盘(无机械臂/夹爪)。底盘运动走 unitree_sdk2py,图像/里程计走 ROS2。
+
+name: "unitree_go2"
+
+# --- 底盘运动 (官方 SDK) ---
+# network_interface: "eth0"            # 主机网卡(Go2 子网);留空用 SDK 默认
+max_linear_speed_mps: 1.0
+max_angular_speed_radps: 1.5
+home_xy_yaw_m_deg: [0.0, 0.0, 0.0]    # Home 位姿 (x_m, y_m, yaw_deg)
+
+# --- ROS2 相机 ---
+camera_source: "ros2"
+ros2_rgb_topic: /go2/camera/color/image_raw
+ros2_depth_topic: /go2/camera/aligned_depth_to_color/image_raw
+ros2_depth_scale_m: 0.001
+ros2_camera_info_topic: /go2/camera/color/camera_info
+# ros2_intrinsics: null               # 无 camera_info 时填行优先 9 元素 3x3 K
+
+# --- ROS2 里程计 ---
+# 框架只消费 odom topic,不跑 SLAM。确保机器人端的 SLAM/里程计栈已启动并收敛。
+ros2_odom_topic: /odom
+ros2_odom_msg_kind: odometry
+
+# --- 安全边界 (底盘 2D 平面;z_min_safe 恒 0.0) ---
+z_min_safe_mm: 0.0
+x_min_mm: -5.0
+x_max_mm: 5.0
+y_min_mm: -5.0
+y_max_mm: 5.0
+
+# --- 检测服务 ---
+detector_url: "http://127.0.0.1:8114"
