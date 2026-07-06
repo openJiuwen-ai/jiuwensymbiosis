@@ -1,15 +1,15 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters.unitree_go2.env."""
+"""Tests for jiuwensymbiosis.adapters.ubetech_cruzr_s2.env."""
 
 from __future__ import annotations
 
-from jiuwensymbiosis.adapters.unitree_go2.config import UnitreeGo2Config
+from jiuwensymbiosis.adapters.ubetech_cruzr_s2.config import UbetechCruzrS2Config
 
 
 class _MockLowLevel:
-    """Mock UnitreeGo2Driver for hardware-free env tests."""
+    """Mock UbetechCruzrS2Driver for hardware-free env tests."""
 
     home_pose = type("Pose", (), {"x": 0.0, "y": 0.0, "z": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0})()
     tool_offset_mm = 0.0
@@ -35,32 +35,32 @@ class _MockLowLevel:
         return self._odom_pose
 
 
-class TestUnitreeGo2EnvConstruction:
+class TestUbetechCruzrS2EnvConstruction:
     def test_default_config(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        cfg = UnitreeGo2Config()
-        env = UnitreeGo2Env(cfg)
+        cfg = UbetechCruzrS2Config()
+        env = UbetechCruzrS2Env(cfg)
         assert env.low_level is None
         assert "motion.cartesian" in env.capabilities
         assert "vision.camera" in env.capabilities
         assert "vision.depth" in env.capabilities
 
     def test_capabilities_exclude_arm_and_grasp(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         # Mobile base form factor: no joint motion, no gripper/suction.
         assert "motion.joint" not in env.capabilities
         assert "grasp.parallel" not in env.capabilities
         assert "grasp.suction" not in env.capabilities
 
 
-class TestUnitreeGo2EnvSafetyContract:
+class TestUbetechCruzrS2EnvSafetyContract:
     def test_z_min_safe_fixed_zero_planar(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         # Before connect: reads from config (0.0).
         assert env.z_min_safe == 0.0
         # With a live driver: still 0.0 (planar base, never triggers).
@@ -68,41 +68,41 @@ class TestUnitreeGo2EnvSafetyContract:
         assert env.z_min_safe == 0.0
 
     def test_workspace_bounds_from_config(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        cfg = UnitreeGo2Config(x_min_m=-5.0, y_min_m=-5.0, x_max_m=5.0, y_max_m=5.0)
-        env = UnitreeGo2Env(cfg)
+        cfg = UbetechCruzrS2Config(x_min_m=-5.0, y_min_m=-5.0, x_max_m=5.0, y_max_m=5.0)
+        env = UbetechCruzrS2Env(cfg)
         assert env.workspace_bounds == (-5.0, -5.0, 5.0, 5.0)
 
     def test_workspace_bounds_none_when_unset(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        cfg = UnitreeGo2Config(x_min_m=None)
-        env = UnitreeGo2Env(cfg)
+        cfg = UbetechCruzrS2Config(x_min_m=None)
+        env = UbetechCruzrS2Env(cfg)
         assert env.workspace_bounds is None
 
     def test_low_level_property_round_trip(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         assert env.low_level is None
         driver = _MockLowLevel()
         env.low_level = driver
         assert env.low_level is driver
 
     def test_tool_offset_mm_fixed_zero(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         env.low_level = _MockLowLevel()
         assert env.tool_offset_mm == 0.0  # mobile base: no flange→tip offset
 
 
-class TestUnitreeGo2EnvObservation:
+class TestUbetechCruzrS2EnvObservation:
     def test_get_observation_returns_empty_before_connect(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         obs = env.get_observation()
         assert obs.pose is None
         assert obs.rgb is None
@@ -110,10 +110,10 @@ class TestUnitreeGo2EnvObservation:
         assert obs.extra == {}  # no low_level → empty extra
 
     def test_get_observation_surfaces_pose_and_odom(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        cfg = UnitreeGo2Config(ros2_odom_topic="/odom")
-        env = UnitreeGo2Env(cfg)
+        cfg = UbetechCruzrS2Config(ros2_odom_topic="/odom")
+        env = UbetechCruzrS2Env(cfg)
         env.low_level = _MockLowLevel()
         obs = env.get_observation()
         assert obs.pose == {"x": 1.0, "y": 2.0, "z": 0.0, "rx": 0.0, "ry": 0.0, "rz": 30.0}
@@ -131,19 +131,19 @@ class TestUnitreeGo2EnvObservation:
         assert obs.extra["z_min_safe"] == 0.0
 
     def test_get_observation_odom_none_when_no_odom_topic(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
         # No ros2_odom_topic configured → extra["odom"] is None even with a driver.
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         env.low_level = _MockLowLevel()
         obs = env.get_observation()
         assert obs.extra["odom"] is None
 
     def test_get_observation_odom_none_when_driver_returns_none(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        cfg = UnitreeGo2Config(ros2_odom_topic="/odom")
-        env = UnitreeGo2Env(cfg)
+        cfg = UbetechCruzrS2Config(ros2_odom_topic="/odom")
+        env = UbetechCruzrS2Env(cfg)
         env.low_level = _MockLowLevel()
         # Force the driver to report no odom message yet.
         env.low_level._odom_pose = None
@@ -153,9 +153,9 @@ class TestUnitreeGo2EnvObservation:
         assert obs.pose is not None
 
     def test_home_pose_prop(self):
-        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
 
-        env = UnitreeGo2Env(UnitreeGo2Config())
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
         env.low_level = _MockLowLevel()
         hp = env.home_pose
         assert hp is not None

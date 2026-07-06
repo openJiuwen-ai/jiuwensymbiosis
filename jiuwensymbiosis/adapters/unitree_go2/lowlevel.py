@@ -42,6 +42,13 @@ from jiuwensymbiosis.adapters._common.ros2_odom import Ros2Odom
 
 logger = logging.getLogger(__name__)
 
+# ``ChannelFactoryInitialize`` is a process-wide one-shot Cyclone DDS init:
+# it binds a DDS participant to the host NIC. Re-invoking on an already-
+# initialized participant errors out. Tracked here so multiple driver
+# instances (or reconnect after ``disconnect``) skip the redundant call.
+# Only a process restart resets DDS (the SDK has no clean shutdown).
+_dds_factory_initialized: bool = False
+
 
 class UnitreeGo2Driver:
     """Unitree Go2 mobile-base driver: SDK chassis motion + ROS2 camera + odom.
@@ -148,9 +155,15 @@ class UnitreeGo2Driver:
                 '(needs Cyclone DDS — see README "Unitree Go2 chassis SDK").'
             ) from exc
         try:
-            # domain 0 + the configured NIC (None → SDK/DDS default interface).
-            ChannelFactoryInitialize(0, self._network_interface)
-            self._sdk = True  # marker: DDS participant initialized; SportClient created per-move
+            # ``ChannelFactoryInitialize`` is a GLOBAL one-shot — only call it
+            # once per process. Skip if already initialized (reconnect / 2nd
+            # instance); the DDS participant from the first call is still live.
+            global _dds_factory_initialized
+            if not _dds_factory_initialized:
+                # domain 0 + the configured NIC (None → SDK/DDS default interface).
+                ChannelFactoryInitialize(0, self._network_interface)
+                _dds_factory_initialized = True
+            self._sdk = True  # marker: DDS participant ready; SportClient created per-move
             logger.info("[Go2] chassis SDK initialized (interface=%s).", self._network_interface or "(default)")
         except Exception as exc:  # SDK init failure is a real motion error, not degradable
             raise RuntimeError(f"[Go2] chassis SDK init failed: {exc}") from exc

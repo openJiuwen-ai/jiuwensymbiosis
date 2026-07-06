@@ -37,7 +37,34 @@ pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu12
 
 # Piper 真机环境（安装 piper_sdk）
 pip install -e ".[piper]"
+
+# Unitree Go2 底盘（安装 unitree_sdk2py — 需 Cyclone DDS，见下文）
+pip install -e ".[unitree]"
+
+# UBTECH Cruzr S2（纯 ROS2 — 无需 vendor SDK；需 rclpy，见 docs/ros2.md）
+# pip install -e "."   # 无需 extra；只需激活 ROS2 环境（source /opt/ros/humble/setup.bash）
 ```
+
+> **ROS2 后端（选填）。** `camera_source: ros2` 相机后端、`ros2_odom_topic` 里程计后端、
+> 以及 `ubetech_cruzr_s2` 的 cmd_vel 运动后端，都通过 ROS2 topic 读/写。其依赖
+> （`rclpy` + `sensor_msgs` / `nav_msgs` / `geometry_msgs`）**不在 PyPI**——它们随
+> ROS2 本身发布。安装 ROS2（推荐 Humble）后，在**每个**运行框架的 shell 里激活：
+>
+> ```bash
+> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-nav-msgs ros-humble-geometry-msgs
+> source /opt/ros/humble/setup.bash   # 加进 ~/.bashrc 或 venv 的 activate
+> ```
+>
+> 然后在 YAML 里指向你的 ROS2 topic（如 `camera_source: ros2`、`ros2_rgb_topic`、
+> `ros2_odom_topic`、`ros2_cmd_vel_topic`）。运行时 `rclpy` 不可 import 时，所有后端
+> 优雅降级为 `None` / no-op（运动在调用时 raise）。完整指南——配置字段、消息类型、
+> SLAM 责任边界、各适配器使用情况——见 **[docs/ros2.md](docs/ros2.md)**。
+
+> **Unitree Go2 底盘 SDK（选填）。** `unitree_go2` 适配器通过官方 `unitree_sdk2py`
+> （经 Cyclone DDS 连接机器人）驱动底盘运动；`unitree_sdk2py` 依赖
+> `cyclonedds==0.10.2`，Linux 上常需先编译 eclipse-cyclonedds 0.10.x 并设
+> `CYCLONEDDS_HOME`，再 `pip install -e ".[unitree]"`。详见
+> `configs/unitree_go2/config_template.yaml` 的安装注释。
 
 或使用锁定版本号的依赖文件以保障可复现性：
 

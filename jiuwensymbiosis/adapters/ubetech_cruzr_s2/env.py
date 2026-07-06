@@ -1,43 +1,44 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""``UnitreeGo2Env`` — adapter from ``BaseRobotEnv`` to ``UnitreeGo2Driver``.
+"""``UbetechCruzrS2Env`` — adapter from ``BaseRobotEnv`` to ``UbetechCruzrS2Driver``.
 
-Mobile-base form factor: capabilities = ``motion.cartesian`` (chassis x/y/yaw)
-+ ``vision.camera`` / ``vision.depth`` (ROS2 images) + ``vision.detection``.
-No ``motion.joint`` / ``grasp.*`` — a quadruped base has no arm or gripper.
+Mobile-base form factor: capabilities = ``motion.cartesian`` (chassis x/y/yaw
+via ROS2 cmd_vel) + ``vision.camera`` / ``vision.depth`` (ROS2 images) +
+``vision.detection``. No ``motion.joint`` / ``grasp.*`` — a mobile base has no
+arm or gripper.
 
 Odometry is surfaced into ``RobotObservation.extra["odom"]`` (raw ROS units:
-meters + quaternion + ``yaw_deg``), mirroring the piper ROS2-odom pattern.
+meters + quaternion + ``yaw_deg``), mirroring the unitree_go2 ROS2-odom pattern.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, cast
 
 import numpy as np
 
-from jiuwensymbiosis.adapters.unitree_go2.config import UnitreeGo2Config
+from jiuwensymbiosis.adapters.ubetech_cruzr_s2.config import UbetechCruzrS2Config
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-class UnitreeGo2Env(BaseRobotEnv):
-    """Unitree Go2 quadruped mobile base + ROS2 camera + odometry."""
+class UbetechCruzrS2Env(BaseRobotEnv):
+    """UBTECH Cruzr S2 mobile base + ROS2 camera + odometry."""
 
     capabilities = frozenset(
         {
-            "motion.cartesian",  # chassis x/y/yaw via unitree_sdk2py
+            "motion.cartesian",  # chassis x/y/yaw via ROS2 cmd_vel
             "vision.camera",  # ROS2 RGB stream via Ros2Camera
             "vision.depth",  # ROS2 depth stream
             "vision.detection",  # open-vocab detection (detector sidecar)
         }
     )
-    name = "unitree_go2"
+    name = "ubetech_cruzr_s2"
 
-    def __init__(self, cfg: UnitreeGo2Config) -> None:
+    def __init__(self, cfg: UbetechCruzrS2Config) -> None:
         """Store config; driver is None until connect().
 
         ``low_level`` (the driver slot) is inherited as a settable property
@@ -56,7 +57,7 @@ class UnitreeGo2Env(BaseRobotEnv):
 
     @z_min_safe.setter
     def z_min_safe(self, _: float | None) -> None:
-        raise AttributeError("UnitreeGo2Env.z_min_safe is read-only (planar base, fixed at 0.0)")
+        raise AttributeError("UbetechCruzrS2Env.z_min_safe is read-only (planar base, fixed at 0.0)")
 
     @property
     def workspace_bounds(self) -> tuple[float, float, float, float] | None:
@@ -74,7 +75,7 @@ class UnitreeGo2Env(BaseRobotEnv):
 
     @workspace_bounds.setter
     def workspace_bounds(self, _: tuple[float, float, float, float] | None) -> None:
-        raise AttributeError("UnitreeGo2Env.workspace_bounds is read-only (computed from config)")
+        raise AttributeError("UbetechCruzrS2Env.workspace_bounds is read-only (computed from config)")
 
     @property
     def home_pose(self):
@@ -85,7 +86,7 @@ class UnitreeGo2Env(BaseRobotEnv):
 
     @home_pose.setter
     def home_pose(self, _: Any) -> None:
-        raise AttributeError("UnitreeGo2Env.home_pose is read-only (read from driver)")
+        raise AttributeError("UbetechCruzrS2Env.home_pose is read-only (read from driver)")
 
     @property
     def tool_offset_mm(self) -> float:
@@ -94,33 +95,37 @@ class UnitreeGo2Env(BaseRobotEnv):
 
     @tool_offset_mm.setter
     def tool_offset_mm(self, _: float) -> None:
-        raise AttributeError("UnitreeGo2Env.tool_offset_mm is read-only (planar base, fixed at 0.0)")
+        raise AttributeError("UbetechCruzrS2Env.tool_offset_mm is read-only (planar base, fixed at 0.0)")
 
     # ----------------------------------------------------------------- connect
     def connect(self) -> None:
-        """Instantiate and connect the UnitreeGo2Driver from config."""
+        """Instantiate and connect the UbetechCruzrS2Driver from config."""
         if self._connected:
             return
-        from jiuwensymbiosis.adapters.unitree_go2.lowlevel import UnitreeGo2Driver
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.lowlevel import UbetechCruzrS2Driver
 
-        kwargs: dict[str, Any] = dict(  # mutable builder, conditionally extended below
-            network_interface=self.cfg.network_interface,
-            max_linear_speed_mps=self.cfg.max_linear_speed_mps,
-            max_angular_speed_radps=self.cfg.max_angular_speed_radps,
-            home_xy_yaw_m_deg=self.cfg.home_xy_yaw_m_deg,
-            camera_source=self.cfg.camera_source,
-            ros2_rgb_topic=self.cfg.ros2_rgb_topic,
-            ros2_depth_topic=self.cfg.ros2_depth_topic,
-            ros2_depth_scale_m=self.cfg.ros2_depth_scale_m,
-            ros2_camera_info_topic=self.cfg.ros2_camera_info_topic,
-            ros2_intrinsics=self.cfg.ros2_intrinsics,
-            ros2_odom_topic=self.cfg.ros2_odom_topic,
-            ros2_odom_msg_kind=self.cfg.ros2_odom_msg_kind,
-        )
-        self._low_level = UnitreeGo2Driver(**kwargs)
+        kwargs: dict[str, Any] = {
+            "ros2_cmd_vel_topic": self.cfg.ros2_cmd_vel_topic,
+            "ros2_cmd_vel_msg_kind": self.cfg.ros2_cmd_vel_msg_kind,
+            "max_linear_speed_mps": self.cfg.max_linear_speed_mps,
+            "max_angular_speed_radps": self.cfg.max_angular_speed_radps,
+            "home_xy_yaw_m_deg": self.cfg.home_xy_yaw_m_deg,
+            "camera_source": self.cfg.camera_source,
+            "ros2_rgb_topic": self.cfg.ros2_rgb_topic,
+            "ros2_depth_topic": self.cfg.ros2_depth_topic,
+            "ros2_depth_scale_m": self.cfg.ros2_depth_scale_m,
+            "ros2_camera_info_topic": self.cfg.ros2_camera_info_topic,
+            "ros2_intrinsics": self.cfg.ros2_intrinsics,
+            "ros2_odom_topic": self.cfg.ros2_odom_topic,
+            "ros2_odom_msg_kind": self.cfg.ros2_odom_msg_kind,
+        }
+        self._low_level = UbetechCruzrS2Driver(**kwargs)
         self._low_level.connect()
         self._connected = True
-        logger.info("UnitreeGo2Env connected (interface=%s)", self.cfg.network_interface or "(default)")
+        logger.info(
+            "UbetechCruzrS2Env connected (cmd_vel=%s)",
+            self.cfg.ros2_cmd_vel_topic or "(none)",
+        )
 
     def disconnect(self) -> None:
         """Close the low-level driver and mark as disconnected."""
@@ -130,7 +135,7 @@ class UnitreeGo2Env(BaseRobotEnv):
             # _low_level is RobotDriver|None here; close() is on the concrete driver
             self._low_level.close()  # type: ignore[union-attr]
         except Exception as exc:  # disconnect is best-effort
-            logger.warning("UnitreeGo2Env disconnect failed: %s", exc)
+            logger.warning("UbetechCruzrS2Env disconnect failed: %s", exc)
         self._low_level = None
         self._connected = False
 
@@ -146,7 +151,7 @@ class UnitreeGo2Env(BaseRobotEnv):
             if frames is not None:
                 rgb, depth = frames
         except Exception as exc:  # camera read best-effort
-            logger.debug("UnitreeGo2Env.grab_frames failed: %s", exc)
+            logger.debug("UbetechCruzrS2Env.grab_frames failed: %s", exc)
         pose: dict | None = None
         try:
             p = self._low_level.get_pose()
@@ -169,9 +174,9 @@ class UnitreeGo2Env(BaseRobotEnv):
                 # Optional ROS2 odometry (meters + quaternion + yaw_deg); None when
                 # no odom backend configured or no message has arrived yet.
                 # ``_low_level`` is typed ``RobotDriver`` (the base Protocol), but
-                # ``get_odom_pose`` is a ``UnitreeGo2Driver``-specific method with
-                # no sibling Protocol — same pattern as piper's odom call, suppressed
-                # for the same reason (see piper/env.py:get_observation).
+                # ``get_odom_pose`` is a ``UbetechCruzrS2Driver``-specific method
+                # with no sibling Protocol — same pattern as piper/unitree_go2's
+                # odom call, suppressed for the same reason.
                 "odom": (
                     self._low_level.get_odom_pose()  # type: ignore[attr-defined]
                     if getattr(self.cfg, "ros2_odom_topic", None)

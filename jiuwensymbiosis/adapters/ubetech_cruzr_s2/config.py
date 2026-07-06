@@ -1,17 +1,18 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""``UnitreeGo2Config`` — Unitree Go2 quadruped (mobile-base) adapter config.
+"""``UbetechCruzrS2Config`` — UBTECH Cruzr S2 (mobile-base) adapter config.
 
 Form factor: **pure mobile base** (no arm / end-effector). Capabilities:
-``motion.cartesian`` (body x/y/yaw via the official SDK) + ``vision.camera`` /
-``vision.depth`` (ROS2 image topics, via ``Ros2Camera``) + optional
-``vision.detection``. Odometry is read from a ROS2 pose topic via ``Ros2Odom``.
+``motion.cartesian`` (body x/y/yaw via ROS2 velocity commands) +
+``vision.camera`` / ``vision.depth`` (ROS2 image topics, via ``Ros2Camera``) +
+optional ``vision.detection``. Odometry is read from a ROS2 pose topic via
+``Ros2Odom``.
 
-Communication is **hybrid**: chassis motion goes through ``unitree_sdk2py``
-(the official Python SDK), while images + odometry come from ROS2 topics
-(reusing the cross-vendor ``Ros2Camera`` / ``Ros2Odom``). This mirrors the
-piper ROS2 backend pattern.
+Communication is **pure ROS2**: chassis motion, images, and odometry all flow
+over ROS2 topics — no vendor SDK required. The motion topic name and message
+type are configurable (``ros2_cmd_vel_topic`` / ``ros2_cmd_vel_msg_kind``) so
+the adapter fits whatever the robot's ROS2 driver exposes.
 """
 
 from __future__ import annotations
@@ -25,31 +26,35 @@ import yaml
 
 
 @dataclass
-class UnitreeGo2Config:
-    """Hardware configuration for the Unitree Go2 (mobile-base form factor).
+class UbetechCruzrS2Config:
+    """Hardware configuration for the UBTECH Cruzr S2 (mobile-base form factor).
 
     Use ``from_yaml(path)`` to load from a YAML file, or construct directly
     with keyword arguments.
     """
 
     # ==================== 基本信息 [必填] ====================
-    name: str = "unitree_go2"
+    name: str = "ubetech_cruzr_s2"
 
-    # ==================== 底盘运动 (官方 SDK) [必填-仅 motion.cartesian] ====================
-    # ``unitree_sdk2py`` connection. The SDK speaks Cyclone DDS over the
-    # robot's network — set ``network_interface`` to the host NIC on the Go2
-    # subnet (e.g. "eth0"), or leave None to use the SDK default. ``robot_ip``
-    # is optional (the SDK usually discovers by interface, not IP).
-    network_interface: str | None = None
-    # chassis velocity limits (in the Go2 sport-mode units: m/s and rad/s).
-    # Enforced in the driver at the hardware boundary.
+    # ==================== 底盘运动 (ROS2 cmd_vel) [必填-仅 motion.cartesian] ====================
+    # ROS2 velocity-command publisher. The driver publishes a velocity command
+    # to ``ros2_cmd_vel_topic``; the message type is chosen by
+    # ``ros2_cmd_vel_msg_kind``:
+    #   * "twist"         → ``geometry_msgs/msg/Twist``       (linear.x/y + angular.z)
+    #   * "twist_stamped" → ``geometry_msgs/msg/TwistStamped`` (same, with header)
+    # Both carry the standard 2D-planar velocity (vx, vy m/s; wz rad/s).
+    # Topic name and type are both configurable to match the robot's driver.
+    ros2_cmd_vel_topic: str = "/cmd_vel"
+    ros2_cmd_vel_msg_kind: str = "twist"  # or twist_stamped
+    # chassis velocity limits (m/s and rad/s). Enforced in the driver at the
+    # hardware boundary (clamped before publishing).
     max_linear_speed_mps: float = 1.0  # m/s
     max_angular_speed_radps: float = 1.5  # rad/s
     # [选填] Home / origin pose of the base (x_m, y_m, yaw_deg) — 2D planar.
     home_xy_yaw_m_deg: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 
     # ==================== ROS2 相机 (复用 Ros2Camera) [选填-仅 vision.*] ====================
-    camera_source: str = "ros2"  # Go2 ships images over ROS2; "realsense" USB also supported
+    camera_source: str = "ros2"  # Cruzr S2 ships images over ROS2
     ros2_rgb_topic: str | None = None
     ros2_depth_topic: str | None = None
     ros2_depth_scale_m: float = 0.001  # 16UC1 raw unit → meters (RealSense default = 1 mm)
@@ -97,14 +102,14 @@ class UnitreeGo2Config:
     # ========================================================================
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> UnitreeGo2Config:
+    def from_dict(cls, data: dict[str, Any]) -> UbetechCruzrS2Config:
         """Construct config from a flat dict (only matching field names are used)."""
         valid = {f.name for f in dataclasses.fields(cls)}
         clean: dict[str, Any] = {k: v for k, v in data.items() if k in valid}
         return cls(**clean)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> UnitreeGo2Config:
+    def from_yaml(cls, path: str | Path) -> UbetechCruzrS2Config:
         """Load config from a YAML file, resolving relative calib_path."""
         path = Path(path).resolve()
         with path.open("r", encoding="utf-8") as f:

@@ -40,80 +40,29 @@ pip install -e ".[piper]"
 
 # Unitree Go2 chassis (installs unitree_sdk2py — needs Cyclone DDS, see below)
 pip install -e ".[unitree]"
+
+# UBTECH Cruzr S2 (pure ROS2 — no vendor SDK; needs rclpy, see docs/ros2.md)
+# pip install -e "."   # no extra needed; just activate ROS2 env (source /opt/ros/humble/setup.bash)
 ```
 
-> **ROS2 camera backend (optional).** The `camera_source: ros2` backend reads
-> RGBD from ROS2 `sensor_msgs/Image` topics instead of a USB RealSense. Its
-> dependencies — `rclpy` and `sensor_msgs` — are **not on PyPI** (they ship
-> with ROS2 itself), so they are deliberately omitted from the `[ros2]`-style
-> extras above. Install and activate them from the ROS apt source:
+> **ROS2 backends (optional).** The `camera_source: ros2` camera backend, the
+> `ros2_odom_topic` odometry backend, and the `ubetech_cruzr_s2` cmd_vel motion
+> backend all read/publish over ROS2 topics. Their dependencies (`rclpy` +
+> `sensor_msgs` / `nav_msgs` / `geometry_msgs`) are **not on PyPI** — they ship
+> with ROS2 itself. Install ROS2 (Humble recommended), then activate it in
+> every shell that runs the framework:
 >
 > ```bash
-> # 1. Install ROS2 (Humble recommended) per https://docs.ros.org/en/humble/Installation.html
-> #    This brings in rclpy + sensor_msgs.
-> #    Or, minimal packages only:
-> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-std-msgs
->
-> # 2. Activate the ROS environment in EVERY shell that runs the framework
-> #    (so Python can import rclpy). Best added to your ~/.bashrc or venv activate.
-> source /opt/ros/humble/setup.bash
->
-> # 3. Then point your Piper YAML at the ROS2 topics (see configs/piper/*.yaml):
-> #       camera_source: ros2
-> #       ros2_rgb_topic: /camera/color/image_raw
-> #       ros2_depth_topic: /camera/aligned_depth_to_color/image_raw
+> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-nav-msgs ros-humble-geometry-msgs
+> source /opt/ros/humble/setup.bash   # add to ~/.bashrc or venv activate
 > ```
 >
-> If `rclpy` is not importable at runtime, `Ros2Camera` degrades gracefully:
-> `start()` returns `False`, `grab_frames()` returns `None`, and the pipeline
-> runs without vision — same failure mode as a missing RealSense.
-
-> **ROS2 odometry backend (optional).** The optional `ros2_odom_topic` field
-> subscribes to a pose-carrying ROS2 topic (`nav_msgs/Odometry`,
-> `geometry_msgs/PoseStamped`, or `PoseWithCovarianceStamped` — chosen via
-> `ros2_odom_msg_kind`) and exposes the latest position via
-> `Ros2Odom.grab_pose()` / `RobotObservation.extra["odom"]`. Its dependencies
-> — `rclpy` and `nav_msgs` / `geometry_msgs` — are **not on PyPI** (they ship
-> with ROS2 itself), so they are deliberately omitted from the extras above,
-> exactly like the camera backend. Install and activate them from the ROS apt
-> source. Odometry is **optional** — leave `ros2_odom_topic` unset to disable.
-> Note the pose is returned in **raw ROS units** (meters + quaternion xyzw +
-> a convenience `yaw_deg`); it is not auto-converted to the arm flange frame.
->
-> ⚠️ The framework is a **pure consumer** of the odom topic — it does NOT run
-> any SLAM / localization / mapping itself. The pose published on that topic
-> must be produced on the **robot side** by a SLAM / odometry stack you deploy
-> alongside the framework: a LiDAR SLAM node (cartographer, slam_toolbox,
-> FAST-LIO, LIO-SAM), visual-inertial odometry (VINS-Fusion, ORB-SLAM3,
-> RTAB-Map), or a wheel-encoder + IMU EKF (robot_localization). Bring that
-> stack up and let it converge BEFORE pointing `ros2_odom_topic` at the topic
-> it publishes. If SLAM isn't running or hasn't converged, no message is
-> published and `grab_pose()` returns `None` — the framework keeps working,
-> just without an external pose feed (same "no data" fallback as a missing
-> camera).
->
-> ```bash
-> # 1. Install ROS2 (Humble recommended) — reuses the rclpy install from the
-> #    camera backend above; this step only adds the pose message packages:
-> sudo apt install ros-humble-nav-msgs ros-humble-geometry-msgs
-> #    (If you skipped the camera backend, also install rclpy itself:
-> #     sudo apt install ros-humble-rclpy)
->
-> # 2. Activate the ROS environment in EVERY shell that runs the framework
-> #    (so Python can import rclpy + nav_msgs/geometry_msgs). Same step as the
-> #    camera backend — best added to your ~/.bashrc or venv activate.
-> source /opt/ros/humble/setup.bash
->
-> # 3. Start your SLAM / odometry stack on the robot side and let it converge,
-> #    then point your Piper YAML at the topic it publishes (see configs/piper/*.yaml):
-> #       ros2_odom_topic: /odom
-> #       ros2_odom_msg_kind: odometry   # or pose_stamped / pose_with_covariance_stamped
-> ```
->
-> If `rclpy` is not importable at runtime (or no SLAM node is publishing),
-> `Ros2Odom` degrades gracefully: `start()` returns `False`, `grab_pose()`
-> returns `None`, and the pipeline runs without an external pose feed — same
-> failure mode as a missing odom source.
+> Then point your YAML at the ROS2 topics (e.g. `camera_source: ros2`,
+> `ros2_rgb_topic`, `ros2_odom_topic`, `ros2_cmd_vel_topic`). If `rclpy` is not
+> importable at runtime, every backend degrades gracefully to `None` / no-op
+> (motion raises at call time). For the full guide — config fields, message
+> types, the SLAM responsibility boundary, and per-adapter usage — see
+> **[docs/ros2.md](docs/ros2.md)**.
 
 > **Unitree Go2 chassis SDK (optional).** The `unitree_go2` adapter drives the
 > Go2 chassis through the official `unitree_sdk2py` (installed via the
