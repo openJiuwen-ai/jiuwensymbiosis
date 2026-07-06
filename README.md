@@ -37,33 +37,66 @@ pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu12
 
 # Piper hardware (installs piper_sdk)
 pip install -e ".[piper]"
+
+# Unitree Go2 chassis (installs unitree_sdk2py — needs Cyclone DDS, see below)
+pip install -e ".[unitree]"
+
+# UBTECH Cruzr S2 (pure ROS2 — no vendor SDK; needs rclpy, see docs/ros2.md)
+# pip install -e "."   # no extra needed; just activate ROS2 env (source /opt/ros/humble/setup.bash)
 ```
 
-> **ROS2 camera backend (optional).** The `camera_source: ros2` backend reads
-> RGBD from ROS2 `sensor_msgs/Image` topics instead of a USB RealSense. Its
-> dependencies — `rclpy` and `sensor_msgs` — are **not on PyPI** (they ship
-> with ROS2 itself), so they are deliberately omitted from the `[ros2]`-style
-> extras above. Install and activate them from the ROS apt source:
+> **ROS2 backends (optional).** The `camera_source: ros2` camera backend, the
+> `ros2_odom_topic` odometry backend, and the `ubetech_cruzr_s2` cmd_vel motion
+> backend all read/publish over ROS2 topics. Their dependencies (`rclpy` +
+> `sensor_msgs` / `nav_msgs` / `geometry_msgs`) are **not on PyPI** — they ship
+> with ROS2 itself. Install ROS2 (Humble recommended), then activate it in
+> every shell that runs the framework:
 >
 > ```bash
-> # 1. Install ROS2 (Humble recommended) per https://docs.ros.org/en/humble/Installation.html
-> #    This brings in rclpy + sensor_msgs.
-> #    Or, minimal packages only:
-> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-std-msgs
->
-> # 2. Activate the ROS environment in EVERY shell that runs the framework
-> #    (so Python can import rclpy). Best added to your ~/.bashrc or venv activate.
-> source /opt/ros/humble/setup.bash
->
-> # 3. Then point your Piper YAML at the ROS2 topics (see configs/piper/*.yaml):
-> #       camera_source: ros2
-> #       ros2_rgb_topic: /camera/color/image_raw
-> #       ros2_depth_topic: /camera/aligned_depth_to_color/image_raw
+> sudo apt install ros-humble-rclpy ros-humble-sensor-msgs ros-humble-nav-msgs ros-humble-geometry-msgs
+> source /opt/ros/humble/setup.bash   # add to ~/.bashrc or venv activate
 > ```
 >
-> If `rclpy` is not importable at runtime, `Ros2Camera` degrades gracefully:
-> `start()` returns `False`, `grab_frames()` returns `None`, and the pipeline
-> runs without vision — same failure mode as a missing RealSense.
+> Then point your YAML at the ROS2 topics (e.g. `camera_source: ros2`,
+> `ros2_rgb_topic`, `ros2_odom_topic`, `ros2_cmd_vel_topic`). If `rclpy` is not
+> importable at runtime, every backend degrades gracefully to `None` / no-op
+> (motion raises at call time). For the full guide — config fields, message
+> types, the SLAM responsibility boundary, and per-adapter usage — see
+> **[docs/ros2.md](docs/ros2.md)**.
+
+> **Unitree Go2 chassis SDK (optional).** The `unitree_go2` adapter drives the
+> Go2 chassis through the official `unitree_sdk2py` (installed via the
+> `[unitree]` extra above), which speaks Cyclone DDS over the robot's network.
+> `unitree_sdk2py` depends on `cyclonedds==0.10.2`, whose PyPI wheel on Linux
+> usually **won't build without a pre-installed Cyclone DDS** — so the install
+> is two layers:
+>
+> ```bash
+> # 1. Build & install Cyclone DDS 0.10.x (the version unitree_sdk2py pins).
+> #    The PyPI `cyclonedds` package needs this at build time (set CYCLONEDDS_HOME).
+> git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
+> cd cyclonedds && mkdir build install && cd build
+> cmake -DCMAKE_INSTALL_PREFIX=../install ..
+> cmake --build . --target install
+> export CYCLONEDDS_HOME="$(pwd)/../install"   # remember this path for step 2
+>
+> # 2. Install the framework with the [unitree] extra (pulls unitree_sdk2py + cyclonedds):
+> pip install -e ".[unitree]"
+> #    If step 1 was skipped, pip fails with "Could not locate cyclonedds.
+> #    Try to set CYCLONEDDS_HOME or CMAKE_PREFIX_PATH" — go back and do step 1.
+> #    (Pre-built binaries exist for some platforms; see
+> #     https://pypi.org/project/cyclonedds/#installing-with-pre-built-binaries)
+>
+> # 3. Pick the host NIC on the Go2 subnet (Go2 ships 192.168.123.x/24) and tell
+> #    the SDK to use it. Either set it in the framework YAML:
+> #       network_interface: "eth0"   # passed to ChannelFactoryInitialize(0, <nic>)
+> #    or let the SDK/DDS pick the default interface (network_interface: null).
+> ```
+>
+> If `unitree_sdk2py` is not importable at runtime, the driver's `connect()`
+> raises `RuntimeError` with install guidance — motion is unavailable (the base
+> can't move). Images + odometry still work via the ROS2 backends above
+> (independent of the SDK), so vision/odom degrade separately, not together.
 
 Or install from the pinned requirements file for reproducibility:
 
