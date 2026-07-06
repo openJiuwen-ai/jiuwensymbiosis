@@ -62,10 +62,12 @@ _MAX_OUTPUT_SUMMARY = 2000  # truncate verbose tool outputs in the trace JSON
 class TraceEventSink(Protocol):
     """Sink that other rails push structured events to.
 
-    The three built-in rails (Safety / Recovery / VisualFeedback) accept an
-    optional ``trace_sink`` and call ``record_rail_event`` at their key points so
-    the trace records *real* outcomes (e.g. did RecoveryRail's home() succeed)
-    instead of the TraceRail guessing from exceptions.
+    The three built-in rails accept an optional ``trace_sink`` and call
+    ``record_rail_event`` at their key points so the trace records *real*
+    outcomes (e.g. did RecoveryRail's home() succeed) instead of the TraceRail
+    guessing from exceptions. ``record_rail_event`` attaches to the current
+    entry (``entries[-1]``) — correct for rails firing synchronously within a
+    tool call (Safety / Recovery).
     """
 
     def record_rail_event(
@@ -76,7 +78,33 @@ class TraceEventSink(Protocol):
         detail: dict,
         success: bool,
     ) -> None:
-        """Push one structured rail event (e.g. kind="reject"/"recovery"/"frame") into the trace."""
+        """Push one structured rail event onto the current trace entry."""
+        ...
+
+
+@runtime_checkable
+class StepAwareTraceEventSink(TraceEventSink, Protocol):
+    """Extension of :class:`TraceEventSink` for delayed-injection rails.
+
+    ``record_rail_event_at_step`` attaches to an explicit entry by step number,
+    needed when an event is staged in one step but flushed in another
+    (VisualFeedbackRail: stage in ``after_tool_call``, flush in
+    ``before_model_call``). ``TraceRail`` implements this; sinks that only
+    implement the base :class:`TraceEventSink` still receive delayed-injection
+    events — callers duck-type the step-aware method and fall back to
+    ``record_rail_event`` when absent.
+    """
+
+    def record_rail_event_at_step(
+        self,
+        *,
+        rail_name: str,
+        kind: str,
+        detail: dict,
+        success: bool,
+        step: int,
+    ) -> None:
+        """Push one structured rail event onto a specific entry by step number."""
         ...
 
 
@@ -208,8 +236,11 @@ class ExecutionTrace:
     # 1's before-frame is this ``initial_frame_path``. Set only when
     # ``save_frames`` is on and the first observation is available.
     initial_frame_path: str | None = None
-    # Pending rail/log events that arrived before any step started (rare: rails
-    # firing in before_invoke). Flushed into the next entry or trace_log.
+    # Pending rail events that arrived with no active step (``step=None``,
+    # e.g. rails firing in before_invoke). Flushed into the next ``new_entry``.
+    # Events explicitly targeting a missing step are dropped: without retaining
+    # the target step alongside the event, pending it would misattach the event
+    # to whichever entry happens to be created next.
     _pending_events: list[dict] = field(default_factory=list, repr=False)
     _step_counter: int = field(default=0, repr=False)
 
@@ -259,8 +290,14 @@ class ExecutionTrace:
         target = self._find_entry(step) if step is not None else self._current_entry()
         if target is not None:
             target.rail_events.append(event)
-        else:
+        elif step is None:
+            # No active entry yet: hold an unscoped event for the next entry.
             self._pending_events.append(event)
+        else:
+            # An explicit target that cannot be found is either evicted or not
+            # yet created. In both cases dropping is safer than attaching it to
+            # an unrelated future entry (and trace_log has a different schema).
+            return
 
     def record_log_event(
         self,
@@ -494,7 +531,7 @@ class TraceRail(AgentRail):
             logger.warning("TraceRail: finalize during close failed: %s", exc)
         self.detach_log_handler()
 
-    # ------------------------------------------------------- TraceEventSink impl
+    # ------------------------------------------- StepAwareTraceEventSink impl
     def record_rail_event(
         self,
         *,
@@ -510,6 +547,26 @@ class TraceRail(AgentRail):
             kind=kind,
             detail=detail,
             success=success,
+            step=None,
+        )
+
+    def record_rail_event_at_step(
+        self,
+        *,
+        rail_name: str,
+        kind: str,
+        detail: dict,
+        success: bool,
+        step: int,
+    ) -> None:
+        if self._trace is None:
+            return
+        self._trace.record_rail_event(
+            rail_name=rail_name,
+            kind=kind,
+            detail=detail,
+            success=success,
+            step=step,
         )
 
     def record_log_event(
@@ -690,12 +747,11 @@ class TraceRail(AgentRail):
         return self._save_frame(rgb, step)
 
     def save_frame_for_sink(self, rgb: Any) -> str | None:
-        """Save a caller-provided frame (used by VisualFeedbackRail's frame_sink).
-
-        This lets the on-disk trace frame be the *same* frame injected into the
-        agent context. Caps at ``max_frames``.
+        """Save a caller-provided frame so the on-disk trace frame is the *same*
+        frame injected into the agent context. Caps at ``max_frames``. Returns
+        ``None`` when ``save_frames`` is off (also a guard against a stale sink).
         """
-        if self._frames_saved >= self.max_frames:
+        if not self.save_frames or self._frames_saved >= self.max_frames:
             return None
         # Align the frame filename with the active step number so it matches
         # entry.step; falls back to the frame counter if no trace is active.
@@ -724,4 +780,5 @@ __all__ = [
     "ExecutionTrace",
     "TraceRail",
     "TraceEventSink",
+    "StepAwareTraceEventSink",
 ]

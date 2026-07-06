@@ -12,7 +12,12 @@ import pytest
 
 from jiuwensymbiosis.agent.abstractions import ToolOutput
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.agent.trace import TraceRail, _unwrap_robot_control
+from jiuwensymbiosis.agent.trace import (
+    StepAwareTraceEventSink,
+    TraceEventSink,
+    TraceRail,
+    _unwrap_robot_control,
+)
 from jiuwensymbiosis.env.mock import MockArmEnv
 from tests.mocks.mock_api import MockApi
 
@@ -216,6 +221,19 @@ class TestOnToolException:
 
 
 class TestRailEventSink:
+    def test_protocols_preserve_legacy_sink_compatibility(self, trace_rail):
+        from jiuwensymbiosis.agent import StepAwareTraceEventSink as PublicStepAwareTraceEventSink
+
+        class _LegacySink:
+            def record_rail_event(self, *, rail_name, kind, detail, success):
+                pass
+
+        legacy = _LegacySink()
+        assert PublicStepAwareTraceEventSink is StepAwareTraceEventSink
+        assert isinstance(legacy, TraceEventSink)
+        assert not isinstance(legacy, StepAwareTraceEventSink)
+        assert isinstance(trace_rail, StepAwareTraceEventSink)
+
     @pytest.mark.asyncio
     async def test_record_rail_event_into_current_step(self, trace_rail):
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c6")))
@@ -244,6 +262,41 @@ class TestRailEventSink:
         await trace_rail.before_tool_call(ctx)
         first = trace_rail.trace.entries[-1]
         assert any(e["rail_name"] == "RecoveryRail" for e in first.rail_events)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing_step", [1, 99], ids=["evicted", "future"])
+    async def test_missing_explicit_step_event_dropped(self, mock_session, tmp_path, missing_step):
+        """An explicit missing target is dropped, never attached to a later step."""
+        rail = TraceRail(mock_session, workspace=str(tmp_path), max_entries=1)
+        await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c_evict")))
+
+        async def _run_step(i):
+            ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": i}))
+            await rail.before_tool_call(ctx)
+            ctx.inputs.tool_result = None
+            await rail.after_tool_call(ctx)
+
+        await _run_step(1)  # step 1 created
+        await _run_step(2)  # step 1 evicted (max_entries=1) → entries=[step 2]
+        assert [e.step for e in rail.trace.entries] == [2]
+
+        # Target either evicted step 1 or a future step that does not exist.
+        rail.trace.record_rail_event(
+            rail_name="VisualFeedback",
+            kind="inject_frame",
+            detail={},
+            success=True,
+            step=missing_step,
+        )
+        step2 = rail.trace.entries[-1]
+        assert not any(e["rail_name"] == "VisualFeedback" for e in step2.rail_events)
+        assert rail.trace._pending_events == []
+
+        # Running further steps must not flush the dropped event into them.
+        await _run_step(3)
+        step3 = rail.trace.entries[-1]
+        assert not any(e["rail_name"] == "VisualFeedback" for e in step3.rail_events)
+        assert rail.trace._pending_events == []
 
 
 class TestLogCapture:
@@ -449,10 +502,26 @@ class TestCurrentStepAndFrameSink:
         assert trace_rail.trace.current_step == 2
 
     @pytest.mark.asyncio
-    async def test_frame_sink_filename_aligns_with_entry_step(self, trace_rail, tmp_path):
+    async def test_frame_sink_returns_none_when_save_frames_off(self, trace_rail):
+        """Contract: save_frame_for_sink is a no-op (returns None, writes
+        nothing) when save_frames=False — the builder also skips installing
+        the frame_sink, but this self-check is the backstop."""
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="cs3")))
+        rgb = MockArmEnv().get_observation().rgb
+        path = trace_rail.save_frame_for_sink(rgb)
+        assert path is None
+
+    @pytest.mark.asyncio
+    async def test_frame_sink_filename_aligns_with_entry_step(self, mock_session, tmp_path):
         # Contract: save_frame_for_sink must name the frame after the
         # active step so it matches entry.step (previously it read the private
         # _step_counter; now it uses the public current_step property).
+        # save_frames=True is required: the self-check returns None when off.
+        from jiuwensymbiosis.agent.trace import TraceRail
+
+        trace_rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=True)
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="cs2")))
         # Create two steps so the active step is 2, then sink a frame.
         for name in ("goto_xyzr", "home"):

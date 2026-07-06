@@ -130,7 +130,7 @@ class TestRailRegistry:
 class TestTracingBuild:
     """build_robot_agent wiring of TraceRail + sinks."""
 
-    def _build(self, mock_session, **cfg_kwargs):
+    def _build(self, mock_session, *, save_frames=False, **cfg_kwargs):
         from jiuwensymbiosis.agent.builder import _resolve_rails
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
@@ -145,7 +145,7 @@ class TestTracingBuild:
         # replicate builder sink injection when tracing is on
         from jiuwensymbiosis.agent.trace import TraceRail
 
-        trace_rail = TraceRail(mock_session, workspace="/tmp/trace_test")
+        trace_rail = TraceRail(mock_session, workspace="/tmp/trace_test", save_frames=save_frames)
         from jiuwensymbiosis.agent.builder import _inject_trace_sinks
 
         _inject_trace_sinks(rails, trace_rail)
@@ -157,7 +157,7 @@ class TestTracingBuild:
         from jiuwensymbiosis.agent.trace import TraceRail
 
         cfg = RobotAgentConfig(enable_tracing=True, workspace=str(tmp_path))
-        agent = build_robot_agent(mock_session, cfg)
+        build_robot_agent(mock_session, cfg)
         # The agent's rails include a TraceRail; inspect via the session ref.
         assert isinstance(mock_session._trace_rail, TraceRail)
         mock_session.disconnect()
@@ -184,11 +184,212 @@ class TestTracingBuild:
         recovery = next(r for r in rails if isinstance(r, RecoveryRail))
         assert recovery.trace_sink is trace_rail
 
-    def test_visual_feedback_rail_gets_frame_sink(self, mock_session):
+    def test_visual_feedback_rail_frame_sink_gated_by_save_frames(self, mock_session):
+        """``frame_sink`` is installed only when ``trace_save_frames=True``;
+        default (False) leaves it None so disabled frame saving isn't silently
+        bypassed."""
         from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
 
-        # mock env has vision.camera → visual feedback enabled
+        # default: save_frames=False → no frame_sink
         trace_rail, rails = self._build(mock_session, enable_visual_feedback=True)
         vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
         assert vf.trace_sink is trace_rail
+        assert vf.frame_sink is None
+
+        # save_frames=True → frame_sink installed
+        trace_rail, rails = self._build(mock_session, enable_visual_feedback=True, save_frames=True)
+        vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
+        assert vf.trace_sink is trace_rail
         assert vf.frame_sink is not None
+
+    def test_public_builder_clears_stale_sinks_when_tracing_disabled(
+        self, mock_session, tmp_path, monkeypatch
+    ):
+        """The public build path reconciles reused rails on tracing-on → off."""
+        from jiuwensymbiosis.agent import builder as builder_mod
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
+
+        vf = VisualFeedbackRail(mock_session)
+        monkeypatch.setattr(builder_mod, "create_deep_agent", lambda **kwargs: kwargs)
+        common = {
+            "model": object(),
+            "workspace": str(tmp_path),
+            "log_dir": None,
+            "enable_visual_feedback": False,
+            "extra_rails": [vf],
+        }
+
+        builder_mod.build_robot_agent(
+            mock_session,
+            RobotAgentConfig(enable_tracing=True, trace_save_frames=True, **common),
+        )
+        assert vf.trace_sink is not None
+        assert vf.frame_sink is not None
+        assert mock_session._trace_rail is vf.trace_sink
+
+        builder_mod.build_robot_agent(
+            mock_session,
+            RobotAgentConfig(enable_tracing=False, **common),
+        )
+        assert vf.trace_sink is None
+        assert vf.frame_sink is None
+        assert mock_session._trace_rail is None
+
+        custom_trace_sink = object()
+
+        def custom_frame_sink(*_args):
+            return None
+
+        vf.trace_sink = custom_trace_sink
+        vf.frame_sink = custom_frame_sink
+        builder_mod.build_robot_agent(
+            mock_session,
+            RobotAgentConfig(enable_tracing=False, **common),
+        )
+        assert vf.trace_sink is custom_trace_sink
+        assert vf.frame_sink is custom_frame_sink
+
+
+class TestParallelToolCalls:
+    """Robot motion is sequential; parallel_tool_calls defaults OFF and is
+    propagated to both ``create_deep_agent`` (single-robot) and
+    ``SubAgentConfig`` (multi-robot). ``True`` with motion/grasp caps raises —
+    physical devices don't get a foot-gun."""
+
+    def test_default_is_false(self):
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        assert RobotAgentConfig().parallel_tool_calls is False
+
+    def test_builder_defaults_false_to_create_deep_agent(self, mock_session, tmp_path, monkeypatch):
+        from jiuwensymbiosis.agent import builder as builder_mod
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        captured: dict = {}
+
+        def _fake_create_deep_agent(*args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create_deep_agent)
+        cfg = RobotAgentConfig(workspace=str(tmp_path))
+        builder_mod.build_robot_agent(mock_session, cfg)
+        assert captured.get("parallel_tool_calls") is False
+
+    def test_builder_passes_true_when_vision_only(self, mock_session, tmp_path, monkeypatch):
+        """``True`` is allowed for non-motion caps (e.g. vision-only agent)."""
+        from jiuwensymbiosis.agent import builder as builder_mod
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        captured: dict = {}
+
+        def _fake_create_deep_agent(*args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create_deep_agent)
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"vision.camera", "vision.detection"}))
+        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True)
+        builder_mod.build_robot_agent(mock_session, cfg)
+        assert captured.get("parallel_tool_calls") is True
+
+    def test_true_with_motion_caps_raises(self, mock_session, tmp_path):
+        from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True)
+        with pytest.raises(ValueError, match="parallel_tool_calls=True is not allowed"):
+            build_robot_agent(mock_session, cfg)
+
+    def test_true_with_grasp_caps_raises(self, mock_session, tmp_path, monkeypatch):
+        from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"grasp.parallel"}))
+        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True)
+        with pytest.raises(ValueError, match="grasp"):
+            build_robot_agent(mock_session, cfg)
+
+    def test_subagent_config_default_false(self, mock_session):
+        from jiuwensymbiosis.agent.builder import build_robot_agent_config
+
+        sac = build_robot_agent_config(mock_session)
+        assert sac.parallel_tool_calls is False
+
+    def test_subagent_config_true_passes_through_when_vision_only(self, mock_session, monkeypatch):
+        from jiuwensymbiosis.agent.builder import build_robot_agent_config
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"vision.camera"}))
+        cfg = RobotAgentConfig(parallel_tool_calls=True)
+        sac = build_robot_agent_config(mock_session, config=cfg)
+        assert sac.parallel_tool_calls is True
+
+    def test_subagent_config_true_with_motion_raises(self, mock_session):
+        from jiuwensymbiosis.agent.builder import build_robot_agent_config
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        cfg = RobotAgentConfig(parallel_tool_calls=True)
+        with pytest.raises(ValueError):
+            build_robot_agent_config(mock_session, config=cfg)
+
+    def test_both_paths_same_default(self, mock_session, tmp_path, monkeypatch):
+        """Single-robot and SubAgent paths share the same default."""
+        from jiuwensymbiosis.agent import builder as builder_mod
+        from jiuwensymbiosis.agent.builder import build_robot_agent_config
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        captured: dict = {}
+
+        def _fake_create_deep_agent(*args, **kwargs):
+            captured["single"] = kwargs.get("parallel_tool_calls")
+            return object()
+
+        monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create_deep_agent)
+        builder_mod.build_robot_agent(mock_session, RobotAgentConfig(workspace=str(tmp_path)))
+        sac = build_robot_agent_config(mock_session)
+        assert captured["single"] == sac.parallel_tool_calls is False
+
+    def test_parallel_with_tracing_raises_vision_only(self, mock_session, tmp_path, monkeypatch):
+        """TraceRail keys current step via shared ctx.extra / entries[-1],
+        which races under parallel dispatch — so tracing + parallel is rejected
+        even for vision-only agents."""
+        from jiuwensymbiosis.agent.builder import build_robot_agent
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"vision.camera"}))
+        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True, enable_tracing=True)
+        with pytest.raises(ValueError, match="enable_tracing=True is not supported"):
+            build_robot_agent(mock_session, cfg)
+
+    def test_parallel_without_tracing_vision_only_ok(self, mock_session, tmp_path, monkeypatch):
+        from jiuwensymbiosis.agent import builder as builder_mod
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        captured: dict = {}
+
+        def _fake_create_deep_agent(*args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create_deep_agent)
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"vision.camera"}))
+        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True, enable_tracing=False)
+        builder_mod.build_robot_agent(mock_session, cfg)
+        assert captured.get("parallel_tool_calls") is True
+
+    def test_parallel_with_tracing_raises_subagent(self, mock_session, monkeypatch):
+        from jiuwensymbiosis.agent.builder import build_robot_agent_config
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+        from jiuwensymbiosis.env.mock import MockArmEnv
+
+        monkeypatch.setattr(MockArmEnv, "capabilities", frozenset({"vision.camera"}))
+        cfg = RobotAgentConfig(parallel_tool_calls=True, enable_tracing=True)
+        with pytest.raises(ValueError, match="enable_tracing=True is not supported"):
+            build_robot_agent_config(mock_session, config=cfg)

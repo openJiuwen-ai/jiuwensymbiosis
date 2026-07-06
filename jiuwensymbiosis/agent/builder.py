@@ -179,13 +179,28 @@ def _inject_trace_sinks(rails: list[Any], trace_rail: TraceRail | None) -> None:
     SafetyRail / RecoveryRail / VisualFeedbackRail each accept an optional
     ``trace_sink`` constructor arg, but the registry builds them with just
     ``session``. We set the attribute post-hoc when tracing is on. Missing the
-    attribute or a None TraceRail → no-op (fully backward compatible).
+    attribute → no-op. Passing ``None`` clears only sinks previously installed
+    by this builder, preserving caller-owned custom sinks.
 
     VisualFeedbackRail additionally takes a ``frame_sink`` so the JPEG it
-    injects into the agent context is *also* saved to the trace frames dir.
+    injects is *also* saved to the trace frames dir, installed only when
+    ``trace_rail.save_frames`` is on. When tracing is off we explicitly clear
+    both sinks to ``None`` so a rail reused across builds can't keep writing
+    to a prior tracing-on session's traces dir.
     """
     if trace_rail is None:
+        # Tracing off: clear only sinks previously installed by this builder.
+        # Custom sinks supplied by an extra rail remain the caller's property.
+        for rail in rails:
+            try:
+                if isinstance(getattr(rail, "trace_sink", None), TraceRail):
+                    rail.trace_sink = None
+                if isinstance(getattr(rail, "frame_sink", None), _TraceFrameSink):
+                    rail.frame_sink = None
+            except (AttributeError, TypeError) as exc:
+                logger.warning("Failed to clear trace_sink on %r: %s", rail, exc)
         return
+    save_frames = bool(getattr(trace_rail, "save_frames", False))
     for rail in rails:
         if rail is trace_rail:
             continue
@@ -193,18 +208,35 @@ def _inject_trace_sinks(rails: list[Any], trace_rail: TraceRail | None) -> None:
             if hasattr(rail, "trace_sink"):
                 rail.trace_sink = trace_rail
             if hasattr(rail, "frame_sink"):
-                rail.frame_sink = _make_frame_sink(trace_rail)
+                rail.frame_sink = _make_frame_sink(trace_rail) if save_frames else None
         except (AttributeError, TypeError) as exc:
             logger.warning("Failed to inject trace_sink into %r: %s", rail, exc)
 
 
-def _make_frame_sink(trace_rail: TraceRail):
+class _TraceFrameSink:
+    """Builder-owned frame sink, distinguishable from caller-owned callbacks."""
+
+    def __init__(self, trace_rail: TraceRail) -> None:
+        self.trace_rail = trace_rail
+
+    def __call__(self, rgb: Any, _tool_name: str) -> str | None:
+        return self.trace_rail.save_frame_for_sink(rgb)
+
+
+def _make_frame_sink(trace_rail: TraceRail) -> _TraceFrameSink:
     """Return a ``(rgb, tool_name) -> path`` callable that saves a trace frame."""
+    return _TraceFrameSink(trace_rail)
 
-    def _sink(rgb: Any, _tool_name: str):
-        return trace_rail.save_frame_for_sink(rgb)
 
-    return _sink
+def _replace_session_trace_rail(session: RobotSession, trace_rail: TraceRail | None) -> None:
+    """Replace the session-owned TraceRail, closing any prior builder instance."""
+    previous = getattr(session, "_trace_rail", None)
+    if previous is not None and previous is not trace_rail:
+        try:
+            previous.close()
+        except (OSError, TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Failed to close prior TraceRail on %s: %s", session.name, exc)
+    session.attach_trace_rail(trace_rail)
 
 
 def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: list[str], level: int) -> TraceLogHandler:
@@ -259,6 +291,47 @@ def _resolve_rails(
     if extra_rails:
         rails.extend(extra_rails)
     return rails
+
+
+# Caps that imply physical motion / actuation — parallel dispatch is unsafe
+# and races every rail that locates the current step via shared ctx.extra.
+_MOTION_CAPS = frozenset({"motion.cartesian", "motion.joint", "grasp.suction", "grasp.parallel"})
+
+
+def _assert_sequential_for_motion(config: RobotAgentConfig, session: RobotSession) -> None:
+    """Reject ``parallel_tool_calls=True`` when the env can move/actuate.
+
+    Concurrent motion is physically unsafe, and openjiuwen's per-tool
+    ``ctx.extra`` is a shared dict, so parallel dispatch races every rail that
+    keys on the current step (TraceRail, VisualFeedbackRail). Non-motion caps
+    (vision / speech) are unaffected.
+    """
+    if not config.parallel_tool_calls:
+        return
+    caps = set(getattr(session.env, "capabilities", frozenset()) or frozenset())
+    conflict = caps & _MOTION_CAPS
+    if conflict:
+        raise ValueError(
+            f"parallel_tool_calls=True is not allowed with motion/grasp "
+            f"capabilities ({sorted(conflict)}): concurrent motion is "
+            f"physically unsafe and races the rail stack via shared ctx.extra."
+        )
+
+
+def _assert_no_tracing_with_parallel(config: RobotAgentConfig) -> None:
+    """Reject ``parallel_tool_calls=True`` together with ``enable_tracing=True``.
+
+    TraceRail keys its current step via the shared ``ctx.extra`` dict and
+    ``entries[-1]`` — both race under parallel dispatch, so the trace would
+    silently attach events to the wrong step. Tracing + parallel is not
+    supported; pick one.
+    """
+    if config.parallel_tool_calls and config.enable_tracing:
+        raise ValueError(
+            "enable_tracing=True is not supported with parallel_tool_calls=True: "
+            "TraceRail keys the current step via shared ctx.extra / entries[-1], "
+            "which races under parallel dispatch. Disable tracing or use sequential."
+        )
 
 
 def _build_tools(
@@ -369,6 +442,8 @@ def build_robot_agent(
     responsibility (use ``with session:`` for clean teardown).
     """
     config = config or RobotAgentConfig()
+    _assert_sequential_for_motion(config, session)
+    _assert_no_tracing_with_parallel(config)
     # Propagate the strictness flag onto the session BEFORE the caller connects
     # it (typical: ``agent = build_robot_agent(session); with session: ...``).
     # If the session is already connected this is a no-op for this connect cycle.
@@ -402,11 +477,14 @@ def build_robot_agent(
             capture_log_level=_logging.WARNING,
             traces_dir=Path(trace_dir),
         )
-        _inject_trace_sinks(rails, trace_rail)
         log_handler = _attach_trace_log_handlers(trace_rail, list(config.trace_capture_loggers), _logging.WARNING)
         trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
-        session.attach_trace_rail(trace_rail)
         rails.insert(0, trace_rail)
+
+    # Reconcile on both paths. In particular, tracing-off must clear builder-
+    # owned sinks from reused extra rails instead of leaving stale callbacks.
+    _inject_trace_sinks(rails, trace_rail)
+    _replace_session_trace_rail(session, trace_rail)
 
     return create_deep_agent(
         model=model,
@@ -422,6 +500,7 @@ def build_robot_agent(
         # (include_tools=False), so widening fs access to load trusted bundled
         # skills is safe.
         restrict_to_work_dir=False,
+        parallel_tool_calls=config.parallel_tool_calls,
     )
 
 
@@ -448,6 +527,8 @@ def build_robot_agent_config(
         An openjiuwen ``SubAgentConfig`` instance.
     """
     config = config or RobotAgentConfig()
+    _assert_sequential_for_motion(config, session)
+    _assert_no_tracing_with_parallel(config)
     model = config.model or build_model(config.model_spec)
     tools = _build_tools(session, config.mode, config.extra_tools, enable_skill=config.enable_skill)
     rails = _resolve_rails(
@@ -465,4 +546,5 @@ def build_robot_agent_config(
         rails=rails,
         model=model,
         max_iterations=config.max_iterations,
+        parallel_tool_calls=config.parallel_tool_calls,
     )

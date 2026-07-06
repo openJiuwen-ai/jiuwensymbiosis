@@ -212,8 +212,12 @@ if tool_name == "robot_control":
 
 每次运动/抓取后抓一帧图像注入上下文，供 VLM **核验**结果。需 `vision.camera` 能力。
 
+**两阶段注入**（保证消息顺序合法）：`after_tool_call` 只抓帧 + 编码 + 暂存到 `ctx.extra["visual_feedback_pending"]`（`_PendingFrame` 结构体，带 `b64`/`tool_name`/`trace_step`/`frame_path`），不碰 `ModelContext`；`before_model_call`（此时 openjiuwen 已写完所有 `ToolMessage`）才 `await ctx.context.add_messages(UserMessage([text, image_url]))` flush 暂存帧。最终序列为 `assistant(tool_calls) → tool(result) → user(image) → 下一轮 model call`——若在 `after_tool_call` 直接注入，会变成 `… → user(image) → tool(result)`，OpenAI 风格 API 会拒绝（tool result 必须紧跟 tool call）。`trace_step` 在 `after_tool_call` 时从 `ctx.extra[_TRACE_RAIL_KEY]` 读 TraceRail 的 `trace.current_step` 暂存，flush 时显式传给 `record_rail_event_at_step(step=...)`，事件钉到正确 entry（多 tool calls 一轮迭代也能分别对位，不会全落到 `entries[-1]`）。`frame_path` 由 `frame_sink` 返回、同样暂存，flush 时进事件 `detail`（`{tool_name, frame_path}` 契约，见 `docs/trace.md`）。`after_invoke` 清理未被消费的暂存帧。注入失败永不逃逸（`_inject` 返回 bool，`except Exception` 吞掉；`CancelledError` 继承 `BaseException` 不被吞，正常传播），避免成功动作被框架误判为 tool failure。fast-path op-ctx 无 `ModelContext`，`_inject` 返回 False，帧仍经 `frame_sink` 落盘供回放。
+
 > 另有 `SkillUseRail`（`agent/builder.py`），非安全 rail——仅 `enable_skill=True` 时附加，加载内置 `SKILL.md` 并附 `RobotControlTool`。详见第五章。
 > 还有平行观测 rail `TraceRail`，不拦截动作，只记录与回放，见下一节。
+
+> **并行工具调用默认关 + 运动硬校验**：`RobotAgentConfig.parallel_tool_calls` 默认 `False`，透传给 `create_deep_agent`（单机器人）与 `SubAgentConfig`（多机器人）。机器人运动本就顺序；且 openjiuwen 各 tool-call 的 `ctx.extra` 是共享 dict，并行会让所有按 `ctx.extra`/`trace.entries[-1]` 定位当前步的 rail 竞态。更进一步：`build_robot_agent` / `build_robot_agent_config` 在 `parallel_tool_calls=True` 且 env 含 `motion.*` / `grasp.*` 能力时直接 `raise ValueError`——运动/抓取不允许并行。非运动能力（如 `vision.*` / `speech.tts`）不受限，允许"视觉+语音"并行。**TraceRail 与并行互斥**：`parallel_tool_calls=True` 且 `enable_tracing=True` 也直接 `raise ValueError`——TraceRail 用共享 `ctx.extra` 的 `_TRACE_CURRENT_KEY` 定位当前步、用 `entries[-1]` 兼容旧 sink，两者在并行下都会钉到错步。
 
 ---
 
