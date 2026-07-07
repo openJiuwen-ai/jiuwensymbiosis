@@ -11,21 +11,23 @@ from jiuwensymbiosis.utils.proxy import clear_proxy_env
 
 clear_proxy_env()
 
-from jiuwensymbiosis.env.mock import MockArmEnv
-from tests.mocks.mock_api import MockApi
-from tests.mocks.mock_detector import make_mock_seg_fn
-
 
 @pytest.fixture
 def mock_env():
+    from jiuwensymbiosis.env.mock import MockArmEnv
+
     return MockArmEnv()
 
 
 @pytest.fixture
 def mock_api(mock_env):
+    from tests.mocks.mock_api import MockApi
+
     return MockApi(mock_env)
 
 
 @pytest.fixture
 def mock_seg_fn():
+    from tests.mocks.mock_detector import make_mock_seg_fn
+
     return make_mock_seg_fn()

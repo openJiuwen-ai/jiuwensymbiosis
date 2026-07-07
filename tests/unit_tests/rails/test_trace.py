@@ -11,55 +11,41 @@ from pathlib import Path
 import pytest
 
 from jiuwensymbiosis.agent.abstractions import ToolOutput
-from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import (
     StepAwareTraceEventSink,
     TraceEventSink,
     TraceRail,
     _unwrap_robot_control,
 )
-from jiuwensymbiosis.env.mock import MockArmEnv
-from tests.mocks.mock_api import MockApi
-
-
-class _FakeInputs:
-    """Mimics openjiuwen ToolCallInputs / InvokeInputs."""
-
-    def __init__(
-        self,
-        *,
-        tool_name: str = "",
-        tool_args: dict | None = None,
-        tool_result=None,
-        conversation_id: str = "",
-        query: str | None = None,
-    ) -> None:
-        self.tool_name = tool_name
-        self.tool_args = tool_args
-        self.tool_result = tool_result
-        self.conversation_id = conversation_id
-        self.query = query
-
-
-class _FakeCtx:
-    """Mimics AgentCallbackContext."""
-
-    def __init__(self, inputs: _FakeInputs, *, exception: Exception | None = None) -> None:
-        self.inputs = inputs
-        self.extra: dict = {}
-        self.exception = exception
+from tests.helpers import FakeCtx as _FakeCtx
+from tests.helpers import FakeInputs as _FakeInputs
+from tests.helpers import make_mock_session
 
 
 @pytest.fixture
 def mock_session(tmp_path):
-    env = MockArmEnv()
-    api = MockApi(env)
-    return RobotSession(env=env, api=api, name="test")
+    return make_mock_session()
 
 
 @pytest.fixture
 def trace_rail(mock_session, tmp_path):
     return TraceRail(mock_session, workspace=str(tmp_path), save_frames=False)
+
+
+def _read_json(path: str) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _path_exists(path: str) -> bool:
+    return Path(path).exists()
+
+
+async def _run_step(rail: TraceRail, *, tool_name: str = "goto_xyzr", tool_args=None, tool_result=None):
+    ctx = _FakeCtx(_FakeInputs(tool_name=tool_name, tool_args=tool_args or {}))
+    await rail.before_tool_call(ctx)
+    ctx.inputs.tool_result = tool_result
+    await rail.after_tool_call(ctx)
+    return ctx
 
 
 class TestUnwrapRobotControl:
@@ -144,10 +130,7 @@ class TestBeforeAfterToolCall:
         rail = TraceRail(mock_session, workspace=str(tmp_path), max_entries=3)
         await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c4")))
         for i in range(10):
-            ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": i}))
-            await rail.before_tool_call(ctx)
-            ctx.inputs.tool_result = None
-            await rail.after_tool_call(ctx)
+            await _run_step(rail, tool_args={"x": i})
         assert len(rail.trace.entries) == 3
         # Most recent 3 kept (steps 8,9,10).
         assert [e.step for e in rail.trace.entries] == [8, 9, 10]
@@ -270,14 +253,11 @@ class TestRailEventSink:
         rail = TraceRail(mock_session, workspace=str(tmp_path), max_entries=1)
         await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c_evict")))
 
-        async def _run_step(i):
-            ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": i}))
-            await rail.before_tool_call(ctx)
-            ctx.inputs.tool_result = None
-            await rail.after_tool_call(ctx)
+        async def _run_numbered_step(i):
+            await _run_step(rail, tool_args={"x": i})
 
-        await _run_step(1)  # step 1 created
-        await _run_step(2)  # step 1 evicted (max_entries=1) → entries=[step 2]
+        await _run_numbered_step(1)  # step 1 created
+        await _run_numbered_step(2)  # step 1 evicted (max_entries=1) → entries=[step 2]
         assert [e.step for e in rail.trace.entries] == [2]
 
         # Target either evicted step 1 or a future step that does not exist.
@@ -293,7 +273,7 @@ class TestRailEventSink:
         assert rail.trace._pending_events == []
 
         # Running further steps must not flush the dropped event into them.
-        await _run_step(3)
+        await _run_numbered_step(3)
         step3 = rail.trace.entries[-1]
         assert not any(e["rail_name"] == "VisualFeedback" for e in step3.rail_events)
         assert rail.trace._pending_events == []
@@ -336,7 +316,7 @@ class TestSerialization:
         await trace_rail.after_tool_call(ctx)
         path = trace_rail.finalize()
         assert path is not None
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = _read_json(path)
         assert data["conversation_id"] == "conv-abc"
         assert data["query"] == "pick"
         assert len(data["entries"]) == 1
@@ -406,13 +386,10 @@ class TestSaveFrames:
     async def test_frame_saved_when_enabled(self, mock_session, tmp_path):
         rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=True, max_frames=5)
         await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c11")))
-        ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3, "r": 0}))
-        await rail.before_tool_call(ctx)
-        ctx.inputs.tool_result = None
-        await rail.after_tool_call(ctx)
+        await _run_step(rail, tool_args={"x": 1, "y": 2, "z": 3, "r": 0})
         last = rail.trace.entries[-1]
         assert last.frame_path is not None
-        assert Path(last.frame_path).exists()
+        assert _path_exists(last.frame_path)
         assert Path(last.frame_path).suffix == ".jpg"
 
     @pytest.mark.asyncio
@@ -423,13 +400,13 @@ class TestSaveFrames:
         await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c-init", query="pick")))
         assert rail.trace.initial_frame_path is not None
         p = Path(rail.trace.initial_frame_path)
-        assert p.exists()
+        assert _path_exists(str(p))
         assert p.name == "step_000.jpg"
         # The initial frame shares the max_frames budget.
         assert rail._frames_saved == 1
         # Survives serialization.
         path = rail.finalize()
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = _read_json(path)
         assert data["initial_frame_path"] == str(p)
 
     @pytest.mark.asyncio
@@ -447,10 +424,7 @@ class TestSaveFrames:
         rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=True, max_frames=2)
         await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c12")))
         for i in range(5):
-            ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": i, "y": 0, "z": 50, "r": 0}))
-            await rail.before_tool_call(ctx)
-            ctx.inputs.tool_result = None
-            await rail.after_tool_call(ctx)
+            await _run_step(rail, tool_args={"x": i, "y": 0, "z": 50, "r": 0})
         # Frames now live under a per-run subdir, so glob recursively.
         saved = list((tmp_path / "traces" / "frames").rglob("*.jpg"))
         assert len(saved) == 2  # 1 initial + 1 step (cap reached)
@@ -465,10 +439,7 @@ class TestSaveFrames:
 
         async def one_run(cid):
             await rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id=cid)))
-            ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3, "r": 0}))
-            await rail.before_tool_call(ctx)
-            ctx.inputs.tool_result = None
-            await rail.after_tool_call(ctx)
+            await _run_step(rail, tool_args={"x": 1, "y": 2, "z": 3, "r": 0})
             frame_path = Path(rail.trace.entries[-1].frame_path)
             rail.finalize()
             return frame_path
@@ -542,10 +513,7 @@ class TestConsoleDashboard:
     async def test_console_prints_lines(self, trace_rail, capsys):
         trace_rail.console = True
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c13")))
-        ctx = _FakeCtx(_FakeInputs(tool_name="goto_xyzr", tool_args={"x": 1, "y": 2, "z": 3}))
-        await trace_rail.before_tool_call(ctx)
-        ctx.inputs.tool_result = {"ok": True}
-        await trace_rail.after_tool_call(ctx)
+        await _run_step(trace_rail, tool_args={"x": 1, "y": 2, "z": 3}, tool_result={"ok": True})
         out = capsys.readouterr().out
         assert "#1" in out
         assert "goto_xyzr" in out

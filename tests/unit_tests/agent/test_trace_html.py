@@ -60,6 +60,28 @@ def _sample_trace() -> dict:
     }
 
 
+def _jpeg_data_uri(raw: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+
+
+def _assert_valid_logo_fallback(html: str) -> str:
+    m = re.search(r'onerror="([^"]*)"', html)
+    assert m, "onerror attribute not found"
+    js = html_module.unescape(m.group(1))
+    assert js.startswith("this.outerHTML='") and js.endswith("'"), (
+        f"onerror JS must be this.outerHTML='<svg…>', got: {js[:60]!r}"
+    )
+    payload = js[len("this.outerHTML='") : -1]
+    assert "'" not in payload, (
+        "SVG payload must be single-quote-free or the JS '-literal closes "
+        f"early (the original bug); got a bare ' in: {payload[:60]!r}"
+    )
+    assert payload.startswith("<svg") and payload.endswith("</svg>"), (
+        f"onerror payload must be a full <svg>…</svg>, got: {payload[:60]!r}"
+    )
+    return payload
+
+
 class TestRenderTraceHtml:
     def test_renders_key_content(self):
         html = render_trace_html(_sample_trace())
@@ -83,8 +105,7 @@ class TestRenderTraceHtml:
         t = _sample_trace()
         t["entries"][0]["frame_path"] = str(frame)
         html = render_trace_html(t)
-        expected = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff\xe0dummy").decode()
-        assert expected in html
+        assert _jpeg_data_uri(b"\xff\xd8\xff\xe0dummy") in html
 
     def test_missing_frame_shows_placeholder(self, tmp_path):
         t = _sample_trace()
@@ -102,8 +123,7 @@ class TestRenderTraceHtml:
         t["entries"][0]["frame_path"] = "step_001.jpg"
         trace_json = tmp_path / "trace.json"
         html = render_trace_html(t, trace_path=trace_json)
-        expected = "data:image/jpeg;base64," + base64.b64encode(b"img-bytes").decode()
-        assert expected in html
+        assert _jpeg_data_uri(b"img-bytes") in html
 
     def test_workspace_relative_frame_resolves_against_trace_parent(self, tmp_path):
         # Reproduces the `trace_dir: ./traces` case: frame_path carries its own
@@ -118,8 +138,7 @@ class TestRenderTraceHtml:
         t["entries"][0]["frame_path"] = "traces/frames/run-1/step_001.jpg"
         trace_json = traces_dir / "trace.json"
         html = render_trace_html(t, trace_path=trace_json)
-        expected = "data:image/jpeg;base64," + base64.b64encode(b"ws-rel-bytes").decode()
-        assert expected in html
+        assert _jpeg_data_uri(b"ws-rel-bytes") in html
         assert "frame missing" not in html
 
     def test_relative_frame_without_trace_dir_no_crash(self):
@@ -203,20 +222,7 @@ class TestRenderTraceHtml:
         # Assert the onerror JS is *executable* (decode like the browser, then
         # check the '-literal is balanced and carries a real <svg>…</svg>) — a
         # plain text-existence check once passed while the JS had a SyntaxError.
-        m = re.search(r'onerror="([^"]*)"', html)
-        assert m, "onerror attribute not found"
-        js = html_module.unescape(m.group(1))
-        assert js.startswith("this.outerHTML='") and js.endswith("'"), (
-            f"onerror JS must be this.outerHTML='<svg…>', got: {js[:60]!r}"
-        )
-        payload = js[len("this.outerHTML='") : -1]
-        assert "'" not in payload, (
-            "SVG payload must be single-quote-free or the JS '-literal closes "
-            f"early (the original bug); got a bare ' in: {payload[:60]!r}"
-        )
-        assert payload.startswith("<svg") and payload.endswith("</svg>"), (
-            f"onerror payload must be a full <svg>…</svg>, got: {payload[:60]!r}"
-        )
+        _assert_valid_logo_fallback(html)
 
     def test_logo_fallback_onerror_is_valid_js_when_png_missing(self, monkeypatch):
         # Missing PNG → _LOGO_SRC="" → <img src=""> fires onerror. Verify the
@@ -225,13 +231,7 @@ class TestRenderTraceHtml:
         monkeypatch.setattr(trace_html, "_LOGO_SRC", "")
         html = render_trace_html(_sample_trace())
         assert 'src=""' in html
-        m = re.search(r'onerror="([^"]*)"', html)
-        assert m, "onerror attribute not found"
-        js = html_module.unescape(m.group(1))
-        assert js.startswith("this.outerHTML='") and js.endswith("'")
-        payload = js[len("this.outerHTML='") : -1]
-        assert "'" not in payload, f"single quote in onerror SVG payload would break the JS literal: {payload[:60]!r}"
-        assert payload.startswith("<svg") and payload.endswith("</svg>")
+        payload = _assert_valid_logo_fallback(html)
         assert 'class="logo"' in payload
 
     def test_before_after_frames_side_by_side(self, tmp_path):
@@ -255,11 +255,9 @@ class TestRenderTraceHtml:
             ],
         }
         html = render_trace_html(t)
-        import base64 as _b64
-
-        assert "data:image/jpeg;base64," + _b64.b64encode(b"INITJPEG").decode() in html
-        assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME1JPEG").decode() in html
-        assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME2JPEG").decode() in html
+        assert _jpeg_data_uri(b"INITJPEG") in html
+        assert _jpeg_data_uri(b"FRAME1JPEG") in html
+        assert _jpeg_data_uri(b"FRAME2JPEG") in html
         # Step 2's before-frame is step 1's after-frame (FRAME1) — already
         # asserted above; the initial frame only appears in step 1's before.
         # Each step card has a before + after label.
@@ -280,9 +278,7 @@ class TestRenderTraceHtml:
         }
         html = render_trace_html(t)
         assert "frame missing" not in html  # no raw before-path → no placeholder
-        import base64 as _b64
-
-        assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME1JPEG").decode() in html
+        assert _jpeg_data_uri(b"FRAME1JPEG") in html
 
     # --- Structural + interactive additions (toolbar, progress, collapse,
     # frame zoom lightbox, mini duration bar, hash-jump, no-JS fallback). ---
@@ -351,9 +347,7 @@ class TestRenderTraceHtml:
         assert 'data-step="1"' in html
         assert 'data-label="after"' in html
         # The base64 img still lives inside the button.
-        import base64 as _b64
-
-        assert "data:image/jpeg;base64," + _b64.b64encode(b"FRAME1JPEG").decode() in html
+        assert _jpeg_data_uri(b"FRAME1JPEG") in html
 
     def test_lightbox_dialog_present(self):
         html = render_trace_html(_sample_trace())

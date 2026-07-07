@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import inspect
 import logging
+import types
+import typing
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ def _annotation_to_schema(ann: Any) -> dict[str, Any]:
     origin = get_origin(ann)
     args = get_args(ann)
 
-    if origin is Union:
+    if origin in (typing.Union, types.UnionType):
         non_none = [a for a in args if a is not type(None)]
         if len(non_none) == 1:
             return _annotation_to_schema(non_none[0])

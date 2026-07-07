@@ -20,7 +20,7 @@ class TestBuildActionIndex:
 
     def test_values_are_bound_methods(self, mock_api):
         index = _build_action_index(mock_api)
-        for name, method in index.items():
+        for method in index.values():
             assert callable(method)
 
 

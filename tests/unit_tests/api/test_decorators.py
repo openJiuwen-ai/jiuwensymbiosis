@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+import typing
+from typing import Literal
+
+import pytest
 
 from jiuwensymbiosis.api.decorators import (
     ToolMeta,
@@ -35,9 +38,13 @@ class TestAnnotationToSchema:
     def test_dict(self):
         assert _annotation_to_schema(dict) == {"type": "object"}
 
-    def test_optional_float(self):
-        result = _annotation_to_schema(Optional[float])
-        assert result == {"type": "number"}
+    @pytest.mark.parametrize(
+        "annotation",
+        [typing.Optional.__getitem__(float), float | None],
+        ids=["typing-optional", "pep604"],
+    )
+    def test_optional_float(self, annotation):
+        assert _annotation_to_schema(annotation) == {"type": "number"}
 
     def test_literal(self):
         result = _annotation_to_schema(Literal["a", "b"])

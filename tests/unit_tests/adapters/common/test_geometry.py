@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from jiuwensymbiosis.adapters._common.geometry import (
     _rot_z,
@@ -55,24 +56,22 @@ class TestInvertTransform:
     def test_self_inverse(self):
         T = make_transform(_rot_z(30.0), np.array([1.0, 2.0, 3.0]))
         T_inv = invert_transform(T)
-        I = T @ T_inv
-        np.testing.assert_array_almost_equal(I, np.eye(4), decimal=10)
+        identity = T @ T_inv
+        np.testing.assert_array_almost_equal(identity, np.eye(4), decimal=10)
 
 
 class TestRotZ:
-    def test_zero(self):
-        R = _rot_z(0.0)
-        np.testing.assert_array_almost_equal(R, np.eye(3))
-
-    def test_90(self):
-        R = _rot_z(90.0)
-        expected = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
-        np.testing.assert_array_almost_equal(R, expected)
-
-    def test_180(self):
-        R = _rot_z(180.0)
-        expected = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)
-        np.testing.assert_array_almost_equal(R, expected, decimal=10)
+    @pytest.mark.parametrize(
+        ("deg", "expected"),
+        [
+            (0.0, np.eye(3)),
+            (90.0, np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)),
+            (180.0, np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)),
+        ],
+        ids=["zero", "90", "180"],
+    )
+    def test_known_angles(self, deg, expected):
+        np.testing.assert_array_almost_equal(_rot_z(deg), expected, decimal=10)
 
 
 class TestPixelDepthToCameraXyz:

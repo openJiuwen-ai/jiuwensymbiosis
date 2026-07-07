@@ -111,9 +111,7 @@ def test_capabilities_aligned_in_env(spec, cleanup):
     cleanup.append(spec.name)
     assert _run_generator(spec).returncode == 0
 
-    env_text = (REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name / "env.py").read_text(
-        encoding="utf-8"
-    )
+    env_text = (REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name / "env.py").read_text(encoding="utf-8")
     for cap in spec.capabilities:
         assert f'"{cap}"' in env_text, f"capability {cap} missing from env.py"
 
@@ -174,9 +172,7 @@ def test_can_connection_config_flows_to_driver(cleanup):
     config_text = (adapter_dir / "config.py").read_text(encoding="utf-8")
     env_text = (adapter_dir / "env.py").read_text(encoding="utf-8")
     lowlevel_text = (adapter_dir / "lowlevel.py").read_text(encoding="utf-8")
-    yaml_text = (REPO_ROOT / "configs" / spec.name / "default.yaml").read_text(
-        encoding="utf-8"
-    )
+    yaml_text = (REPO_ROOT / "configs" / spec.name / "default.yaml").read_text(encoding="utf-8")
 
     assert 'connection: str = "can"' in config_text
     assert "can_port" in config_text
