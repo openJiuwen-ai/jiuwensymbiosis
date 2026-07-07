@@ -3,6 +3,9 @@ description: Python code style, formatting, naming, imports, and async safety ru
 language: chinese
 paths:
   - "jiuwensymbiosis/**/*.py"
+  - "scripts/**/*.py"
+  - "templates/**/*.py"
+  - "tests/**/*.py"
 alwaysApply: false
 ---
 
@@ -20,6 +23,27 @@ alwaysApply: false
 - Match surrounding module style before introducing new patterns.
 - Add type hints for new public APIs; keep docstrings aligned with the
   surrounding module.
+
+## Comments and Docstrings
+
+- Prefer self-documenting names and small functions over explanatory comments.
+- Do not add comments that restate the code, repeat the test name/assertion, or
+  quote issue numbers/PR context. Put historical context in commits, issues, or
+  docs instead.
+- Add a comment only when it explains a non-obvious invariant, hardware safety
+  contract, external API quirk, unit convention, ordering requirement, or
+  compatibility decision that a maintainer could otherwise break.
+- Keep required comments short: one sentence or at most two wrapped lines. If a
+  longer explanation is needed, move it to `docs/` and link or name that doc.
+- Docstrings are for public APIs, generated-user-facing skeletons, and complex
+  helpers. Avoid docstrings on tests or private helpers when the function name
+  and assertions already describe the behavior.
+- Generated templates (`scripts/new_adapter/render.py`, `templates/`) must be
+  especially terse because every comment is copied into user code. Include only
+  comments that adapter authors must act on.
+- Before finishing a change, scan your diff for added `#` comments and
+  docstrings. Delete any that fail the "would this prevent a future bug?"
+  test.
 
 ## Async Safety
 
