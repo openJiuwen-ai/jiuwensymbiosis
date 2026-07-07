@@ -31,12 +31,19 @@ class TestPiperApiStructure:
             assert hasattr(method, "__robot_tool__"), f"PiperApi.{name} missing @robot_tool"
 
     def test_api_capabilities(self):
-        from jiuwensymbiosis.env.mock import MockArmEnv
-        from tests.mocks.mock_api import MockApi
+        from jiuwensymbiosis.adapters.piper.api import PiperApi
+        from jiuwensymbiosis.adapters.piper.config import PiperConfig
+        from jiuwensymbiosis.adapters.piper.env import PiperEnv
 
-        env = MockArmEnv()
-        api = MockApi(env)
-        assert "motion.cartesian" in api.capabilities or len(api.capabilities) > 0
+        api = PiperApi(PiperEnv(PiperConfig()))
+        assert api.capabilities == frozenset(
+            {
+                "motion.cartesian",
+                "motion.joint",
+                "grasp.parallel",
+                "vision.detection",
+            }
+        )
 
 
 class _SpyDriver:

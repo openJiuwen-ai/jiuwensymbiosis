@@ -122,7 +122,9 @@ class TestRobotSessionSidecars:
             def __exit__(self, *a):
                 pass
 
-        starter = lambda: FakeSidecar()
+        def starter():
+            return FakeSidecar()
+
         s = RobotSession(env=env, api=api, name="t", sidecar_starters=[starter])
         s.connect()
         assert len(started) == 1

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from jiuwensymbiosis.adapters._common.vision import (
     DETECTION_REASONS,
@@ -294,7 +295,7 @@ class TestDefaultEyeInHandHelpers:
         api = self._setup()
         api.env.low_level._tf = None
         api.env.low_level._K = None
-        with np.testing.assert_raises(RuntimeError):
+        with pytest.raises(RuntimeError):
             default_get_grasp_info_simple(
                 api,
                 "box",

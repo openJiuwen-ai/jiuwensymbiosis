@@ -10,40 +10,30 @@ import asyncio
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail, _encode_jpeg_b64
-from tests.mocks.mock_api import MockApi
+from tests.helpers import FakeCtx, RecordingModelContext, RecordingRailSink, make_mock_session
 
 
 @pytest.fixture
 def mock_session():
-    env = MockArmEnv()
-    api = MockApi(env)
-    return RobotSession(env=env, api=api, name="test")
+    return make_mock_session()
 
 
 class TestShouldTrigger:
-    def test_motion_tag_triggers(self, mock_session):
-        rail = VisualFeedbackRail(mock_session)
-        assert rail._should_trigger("goto_xyzr", tool_args=None) is True
-
-    def test_grasp_tag_triggers(self, mock_session):
-        rail = VisualFeedbackRail(mock_session)
-        assert rail._should_trigger("close_gripper", tool_args=None) is True
-
-    def test_other_tool_does_not_trigger(self, mock_session):
-        rail = VisualFeedbackRail(mock_session)
-        assert rail._should_trigger("get_pose", tool_args={}) is False
-
-    def test_watch_tools_triggers(self, mock_session):
-        rail = VisualFeedbackRail(mock_session, watch_tools={"custom_tool"})
-        assert rail._should_trigger("custom_tool", tool_args=None) is True
-
-    def test_robot_control_unwrap(self, mock_session):
-        rail = VisualFeedbackRail(mock_session)
-        result = rail._should_trigger("robot_control", tool_args={"action": "goto_xyzr", "params": {}})
-        assert result is True
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_args", "watch_tools", "expected"),
+        [
+            ("goto_xyzr", None, None, True),
+            ("close_gripper", None, None, True),
+            ("get_pose", {}, None, False),
+            ("custom_tool", None, {"custom_tool"}, True),
+            ("robot_control", {"action": "goto_xyzr", "params": {}}, None, True),
+        ],
+        ids=["motion", "grasp", "other", "watch-tool", "robot-control"],
+    )
+    def test_should_trigger_policy(self, mock_session, tool_name, tool_args, watch_tools, expected):
+        rail = VisualFeedbackRail(mock_session, watch_tools=watch_tools)
+        assert rail._should_trigger(tool_name, tool_args=tool_args) is expected
 
 
 class TestEncodeJpegB64:
@@ -56,11 +46,9 @@ class TestEncodeJpegB64:
         decoded = base64.b64decode(result)
         assert len(decoded) > 0
 
-    def test_none_on_bad_input(self):
-        assert _encode_jpeg_b64("not_array") is None
-
-    def test_none_on_wrong_ndim(self):
-        assert _encode_jpeg_b64(np.zeros((10, 10))) is None
+    @pytest.mark.parametrize("bad_input", ["not_array", np.zeros((10, 10))], ids=["not-array", "wrong-ndim"])
+    def test_none_on_bad_input(self, bad_input):
+        assert _encode_jpeg_b64(bad_input) is None
 
 
 class TestGrabFrameB64:
@@ -70,34 +58,9 @@ class TestGrabFrameB64:
         assert result is not None
 
 
-class _RecordingModelContext:
-    """Stand-in for openjiuwen ``SessionModelContext``.
-
-    The real ``ModelContext`` ABC exposes a single async ``add_messages`` (no
-    synchronous ``add_message``/``append_message``/``messages`` attribute).
-    Tests assert against that real surface.
-    """
-
-    def __init__(self) -> None:
-        self.added: list = []
-
-    async def add_messages(self, message) -> list:
-        self.added.append(message)
-        return self.added
-
-
 def _make_ctx(mc=None, *, tool_name="goto_xyzr", tool_args=None, extra=None):
     """Build a ctx mimicking AgentCallbackContext for VFR hooks."""
-    from unittest.mock import MagicMock
-
-    inputs = MagicMock()
-    inputs.tool_name = tool_name
-    inputs.tool_args = tool_args or {}
-    ctx = MagicMock()
-    ctx.inputs = inputs
-    ctx.extra = extra if extra is not None else {}
-    ctx.context = mc
-    return ctx
+    return FakeCtx(tool_name=tool_name, tool_args=tool_args, context=mc, extra=extra)
 
 
 class TestAfterToolCallStagesOnly:
@@ -109,7 +72,7 @@ class TestAfterToolCallStagesOnly:
     @pytest.mark.asyncio
     async def test_after_tool_call_does_not_touch_context(self, mock_session):
         rail = VisualFeedbackRail(mock_session)
-        mc = _RecordingModelContext()
+        mc = RecordingModelContext()
         ctx = _make_ctx(mc)
         await rail.after_tool_call(ctx)
         assert mc.added == []
@@ -118,7 +81,7 @@ class TestAfterToolCallStagesOnly:
     @pytest.mark.asyncio
     async def test_max_frames_counts_pending_plus_injected(self, mock_session):
         rail = VisualFeedbackRail(mock_session, max_frames_per_invoke=2)
-        ctx = _make_ctx(_RecordingModelContext())
+        ctx = _make_ctx(RecordingModelContext())
         await rail.after_tool_call(ctx)  # 1 pending
         await rail.after_tool_call(ctx)  # 2 pending
         await rail.after_tool_call(ctx)  # cap reached — no new stage
@@ -141,7 +104,7 @@ class TestBeforeModelCallFlush:
         )
 
         rail = VisualFeedbackRail(mock_session)
-        mc = _RecordingModelContext()
+        mc = RecordingModelContext()
         ctx = _make_ctx(mc)
         # iteration: assistant emits tool_call → after_tool_call stages frame
         mc.added.append(AssistantMessage(content="tool_calls", tool_calls=[]))
@@ -165,7 +128,7 @@ class TestBeforeModelCallFlush:
         before_model_call flushes both → ``… → tool1 → tool2 → user(img1) →
         user(img2) → model call`` (legal)."""
         rail = VisualFeedbackRail(mock_session)
-        mc = _RecordingModelContext()
+        mc = RecordingModelContext()
         ctx = _make_ctx(mc)
         await rail.after_tool_call(ctx)  # tool 1
         await rail.after_tool_call(ctx)  # tool 2
@@ -214,18 +177,11 @@ class TestInjectFailureSafety:
 class TestTraceSink:
     @pytest.mark.asyncio
     async def test_failed_flush_notifies_sink_failure(self, mock_session):
-        class _Sink:
-            def __init__(self):
-                self.events = []
-
-            def record_rail_event(self, *, rail_name, kind, detail, success):
-                self.events.append((rail_name, kind, detail, success))
-
         class _Exploding:
             async def add_messages(self, msg):
                 raise RuntimeError("store down")
 
-        sink = _Sink()
+        sink = RecordingRailSink()
         rail = VisualFeedbackRail(mock_session, trace_sink=sink)
         ctx = _make_ctx(_Exploding())
         await rail.after_tool_call(ctx)
@@ -251,7 +207,7 @@ class TestTraceSink:
         # trace_step is None here (no TraceRail) → base path; but even with a
         # step, a legacy sink has no record_rail_event_at_step → base path.
         rail = VisualFeedbackRail(mock_session, trace_sink=sink)
-        ctx = _make_ctx(_RecordingModelContext())
+        ctx = _make_ctx(RecordingModelContext())
         await rail.after_tool_call(ctx)
         await rail.before_model_call(ctx)
         assert len(sink.events) == 1
@@ -270,31 +226,15 @@ class TestAfterInvokeCleanup:
         unconsumed — after_invoke must drop them so they don't leak across
         invokes."""
         rail = VisualFeedbackRail(mock_session)
-        ctx = _make_ctx(_RecordingModelContext())
+        ctx = _make_ctx(RecordingModelContext())
         await rail.after_tool_call(ctx)
         assert "visual_feedback_pending" in ctx.extra
         await rail.after_invoke(ctx)
         assert "visual_feedback_pending" not in ctx.extra
 
 
-class _FakeInputs:
-    """Lightweight ToolCallInputs stand-in (real tool_name/tool_args)."""
-
-    def __init__(self, tool_name="goto_xyzr", tool_args=None) -> None:
-        self.tool_name = tool_name
-        self.tool_args = tool_args or {}
-        self.tool_result = None
-        self.tool_msg = None
-
-
-class _LifecycleCtx:
-    """A ctx both TraceRail and VFR can drive: real inputs, dict extra,
-    swappable ModelContext, no MagicMock auto-magic that confuses TraceRail."""
-
-    def __init__(self, mc=None, *, tool_name="goto_xyzr", tool_args=None) -> None:
-        self.inputs = _FakeInputs(tool_name, tool_args)
-        self.extra: dict = {}
-        self.context = mc
+def _make_lifecycle_ctx(mc=None, *, tool_name="goto_xyzr", tool_args=None) -> FakeCtx:
+    return FakeCtx(tool_name=tool_name, tool_args=tool_args, context=mc)
 
 
 class TestStepPreciseFlush:
@@ -310,30 +250,30 @@ class TestStepPreciseFlush:
 
         trace_rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=False)
         # before_invoke initializes the trace + stashes trace_rail on ctx.extra
-        invoke_ctx = _LifecycleCtx()
+        invoke_ctx = _make_lifecycle_ctx()
         invoke_ctx.inputs.conversation_id = "c1"
         invoke_ctx.inputs.query = "q"
         await trace_rail.before_invoke(invoke_ctx)
 
         vfr = VisualFeedbackRail(mock_session, trace_sink=trace_rail)
-        mc = _RecordingModelContext()
+        mc = RecordingModelContext()
 
         # step 1
-        ctx1 = _LifecycleCtx(mc, tool_name="goto_xyzr")
+        ctx1 = _make_lifecycle_ctx(mc, tool_name="goto_xyzr")
         ctx1.extra = invoke_ctx.extra  # share the extra that has _TRACE_RAIL_KEY
         await trace_rail.before_tool_call(ctx1)
         await vfr.after_tool_call(ctx1)
         await trace_rail.after_tool_call(ctx1)
 
         # step 2
-        ctx2 = _LifecycleCtx(mc, tool_name="close_gripper")
+        ctx2 = _make_lifecycle_ctx(mc, tool_name="close_gripper")
         ctx2.extra = invoke_ctx.extra
         await trace_rail.before_tool_call(ctx2)
         await vfr.after_tool_call(ctx2)
         await trace_rail.after_tool_call(ctx2)
 
         # flush both staged frames in one before_model_call
-        flush_ctx = _LifecycleCtx(mc)
+        flush_ctx = _make_lifecycle_ctx(mc)
         flush_ctx.extra = invoke_ctx.extra
         await vfr.before_model_call(flush_ctx)
 
@@ -357,7 +297,7 @@ class TestStepPreciseFlush:
         from jiuwensymbiosis.agent.trace import TraceRail
 
         trace_rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=False)
-        invoke_ctx = _LifecycleCtx()
+        invoke_ctx = _make_lifecycle_ctx()
         invoke_ctx.inputs.conversation_id = "c"
         invoke_ctx.inputs.query = "q"
         await trace_rail.before_invoke(invoke_ctx)
@@ -369,13 +309,13 @@ class TestStepPreciseFlush:
             return str(saved_path)
 
         vfr = VisualFeedbackRail(mock_session, trace_sink=trace_rail, frame_sink=_frame_sink)
-        ctx = _LifecycleCtx(_RecordingModelContext(), tool_name="goto_xyzr")
+        ctx = _make_lifecycle_ctx(RecordingModelContext(), tool_name="goto_xyzr")
         ctx.extra = invoke_ctx.extra
         await trace_rail.before_tool_call(ctx)
         await vfr.after_tool_call(ctx)
         await trace_rail.after_tool_call(ctx)
 
-        flush_ctx = _LifecycleCtx(_RecordingModelContext())
+        flush_ctx = _make_lifecycle_ctx(RecordingModelContext())
         flush_ctx.extra = invoke_ctx.extra
         await vfr.before_model_call(flush_ctx)
 

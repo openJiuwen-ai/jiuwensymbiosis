@@ -6,12 +6,9 @@
 from __future__ import annotations
 
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.env.mock import MockArmEnv
-from tests.mocks.mock_api import MockApi
+from tests.helpers import make_mock_session as _make_mock_session
 
 
 def make_mock_session(**api_kwargs) -> RobotSession:
     """Build a RobotSession with MockArmEnv + MockApi."""
-    env = MockArmEnv()
-    api = MockApi(env, **api_kwargs)
-    return RobotSession(env=env, api=api, name="test_mock")
+    return _make_mock_session(name="test_mock", api_kwargs=api_kwargs)
