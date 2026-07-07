@@ -169,8 +169,8 @@ git push origin feat/<short-description>
 
 - **凭据**：永不在源码 / YAML 硬编码 API key、token、真实硬件端点；凭据一律来自环境变量或运行时配置。测试与 `--mock` 路径用 `build_mock_model()`（`jiuwensymbiosis/agent/mock_model.py`）/ `MockDriver` / `MockArmEnv`。
 - **物理安全（最重要）**：
-  - 永不绕过 `SafetyRail`：Z 下限 `z_min_safe` 与 XY 工作空间边界检查在每个 `goto_xyzr` / `goto_pose` 前运行，禁止直接调驱动运动方法跳过 rail。
-  - `z_min_safe` 是硬下限，env 子类须如实反映真实机械臂碰撞极限，**不得**为"让测试过"而设宽松值。
+  - 永不绕过 `SafetyRail`：Z 下限 `z_min_safe`、XY 工作空间边界、关节软限位 `joint_limits` 分别在 `goto_xyzr` / `goto_pose` / `move_joint` 前运行，禁止直接调驱动运动方法跳过 rail。
+  - `z_min_safe` 是硬下限，env 子类须如实反映真实机械臂碰撞极限，**不得**为"让测试过"而设宽松值。`joint_limits` 同理：限位值以官方手册为准，未配置 `joint_limits`（`env.joint_limits is None`）时 SafetyRail 跳过越限检查但保留 q 缺失/类型/finite 检查——**不要**为"让测试过"而硬编码未核实的宽限位。
   - 保留 `RecoveryRail`（失败自动回零 + 释放末端）；不要以吞异常方式跳过恢复。
   - 速度 / 力限放驱动层（`lowlevel.py`）在硬件边界强制，而非 Python 层"尽力而为"。
 - **`.env` 与代理**：`.env` / `.env.*` 不得提交（已 gitignore）；`clear_proxy_env()` 必须在 `import openjiuwen` 前调用。

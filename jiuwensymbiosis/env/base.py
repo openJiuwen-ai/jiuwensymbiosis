@@ -158,6 +158,11 @@ class BaseRobotEnv(ABC):
     _low_level: RobotDriver | None = None
     _z_min_safe: float | None = None
     _workspace_bounds: tuple[float, float, float, float] | None = None
+    # Joint soft limits: {J1: (low, high), ...}. Unit MUST match the env's
+    # ``move_joint(q)`` convention (deg for Piper; rad for a ROS-style adapter);
+    # key order = q index order. ``None`` → SafetyRail skips the range check
+    # (only q-presence / type / finite checks run).
+    _joint_limits: dict[str, tuple[float, float]] | None = None
     _home_pose: Any = None
     _tool_offset_mm: float = 0.0
 
@@ -184,6 +189,14 @@ class BaseRobotEnv(ABC):
     @workspace_bounds.setter
     def workspace_bounds(self, value: tuple[float, float, float, float] | None) -> None:
         self._workspace_bounds = value
+
+    @property
+    def joint_limits(self) -> dict[str, tuple[float, float]] | None:
+        return self._joint_limits
+
+    @joint_limits.setter
+    def joint_limits(self, value: dict[str, tuple[float, float]] | None) -> None:
+        self._joint_limits = value
 
     # Robot body constants. Adapters override as @property or set in connect().
     @property

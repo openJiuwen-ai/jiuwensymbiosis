@@ -98,14 +98,14 @@ Hardware Layer    XxxDriver — adapter author's main work (serial/CAN/socket)
 
 ### Safety & Auxiliary Rails
 
-1. **SafetyRail** — Pre-motion boundary check: validates Z floor (`z_min_safe`) and XY workspace bounds before `goto_xyzr`/`goto_pose`. Rejects with `ValueError` so LLM can self-correct.
+1. **SafetyRail** — Pre-motion boundary check: validates Z floor (`z_min_safe`) and XY workspace bounds before `goto_xyzr`/`goto_pose`, and joint soft limits before `move_joint(q)` (`joint_limits`, unit = env's `move_joint` convention). Rejects with `ValueError` (per-failure message: missing q / wrong type / length mismatch / non-finite / out of range) so LLM can self-correct.
 2. **RecoveryRail** — On motion/grasp failure, auto-homes + releases end-effector to return to safe state.
 3. **VisualFeedbackRail** — Captures camera frame after every motion/grasp, injects into agent context for VLM result verification.
 4. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.enable_skill=True`. (`rails/__init__.py` re-exports only the first three; `SkillUseRail` lives in `agent/builder.py`.)
 
 Note: `TraceRail` (see "Execution Trace & Replay" below) is a fourth parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `enable_tracing` rather than a safety flag.
 
-Rails are enabled/disabled via `RobotAgentConfig` flags and gated by session capabilities (e.g., VisualFeedbackRail requires `vision.camera`).
+Rails are enabled/disabled via `RobotAgentConfig` flags and gated by session capabilities (e.g., VisualFeedbackRail requires `vision.camera`; SafetyRail attaches when **any** of `motion.cartesian` / `motion.joint` is present, so joint-only robots get the `move_joint` soft-limit pre-check too).
 
 ### Execution Trace & Replay
 
@@ -124,7 +124,7 @@ The trace JSON is persisted to `<workspace>/traces/{conversation_id}_{timestamp}
 New robot types follow this pattern under `jiuwensymbiosis/adapters/<name>/`:
 1. `config.py` — `@dataclass` with `from_yaml()`/`from_dict()`
 2. `lowlevel.py` — Driver implementing `RobotDriver` Protocol (motion, gripper/suction, camera)
-3. `env.py` — `BaseRobotEnv` subclass: `capabilities` frozenset, `connect`/`disconnect`/`get_observation`, expose `z_min_safe`/`workspace_bounds`/`home_pose`/`tool_offset_mm` as properties
+3. `env.py` — `BaseRobotEnv` subclass: `capabilities` frozenset, `connect`/`disconnect`/`get_observation`, expose `z_min_safe`/`workspace_bounds`/`joint_limits`/`home_pose`/`tool_offset_mm` as properties
 4. `api.py` — Multi-inherits Mixins + `BaseRobotApi`; overrides geometry-specific methods, implements vision methods
 5. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor, and `make_detector_sidecar()` provides the standard detection-server sidecar
 6. `config_template.yaml` — YAML template with Chinese annotations

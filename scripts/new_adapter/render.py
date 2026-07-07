@@ -16,10 +16,7 @@ from jiuwensymbiosis.adapters._common.capability_spec import CAPABILITY_MIXIN
 
 from .spec import Spec
 
-HEADER = (
-    "# coding: utf-8\n"
-    "# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.\n"
-)
+HEADER = "# coding: utf-8\n# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.\n"
 
 # Tags a generated mock body. ``checks.py`` greps for it to know which driver
 # methods are still mocks; the user deletes the line once a method is real.
@@ -284,6 +281,17 @@ def _connect_note(spec: Spec) -> str:
 
 def _config_optional_fields(spec: Spec) -> str:
     blocks: list[str] = []
+    if spec.joint:
+        blocks.append(
+            _indent(
+                """
+                # ============== 关节软限位 [选填-仅 motion.joint] ==============
+                # 单位须与 move_joint(q) 一致。
+                joint_limits: Optional[dict[str, tuple[float, float]]] = None
+                """,
+                4,
+            )
+        )
     if spec.end_effector == "parallel":
         blocks.append(
             _indent(
@@ -332,6 +340,27 @@ def render_config(spec: Spec) -> str:
             """
             if "camera_resolution" in clean and isinstance(clean["camera_resolution"], list):
                 clean["camera_resolution"] = tuple(clean["camera_resolution"])
+            """,
+            8,
+        )
+    joint_limits_fix = ""
+    if spec.joint:
+        joint_limits_fix = _indent(
+            """
+            if "joint_limits" in clean:
+                _raw = clean["joint_limits"]
+                if not isinstance(_raw, dict):
+                    clean["joint_limits"] = None
+                else:
+                    _norm: dict[str, tuple[float, float]] = {}
+                    for _k, _v in _raw.items():
+                        if not isinstance(_v, (list, tuple)) or len(_v) != 2:
+                            continue
+                        try:
+                            _norm[str(_k)] = (float(_v[0]), float(_v[1]))
+                        except (TypeError, ValueError):
+                            continue
+                    clean["joint_limits"] = _norm if _norm else None
             """,
             8,
         )
@@ -401,6 +430,7 @@ def render_config(spec: Spec) -> str:
                 valid = {{f.name for f in dataclasses.fields(cls)}}
                 clean: dict[str, Any] = {{k: v for k, v in data.items() if k in valid}}
         __CAMERA_RESOLUTION_FIX__
+        __JOINT_LIMITS_FIX__
                 return cls(**clean)
 
             @classmethod
@@ -416,6 +446,7 @@ def render_config(spec: Spec) -> str:
         CONNECTION_FIELDS=_connection_config_fields(spec),
         OPTIONAL_FIELDS=_config_optional_fields(spec),
         CAMERA_RESOLUTION_FIX=camera_resolution_fix,
+        JOINT_LIMITS_FIX=joint_limits_fix,
         CALIB_PATH_FIX=calib_path_fix,
     )
 
@@ -554,17 +585,11 @@ def render_lowlevel(spec: Spec) -> str:
         )
     )
     home_update = _block(
-        [
-            f'self._pose["{key}"] = float(getattr(hp, "{key}", {default!r}))'
-            for key, default in pairs
-        ],
+        [f'self._pose["{key}"] = float(getattr(hp, "{key}", {default!r}))' for key, default in pairs],
         8,
     )
     pose_update = _block(
-        [
-            f'self._pose["{key}"] = float(getattr(pose, "{key}", {default!r}))'
-            for key, default in pairs
-        ],
+        [f'self._pose["{key}"] = float(getattr(pose, "{key}", {default!r}))' for key, default in pairs],
         8,
     )
     gripper_attrs = ""
@@ -718,6 +743,24 @@ def render_lowlevel(spec: Spec) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _env_joint_limits_prop(spec: Spec) -> str:
+    if not spec.joint:
+        return ""
+    return _indent(
+        """
+        @property
+        def joint_limits(self) -> Optional[dict[str, tuple[float, float]]]:
+            \"\"\"Joint soft limits from config, or None when unconfigured.\"\"\"
+            return getattr(self._cfg, "joint_limits", None)
+
+        @joint_limits.setter
+        def joint_limits(self, _: Optional[dict[str, tuple[float, float]]]) -> None:
+            raise AttributeError(f"{type(self).__name__}.joint_limits is read-only (read from config)")
+        """,
+        8,
+    )
+
+
 def render_env(spec: Spec) -> str:
     caps = _block([f'"{cap}",' for cap in spec.capabilities], 12)
     pose_items = ", ".join(f'"{field}": getattr(p, "{field}", 0.0)' for field in spec.pose_fields)
@@ -815,6 +858,7 @@ def render_env(spec: Spec) -> str:
                 if cfg.x_min_mm is not None:
                     return (cfg.x_min_mm, cfg.y_min_mm, cfg.x_max_mm, cfg.y_max_mm)
                 return None
+        __JOINT_LIMITS_PROP__
 
             # -------------------------------------------- robot body constants
             @property
@@ -834,6 +878,7 @@ def render_env(spec: Spec) -> str:
         CAPABILITIES=caps,
         DRIVER_KWARGS=_driver_kwargs(spec),
         CAMERA_OBSERVATION=camera_observation,
+        JOINT_LIMITS_PROP=_env_joint_limits_prop(spec),
     )
 
 
@@ -952,8 +997,7 @@ def render_api(spec: Spec) -> str:
     constants = ""
     if tilted:
         constants = (
-            f"_TOOL_DOWN_RX = {_TOOL_DOWN_RX}\n"
-            f"_TOOL_DOWN_RY = {_TOOL_DOWN_RY}  # 略倾以改善抓取可达性 (参考 piper)\n\n"
+            f"_TOOL_DOWN_RX = {_TOOL_DOWN_RX}\n_TOOL_DOWN_RY = {_TOOL_DOWN_RY}  # 略倾以改善抓取可达性 (参考 piper)\n\n"
         )
     get_items = ['"x": p.x', '"y": p.y', '"z": p.z - tool_off']
     get_items += [f'"{field}": getattr(p, "{field}", 0.0)' for field in spec.rot_fields]
@@ -987,10 +1031,7 @@ def render_api(spec: Spec) -> str:
         )
     else:
         pose_build = _block(
-            [
-                "pose = SimpleNamespace("
-                "x=float(x), y=float(y), z=float(z) + tool_off, rx=180.0, ry=0.0, rz=float(r))"
-            ],
+            ["pose = SimpleNamespace(x=float(x), y=float(y), z=float(z) + tool_off, rx=180.0, ry=0.0, rz=float(r))"],
             8,
         )
 
@@ -1194,6 +1235,20 @@ def render_yaml(spec: Spec) -> str:
         "y_min_mm: -500.0",
         "y_max_mm: 500.0",
     ]
+    if spec.joint:
+        lines += [
+            "",
+            "# ---- 关节软限位 [选填-仅 motion.joint] ----",
+            "# 单位须与 move_joint(q) 一致；键顺序 = q 索引顺序 (按 J1/J2/... 写)。",
+            "# 限位值以官方手册为准，示例仅为占位。未配置则 SafetyRail 跳过越限检查。",
+            "# joint_limits:",
+            "#   J1: [-360.0, 360.0]",
+            "#   J2: [-135.0, 135.0]",
+            "#   J3: [-135.0, 135.0]",
+            "#   J4: [-360.0, 360.0]",
+            "#   J5: [-135.0, 135.0]",
+            "#   J6: [-360.0, 360.0]",
+        ]
     if spec.end_effector == "parallel":
         lines += ["", "# ---- 夹爪 ----", "gripper_open_mm: 70.0", "gripper_effort: 1000"]
     if spec.has_camera:

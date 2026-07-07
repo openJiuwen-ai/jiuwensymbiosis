@@ -60,10 +60,11 @@ capabilities = frozenset({
 })
 ```
 
-env 还需暴露 4 个只读属性供安全 rails 读取（**适配作者只需填值，无需写检查逻辑**）：
+env 还需暴露 5 个只读属性供安全 rails 读取（**适配作者只需填值，无需写检查逻辑**）：
 
 - `z_min_safe` —— Z 轴安全下限（mm）
 - `workspace_bounds` —— XY 工作区边界 `(xmin, ymin, xmax, ymax)`
+- `joint_limits` —— 关节软限位 `{J1: (low, high), ...}`（单位与 `move_joint(q)` 一致；**键顺序 = q 的关节顺序**，按 J1/J2/... 与 q 索引一一对应，否则会用错限位检查；`None` 时跳过越限检查，仅保留 q 缺失/类型/finite 检查）
 - `home_pose` —— 归零位姿
 - `tool_offset_mm` —— flange 到 tip 的偏移
 
@@ -202,7 +203,7 @@ if tool_name == "robot_control":
 
 ### 1. SafetyRail —— 动作前的"软件预检"
 
-拦截 `goto_xyzr`/`goto_pose`，校验 Z 下限（`z_floor_mm` 或 env 的 `z_min_safe`）与 XY 边界（`xy_bounds_mm` 或 env 的 `workspace_bounds`）。越界 `raise ValueError`，被 openjiuwen 转成 tool-exception 回灌给 LLM **自行纠错**。它是硬件急停的**补充而非替代**，专门防 `goto_xyzr(0,0,-50)` 这类 LLM 幻觉。
+拦截 `goto_xyzr`/`goto_pose`/`move_joint`：校验 Z 下限（`z_floor_mm` 或 env 的 `z_min_safe`）与 XY 边界（`xy_bounds_mm` 或 env 的 `workspace_bounds`）；对 `move_joint(q)` 校验关节软限位（`joint_limits`，单位与 env 的 `move_joint` 约定一致）。未配置 `joint_limits` 时仍做 q 缺失/类型/有限数检查。越限 `raise ValueError`（每类失败独立 message：缺 q / 类型错 / 长度不符 / non-finite / 越限），被 openjiuwen 转成 tool-exception 回灌给 LLM **自行纠错**。它是硬件急停的**补充而非替代**，专门防 `goto_xyzr(0,0,-50)` 或 `move_joint([9999, ...])` 这类 LLM 幻觉。能力门控：只要声明 `motion.cartesian` 或 `motion.joint` 之一即挂载（joint-only 机器人也受保护）。
 
 ### 2. RecoveryRail —— 失败后自动归零
 

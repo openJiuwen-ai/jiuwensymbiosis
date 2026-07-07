@@ -52,6 +52,8 @@ class XxxConfig:
     y_min_mm: float | None = -500.0  # Y 向工作空间下界
     y_max_mm: float | None = 500.0  # Y 向工作空间上界
     z_max_mm: float | None = 800.0  # Z 向工作空间上界 (None=不限制)
+    # [选填-仅 motion.joint] 关节软限位；单位须与 move_joint(q) 一致。
+    joint_limits: dict[str, tuple[float, float]] | None = None
 
     # ==================== 夹爪/吸盘 [选填-仅 grasp.*] ====================
     gripper_open_mm: float = 70.0  # [选填-仅 grasp.parallel] 打开宽度 (mm)
@@ -94,6 +96,20 @@ class XxxConfig:
         clean: dict[str, Any] = {k: v for k, v in data.items() if k in valid}
         if "camera_resolution" in clean and isinstance(clean["camera_resolution"], list):
             clean["camera_resolution"] = tuple(clean["camera_resolution"])
+        if "joint_limits" in clean:
+            raw_limits = clean["joint_limits"]
+            if not isinstance(raw_limits, dict):
+                clean["joint_limits"] = None
+            else:
+                normalised: dict[str, tuple[float, float]] = {}
+                for k, v in raw_limits.items():
+                    if not isinstance(v, (list, tuple)) or len(v) != 2:
+                        continue
+                    try:
+                        normalised[str(k)] = (float(v[0]), float(v[1]))
+                    except (TypeError, ValueError):
+                        continue
+                clean["joint_limits"] = normalised if normalised else None
         return cls(**clean)
 
     @classmethod

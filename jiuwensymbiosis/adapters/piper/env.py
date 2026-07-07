@@ -86,6 +86,15 @@ class PiperEnv(BaseRobotEnv):
         raise AttributeError("PiperEnv.workspace_bounds is read-only (computed from config)")
 
     @property
+    def joint_limits(self) -> dict[str, tuple[float, float]] | None:
+        """Joint soft limits (deg) from config, or None when unconfigured."""
+        return getattr(self.cfg, "joint_limits", None)
+
+    @joint_limits.setter
+    def joint_limits(self, _: dict[str, tuple[float, float]] | None) -> None:
+        raise AttributeError("PiperEnv.joint_limits is read-only (computed from config)")
+
+    @property
     def home_pose(self):
         """Home pose (vendor Pose object) from the driver, or None before connect."""
         if self._inner is not None:

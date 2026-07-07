@@ -22,7 +22,8 @@ class TestRailRegistry:
         assert visual_feedback.required_flags == ["enable_visual_feedback"]
         assert visual_feedback.required_capabilities == ["vision.camera"]
         assert safety.required_flags == ["enable_safety"]
-        assert safety.required_capabilities == ["motion.cartesian"]
+        assert safety.any_capabilities == ["motion.cartesian", "motion.joint"]
+        assert safety.required_capabilities is None
         assert recovery.required_flags == ["enable_recovery"]
         assert recovery.any_capabilities == ["motion.cartesian", "grasp.suction", "grasp.parallel"]
 
@@ -31,9 +32,19 @@ class TestRailRegistry:
         [
             (0, {"enable_visual_feedback": True, "enable_safety": True}, {"vision.camera", "motion.cartesian"}, True),
             (0, {"enable_visual_feedback": True, "enable_safety": True}, {"motion.cartesian"}, False),
+            (1, {"enable_safety": True}, {"motion.cartesian"}, True),
+            (1, {"enable_safety": True}, {"motion.joint"}, True),
+            (1, {"enable_safety": True}, {"grasp.parallel"}, False),
             (2, {"enable_recovery": True, "enable_safety": True}, {"grasp.parallel"}, True),
         ],
-        ids=["visual-feedback-enabled", "visual-feedback-missing-camera", "recovery-any-cap"],
+        ids=[
+            "visual-feedback-enabled",
+            "visual-feedback-missing-camera",
+            "safety-cartesian",
+            "safety-joint-only",
+            "safety-no-motion-cap",
+            "recovery-any-cap",
+        ],
     )
     def test_should_enable_conditions(self, rail_index, flags, caps, expected):
         cfg = _RailRegistry._rails[rail_index]

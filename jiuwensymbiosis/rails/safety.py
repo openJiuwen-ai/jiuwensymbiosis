@@ -12,6 +12,9 @@ Currently checks:
 - Cartesian Z floor: explicit ``z_floor_mm``, else the env's ``z_min_safe``.
 - Cartesian XY bounds: explicit ``xy_bounds_mm``, else the env's
   ``workspace_bounds`` (unless ``enforce_xy_from_env=False``).
+- Joint soft limits on ``move_joint(q)``: explicit ``joint_limits``, else the
+  env's ``joint_limits``. Each rejected branch (missing q / wrong type /
+  wrong length / non-finite / out of range) gets its own message.
 
 Reject mechanism: forces a tool error result instead of executing the tool,
 by raising via ``ctx.request_force_finish`` is not appropriate here (we
@@ -24,7 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+import math
+from typing import Any, cast
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
@@ -63,6 +67,7 @@ class SafetyRail(AgentRail):
         *,
         z_floor_mm: float | None = None,
         xy_bounds_mm: tuple[float, float, float, float] | None = None,  # (xmin, ymin, xmax, ymax)
+        joint_limits: dict[str, tuple[float, float]] | None = None,
         watch_tools: set[str] | None = None,
         enforce_xy_from_env: bool = True,
         trace_sink: TraceEventSink | None = None,
@@ -71,6 +76,8 @@ class SafetyRail(AgentRail):
 
         When ``xy_bounds_mm`` is not given, XY bounds fall back to the env's
         ``workspace_bounds`` property unless ``enforce_xy_from_env`` is False.
+        When ``joint_limits`` is not given, it falls back to the env's
+        ``joint_limits`` property.
 
         ``trace_sink`` (optional) receives a structured event when this rail
         rejects a call — injected by ``build_robot_agent`` when tracing is on.
@@ -79,9 +86,10 @@ class SafetyRail(AgentRail):
         self.session = session
         self.z_floor = z_floor_mm
         self.xy_bounds = xy_bounds_mm
+        self.joint_limits = joint_limits
         self.enforce_xy_from_env = enforce_xy_from_env
-        # Default: only intercept cartesian moves. ``home`` is always safe.
-        self.watch_tools = set(watch_tools) if watch_tools else {"goto_xyzr", "goto_pose"}
+        # Default: intercept cartesian + joint moves. ``home`` is always safe.
+        self.watch_tools = set(watch_tools) if watch_tools else {"goto_xyzr", "goto_pose", "move_joint"}
         self.trace_sink = trace_sink
 
     def _notify_reject(self, tool_name: str, reason: str) -> None:
@@ -126,6 +134,10 @@ class SafetyRail(AgentRail):
                 args = params
 
         if tool_name not in self.watch_tools:
+            return
+
+        if tool_name == "move_joint":
+            self._check_joint_limits(tool_name, args)
             return
 
         z = args.get("z")
@@ -176,3 +188,62 @@ class SafetyRail(AgentRail):
             return (float(xmin), float(ymin), float(xmax), float(ymax))
         except (TypeError, ValueError):
             return None
+
+    def _resolve_joint_limits(self) -> dict[str, tuple[float, float]] | None:
+        """Joint limits: explicit ``joint_limits``, else the env's, else None."""
+        if self.joint_limits is not None:
+            return self.joint_limits
+        env = getattr(self.session, "env", None)
+        limits = getattr(env, "joint_limits", None)
+        if limits is None:
+            return None
+        return cast("dict[str, tuple[float, float]] | None", limits)
+
+    def _check_joint_limits(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Validate a ``move_joint(q)`` call before it reaches the env.
+
+        Distinct error messages per failure so the LLM doesn't misread "length
+        mismatch" as "lower a joint angle".
+        """
+        q = args.get("q")
+        if q is None:
+            reason = "missing required joint vector q"
+            self._notify_reject(tool_name, reason)
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+        if not isinstance(q, (list, tuple)):
+            reason = f"q must be a list or tuple, got {type(q).__name__}"
+            self._notify_reject(tool_name, reason)
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+
+        limits = self._resolve_joint_limits()
+        names: list[str] = list(limits.keys()) if limits is not None else []
+        if limits is not None and len(q) != len(names):
+            reason = f"q has {len(q)} joints but limits has {len(names)}"
+            self._notify_reject(tool_name, reason)
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+
+        for i, raw in enumerate(q):
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                reason = f"{self._joint_label(names, i)} is not a number: {raw!r}"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.") from None
+            if not math.isfinite(v):
+                label = self._joint_label(names, i)
+                reason = f"{label} is non-finite: {raw!r}"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+            if limits is not None:
+                lo, hi = limits[names[i]]
+                if not float(lo) <= v <= float(hi):
+                    label = self._joint_label(names, i)
+                    reason = f"{label}={v} out of limits [{float(lo)}, {float(hi)}]"
+                    self._notify_reject(tool_name, reason)
+                    raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+
+    @staticmethod
+    def _joint_label(names: list[str], i: int) -> str:
+        """Best-effort joint name for an error message: ``J2`` if limits are
+        configured with that key, else the positional ``q[1]``."""
+        return names[i] if i < len(names) else f"q[{i}]"

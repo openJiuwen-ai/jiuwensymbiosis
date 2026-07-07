@@ -90,6 +90,26 @@ class TestPiperEnvSafetyContract:
         env = PiperEnv(cfg)
         assert env.workspace_bounds is None
 
+    def test_joint_limits_none_by_default(self):
+        from jiuwensymbiosis.adapters.piper.env import PiperEnv
+
+        env = PiperEnv(PiperConfig())
+        assert env.joint_limits is None
+
+    def test_joint_limits_from_config(self):
+        from jiuwensymbiosis.adapters.piper.env import PiperEnv
+
+        limits = {"J1": (-360.0, 360.0), "J2": (-135.0, 135.0)}
+        env = PiperEnv(PiperConfig(joint_limits=limits))
+        assert env.joint_limits == limits
+
+    def test_joint_limits_read_only(self):
+        from jiuwensymbiosis.adapters.piper.env import PiperEnv
+
+        env = PiperEnv(PiperConfig())
+        with pytest.raises(AttributeError, match="read-only"):
+            env.joint_limits = {"J1": (-1.0, 1.0)}
+
     def test_low_level_property_tracks_inner(self):
         from jiuwensymbiosis.adapters.piper.env import PiperEnv
 

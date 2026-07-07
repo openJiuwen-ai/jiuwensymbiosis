@@ -235,7 +235,7 @@ class MotionMixin:
 
 ### 三层安全防线
 
-- **SafetyRail（运动前边界校验）**：在 `goto_xyzr` 等运动工具执行前，校验 Z 限位与 XY 工作空间边界，越界直接拒绝并告知 LLM 原因。
+- **SafetyRail（运动前边界校验）**：在 `goto_xyzr`/`goto_pose`/`move_joint` 等运动工具执行前，校验 Z 限位、XY 工作空间边界与关节软限位（`joint_limits`），越界直接拒绝并告知 LLM 原因。
 - **RecoveryRail（异常自动恢复）**：运动/抓取工具异常时，自动尝试回零 + 释放末端，将本体带回已知安全状态。
 - **VisualFeedbackRail（动作后视觉验证）**：每次运动或抓取后捕获相机帧，注入 Agent 上下文，让 VLM 验证动作结果。
 

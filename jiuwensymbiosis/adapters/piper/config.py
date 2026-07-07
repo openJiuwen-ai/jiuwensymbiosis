@@ -63,6 +63,9 @@ class PiperConfig:
     y_max_mm: float | None = 500.0
     z_max_mm: float | None = 800.0
 
+    # --- joint soft limits (Piper uses degree; unit must match move_joint).
+    joint_limits: dict[str, tuple[float, float]] | None = None
+
     # --- camera (optional; None disables)
     camera_serial: str | None = None
     camera_resolution: tuple[int, int] = (640, 480)
@@ -122,6 +125,20 @@ class PiperConfig:
             kw = dict(data)
         if "camera_resolution" in kw:
             kw["camera_resolution"] = tuple(kw["camera_resolution"])
+        if "joint_limits" in kw:
+            raw_limits = kw["joint_limits"]
+            if not isinstance(raw_limits, dict):
+                kw["joint_limits"] = None
+            else:
+                normalised: dict[str, tuple[float, float]] = {}
+                for k, v in raw_limits.items():
+                    if not isinstance(v, (list, tuple)) or len(v) != 2:
+                        continue
+                    try:
+                        normalised[str(k)] = (float(v[0]), float(v[1]))
+                    except (TypeError, ValueError):
+                        continue
+                kw["joint_limits"] = normalised if normalised else None
 
         valid = {f.name for f in dataclasses.fields(cls)}
         clean = {k: v for k, v in kw.items() if k in valid}

@@ -235,7 +235,7 @@ Both can coexist. The safety policy layer uniformly unwraps the `action/params` 
 
 ### Three-Layer Safety Rails
 
-- **SafetyRail (Pre-motion Boundary Check)**: Before executing motion tools such as `goto_xyzr`, validates Z limits and XY workspace boundaries. Out-of-bounds commands are rejected immediately with a reason provided to the LLM.
+- **SafetyRail (Pre-motion Boundary Check)**: Before executing motion tools such as `goto_xyzr`/`goto_pose`/`move_joint`, validates Z limits, XY workspace boundaries, and joint soft limits (`joint_limits`). Out-of-bounds commands are rejected immediately with a reason provided to the LLM.
 - **RecoveryRail (Automatic Anomaly Recovery)**: On motion/grasp tool failures, automatically attempts homing + end-effector release to bring the hardware back to a known safe state.
 - **VisualFeedbackRail (Post-action Visual Verification)**: Captures a camera frame after every motion or grasp, injects it into the agent context for the VLM to verify the action result.
 

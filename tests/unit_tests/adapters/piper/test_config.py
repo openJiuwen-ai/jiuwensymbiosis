@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from jiuwensymbiosis.adapters.piper.config import (
@@ -43,6 +44,42 @@ class TestPiperConfigDefaults:
         cfg = PiperConfig.from_dict({})
         assert cfg.can_port == "can_left"
         assert cfg.z_min_safe_mm == 50.0
+        assert cfg.joint_limits is None
+
+    def test_from_dict_joint_limits_normalises_tuples(self):
+        """YAML loads inner bounds as lists; from_dict must coerce to tuples."""
+        cfg = PiperConfig.from_dict({"joint_limits": {"J1": [-360.0, 360.0], "J2": [-135.0, 135.0]}})
+        assert cfg.joint_limits == {"J1": (-360.0, 360.0), "J2": (-135.0, 135.0)}
+        # inner bounds are tuples, not lists (matches the dataclass annotation)
+        assert all(isinstance(v, tuple) for v in cfg.joint_limits.values())
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # wrong top-level type (not a dict) → None, no crash
+            ([-360.0, 360.0], None),
+            ("not-a-dict", None),
+            (5, None),
+            # inner value wrong arity/type → that joint dropped
+            ({"J1": 5}, None),  # scalar, not iterable
+            ({"J1": [1, 2, 3]}, None),  # 3 elements, not 2
+            ({"J1": ["a", "b"]}, None),  # not float-coercible
+            # mixed: one good + one bad → keep the good, drop the bad
+            ({"J1": [-360.0, 360.0], "J2": "bad"}, {"J1": (-360.0, 360.0)}),
+        ],
+        ids=[
+            "list-instead-of-dict",
+            "string-instead-of-dict",
+            "scalar",
+            "inner-scalar",
+            "inner-3-tuple",
+            "inner-non-float",
+            "mixed-good-and-bad",
+        ],
+    )
+    def test_from_dict_joint_limits_malformed_drops_safely(self, raw, expected):
+        cfg = PiperConfig.from_dict({"joint_limits": raw})
+        assert cfg.joint_limits == expected
 
 
 class TestExtractDetectorFromApiServers:
@@ -80,6 +117,14 @@ class TestPiperConfigFromYaml:
         cfg = PiperConfig.from_yaml(p)
         assert cfg.can_port == "can_left"
         assert cfg.move_speed == 40
+
+    def test_from_yaml_joint_limits(self, tmp_path):
+        data = {"joint_limits": {"J1": [-360.0, 360.0], "J2": [-135.0, 135.0]}}
+        p = tmp_path / "limits.yaml"
+        p.write_text(yaml.dump(data), encoding="utf-8")
+        cfg = PiperConfig.from_yaml(p)
+        assert cfg.joint_limits == {"J1": (-360.0, 360.0), "J2": (-135.0, 135.0)}
+        assert isinstance(cfg.joint_limits["J1"], tuple)
 
 
 class TestEnvVarOverrides:
