@@ -482,6 +482,27 @@ def build_robot_agent(
         trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
         rails.insert(0, trace_rail)
 
+        # Online diagnosis: depends on TraceRail (reads its active trace via
+        # ctx.extra["trace_rail"]). Auto-disable with a warning when tracing
+        # is off — only attached here, inside the tracing-on branch.
+        if config.enable_diagnosis:
+            from jiuwensymbiosis.rails.diagnosis import DiagnosisRail
+
+            rails.insert(
+                0,
+                DiagnosisRail(
+                    session,
+                    max_chars=config.diagnosis_max_chars,
+                    history_steps=config.diagnosis_history_steps,
+                    history_kinds=tuple(config.diagnosis_history_kinds),
+                ),
+            )
+    elif config.enable_diagnosis:
+        logger.warning(
+            "enable_diagnosis=True requires enable_tracing=True; "
+            "DiagnosisRail disabled. Enable tracing to use online diagnosis."
+        )
+
     # Reconcile on both paths. In particular, tracing-off must clear builder-
     # owned sinks from reused extra rails instead of leaving stale callbacks.
     _inject_trace_sinks(rails, trace_rail)

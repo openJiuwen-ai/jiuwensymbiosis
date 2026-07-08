@@ -40,6 +40,10 @@ agent:
   # log_dir: ./logs           # 不写=仅控制台；写则落盘
   # trace_dir: ./traces       # 覆盖 trace 目录（默认 <workspace>/traces）
   # trace_capture_loggers: ["jiuwensymbiosis"]  # TraceLogHandler 捕获哪些 logger 的 WARNING+
+  # enable_diagnosis: true    # 在线诊断：失败步后把「当前参数+相关历史+系统状态」回灌下一轮 LLM（依赖 enable_tracing）
+  # diagnosis_max_chars: 1500 # 诊断消息软上限；超限先丢历史，保当前步+系统状态
+  # diagnosis_history_steps: 3  # 因果链回看步数（同工具或同类 rail 事件）
+  # diagnosis_history_kinds: ["reject", "recover"]  # 视为相关的 rail_events kind
 ```
 
 `build_robot_agent` 会读这个块、装配 `TraceRail`、向三个 rail 注入 sink、挂 `TraceLogHandler`，无需手写额外接线。`agent:` 块**全可选、纯增量**——不写它，既有 YAML 照样按默认（全关）运行。
@@ -133,6 +137,10 @@ query: pick the red box
 | `trace_console` | `False` | 是否打印逐轮 dashboard 到 stdout |
 | `trace_dir` | `None` | 覆盖 trace 目录（默认 `<workspace>/traces`） |
 | `trace_capture_loggers` | `["jiuwensymbiosis"]` | `TraceLogHandler` 挂哪些 logger 前缀 |
+| `enable_diagnosis` | `False` | 在线诊断开关；失败步后向下一轮 LLM 注入诊断消息（依赖 `enable_tracing`，关 tracing 时自动禁用并 warning） |
+| `diagnosis_max_chars` | `1500` | 诊断消息软上限；超限按「历史→系统状态」顺序丢弃，保当前步 |
+| `diagnosis_history_steps` | `3` | 因果链回看步数（同工具名或 rail 事件 kind 命中） |
+| `diagnosis_history_kinds` | `("reject","recover")` | 视为与当前失败相关的 `rail_events` kind |
 | `log_level` | `"INFO"` | 日志级别（见 [logging.md](logging.md)） |
 | `log_dir` | `None` | 日志文件目录（见 [logging.md](logging.md)） |
 

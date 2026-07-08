@@ -110,9 +110,10 @@ Hardware Layer    XxxDriver — adapter author's main work (serial/CAN/socket)
 1. **SafetyRail** — Pre-motion boundary check: validates Z floor (`z_min_safe`) and XY workspace bounds before `goto_xyzr`/`goto_pose`, and joint soft limits before `move_joint(q)` (`joint_limits`, unit = env's `move_joint` convention). Rejects with `ValueError` (per-failure message: missing q / wrong type / length mismatch / non-finite / out of range) so LLM can self-correct.
 2. **RecoveryRail** — On motion/grasp failure, auto-homes + releases end-effector to return to safe state.
 3. **VisualFeedbackRail** — Captures camera frame after every motion/grasp, injects into agent context for VLM result verification.
-4. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.enable_skill=True`. (`rails/__init__.py` re-exports only the first three; `SkillUseRail` lives in `agent/builder.py`.)
+4. **DiagnosisRail** — Online failure-feedback (Trace Feedback Loop P1): after a failed step, stages a compact diagnosis (current params + relevant recent history + system state) and flushes it into the next LLM turn via `before_model_call`; gated by `enable_diagnosis` (requires `enable_tracing`). Lives in `jiuwensymbiosis/rails/diagnosis.py`.
+5. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.enable_skill=True`. (`rails/__init__.py` re-exports SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail; `SkillUseRail` lives in `agent/builder.py`.)
 
-Note: `TraceRail` (see "Execution Trace & Replay" below) is a fourth parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `enable_tracing` rather than a safety flag.
+Note: `TraceRail` (see "Execution Trace & Replay" below) is another parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `enable_tracing` rather than a safety flag.
 
 Rails are enabled/disabled via `RobotAgentConfig` flags and gated by session capabilities (e.g., VisualFeedbackRail requires `vision.camera`; SafetyRail attaches when **any** of `motion.cartesian` / `motion.joint` is present, so joint-only robots get the `move_joint` soft-limit pre-check too).
 
