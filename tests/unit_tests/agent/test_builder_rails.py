@@ -70,6 +70,13 @@ class TestTracingBuild:
         assert isinstance(mock_session._trace_rail, TraceRail)
         mock_session.disconnect()
 
+    def test_trace_rail_priority_runs_before_default_rails(self):
+        """openjiuwen sorts callbacks by priority descending."""
+        from jiuwensymbiosis.agent.abstractions import AgentRail
+        from jiuwensymbiosis.agent.trace import TraceRail
+
+        assert TraceRail.priority > AgentRail.priority
+
     def test_no_trace_rail_when_disabled(self, mock_session, tmp_path):
         from jiuwensymbiosis.agent.builder import build_robot_agent
         from jiuwensymbiosis.agent.config import RobotAgentConfig

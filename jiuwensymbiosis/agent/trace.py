@@ -36,7 +36,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -55,6 +55,7 @@ _TRACE_RAIL_KEY = "trace_rail"  # ctx.extra key holding the TraceRail (for sink 
 
 _DEFAULT_CAPTURE_LOGGERS = ("jiuwensymbiosis",)
 _DEFAULT_CAPTURE_LOG_LEVEL = logging.WARNING
+_TRACE_RAIL_PRIORITY: Final[int] = 100
 _MAX_OUTPUT_SUMMARY = 2000  # truncate verbose tool outputs in the trace JSON
 
 
@@ -416,9 +417,10 @@ def _observation_snapshot(env: Any) -> dict | None:
 class TraceRail(AgentRail):
     """Parallel rail that records a structured trace of an agent invoke.
 
-    Enabled via ``RobotAgentConfig.enable_tracing``. Placed at ``priority = 0``
-    so its ``before_tool_call`` runs first (records request time) and
-    ``after_tool_call`` runs first (records post-action observation / timing).
+    Enabled via ``RobotAgentConfig.enable_tracing``. Placed above the default
+    rail priority so its ``before_tool_call`` runs first (creates the active
+    entry before SafetyRail can reject) and ``after_tool_call`` runs first
+    (records post-action observation / timing before later feedback rails).
 
     Args:
         session: ``RobotSession`` (used for ``env`` and ``api`` lookups).
@@ -435,7 +437,7 @@ class TraceRail(AgentRail):
         capture_log_level: Minimum level for captured log records.
     """
 
-    priority = 0
+    priority = _TRACE_RAIL_PRIORITY
 
     def __init__(
         self,

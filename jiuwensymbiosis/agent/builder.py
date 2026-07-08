@@ -460,7 +460,8 @@ def build_robot_agent(
     sys_prompt = _build_system_prompt(session, config.system_prompt, mode=config.mode)
     workspace = _resolve_workspace(session, config.workspace)
 
-    # Execution trace: prepend TraceRail so it observes every step.
+    # Execution trace: TraceRail has high callback priority so it creates the
+    # active step before safety/recovery/feedback rails emit events.
     trace_rail: TraceRail | None = None
     if config.enable_tracing:
         import logging as _logging

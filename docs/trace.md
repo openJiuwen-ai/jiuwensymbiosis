@@ -213,7 +213,7 @@ class ExecutionTrace:
 
 ```python
 class TraceRail(AgentRail):
-    priority = 0  # lower = runs first，保证 before_tool_call 先于 SafetyRail 记录
+    priority = 100  # openjiuwen higher = runs first，保证 before_tool_call 先于 SafetyRail 记录
 ```
 
 ---
@@ -364,7 +364,7 @@ _inject_trace_sinks(rails, trace_rail)  # 注入 trace_sink + frame_sink 到三 
 log_handler = _attach_trace_log_handlers(trace_rail, loggers, level)  # purge 旧 handler 后挂新
 trace_rail.attach_log_handler(log_handler, tuple(loggers))
 session._trace_rail = trace_rail  # session.disconnect 时调 close()
-rails.insert(0, trace_rail)  # priority=0 最先执行
+rails.insert(0, trace_rail)  # 列表位置不决定执行顺序；TraceRail.priority=100 保证先执行
 ```
 
 **frame_sink 注入**：当 `VisualFeedbackRail` 启用**且** `trace_save_frames=True` 时，`_make_frame_sink(trace_rail)` 返回一个 `(rgb, tool_name) -> path` 的 callable，让 VisualFeedbackRail 注入到 agent 上下文的帧**同时**落盘到 trace 的 `frames/`——保证注入帧与落盘帧是**同一帧**。`trace_save_frames=False`（默认）时**不安装** `frame_sink`（且显式置 `None` 防复用残留），`TraceRail.save_frame_for_sink` 自身也再判一次 `save_frames`——双层防护，确保用户关掉帧落盘就不会有 JPEG 写盘。
@@ -377,9 +377,9 @@ rails.insert(0, trace_rail)  # priority=0 最先执行
 
 机器人控制循环对延迟敏感。trace 涉及每步 `get_observation()` 快照、可能的帧编码、JSON 序列化——虽是 best-effort，但不该在默认路径上引入。`enable_tracing=False` 保证既有部署零开销。
 
-### 为什么 TraceRail `priority=0`？
+### 为什么 TraceRail `priority=100`？
 
-openjiuwen 的 `register_callback` 语义是 **lower = runs first**。`priority=0` 让 TraceRail 的 `before_tool_call` 先于 SafetyRail 运行（记录请求时刻），`after_tool_call` 先于 VisualFeedbackRail（记录动作后观测）。
+openjiuwen 当前 `register_callback` 语义是 **higher = runs first**（回调列表按 `priority` 倒序执行），而默认 `AgentRail.priority=50`。`TraceRail.priority=100` 让 TraceRail 的 `before_tool_call` 先于 SafetyRail 运行（先创建当前 step，安全拒绝事件才能落到正确 entry），也让 `after_tool_call` 先于 VisualFeedbackRail 运行（先记录动作后观测，再让反馈 rail 暂存/flush 帧事件）。
 
 ### 为什么采集与持久化解耦？
 
