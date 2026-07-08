@@ -126,6 +126,15 @@ class XxxEnv(BaseRobotEnv):
             return (cfg.x_min_mm, cfg.y_min_mm, cfg.x_max_mm, cfg.y_max_mm)
         return None
 
+    @property
+    def joint_limits(self) -> dict[str, tuple[float, float]] | None:
+        """Joint soft limits from config, or None when unconfigured."""
+        return getattr(self._cfg, "joint_limits", None)
+
+    @joint_limits.setter
+    def joint_limits(self, _: dict[str, tuple[float, float]] | None) -> None:
+        raise AttributeError("XxxEnv.joint_limits is read-only (read from config)")
+
     # ---------------------------------------------------- robot body constants
 
     @property

@@ -36,6 +36,7 @@
 │                   │  home_pose/tool_offset_mm    │  机器人常量属性
 │                   │  grab_rgb()                  │  单帧图像（默认走 get_observation）
 │                   │  z_min_safe/workspace_bounds │  安全契约属性
+│                   │  joint_limits                │  关节软限位（仅 motion.joint）
 │                   │  low_level: RobotDriver      │  受控穿透点（视觉标定/厂商特有）
 ├──────────────────────────────────────────────────┤
 │  Hardware Layer   │  XxxDriver (lowlevel.py)     │  实现 RobotDriver Protocol
@@ -46,7 +47,7 @@
 > Env 是 Agent/Rails/Tools 与硬件之间的**唯一契约面**：
 > - 运动/末端经 Env 动词（`home`/`move_to_flange`/`move_joint`/`get_flange_pose`/`set_end_effector`）
 > - 机器人常量经 Env 属性（`home_pose`/`tool_offset_mm`）
-> - 安全边界经 Env 属性（`z_min_safe`/`workspace_bounds`）
+> - 安全边界经 Env 属性（`z_min_safe`/`workspace_bounds`/`joint_limits`）
 > - 单帧图像经 Env 方法（`grab_rgb()`，默认委托 `get_observation().rgb`）
 > - 视觉标定数据经 `env.low_level`（`RobotDriver` + 子 Protocol 类型约束的受控穿透）
 >
@@ -465,6 +466,14 @@ class MyEnv(BaseRobotEnv):
             return (self._cfg.x_min_mm, self._cfg.y_min_mm,
                     self._cfg.x_max_mm, self._cfg.y_max_mm)
         return None
+
+    @property
+    def joint_limits(self) -> dict[str, tuple[float, float]] | None:
+        """关节软限位 {J1: (low, high), ...}，单位与 move_joint(q) 一致。
+
+        键顺序 = q 索引顺序（按 J1/J2/... 与 move_joint 的关节顺序一一对应，
+        否则会用错限位）。仅 motion.joint 适配器暴露。限位值以官方手册为准。"""
+        return getattr(self._cfg, "joint_limits", None)
 
     # ---- 机器人常量（Api 层读取）----
 

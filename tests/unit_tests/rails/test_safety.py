@@ -186,3 +186,124 @@ class TestSafetyRailTraceSink:
         ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 30})
         with pytest.raises(ValueError):
             await rail.before_tool_call(ctx)  # no crash with sink=None
+
+
+class TestSafetyRailJointLimits:
+    LIMITS = {"J1": (-360.0, 360.0), "J2": (-135.0, 135.0), "J3": (-135.0, 135.0)}
+
+    @pytest.mark.asyncio
+    async def test_within_limits_passes(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, 0.0, 0.0]})
+        await rail.before_tool_call(ctx)  # no raise
+
+    @pytest.mark.asyncio
+    async def test_out_of_limits_raises_with_name_and_range(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, -150.0, 0.0]})
+        with pytest.raises(ValueError, match=r"J2=-150\.0 out of limits \[-135\.0, 135\.0\]"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_length_mismatch_raises(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, 0.0, 0.0, 0.0]})
+        with pytest.raises(ValueError, match="q has 4 joints but limits has 3"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")], ids=["nan", "inf", "-inf"])
+    async def test_non_finite_raises(self, mock_session, bad):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, bad, 0.0]})
+        with pytest.raises(ValueError, match="non-finite"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_missing_q_raises(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={})
+        with pytest.raises(ValueError, match="missing required joint vector q"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_wrong_type_q_raises(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": "0,0,0"})
+        with pytest.raises(ValueError, match="q must be a list or tuple"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_robot_control_unwrap_move_joint(self, mock_session):
+        """move_joint dispatched via robot_control is unwrapped and checked."""
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args={"action": "move_joint", "params": {"q": [0.0, -150.0, 0.0]}},
+        )
+        with pytest.raises(ValueError, match="J2=-150.0 out of limits"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_string_args_move_joint(self, mock_session):
+        """tool_args arrives as a JSON string (openjiuwen contract)."""
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args='{"q": [0.0, -150.0, 0.0]}')
+        with pytest.raises(ValueError, match="J2=-150.0 out of limits"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_explicit_limits_precedence_over_env(self, mock_session):
+        """Explicit joint_limits kwarg wins over env.joint_limits."""
+        mock_session.env.joint_limits = self.LIMITS
+        explicit = {"J1": (-10.0, 10.0), "J2": (-10.0, 10.0), "J3": (-10.0, 10.0)}
+        rail = SafetyRail(mock_session, joint_limits=explicit)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, 50.0, 0.0]})
+        with pytest.raises(ValueError, match=r"J2=50\.0 out of limits \[-10\.0, 10\.0\]"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_no_limits_skips_range_check(self, mock_session):
+        mock_session.env.joint_limits = None
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, 0.0, 0.0, 0.0]})
+        await rail.before_tool_call(ctx)  # no raise — no limits to check against
+
+    @pytest.mark.asyncio
+    async def test_no_limits_still_rejects_non_finite(self, mock_session):
+        """Without limits, the universal finite-check still fires."""
+        mock_session.env.joint_limits = None
+        rail = SafetyRail(mock_session)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, float("nan"), 0.0]})
+        with pytest.raises(ValueError, match="non-finite"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
+    async def test_reject_notifies_sink(self, mock_session):
+        sink = RecordingRailSink()
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session, trace_sink=sink)
+        ctx = FakeCtx(tool_name="move_joint", tool_args={"q": [0.0, -150.0, 0.0]})
+        with pytest.raises(ValueError):
+            await rail.before_tool_call(ctx)
+        assert sink.events
+        assert sink.events[0][0] == "SafetyRail"
+        assert sink.events[0][3] is False
+
+    def test_resolve_joint_limits_reads_env(self, mock_session):
+        mock_session.env.joint_limits = self.LIMITS
+        rail = SafetyRail(mock_session)
+        assert rail._resolve_joint_limits() == self.LIMITS
+
+    def test_resolve_joint_limits_none(self, mock_session):
+        mock_session.env.joint_limits = None
+        rail = SafetyRail(mock_session)
+        assert rail._resolve_joint_limits() is None

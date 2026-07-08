@@ -110,7 +110,7 @@ class _RailRegistry:
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.safety.SafetyRail",
             required_flags=["enable_safety"],
-            required_capabilities=["motion.cartesian"],
+            any_capabilities=["motion.cartesian", "motion.joint"],
         ),
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.recovery.RecoveryRail",

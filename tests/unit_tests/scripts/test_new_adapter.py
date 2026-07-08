@@ -191,6 +191,63 @@ def test_can_connection_config_flows_to_driver(cleanup):
     assert 'connection: "can"' in yaml_text
 
 
+def test_joint_limits_emitted_when_joint_enabled(cleanup):
+    spec = Spec(name="gentest_jlim", dof=6, joint=True, end_effector="parallel").normalized()
+    cleanup.append(spec.name)
+    assert _run_generator(spec).returncode == 0
+
+    adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
+    config_text = (adapter_dir / "config.py").read_text(encoding="utf-8")
+    env_text = (adapter_dir / "env.py").read_text(encoding="utf-8")
+
+    assert "joint_limits:" in config_text
+    assert "isinstance(_raw, dict)" in config_text
+    assert "len(_v) != 2" in config_text
+    assert "def joint_limits(self)" in env_text
+    assert 'getattr(self._cfg, "joint_limits", None)' in env_text
+    assert "raise AttributeError" in env_text
+    yaml_text = (REPO_ROOT / "configs" / spec.name / "default.yaml").read_text(encoding="utf-8")
+    assert "# joint_limits:" in yaml_text
+    assert "#   J1: [-360.0, 360.0]" in yaml_text
+
+    module = f"jiuwensymbiosis.adapters.{spec.name}"
+    assert checks.run_validate(module).ok, "validate failed"
+    assert checks.run_smoke(module).ok, "smoke failed"
+
+
+def test_no_joint_limits_when_joint_disabled(cleanup):
+    """A non-joint adapter must NOT emit joint_limits (no move_joint tool)."""
+    spec = Spec(name="gentest_nojlim", dof=4, end_effector="suction").normalized()
+    cleanup.append(spec.name)
+    assert _run_generator(spec).returncode == 0
+
+    adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
+    config_text = (adapter_dir / "config.py").read_text(encoding="utf-8")
+    env_text = (adapter_dir / "env.py").read_text(encoding="utf-8")
+    yaml_text = (REPO_ROOT / "configs" / spec.name / "default.yaml").read_text(encoding="utf-8")
+    assert "joint_limits" not in config_text
+    assert "joint_limits" not in env_text
+    assert "joint_limits" not in yaml_text
+
+
+def test_generated_from_dict_handles_malformed_joint_limits(cleanup):
+    spec = Spec(name="gentest_malformed", dof=6, joint=True, end_effector="parallel").normalized()
+    cleanup.append(spec.name)
+    assert _run_generator(spec).returncode == 0
+
+    import importlib
+
+    mod = importlib.import_module(f"jiuwensymbiosis.adapters.{spec.name}.config")
+    cfg_cls = getattr(mod, f"{spec.prefix}Config")
+    # Each of these must not raise:
+    assert cfg_cls.from_dict({"joint_limits": [-360.0, 360.0]}).joint_limits is None  # list, not dict
+    assert cfg_cls.from_dict({"joint_limits": {"J1": [1, 2, 3]}}).joint_limits is None  # 3 elements
+    assert cfg_cls.from_dict({"joint_limits": {"J1": ["a", "b"]}}).joint_limits is None  # non-float
+    # Mixed: keep good, drop bad.
+    cfg = cfg_cls.from_dict({"joint_limits": {"J1": [-360.0, 360.0], "J2": "bad"}})
+    assert cfg.joint_limits == {"J1": (-360.0, 360.0)}
+
+
 def test_non_can_connection_is_placeholder_but_valid(cleanup):
     spec = Spec(name="gentest_tcp", dof=6, end_effector="none", connection="tcp").normalized()
     cleanup.append(spec.name)
