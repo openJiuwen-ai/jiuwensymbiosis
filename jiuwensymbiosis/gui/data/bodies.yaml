@@ -1,0 +1,9 @@
+# 内置本体(机器人形态)清单 —— GUI 内部资产,随包发布、只读。
+# 新增/修改本体请改这里;`adapter` 引用代码侧 registry._ADAPTERS 里的构建函数
+# (真机会话要 import 适配器类,属可执行逻辑,故留代码,不放数据文件)。
+bodies:
+  - key: piper
+    display_name: "Piper 六轴机械臂(示例)"
+    description: "AgileX Piper 六轴机械臂 + 平行夹爪 + 腕部相机(示例本体)。"
+    capability_badges: ["运动", "夹爪", "视觉"]
+    adapter: piper

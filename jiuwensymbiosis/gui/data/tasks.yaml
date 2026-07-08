@@ -1,0 +1,29 @@
+# 内置任务清单 —— GUI 内部资产,随包发布、只读。用户「另存为新任务」写到
+# ~/.jiuwensymbiosis/gui/tasks.yaml,启动时与本文件合并(用户可覆盖同 key)。
+#
+# 字段:key(唯一)/ body(引用本体 key)/ display_name / description /
+#       config_relpath(相对 configs/ 或绝对路径)/ default_query(配置无 prompt 时的兜底)/
+#       mock_final_text / agent_defaults / mock_script(仅内置演示任务需要,用户任务不填)。
+tasks:
+  - key: pick_box
+    body: piper
+    display_name: "拾取盒子"
+    description: "视觉识别并把黑色盒子抓取放置到白色盒子上。"
+    config_relpath: "piper/piper.yaml"
+    default_query: "把黑色盒子抓起来放到白色盒子上。"
+    mock_final_text: "已把黑色盒子放到白色盒子上,任务完成。"
+    agent_defaults:
+      enable_skill: true
+    # 模拟运行的脚本序列:一条完整"识别→抓取→放置→回位",让模拟也能演示全流程
+    # (仅用模拟会话实际可用的工具)。
+    mock_script:
+      - { tool: home, args: {}, say: "回到初始位置" }
+      - { tool: get_grasp_info_simple, args: { object_name: "black box" }, say: "识别并定位黑色盒子" }
+      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 90 }, say: "移动到抓取点上方" }
+      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 55 }, say: "下降到抓取高度" }
+      - { tool: close_gripper, args: {}, say: "闭合夹爪抓取" }
+      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 250 }, say: "抬起物体" }
+      - { tool: get_grasp_info_simple, args: { object_name: "white box" }, say: "识别并定位白色盒子" }
+      - { tool: goto_xyzr, args: { x: 265, y: 0, z: 160 }, say: "移动到放置点上方" }
+      - { tool: open_gripper, args: {}, say: "张开夹爪放下" }
+      - { tool: home, args: {}, say: "回到初始位置" }

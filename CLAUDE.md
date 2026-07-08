@@ -39,6 +39,13 @@ catalog, not on every edit.
 
 Permissions and env vars: see `.claude/settings.local.json`.
 
+## 语言约定 (Language Convention)
+
+- **面向用户的输出一律用中文**：计划书、提问、方案说明、交互解释、总结等
+  写给用户看的内容,统一使用中文。
+- 代码、标识符、英文技术术语、日志、docstring、注释等仍按现有代码风格
+  (英文为主)撰写——本约定只约束"对用户说话"的部分,不改变代码本身的语言。
+
 ## Claude Workflow
 
 - Run `/memory` to manage auto memory.

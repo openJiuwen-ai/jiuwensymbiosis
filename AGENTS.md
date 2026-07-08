@@ -27,6 +27,7 @@ make test-all     # pytest (incl. integration)
 pip install -e ".[dev]"                                    # core + test deps
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + vision/GPU deps
 pip install -e ".[piper]"                                  # + piper hardware SDK
+pip install -e ".[gui]"                                    # + 图形界面 (NiceGUI, 浏览器模式)
 
 # Run tests
 pytest                                                     # all unit tests (no hardware needed)
@@ -43,6 +44,13 @@ python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
 python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock --query "<任务>"
 # CLI entry point (after pip install)
 piper-pick-demo --config configs/piper/piper.yaml --mock --query "<任务>"
+
+# Run the GUI (browser mode; defaults to mock mode in-app; no hardware needed)
+python -m jiuwensymbiosis.gui        # or the console script: jiuwensymbiosis-gui
+#   Opens the default browser at http://127.0.0.1:<port> (NiceGUI, never native=True,
+#   so no pywebview/WebKitGTK). No extra system libs needed. The GUI does a startup
+#   pre-check (jiuwensymbiosis/gui/preflight.py) and prints the exact package to
+#   install (pip install -e ".[gui]") instead of crashing with a raw traceback.
 
 # Lint / format / type-check (tools not installed by default; install: pip install ruff mypy)
 ruff format .           # format (Black-compatible drop-in)
