@@ -19,13 +19,13 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation  # scipy 是 core 依赖，可顶层 import
 
 # 复用本体无关的纯数学原语（只读，不修改）
-from jiuwensymbiosis.adapters._common.geometry import invert_transform, make_transform
+from jiuwensymbiosis.utils.geometry import invert_transform, make_transform
 
 logger = logging.getLogger("calibrate_hand_eye")
 
@@ -40,8 +40,7 @@ def _require_cv2():
         return cv2
     except ImportError as exc:
         raise RuntimeError(
-            '手眼标定需要 OpenCV：请安装 `pip install -e ".[calib]"`'
-            "（ChArUco 需 opencv-python>=4.8）。"
+            '手眼标定需要 OpenCV：请安装 `pip install -e ".[calib]"`（ChArUco 需 opencv-python>=4.8）。'
         ) from exc
 
 
@@ -50,7 +49,8 @@ def _require_cv2():
 # =============================================================================
 def rpy_deg_to_rot(rx_deg: float, ry_deg: float, rz_deg: float, axes: str = "xyz") -> np.ndarray:
     """RPY (degrees) -> 3x3 rotation, matching the runtime FlangePose convention."""
-    return Rotation.from_euler(axes, [rx_deg, ry_deg, rz_deg], degrees=True).as_matrix()
+    rot = Rotation.from_euler(axes, [rx_deg, ry_deg, rz_deg], degrees=True).as_matrix()
+    return np.asarray(rot, dtype=np.float64)
 
 
 def _first_attr(obj: Any, *names: str) -> Any:
@@ -61,10 +61,11 @@ def _first_attr(obj: Any, *names: str) -> Any:
     raise AttributeError(f"pose 缺少属性 {names}")
 
 
-def _opt_attr(obj: Any, *names: str) -> Optional[float]:
+def _opt_attr(obj: Any, *names: str) -> float | None:
     for n in names:
         if hasattr(obj, n):
-            return getattr(obj, n)
+            val = getattr(obj, n)
+            return None if val is None else float(val)
     return None
 
 
@@ -91,9 +92,7 @@ def pose_to_tf_base_flange(pose: Any, *, axes: str = "xyz") -> np.ndarray:
         rx = float(rx) if rx is not None else 0.0
         ry = float(ry) if ry is not None else 0.0
         rz = float(rz) if rz is not None else 0.0
-    return make_transform(
-        rpy_deg_to_rot(rx, ry, rz, axes=axes), np.array([x, y, z], dtype=np.float64)
-    )
+    return make_transform(rpy_deg_to_rot(rx, ry, rz, axes=axes), np.array([x, y, z], dtype=np.float64))
 
 
 def orthonormalize(rot: np.ndarray) -> np.ndarray:
@@ -104,7 +103,7 @@ def orthonormalize(rot: np.ndarray) -> np.ndarray:
         u = u.copy()
         u[:, -1] *= -1.0
         rn = u @ vt
-    return rn
+    return np.asarray(rn, dtype=np.float64)
 
 
 def _rotation_angle_deg(ra: np.ndarray, rb: np.ndarray) -> float:
@@ -114,14 +113,12 @@ def _rotation_angle_deg(ra: np.ndarray, rb: np.ndarray) -> float:
     return float(np.degrees(np.arccos(c)))
 
 
-def rotation_spread_deg(stations: list["Station"]) -> float:
+def rotation_spread_deg(stations: list[Station]) -> float:
     """所有 station 法兰旋转两两最大角差（衡量姿态多样性；手眼求解需要它够大）。"""
     rs = [s.tf_base_flange[:3, :3] for s in stations]
     if len(rs) < 2:
         return 0.0
-    return max(
-        _rotation_angle_deg(rs[i], rs[j]) for i in range(len(rs)) for j in range(i + 1, len(rs))
-    )
+    return max(_rotation_angle_deg(rs[i], rs[j]) for i in range(len(rs)) for j in range(i + 1, len(rs)))
 
 
 # =============================================================================
@@ -148,10 +145,10 @@ class ViewDetection:
     """一帧图像的标定板检测结果（不含机器人信息）。"""
 
     ok: bool
-    image_points: Optional[np.ndarray] = None  # (N,2)
-    object_points: Optional[np.ndarray] = None  # (N,3) mm
-    tf_cam_target: Optional[np.ndarray] = None  # (4,4) board-in-camera, mm
-    reproj_rms_px: Optional[float] = None
+    image_points: np.ndarray | None = None  # (N,2)
+    object_points: np.ndarray | None = None  # (N,3) mm
+    tf_cam_target: np.ndarray | None = None  # (4,4) board-in-camera, mm
+    reproj_rms_px: float | None = None
     reason: str = ""
 
 
@@ -179,17 +176,15 @@ class HandEyeResult:
     board_origin_base_mm: np.ndarray
     board_origin_spread_mm: VerifyStat
     rotation_spread_deg: float
-    cross_check: Optional[dict[str, np.ndarray]] = None
-    cross_check_max_deg: Optional[float] = None
-    cross_check_max_mm: Optional[float] = None
+    cross_check: dict[str, np.ndarray] | None = None
+    cross_check_max_deg: float | None = None
+    cross_check_max_mm: float | None = None
 
 
 # =============================================================================
 # 精度评估（纯 numpy）
 # =============================================================================
-def axxb_residuals(
-    stations: list[Station], tf_handeye: np.ndarray
-) -> tuple[VerifyStat, VerifyStat]:
+def axxb_residuals(stations: list[Station], tf_handeye: np.ndarray) -> tuple[VerifyStat, VerifyStat]:
     """AX=XB consistency across station pairs -> (rot_deg stat, trans_mm stat)."""
     rot_errs: list[float] = []
     trans_errs: list[float] = []
@@ -218,9 +213,7 @@ def board_origin_points(stations: list[Station], tf_handeye: np.ndarray) -> np.n
     return np.asarray(pts)
 
 
-def board_origin_in_base(
-    stations: list[Station], tf_handeye: np.ndarray
-) -> tuple[np.ndarray, VerifyStat]:
+def board_origin_in_base(stations: list[Station], tf_handeye: np.ndarray) -> tuple[np.ndarray, VerifyStat]:
     """Recompute the board origin in base from every station -> (mean, spread)."""
     pts = board_origin_points(stations, tf_handeye)
     mean = pts.mean(axis=0)
@@ -260,9 +253,7 @@ def _cv2_methods(cv2) -> dict[str, int]:
     }
 
 
-def _calibrate_once(
-    cv2, stations: list[Station], method_const: int, eye_to_hand: bool
-) -> np.ndarray:
+def _calibrate_once(cv2, stations: list[Station], method_const: int, eye_to_hand: bool) -> np.ndarray:
     r_g2b, t_g2b, r_t2c, t_t2c = [], [], [], []
     for s in stations:
         c = s.detection.tf_cam_target  # solvePnP 直接给 target-in-cam，不取逆
@@ -346,9 +337,9 @@ def save_calibration(
     *,
     frame_field: str = "T_flange_cam",
     frame_comment: str = "camera pose in flange frame; translation in mm",
-    top_comment: Optional[str] = None,
-    intrinsics_comment: Optional[str] = None,
-    object_comment: Optional[str] = None,
+    top_comment: str | None = None,
+    intrinsics_comment: str | None = None,
+    object_comment: str | None = None,
 ) -> Path:
     """Write a schema-2 calibration JSON loadable verbatim by ``load_calibration``."""
     tf_handeye = np.asarray(tf_flange_cam, dtype=np.float64).copy()
@@ -363,9 +354,7 @@ def save_calibration(
     obj: dict[str, Any] = {}
     if object_comment:
         obj["_comment"] = object_comment
-    obj["xyz_base_mm"] = [
-        round(float(v), 4) for v in np.asarray(object_xyz_base_mm).reshape(-1)[:3]
-    ]
+    obj["xyz_base_mm"] = [round(float(v), 4) for v in np.asarray(object_xyz_base_mm).reshape(-1)[:3]]
     payload["object"] = obj
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

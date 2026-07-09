@@ -11,13 +11,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
-
 from handeye_core import ViewDetection, _require_cv2
 
-from jiuwensymbiosis.adapters._common.geometry import make_transform
+from jiuwensymbiosis.utils.geometry import make_transform
 
 logger = logging.getLogger("calibrate_hand_eye")
 
@@ -30,7 +28,7 @@ class BoardSpec:
     squares_x: int
     squares_y: int
     square_size_mm: float
-    marker_size_mm: Optional[float] = None  # ChArUco 专用；None 时取 0.75*square
+    marker_size_mm: float | None = None  # ChArUco 专用；None 时取 0.75*square
     aruco_dict: str = "DICT_4X4_50"
 
     def inner_corners(self) -> tuple[int, int]:
@@ -59,14 +57,10 @@ def _charuco_board(cv2, board: BoardSpec):
     d = _aruco_dictionary(cv2, board.aruco_dict)
     marker = float(board.marker_size_mm or board.square_size_mm * 0.75)
     # CharucoBoard((squaresX, squaresY), squareLength, markerLength, dictionary)；单位 mm
-    return cv2.aruco.CharucoBoard(
-        (board.squares_x, board.squares_y), float(board.square_size_mm), marker, d
-    )
+    return cv2.aruco.CharucoBoard((board.squares_x, board.squares_y), float(board.square_size_mm), marker, d)
 
 
-def generate_board_image(
-    board: BoardSpec, path: str | Path, *, dpi: int = 300, margin_px: int = 40
-) -> Path:
+def generate_board_image(board: BoardSpec, path: str | Path, *, dpi: int = 300, margin_px: int = 40) -> Path:
     """Generate a printable calibration-board PNG (ChArUco or chessboard)."""
     cv2 = _require_cv2()
     px_per_mm = dpi / 25.4
@@ -103,7 +97,7 @@ def _imread_rgb(path) -> np.ndarray:
     bgr = cv2.imread(str(path))
     if bgr is None:
         raise FileNotFoundError(f"无法读取图像（文件不存在或格式不支持）：{path}")
-    return bgr[:, :, ::-1].copy()
+    return np.asarray(bgr[:, :, ::-1]).copy()
 
 
 # =============================================================================
@@ -112,8 +106,8 @@ def _imread_rgb(path) -> np.ndarray:
 def detect_board(
     rgb: np.ndarray,
     board: BoardSpec,
-    intrinsics: Optional[np.ndarray] = None,
-    dist: Optional[np.ndarray] = None,
+    intrinsics: np.ndarray | None = None,
+    dist: np.ndarray | None = None,
     *,
     min_corners: int = 6,
 ) -> ViewDetection:
@@ -143,9 +137,7 @@ def _detect_chessboard(cv2, gray, board: BoardSpec) -> ViewDetection:
         return ViewDetection(ok=False, reason="未检测到棋盘格（板不在视野/太斜/反光/行列数不符？）")
     crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), crit)
-    return ViewDetection(
-        ok=True, image_points=corners.reshape(-1, 2), object_points=board.chessboard_object_points()
-    )
+    return ViewDetection(ok=True, image_points=corners.reshape(-1, 2), object_points=board.chessboard_object_points())
 
 
 def _detect_charuco(cv2, gray, board: BoardSpec, min_corners: int = 6) -> ViewDetection:
@@ -162,12 +154,10 @@ def _detect_charuco(cv2, gray, board: BoardSpec, min_corners: int = 6) -> ViewDe
     if objp is None or len(objp) < min_corners:
         m = 0 if objp is None else len(objp)
         return ViewDetection(ok=False, reason=f"matchImagePoints 角点不足（{m}<{min_corners}）")
-    return ViewDetection(
-        ok=True, image_points=imgp.reshape(-1, 2), object_points=objp.reshape(-1, 3)
-    )
+    return ViewDetection(ok=True, image_points=imgp.reshape(-1, 2), object_points=objp.reshape(-1, 3))
 
 
-def _fill_pose(cv2, det: ViewDetection, intrinsics: np.ndarray, dist: Optional[np.ndarray]) -> None:
+def _fill_pose(cv2, det: ViewDetection, intrinsics: np.ndarray, dist: np.ndarray | None) -> None:
     """对已检测到角点的 view，用 solvePnP 填 T_cam_target 与重投影误差。"""
     if dist is None:
         dist = np.zeros(5, dtype=np.float64)
@@ -193,9 +183,7 @@ def _fill_pose(cv2, det: ViewDetection, intrinsics: np.ndarray, dist: Optional[n
     det.reproj_rms_px = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - imgp) ** 2, axis=1))))
 
 
-def _fill_poses(
-    detections: list[ViewDetection], intrinsics: np.ndarray, dist, board: BoardSpec
-) -> None:
+def _fill_poses(detections: list[ViewDetection], intrinsics: np.ndarray, dist, board: BoardSpec) -> None:
     cv2 = _require_cv2()
     for d in detections:
         if d.ok and d.image_points is not None:
@@ -207,23 +195,15 @@ def calibrate_intrinsics_from_views(
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """cv2.calibrateCamera over accepted views -> (K 3x3, dist, rms_px)."""
     cv2 = _require_cv2()
-    objpoints = [
-        d.object_points.astype(np.float32)
-        for d in detections
-        if d.ok and d.object_points is not None
-    ]
-    imgpoints = [
-        d.image_points.astype(np.float32) for d in detections if d.ok and d.image_points is not None
-    ]
+    objpoints = [d.object_points.astype(np.float32) for d in detections if d.ok and d.object_points is not None]
+    imgpoints = [d.image_points.astype(np.float32) for d in detections if d.ok and d.image_points is not None]
     if len(objpoints) < 3:
         raise ValueError("内参标定需要 ≥3 个有效视图")
     # 不带 CALIB_USE_INTRINSIC_GUESS 时 cameraMatrix/distCoeffs 会被忽略并从零重估，
     # 传占位空矩阵等价于传 None（opencv 存根把这两个入参误标为必填非空）。
     init_k = np.eye(3, dtype=np.float64)
     init_d = np.zeros((5, 1), dtype=np.float64)
-    rms, intrinsics, dist, _r, _t = cv2.calibrateCamera(
-        objpoints, imgpoints, image_size, init_k, init_d
-    )
+    rms, intrinsics, dist, _r, _t = cv2.calibrateCamera(objpoints, imgpoints, image_size, init_k, init_d)
     return (
         np.asarray(intrinsics, dtype=np.float64),
         np.asarray(dist, dtype=np.float64).reshape(-1),
