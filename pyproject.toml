@@ -117,6 +117,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # White-box tests legitimately reach into the internals of objects under test.
 "tests/**" = ["SLF001"]
+# Package init clears proxy env (os.environ.pop) before the agent/openjiuwen
+# imports, so those imports are not "at top of file" per E402 — by design.
+"jiuwensymbiosis/__init__.py" = ["E402"]
 
 [tool.ruff.format]
 # ruff format is a Black-compatible drop-in replacement — one tool does
