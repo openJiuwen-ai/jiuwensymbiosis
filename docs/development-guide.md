@@ -242,7 +242,7 @@ make test-all
 # 5.（按需）adapter 改动 → 脚本冒烟（非 make 目标）
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>
 python scripts/smoke_test_adapter.py
-python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock  # 端到端冒烟（无硬件/LLM）
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock  # 端到端冒烟（无硬件/LLM）
 
 # 6.（新增依赖时）依赖审计
 pip-audit
@@ -276,7 +276,7 @@ git push origin <branch>
 - **用户可见行为变更**（新 `@robot_tool`、新 mixin 方法、新 env 属性、capability 增减、CLI/配置项变化）→ 同步更新 `examples/`、`docs/`，并视情况更新 `AGENTS.md` 与 `CLAUDE.md` 的相关章节。
 - **新 adapter** → 更新 `AGENTS.md` "Source Tree Layout"，必要时补 `docs/hardware-porting-guide.md`。
 - **新安全/物理安全相关** → 复核 `.claude/rules/security.md` 与 `skills/security-review` 是否需要补充。
-- 深参考手册按需查读：`docs/architecture.md`、`docs/hardware-porting-guide.md`、`docs/logging.md`、`docs/trace.md`、`docs/hand-eye-calibration.md`、`docs/simulation.md`（MuJoCo 仿真环境集成设计，对应 issue #11）。
+- 深参考手册按需查读：`docs/architecture.md`、`docs/hardware-porting-guide.md`、`docs/logging.md`、`docs/trace.md`、`docs/hand-eye-calibration.md`。
 
 ---
 

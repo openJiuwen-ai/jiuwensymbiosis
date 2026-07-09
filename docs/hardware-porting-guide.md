@@ -24,7 +24,6 @@
 ├──────────────────────────────────────────────────┤
 │  Skill Layer      │  visual_pick/SKILL.md        │  预置操作流程文档
 │                   │  visual_place/SKILL.md        │  SkillUseRail 自动加载
-│                   │  slot_pick/SKILL.md           │
 ├──────────────────────────────────────────────────┤
 │  API Layer        │  MotionMixin / VisionMixin   │  能力声明 + @robot_tool 方法
 │  (Capability      │  SuctionMixin / etc.         │  运动/抓取/取图带默认委托
@@ -117,7 +116,7 @@ capability   RobotDriver  实现观测      返回 ok/error   必填/选填     
 > Env（步骤 3）通常只写 `connect/disconnect/get_observation` + 暴露 `low_level` 和安全属性——
 > 运动/末端动词由 `BaseRobotEnv` 默认委托给驱动。Api（步骤 4）的运动/抓取/取图方法由 Mixin
 > 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）并实现高层视觉——eye-in-hand
-> 视觉可委托 `adapters/_common/vision.default_get_grasp_info_simple` /
+> 视觉可委托 `perception/vision.default_get_grasp_info_simple` /
 > `default_pixel_to_base_xyz`，只补一个 `pose_to_tf` 回调与检测器 `seg_fn`。
 
 每步详细说明见后续章节。
@@ -242,7 +241,7 @@ class MyApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
 
 ### 4.3 驱动接口：`RobotDriver` Protocol
 
-驱动**不强制继承**任何基类，但应满足 `jiuwensymbiosis/adapters/_common/protocol.py`
+驱动**不强制继承**任何基类，但应满足 `jiuwensymbiosis/env/protocol.py`
 里的结构化 Protocol（`typing.Protocol`，按能力拆分）。`validate_adapter` 的 D-14
 按 `CAPABILITY_DRIVER_MEMBERS` 表用 `hasattr` 逐成员校验驱动类——声明了某能力却缺对应 Protocol 成员会报 ERROR。
 
@@ -659,7 +658,7 @@ class MyApi(MotionMixin, ParallelGripperMixin, BaseRobotApi):
 **6.4.1 检测客户端初始化**
 
 ```python
-from jiuwensymbiosis.adapters._common.detector_client import init_detector
+from jiuwensymbiosis.perception.detector_client import init_detector
 
 class MyApi(MotionMixin, VisionMixin, BaseRobotApi):
     def __init__(self, env, *, detector_service_url="http://127.0.0.1:8114", ...):
@@ -677,7 +676,7 @@ class MyApi(MotionMixin, VisionMixin, BaseRobotApi):
 **6.4.2 实现 get_grasp_info_simple（核心方法）**
 
 ```python
-from jiuwensymbiosis.adapters._common.vision import detect_and_centroid, apply_xy_correction
+from jiuwensymbiosis.perception.vision import detect_and_centroid, apply_xy_correction
 
 def get_grasp_info_simple(self, object_name: str) -> dict:
     # 视觉标定数据经 env.low_level 受控穿透（RobotDriver + CameraDriver + VisionDriver Protocol）
@@ -904,10 +903,10 @@ build_my_session = make_builder(
 
 ### 8.3 sidecar_builders — 检测子进程管理
 
-如果使用视觉检测，需要注册检测子进程启动器。参考 `jiuwensymbiosis/adapters/_common/detector_sidecar.py:detector_subprocess()`：
+如果使用视觉检测，需要注册检测子进程启动器。参考 `jiuwensymbiosis/perception/detector_sidecar.py:detector_subprocess()`：
 
 ```python
-from jiuwensymbiosis.adapters._common.detector_sidecar import detector_subprocess
+from jiuwensymbiosis.perception.detector_sidecar import detector_subprocess
 
 def _detector_sidecar(cfg: MyConfig):
     """根据配置决定是否启动检测子进程。"""
@@ -976,30 +975,30 @@ with session:
 
 ---
 
-## 9. _common 共享模块速查
+## 9. 可复用共享模块速查
 
-`jiuwensymbiosis/adapters/_common/` 提供了所有适配器可复用的工具模块。不要重新发明轮子。
+适配器可复用的工具模块分布在几处，不要重新发明轮子：会话构建与工作空间防御仍在 `jiuwensymbiosis/adapters/_common/`（`builder`/`safety`/`capability_spec`）；感知（检测/视觉/标定/相机）在 `jiuwensymbiosis.perception`；SE(3)/针孔几何在 `jiuwensymbiosis.utils.geometry`；驱动 Protocol 在 `jiuwensymbiosis.env.protocol`。
 
 | 模块 | 主要接口 | 用途 | 何时使用 |
 |------|---------|------|---------|
-| `builder.py` | `make_builder()` | 通用会话构建工厂 | **所有适配器必用** |
-| `detector_client.py` | `init_detector(service_url) → seg_fn` | 检测服务 HTTP 客户端 | 视觉适配器必用 |
-| `detector_sidecar.py` | `detector_subprocess(host, port, ...)` | 检测子进程生命周期 | 视觉适配器必用 |
-| `vision.py` | `detect_and_centroid(rgb, depth, seg_fn, object_name, ...)` | 检测 + 质心 + 中值深度 | 视觉适配器必用 |
-| `vision.py` | `apply_xy_correction(xyz_raw, xy_transform, xy_correction_mm)` | XY 坐标校正 | 视觉适配器按需 |
-| `vision.py` | `dump_grasp_debug(rgb, object_name, best, u, v, ...)` | 检测结果 dumping 到磁盘 | 视觉调试按需 |
-| `calibration.py` | 手眼标定加载 | `tf_flange_cam` 变换矩阵 | 视觉适配器按需 |
-| `camera.py` | 相机工具函数 | 相机初始化和帧抓取 | 视觉适配器按需 |
-| `geometry.py` | 几何变换辅助 | 坐标系变换、投影 | 视觉适配器按需 |
-| `protocol.py` | `RobotDriver`/`JointDriver`/`GripperDriver`/`SuctionDriver`/`CameraDriver`/`VisionDriver` | 驱动接口 Protocol（结构化类型，供标注 + D-14 校验）。多协议驱动可定义复合 Protocol（参考 `PiperFullDriver` = `RobotDriver + JointDriver + CameraDriver + GripperDriver + VisionDriver`）做 `low_level` 访问的类型收紧，mypy/pyright 会静态校验全部成员。 | **驱动应满足对应子集** |
-| `safety.py` | `WorkspaceBounds(z_min_safe, tool_offset_mm, ...)` + `check_flange_z()` | tip/flange 双坐标系 Z 楼面换算与拦截 | 驱动层做 Z 防御按需 |
+| `adapters/_common/builder.py` | `make_builder()` | 通用会话构建工厂 | **所有适配器必用** |
+| `perception/detector_client.py` | `init_detector(service_url) → seg_fn` | 检测服务 HTTP 客户端 | 视觉适配器必用 |
+| `perception/detector_sidecar.py` | `detector_subprocess(host, port, ...)` | 检测子进程生命周期 | 视觉适配器必用 |
+| `perception/vision.py` | `detect_and_centroid(rgb, depth, seg_fn, object_name, ...)` | 检测 + 质心 + 中值深度 | 视觉适配器必用 |
+| `perception/vision.py` | `apply_xy_correction(xyz_raw, xy_transform, xy_correction_mm)` | XY 坐标校正 | 视觉适配器按需 |
+| `perception/vision.py` | `dump_grasp_debug(rgb, object_name, best, u, v, ...)` | 检测结果 dumping 到磁盘 | 视觉调试按需 |
+| `perception/calibration.py` | 手眼标定加载 | `tf_flange_cam` 变换矩阵 | 视觉适配器按需 |
+| `perception/camera.py` | 相机工具函数 | 相机初始化和帧抓取 | 视觉适配器按需 |
+| `utils/geometry.py` | 几何变换辅助 | 坐标系变换、投影 | 视觉适配器按需 |
+| `env/protocol.py` | `RobotDriver`/`JointDriver`/`GripperDriver`/`SuctionDriver`/`CameraDriver`/`VisionDriver` | 驱动接口 Protocol（结构化类型，供标注 + D-14 校验）。多协议驱动可定义复合 Protocol（参考 `PiperFullDriver` = `RobotDriver + JointDriver + CameraDriver + GripperDriver + VisionDriver`）做 `low_level` 访问的类型收紧，mypy/pyright 会静态校验全部成员。 | **驱动应满足对应子集** |
+| `adapters/_common/safety.py` | `WorkspaceBounds(z_min_safe, tool_offset_mm, ...)` + `check_flange_z()` | tip/flange 双坐标系 Z 楼面换算与拦截 | 驱动层做 Z 防御按需 |
 
 ### 关键接口签名与用法
 
 #### init_detector
 
 ```python
-from jiuwensymbiosis.adapters._common.detector_client import init_detector
+from jiuwensymbiosis.perception.detector_client import init_detector
 
 seg_fn = init_detector("http://127.0.0.1:8114")
 # seg_fn 是可调用对象: seg_fn(image_ndarray, text_prompt="blue box") -> list[dict]
@@ -1010,7 +1009,7 @@ seg_fn = init_detector("http://127.0.0.1:8114")
 #### detect_and_centroid
 
 ```python
-from jiuwensymbiosis.adapters._common.vision import detect_and_centroid
+from jiuwensymbiosis.perception.vision import detect_and_centroid
 
 result = detect_and_centroid(
     rgb=rgb_ndarray,          # HxWx3 uint8
@@ -1028,7 +1027,7 @@ result = detect_and_centroid(
 #### apply_xy_correction
 
 ```python
-from jiuwensymbiosis.adapters._common.vision import apply_xy_correction
+from jiuwensymbiosis.perception.vision import apply_xy_correction
 
 xyz_final, corr_desc = apply_xy_correction(
     xyz_raw=np.array([x, y, z], dtype=np.float64),

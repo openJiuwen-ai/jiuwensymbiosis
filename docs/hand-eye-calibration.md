@@ -64,7 +64,7 @@ python scripts/calibrate/calibrate_hand_eye.py --generate-board board.png \
 
 或临时用环境变量：`export CAMERA_SERIAL=你的序列号`。
 
-> 这份配置专为标定准备，**不要**用 `pick_box.yaml`——那会指向正在生成的标定文件。
+> 这份配置专为标定准备，**不要**用 `piper.yaml`——那会指向正在生成的标定文件。
 
 ---
 
@@ -153,7 +153,7 @@ python scripts/calibrate/calibrate_hand_eye.py --config scripts/calibrate/calibr
 也可以直接跑抓取演示看整体效果：
 
 ```bash
-piper-pick-demo --config configs/piper/pick_box.yaml
+piper-pick-demo --config configs/piper/piper.yaml
 ```
 
 ---

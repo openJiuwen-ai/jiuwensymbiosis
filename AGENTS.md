@@ -38,10 +38,11 @@ pytest -k "test_capabilities"                              # filter by test name
 # Validate a hardware adapter
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
 
-# Run demo (mock mode: no hardware, no real LLM — uses MockArmEnv + MockModel)
-python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock
+# Run demo (mock mode: no hardware, no real LLM — uses MockArmEnv + MockModel).
+# Task is not in the config — pass it via --query (or --voice at run time).
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock --query "<任务>"
 # CLI entry point (after pip install)
-piper-pick-demo --config configs/piper/pick_box.yaml --mock
+piper-pick-demo --config configs/piper/piper.yaml --mock --query "<任务>"
 
 # Lint / format / type-check (tools not installed by default; install: pip install ruff mypy)
 ruff format .           # format (Black-compatible drop-in)
@@ -70,7 +71,7 @@ The framework has 7 layers, with data flowing top-down for commands and bottom-u
 Agent Layer       RobotSession + build_robot_agent() + RobotAgentConfig
 Safety Rails      SafetyRail / RecoveryRail / VisualFeedbackRail / SkillUseRail (before_tool_call hooks); TraceRail (parallel, optional)
 Tool Layer        build_robot_tools(api) | RobotControlTool(api) | InProcessCodeTool
-Skill Layer       SKILL.md docs (visual_pick, visual_place, slot_pick) loaded by SkillUseRail
+Skill Layer       SKILL.md docs (visual_pick, visual_place) loaded by SkillUseRail
 API Layer         MotionMixin / VisionMixin / SuctionMixin etc. (@robot_tool methods)
 Env Layer         BaseRobotEnv — the SINGLE hardware contract (connect/disconnect/observe)
 Hardware Layer    XxxDriver — adapter author's main work (serial/CAN/socket)
@@ -146,9 +147,9 @@ jiuwensymbiosis/          # Main package
   agent/                  # RobotSession, build_robot_agent, RobotAgentConfig, ModelSpec, MockModel (--mock)
   api/                    # BaseRobotApi, @robot_tool decorator, capability mixins
   env/                    # BaseRobotEnv, MockArmEnv, KNOWN_CAPABILITIES
-  tools/                  # build_robot_tools, RobotControlTool, InProcessCodeTool, slot_pick/
+  tools/                  # build_robot_tools, RobotControlTool, InProcessCodeTool
   rails/                  # SafetyRail, RecoveryRail, VisualFeedbackRail
-  skills/                 # Built-in SKILL.md files (visual_pick, visual_place, slot_pick)
+  skills/                 # Built-in SKILL.md files (visual_pick, visual_place)
   adapters/
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     _common/              # Shared adapter utilities (builder, detector, vision, calibration, protocol)
@@ -162,7 +163,7 @@ tests/
   integration/            # Hardware/GPU-dependent tests
 scripts/validate_adapter.py  # Static compatibility checker for new adapters
 scripts/smoke_test_adapter.py # Runtime smoke test: drive each @robot_tool with MockEnv
-examples/                 # Runnable demos (piper_pick_demo, piper_watch_pick_place)
+examples/                 # Runnable demos (piper_pick_demo)
 docs/                     # Deep-dive manuals: architecture.md, hardware-porting-guide.md, logging.md, trace.md
 Makefile                  # check / fix / format / lint / type-check / test targets (conda env "jiuwensymbiosis" by default)
 ```

@@ -67,7 +67,7 @@ logs/
 
 ### 2.1 YAML `agent:` 块（声明式配置）
 
-在任务配置文件（如 `configs/piper/pick_box.yaml`）里写 `agent:` 块：
+在任务配置文件（如 `configs/piper/piper.yaml`）里写 `agent:` 块：
 
 ```yaml
 agent:
@@ -121,7 +121,7 @@ agent = build_robot_agent(session, config=agent_cfg)
 
 ```bash
 # 临时看 DEBUG 级日志（覆盖 YAML 的 log_level），不必改配置文件
-python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock --debug
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock --debug
 ```
 
 > demo **不在 `main()` 里调 `logging.basicConfig`**——根日志完全由 `build_robot_agent → configure_logging` 接管。这点很重要：`basicConfig` 会另挂一个不被 `configure_logging` 识别的 handler，导致控制台重复打印（见 §三.3）。
