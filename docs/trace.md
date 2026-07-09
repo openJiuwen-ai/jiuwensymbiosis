@@ -29,7 +29,7 @@
 在任务 YAML 里加一个 `agent:` 块即可。它与 `env:`（硬件）、`model:`（模型）、`api_servers:`（检测服务）并列，是 agent 行为的声明式入口；所有字段都可选，缺省即默认关闭：
 
 ```yaml
-# configs/piper/pick_box.yaml
+# configs/piper/piper.yaml
 agent:
   enable_tracing: true        # 总开关（默认 False）
   trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/

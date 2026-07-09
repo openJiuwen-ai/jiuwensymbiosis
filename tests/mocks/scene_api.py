@@ -5,10 +5,10 @@
 
 Unlike ``MockApi`` (a simple stub returning hardcoded dicts), ``SceneMockApi``
 renders RGB + depth frames from a ``MockScene``, runs the actual
-``detect_and_centroid`` (from ``adapters._common.vision``) with a scene-backed
+``detect_and_centroid`` (from ``perception.vision``) with a scene-backed
 segment function, and back-projects via the real
 ``pixel_and_depth_to_camera_xyz`` + ``apply_transform`` (from
-``adapters._common.geometry``). This closes the perception → projection →
+``utils.geometry``). This closes the perception → projection →
 motion data-flow loop against known ground truth in CI.
 
 Motion / gripper methods are inherited unchanged from ``MockApi`` — only the
@@ -19,12 +19,12 @@ the same frames the pipeline consumes.
 
 from __future__ import annotations
 
-from jiuwensymbiosis.adapters._common.geometry import (
+from jiuwensymbiosis.api.decorators import robot_tool
+from jiuwensymbiosis.perception.vision import detect_and_centroid
+from jiuwensymbiosis.utils.geometry import (
     apply_transform,
     pixel_and_depth_to_camera_xyz,
 )
-from jiuwensymbiosis.adapters._common.vision import detect_and_centroid
-from jiuwensymbiosis.api.decorators import robot_tool
 from tests.mocks.mock_api import MockApi
 from tests.mocks.mock_scene import MockScene, mock_seg_fn_from_scene
 

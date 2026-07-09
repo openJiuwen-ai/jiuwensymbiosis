@@ -32,7 +32,7 @@ from typing import Any
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.geometry import make_transform
+from jiuwensymbiosis.utils.geometry import make_transform
 
 
 @dataclass

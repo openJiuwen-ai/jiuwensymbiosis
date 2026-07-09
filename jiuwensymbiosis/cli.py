@@ -36,10 +36,6 @@ def piper_pick_demo() -> None:
     _run_example("piper_pick_demo.py")
 
 
-def piper_watch_pick_place() -> None:
-    _run_example("piper_watch_pick_place.py")
-
-
 # ---------------------------------------------------------------------------
 # Replay CLI — renders a recorded execution trace.
 # Usage: ``jiuwensymbiosis replay <trace.json>``

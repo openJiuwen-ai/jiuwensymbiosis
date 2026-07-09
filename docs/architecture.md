@@ -18,8 +18,7 @@
 │  Tool Layer        build_robot_tools | RobotControlTool    │  LLM 可调用的工具
 │                    | InProcessCodeTool                       │
 ├─────────────────────────────────────────────────────────────┤
-│  Skill Layer       SKILL.md (visual_pick / visual_place     │  可复用技能文档
-│                    / slot_pick)                              │
+│  Skill Layer       SKILL.md (visual_pick / visual_place)    │  可复用技能文档
 ├─────────────────────────────────────────────────────────────┤
 │  API Layer         MotionMixin / VisionMixin / SuctionMixin │  @robot_tool 方法
 ├─────────────────────────────────────────────────────────────┤
@@ -124,7 +123,7 @@ class RobotApi(MotionMixin, SuctionMixin, VisionMixin, BaseRobotApi):
 - `pixel_to_base_xyz` —— 像素重投影（依赖手眼标定）
 - `analyze_scene` —— 场景分析（依赖检测器客户端）
 
-这 3 个在 Mixin 层 `raise NotImplementedError`，因为它们依赖具体机器人的检测器与手眼标定矩阵，无法给出**mixin 级**通用默认。但 eye-in-hand 相机机器人的检测→质心→投影→矫正→抓放几何流程是通用的，`adapters/_common/vision.py` 提供 `default_get_grasp_info_simple` / `default_pixel_to_base_xyz` 帮助函数把它抽出——适配作者只需提供检测器 `seg_fn` 和一个 `pose_to_tf(flange_pose) -> 4x4` 回调（把厂商 flange 位姿转成 base←flange 变换，这是唯一真正 per-vendor 的几何步骤），标定数据从 `env.low_level`（`tf_flange_cam` / `intrinsics` / `calibration` / `grab_frames`）读取。`analyze_scene` 仍需 per-adapter 实现。
+这 3 个在 Mixin 层 `raise NotImplementedError`，因为它们依赖具体机器人的检测器与手眼标定矩阵，无法给出**mixin 级**通用默认。但 eye-in-hand 相机机器人的检测→质心→投影→矫正→抓放几何流程是通用的，`perception/vision.py` 提供 `default_get_grasp_info_simple` / `default_pixel_to_base_xyz` 帮助函数把它抽出——适配作者只需提供检测器 `seg_fn` 和一个 `pose_to_tf(flange_pose) -> 4x4` 回调（把厂商 flange 位姿转成 base←flange 变换，这是唯一真正 per-vendor 的几何步骤），标定数据从 `env.low_level`（`tf_flange_cam` / `intrinsics` / `calibration` / `grab_frames`）读取。`analyze_scene` 仍需 per-adapter 实现。
 
 ### 已有的能力 Mixin
 
@@ -282,7 +281,7 @@ agent:
 
 ## 九、视觉感知：检测器作为子进程
 
-检测（GroundingDINO + SAM2）跑在**独立子进程**里，通过 HTTP 通信（`adapters/_common/detector_client.py`）：
+检测（GroundingDINO + SAM2）跑在**独立子进程**里，通过 HTTP 通信（`perception/detector_client.py`）：
 
 ```
 init_detector(service_url) → segment_fn(image, text_prompt) → [{"mask", "box", "score", "label"}]

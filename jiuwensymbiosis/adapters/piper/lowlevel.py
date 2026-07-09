@@ -20,10 +20,10 @@ from typing import Any
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.camera import RealSenseCamera
 from jiuwensymbiosis.adapters._common.safety import WorkspaceBounds
 from jiuwensymbiosis.adapters.piper._calibration import load_calibration
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose
+from jiuwensymbiosis.perception.camera import RealSenseCamera
 
 logger = logging.getLogger(__name__)
 

@@ -33,6 +33,7 @@ full = [
     # torchvision 0.23.0 与 torch 2.8.0 配对；SAM2(transformers Sam2ImageProcessor)依赖 torchvision。
     "torch==2.8.0+cu128",
     "torchvision==0.23.0+cu128",
+    "torchaudio==2.8.0+cu128",  # funasr（[voice] 的 ASR）音频处理依赖，须与 torch 同版本+CUDA 构建
     "pyrealsense2>=2.57",
     "opencv-python>=4",
     "transformers>=5",
@@ -43,6 +44,16 @@ full = [
     "httpx>=0.28",
 ]
 piper = ["piper_sdk>=0.6.1"]
+voice = [
+    # 语音前端（jiuwensymbiosis/voice/）：ASR + 录音。全部惰性 import，
+    # 不安装本组也能 import jiuwensymbiosis.voice（仅 mock backend 可用）。
+    # ChatTTS 是本地打包件（n2_voice 的 customer_release_chattts），非 pip 依赖，
+    # 用 voice.tts_module_path 指向其 tts.py 即可；不配则默认 NullTTS 不发声。
+    "funasr>=1.0",        # ASR / 唤醒（paraformer-zh），间接依赖 torch
+    "sounddevice>=0.4",   # 麦克风采集（sounddevice 后端）；pulse 后端改用系统 parec
+    "soundfile>=0.12",    # 写临时 WAV 喂给 FunASR
+    "webrtcvad>=2.0.10",  # 语音活动检测；缺失时自动回退能量阈值
+]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。
@@ -54,7 +65,6 @@ calib = [
 
 [project.scripts]
 piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"
-piper-watch-pick-place = "jiuwensymbiosis.cli:piper_watch_pick_place"
 jiuwensymbiosis-replay = "jiuwensymbiosis.cli:replay_main"
 
 [tool.setuptools.packages.find]

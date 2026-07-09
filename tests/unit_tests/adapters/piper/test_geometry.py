@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from jiuwensymbiosis.adapters._common.geometry import make_transform
 from jiuwensymbiosis.adapters.piper.geometry import (
     FlangePose,
     pixel_and_depth_to_base_xyz,
     rpy_deg_to_rot,
 )
+from jiuwensymbiosis.utils.geometry import make_transform
 
 
 class TestFlangePose:

@@ -28,16 +28,8 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 if TYPE_CHECKING:
-    from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
+    from jiuwensymbiosis.env.protocol import PiperFullDriver
 
-from jiuwensymbiosis.adapters._common.detector_client import init_detector
-from jiuwensymbiosis.adapters._common.vision import (
-    GraspFailure,
-    GraspResult,
-    apply_xy_correction,
-    detect_and_centroid,
-    dump_grasp_debug,
-)
 from jiuwensymbiosis.adapters.piper.env import PiperEnv
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose, pixel_and_depth_to_base_xyz
 from jiuwensymbiosis.api.base import BaseRobotApi
@@ -47,6 +39,14 @@ from jiuwensymbiosis.api.mixins import (
     MotionMixin,
     ParallelGripperMixin,
     VisionMixin,
+)
+from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.perception.vision import (
+    GraspFailure,
+    GraspResult,
+    apply_xy_correction,
+    detect_and_centroid,
+    dump_grasp_debug,
 )
 
 logger = logging.getLogger(__name__)

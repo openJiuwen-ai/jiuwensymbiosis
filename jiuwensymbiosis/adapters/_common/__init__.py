@@ -1,12 +1,17 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Cross-vendor adapter building blocks.
+"""Cross-vendor adapter building blocks — used *by* adapters, nothing else.
 
-Things that are NOT specific to any one robot family — RealSense pipeline,
-hand-eye calibration loading, SE(3)/pinhole math, workspace bounds,
-detector client + sidecar, vision projection helpers, pick/place skill
-choreography, the generic session builder, and the ``RobotDriver``
-Protocol that new vendors implement.
+What's left here is only consumed inside ``adapters/``: the generic session
+builder (``builder``) and cartesian workspace bounds (``safety``).
+
+Things consumed outside ``adapters/`` moved to where their consumer lives:
+* the ``RobotDriver`` Protocol → ``jiuwensymbiosis.env.protocol`` (Env delegates
+  to the driver, so the contract lives with the env layer — no more TYPE_CHECKING
+  dance in ``env/base.py``);
+* sensing (camera, detector client/sidecar, vision, calibration) →
+  ``jiuwensymbiosis.perception``;
+* SE(3)/pinhole math → ``jiuwensymbiosis.utils.geometry``.
 
 Per-vendor adapters under ``adapters/<vendor>/`` import from here.
 """

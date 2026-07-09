@@ -3,7 +3,7 @@
 """Intel RealSense camera wrapper — robot-agnostic.
 
 Encapsulates one ``pyrealsense2`` pipeline + color/depth stream alignment +
-the 3x3 intrinsics matrix needed by ``adapters._common.geometry``.
+the 3x3 intrinsics matrix needed by ``utils.geometry``.
 
 Lazy import of ``pyrealsense2`` — if the package isn't installed, ``start()``
 logs a warning and returns False, and ``grab_frames()`` returns None.

@@ -14,10 +14,16 @@ from jiuwensymbiosis.api.mixins import (
     ParallelGripperMixin,
     VisionMixin,
 )
+from jiuwensymbiosis.env.mock import MockArmEnv
 
 
 class MockApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
     """In-memory mock of a Piper-like API for tests."""
+
+    # Tests always construct MockApi with a MockArmEnv, which exposes the
+    # simplified move()/set_suction() helpers used below. Narrow the base's
+    # BaseRobotEnv annotation so those calls type-check.
+    env: MockArmEnv
 
     def __init__(self, env, *, detection_result: dict | None = None, pixel_result: dict | None = None) -> None:
         super().__init__(env)
@@ -62,7 +68,7 @@ class MockApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
         self.env.move(x, y, z, r)
 
     # -- gripper --
-    # -- suction (for _common.skills) --
+    # -- suction --
     def activate_suction(self) -> dict:
         self._call_log.append("activate_suction")
         self.env.set_suction(True)

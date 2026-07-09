@@ -46,10 +46,9 @@ ROBOT_PROMPT_TEMPLATE = (
     # confuses the model and biases it toward writing code in ``content``.
     "你是机器人控制代理，负责操作 {robot_name} 完成物理任务。"
     "请使用提供的工具完成感知、运动、抓取和释放，从工具描述中读取每个工具的参数和返回值。"
-    "**要抓取/放置的物体由用户的自然语言任务决定**：你自己从用户的话里识别出"
-    "「要抓的物体」和「放置目标」，把对应的物体名作为检测工具(get_grasp_info_simple / "
-    "analyze_scene 的 object_name, 或 slot_pick 的 chip_object_name/slot_object_name)的参数；"
-    "用户不会、也不需要再单独传物体参数。"
+    "**要操作的目标由用户的自然语言任务决定**：你自己从用户的话里识别出要检测/操作的目标"
+    "（用它的自然语言描述——颜色/形状/大小/类别/材质等任意特征），作为检测工具"
+    "(get_grasp_info_simple / analyze_scene)的 object_name 参数；用户不会、也不需要再单独传物体参数。"
     "开始任何动作前先回到 home 位姿；视觉检测应在 home 高度进行以获得清晰深度。"
     "完成或失败时简洁汇报最终结果。"
 )
@@ -211,8 +210,6 @@ class RobotAgentConfig:
     # exec_mode: "agent" (per-step LLM, current) or "fast" agent (plan-once + real-time
     #   Perceive+Act loop with no LLM in the loop). See ExecMode.
     exec_mode: ExecMode = "agent"
-    fast_pick_object: str | None = None
-    fast_place_object: str | None = None
     exec_config: Any = None
 
     @classmethod

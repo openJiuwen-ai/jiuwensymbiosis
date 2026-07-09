@@ -83,7 +83,7 @@ def make_detector_sidecar(cfg_attr: str = "detector"):
         det = getattr(cfg, cfg_attr, None)
         if det is None or not getattr(det, "spawn", False):
             return None
-        from jiuwensymbiosis.adapters._common.detector_sidecar import detector_subprocess
+        from jiuwensymbiosis.perception.detector_sidecar import detector_subprocess
 
         kwargs = {
             "host": det.host,
