@@ -247,3 +247,9 @@ Copyright (c) 2020, Jonas Lundberg
 
 License: BSD 3-Clause License
 Please see above
+Software: nicegui 2.24.2
+Copyright notice:
+Copyright (c) 2021 Zauberzeug GmbH
+
+License: MIT License
+Please see above
