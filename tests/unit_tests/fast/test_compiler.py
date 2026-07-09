@@ -94,3 +94,58 @@ def test_compile_raises_when_no_json(monkeypatch):
     _patch_chat(monkeypatch, "对不起我不知道怎么做")
     with pytest.raises(RuntimeError):
         _compile(attempts=1)
+
+
+def test_compile_retries_on_chat_timeout_then_recovers(monkeypatch):
+    # A transient LLM/HTTP failure (e.g. read timeout) makes _chat raise; the
+    # compiler must count it as one attempt and retry, not abort the whole compile.
+    calls = {"n": 0}
+
+    def fake_chat(system, user, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("planner LLM call failed after 1 attempts: The read operation timed out")
+        return json.dumps(_GOOD_SEQUENCE)
+
+    monkeypatch.setattr(planner, "_chat", fake_chat)
+    out = _compile(attempts=3)
+    assert calls["n"] == 2
+    assert [s["op"] for s in out] == ["home", "track_detect", "goto_xyzr", "close_gripper"]
+
+
+def test_compile_raises_after_all_chat_timeouts(monkeypatch):
+    def always_timeout(system, user, **kwargs):
+        raise RuntimeError("The read operation timed out")
+
+    monkeypatch.setattr(planner, "_chat", always_timeout)
+    with pytest.raises(RuntimeError, match="no valid sequence"):
+        _compile(attempts=2)
+
+
+def test_compile_feeds_validation_error_back_and_recovers(monkeypatch):
+    # First reply drifts: object_name 'black box' but no bind matching the later
+    # 'black_box.*' reference (the production bug). The compiler must reject it,
+    # feed the error into the next prompt, and accept the corrected retry.
+    bad = json.dumps(
+        [
+            {"op": "track_detect", "params": {"object_name": "black box"}, "bind": "pick"},
+            {"op": "goto_xyzr", "params": {"x": "black_box.position[0]"}},
+        ]
+    )
+    good = json.dumps(
+        [
+            {"op": "track_detect", "params": {"object_name": "black box"}, "bind": "black_box"},
+            {"op": "goto_xyzr", "params": {"x": "black_box.position[0]"}},
+        ]
+    )
+    prompts: list[str] = []
+
+    def fake_chat(system, user, **kwargs):
+        prompts.append(user)
+        return bad if len(prompts) == 1 else good
+
+    monkeypatch.setattr(planner, "_chat", fake_chat)
+    out = _compile(attempts=3)
+    assert out[0]["bind"] == "black_box"
+    # the retry prompt carries the corrective feedback, not just a re-sample
+    assert "unbound" in prompts[1] or "bind" in prompts[1]

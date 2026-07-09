@@ -18,7 +18,7 @@ This module is the contract between the LLM (producer) and the runner
   * ``parse_sequence`` — validate a raw ``list[dict]`` (the LLM output) into
     ``list[ActionStep]``, rejecting unknown ops / malformed detection steps.
   * ``evaluate_expr`` / ``resolve_params`` — a **whitelisted-AST** evaluator so a
-    param like ``"box.grasp_z"`` or ``"box.grasp_z + 30"`` resolves against the
+    param like ``"obj.z"`` or ``"obj.z + 30"`` resolves against the
     runtime variable environment (the detection bindings). It never executes
     arbitrary Python: only numbers, ``+ - * /``, unary ``-``, name lookup,
     ``var.field``, and ``var.field[idx]`` are allowed.
@@ -32,7 +32,7 @@ This module is the contract between the LLM (producer) and the runner
 Why string-or-number params: numeric targets (``goto_xyzr`` x/y/z) are
 expressions; string args (``object_name``) are literals. ``resolve_params``
 distinguishes them by trying to evaluate; a value that does not parse as a
-numeric expression (e.g. ``"黑盒子"``) is left as the literal string.
+numeric expression (e.g. ``"红杯子"``) is left as the literal string.
 """
 
 from __future__ import annotations
@@ -83,6 +83,35 @@ class ActionStep:
         return self.bind is not None
 
 
+def referenced_binding_names(value: Any) -> set[str]:
+    """Root binding names a param value reads via ``.field`` / ``[idx]`` access.
+
+    Returns the set of ``ast.Name`` roots reached through an attribute or
+    subscript — e.g. ``{"obj"}`` for ``"obj.z + 30"`` or
+    ``"obj.position[0]"``. A plain literal yields an empty set: an
+    ``object_name`` like ``"red cup"`` is a syntax error, and a bare word like
+    ``"红杯子"`` is a lone ``Name`` (not an access), so literals are never
+    mistaken for binding references. Only attribute/subscript access means "read
+    a detection field" — exactly the shape that must resolve against a prior
+    ``track_detect`` bind.
+    """
+    if not isinstance(value, str):
+        return set()
+    try:
+        tree = ast.parse(value, mode="eval")
+    except SyntaxError:
+        return set()
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            base = node.value
+            while isinstance(base, (ast.Attribute, ast.Subscript)):
+                base = base.value
+            if isinstance(base, ast.Name):
+                roots.add(base.id)
+    return roots
+
+
 def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set) -> list[ActionStep]:
     """Validate a raw action sequence (the LLM output) into ``list[ActionStep]``.
 
@@ -96,12 +125,14 @@ def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set
         Validated steps, in order.
 
     Raises:
-        SequenceError: on a non-list payload, a malformed step, an unknown op, or
-            a detection step missing ``object_name`` / a bad ``role``.
+        SequenceError: on a non-list payload, a malformed step, an unknown op, a
+            ``track_detect`` missing ``object_name`` / ``bind``, or a param
+            expression that reads a binding no earlier step produced.
     """
     if not isinstance(raw, list):
         raise SequenceError(f"sequence must be a list, got {type(raw).__name__}")
     steps: list[ActionStep] = []
+    bound: set[str] = set()  # binding names produced by earlier steps' `bind`
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
             raise SequenceError(f"step {i}: must be an object, got {type(item).__name__}")
@@ -120,7 +151,27 @@ def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set
             obj = params.get("object_name")
             if not isinstance(obj, str) or not obj:
                 raise SequenceError(f"step {i}: track_detect requires params.object_name")
+            if not bind:
+                raise SequenceError(
+                    f"step {i}: track_detect must have a 'bind' name — its detection is read "
+                    f"later as <bind>.field; without it the reference resolves to nothing"
+                )
+        # Every binding a param reads via <name>.field / <name>[i] must already
+        # be produced by an earlier step's `bind`. Catches the LLM naming its
+        # bind one thing and referencing another (e.g. object_name 'red cup'
+        # but no matching bind for a later 'red_cup.position[0]') at compile
+        # time, instead of a cryptic 'str < float' crash deep in a motion tool.
+        for key, val in params.items():
+            missing = referenced_binding_names(val) - bound
+            if missing:
+                raise SequenceError(
+                    f"step {i}: param {key!r}={val!r} reads unbound {sorted(missing)}; "
+                    f"an earlier track_detect must `bind` it under that exact name "
+                    f"(bound so far: {sorted(bound) or ['—']})"
+                )
         steps.append(ActionStep(op=op, params=dict(params), bind=bind))
+        if bind:
+            bound.add(bind)
     return steps
 
 
@@ -189,7 +240,7 @@ def evaluate_expr(expr: str, env: Mapping[str, Any]) -> float:
     no function calls, no arbitrary Python.
 
     Args:
-        expr: the expression text, e.g. ``"pick.grasp_z"`` or ``"pick.grasp_z + 30"``.
+        expr: the expression text, e.g. ``"obj.z"`` or ``"obj.z + 30"``.
         env: variable environment (config constants + detection bindings).
 
     Returns:
@@ -216,7 +267,7 @@ def resolve_value(value: Any, env: Mapping[str, Any]) -> Any:
     """Resolve one param value: evaluate numeric expressions, keep literals.
 
     A number passes through. A string is tried as an expression; if it does not
-    parse/evaluate to a number (e.g. an ``object_name`` like ``"黑盒子"``), the
+    parse/evaluate to a number (e.g. an ``object_name`` like ``"红杯子"``), the
     original string is returned as a literal.
     """
     if isinstance(value, bool):
@@ -246,8 +297,8 @@ def normalize_detection(gi: Mapping[str, Any]) -> dict[str, Any]:
     detector emits — ``grasp_z``, ``place_z``, ``score``, ``depth_m``, … — is
     addressable), plus purely geometric conveniences ``x/y/z`` taken from
     ``position[0]/[1]/[2]``. NO task semantics are baked in: a pick skill's
-    expression reads ``box.grasp_z``, a place skill reads ``box.place_z``, a
-    carry/push skill reads ``box.x`` / ``box.position[0]`` — the choice lives in
+    expression reads ``obj.grasp_z``, a place skill reads ``obj.place_z``, a
+    carry/push skill reads ``obj.x`` / ``obj.position[0]`` — the choice lives in
     the skill's SKILL.md, not here.
 
     Args:

@@ -93,6 +93,56 @@ def test_parse_rejects_bad_params_type():
         parse_sequence([{"op": "home", "params": [1, 2]}], allowed_ops=_ALLOWED)
 
 
+def test_parse_rejects_track_detect_without_bind():
+    # track_detect's whole purpose is to bind a detection for later reference.
+    with pytest.raises(SequenceError, match="bind"):
+        parse_sequence(
+            [{"op": "track_detect", "params": {"object_name": "black box"}}],
+            allowed_ops=_ALLOWED,
+        )
+
+
+def test_parse_rejects_reference_to_unbound_binding():
+    # The exact production failure: object_name 'black box' but a later step
+    # reads 'black_box.*', which no step bound → caught at compile time instead
+    # of a cryptic 'str < float' crash deep in goto_xyzr at run time.
+    raw = [
+        {"op": "track_detect", "params": {"object_name": "black box"}, "bind": "pick"},
+        {"op": "goto_xyzr", "params": {"x": "black_box.position[0]", "z": "black_box.grasp_z + 40"}},
+    ]
+    with pytest.raises(SequenceError, match="unbound"):
+        parse_sequence(raw, allowed_ops=_ALLOWED)
+
+
+def test_parse_accepts_reference_matching_prior_bind():
+    raw = [
+        {"op": "track_detect", "params": {"object_name": "black box"}, "bind": "black_box"},
+        {"op": "goto_xyzr", "params": {"x": "black_box.position[0]", "z": "black_box.grasp_z + 40"}},
+    ]
+    steps = parse_sequence(raw, allowed_ops=_ALLOWED)
+    assert steps[1].op == "goto_xyzr"
+
+
+def test_parse_rejects_forward_reference_before_bind():
+    # Referencing a binding produced by a *later* step is still unbound at use.
+    raw = [
+        {"op": "goto_xyzr", "params": {"x": "pick.x"}},
+        {"op": "track_detect", "params": {"object_name": "x"}, "bind": "pick"},
+    ]
+    with pytest.raises(SequenceError, match="unbound"):
+        parse_sequence(raw, allowed_ops=_ALLOWED)
+
+
+def test_referenced_binding_names_ignores_literals_and_bare_names():
+    from jiuwensymbiosis.agent.fast.sequence import referenced_binding_names
+
+    assert referenced_binding_names("black box") == set()  # syntax error → literal
+    assert referenced_binding_names("黑盒子") == set()  # bare name → not a field read
+    assert referenced_binding_names(40) == set()  # non-string
+    assert referenced_binding_names("box.grasp_z + 30") == {"box"}
+    assert referenced_binding_names("black_box.position[0]") == {"black_box"}
+
+
 # --------------------------------------------------------------------------- #
 # evaluate_expr
 # --------------------------------------------------------------------------- #

@@ -176,18 +176,23 @@ _COMPILER_SYSTEM = (
     '  {"op": "<动作名>", "params": {<参数>}, "bind": "<可选:绑定名>"}\n'
     "规则：\n"
     "- op 只能用【可用动作】清单里的名字，或特殊动作 track_detect。\n"
-    '- track_detect{"object_name":"<物体>"} 必须带 bind：它实时检测并追踪该物体，'
-    '把检测结果绑定到 <bind>；后续步骤用 "<bind>.字段" 读取，例如 <bind>.x、<bind>.y、'
-    "<bind>.z，或检测返回的任意字段（如 <bind>.grasp_z、<bind>.place_z、<bind>.position[0]）。"
-    "用哪个字段由该技能 SKILL.md 决定，不要臆造检测没有的字段。\n"
-    '- **object_name 用英文**（颜色+类别，如 "black box"、"white box"），照各 SKILL.md '
-    "“检测目标来自用户任务”一节给的英文形式——开放词表检测器对英文区分准，中文易把不同颜色/"
-    "类别的物体识别成同一个。bind 名用对应英文（如 black_box）。\n"
+    '- track_detect{"object_name":"<目标>"} 必须带 bind：它实时检测并追踪该目标，'
+    '把检测结果绑定到 <bind>；后续步骤用 "<bind>.字段" 读取（如 <bind>.x、<bind>.y、<bind>.z，'
+    "或该技能 SKILL.md 指定的其它检测字段）。用哪个字段完全由该技能 SKILL.md 决定，"
+    "不要臆造检测没有的字段。\n"
+    "- **object_name 只来自用户任务本身**：从用户这句话里识别要操作/检测的目标，用它的自然语言"
+    "描述（颜色/形状/大小/类别/材质/位置等任意特征的组合，也可能只有类别），转成英文——照各 "
+    "SKILL.md “检测目标来自用户任务”一节。开放词表检测器对英文区分准，中文易把不同目标识别成同一个。"
+    "**不要借用示例或 SKILL.md 里出现过的任何具体目标名，目标一律以用户任务为准。**\n"
+    "- **bind 与引用必须逐字一致**：bind 是合法标识符（字母/数字/下划线，**不能含空格**），"
+    "由 object_name 转写而来——把其中的空格换成下划线。object_name 是自由字符串、bind 是变量名，"
+    "用途不同；后续每一处 <bind>.字段 里的 <bind> 都必须和某个 track_detect 的 bind 一模一样，"
+    "否则运行时读不到该检测结果。\n"
     "- params 的值可以是数字，或对【已绑定检测】的算术表达式（只允许 + - * / 和 字段/下标），"
-    '例如 "box.grasp_z"、"box.position[0]"。物体名等字符串原样写。\n'
-    "- **严格照 SKILL.md 的 workflow 表逐行展开，不要自己加额外步骤或高度偏移**。"
-    '若某技能 SKILL.md 明确给了某个偏移的数值范围，按它取一个具体数字写成字面量（如 "box.grasp_z + 30"）；'
-    '没写偏移就直接用工作高度（如 "box.grasp_z"），不要臆造 approach/lift 之类的符号名。\n'
+    '例如 "obj.z"、"obj.position[0]"（obj 指代你取的某个 bind 名）。目标名等字符串原样写。\n'
+    "- **严格照 SKILL.md 的 workflow 表逐行展开，不要自己加额外步骤或偏移**。"
+    '若某技能 SKILL.md 明确给了某个偏移的数值范围，按它取一个具体数字写成字面量（如 "obj.z + 30"）；'
+    '没写偏移就直接用 SKILL.md 指定的字段（如 "obj.z"），不要臆造 SKILL.md 里没有的符号名。\n'
     "- 不要臆造清单外的动作；不要输出绝对坐标数值（xy/工作高度都来自运行时检测）。\n"
     "只输出这一个 JSON 数组，不要任何解释或 markdown 代码块。"
 )
@@ -210,7 +215,7 @@ def compile_sequence(
     api_base: str,
     api_key: str = "",
     model_name: str,
-    timeout_s: float = 30.0,
+    timeout_s: float = 90.0,
     temperature: float = 0.0,
     proxy: str | None = None,
     attempts: int = 4,
@@ -243,30 +248,50 @@ def compile_sequence(
         "请输出展开后的动作序列 JSON 数组。"
     )
     last_err: str | None = None
+    # Corrective feedback appended to the prompt on the next attempt: re-sampling
+    # the identical prompt (temperature is often low) tends to repeat the same
+    # mistake, so we tell the model exactly what was wrong and let it self-fix.
+    correction = ""
     for attempt in range(1, max(1, attempts) + 1):
-        text = _chat(
-            _COMPILER_SYSTEM,
-            user,
-            api_base=api_base,
-            api_key=api_key,
-            model_name=model_name,
-            timeout_s=timeout_s,
-            temperature=temperature,
-            proxy=proxy,
-            attempts=1,
-            max_tokens=1500,
-        )
+        try:
+            text = _chat(
+                _COMPILER_SYSTEM,
+                user + correction,
+                api_base=api_base,
+                api_key=api_key,
+                model_name=model_name,
+                timeout_s=timeout_s,
+                temperature=temperature,
+                proxy=proxy,
+                attempts=1,
+                max_tokens=1500,
+            )
+        except RuntimeError as exc:
+            # Transient LLM/HTTP failure (e.g. read timeout on a slow generation).
+            # _chat raises instead of returning; catch it here so it counts as one
+            # attempt and retries, rather than aborting the whole compile on a
+            # single slow/failed response. correction is left unchanged.
+            last_err = str(exc)
+            logger.warning("[compiler] attempt %d: LLM call failed, retrying: %s", attempt, exc)
+            continue
         data = _extract_json_array(text)
         if data is None:
             last_err = f"no JSON array in reply: {text[:200]!r}"
             logger.warning("[compiler] attempt %d: %s", attempt, last_err)
+            correction = "\n\n上次回复没有包含合法的 JSON 数组。请只输出一个 JSON 数组，不要任何解释或 markdown。"
             continue
         try:
             parse_sequence(data, allowed_ops=allowed_ops)  # validate only; keep raw dicts
         except SequenceError as exc:
             last_err = str(exc)
             logger.warning("[compiler] attempt %d: invalid sequence: %s", attempt, exc)
+            correction = (
+                f"\n\n上次输出的动作序列无效：{exc}\n"
+                "请修正后重新输出完整的 JSON 数组。特别注意：每个 track_detect 都必须带 bind；"
+                "后续步骤引用检测字段（如 <bind>.grasp_z、<bind>.position[0]）时，其中的 <bind> "
+                "必须与某个 track_detect 的 bind 名逐字一致（用下划线，不含空格；object_name 是另一个独立的自由字符串）。"
+            )
             continue
-        logger.info("[compiler] task=%r → %d steps", query, len(data))
+        logger.info("[compiler] task=%r → %d steps: %s", query, len(data), data)
         return data
     raise RuntimeError(f"sequence compiler produced no valid sequence after {attempts} attempts: {last_err}")
