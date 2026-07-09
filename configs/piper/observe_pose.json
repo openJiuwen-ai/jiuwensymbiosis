@@ -1,0 +1,22 @@
+{
+  "note": "piper 观察位（真机记录）。复现优先用 joints_deg + JointCtrl（必然可达）；EndPose 仅参考。",
+  "can_port": "can_left",
+  "joints_deg": [
+    7.35,
+    53.609,
+    -74.067,
+    -8.396,
+    70.958,
+    2.656
+  ],
+  "end_pose_xyzrxryrz_mm_deg": [
+    144.27,
+    5.95,
+    436.79,
+    -171.97,
+    44.68,
+    -172.51
+  ],
+  "gripper_mm": 89.4,
+  "read_drift_mm": 0.0
+}
