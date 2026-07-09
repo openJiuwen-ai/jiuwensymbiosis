@@ -96,10 +96,10 @@ class PiperConfig:
     # --- stacking place offset. When releasing a held object ON TOP of a target,
     #     the gripper tip goes to ``target_top + chip_thickness_mm`` so the held
     #     object's bottom rests on the target's top. So this = the held object's
-    #     tip-to-bottom distance (= object_height - grasp depth). Same role as
-    #     slot_pick's ``chip_thickness_mm``. ``get_grasp_info_simple`` returns a
-    #     ready ``place_z = detected_top + chip_thickness_mm`` so the agent descends
-    #     to it directly and never computes the stack height.
+    #     tip-to-bottom distance (= object_height - grasp depth).
+    #     ``get_grasp_info_simple`` returns a ready ``place_z = detected_top +
+    #     chip_thickness_mm`` so the agent descends to it directly and never
+    #     computes the stack height. (This is the knob for placement height.)
     chip_thickness_mm: float = 75.0
 
     # --- task knobs
