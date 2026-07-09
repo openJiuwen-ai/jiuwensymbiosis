@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters._common.calibration."""
+"""Tests for jiuwensymbiosis.perception.calibration."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.adapters._common.calibration import (
+from jiuwensymbiosis.perception.calibration import (
     LegacyCalibrationError,
     load_calibration,
 )

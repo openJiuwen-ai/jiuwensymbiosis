@@ -1,14 +1,13 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters._common.vision."""
+"""Tests for jiuwensymbiosis.perception.vision."""
 
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from jiuwensymbiosis.adapters._common.vision import (
+from jiuwensymbiosis.perception.vision import (
     DETECTION_REASONS,
     GraspFailure,
     GraspResult,
@@ -219,7 +218,7 @@ class TestDefaultEyeInHandHelpers:
         return api
 
     def test_get_grasp_info_simple_success_shape(self):
-        from jiuwensymbiosis.adapters._common.vision import default_get_grasp_info_simple
+        from jiuwensymbiosis.perception.vision import default_get_grasp_info_simple
 
         api = self._setup()
         result = default_get_grasp_info_simple(
@@ -244,7 +243,7 @@ class TestDefaultEyeInHandHelpers:
         assert result["position"][2] == result["depth_m"] * 1000.0  # identity tf, mm
 
     def test_grasp_z_clamped_to_z_min_safe(self):
-        from jiuwensymbiosis.adapters._common.vision import default_get_grasp_info_simple
+        from jiuwensymbiosis.perception.vision import default_get_grasp_info_simple
 
         # detected top at 500mm; z_min_safe 600mm → grasp_z clamped up to 600.
         api = self._setup(depth_m=0.5, z_min_safe=600.0)
@@ -258,7 +257,7 @@ class TestDefaultEyeInHandHelpers:
         assert result["grasp_z"] >= 600.0
 
     def test_get_grasp_info_simple_no_camera(self):
-        from jiuwensymbiosis.adapters._common.vision import default_get_grasp_info_simple
+        from jiuwensymbiosis.perception.vision import default_get_grasp_info_simple
 
         api = self._setup()
         # Make grab_frames return None.
@@ -274,7 +273,7 @@ class TestDefaultEyeInHandHelpers:
         assert result["reason"] == "no_camera"
 
     def test_get_grasp_info_simple_propagates_detection_failure(self):
-        from jiuwensymbiosis.adapters._common.vision import default_get_grasp_info_simple
+        from jiuwensymbiosis.perception.vision import default_get_grasp_info_simple
         from tests.mocks.mock_detector import make_mock_seg_fn
 
         api = self._setup()
@@ -290,12 +289,12 @@ class TestDefaultEyeInHandHelpers:
         assert result["reason"] == "no_detection"
 
     def test_get_grasp_info_simple_no_calibration_raises(self):
-        from jiuwensymbiosis.adapters._common.vision import default_get_grasp_info_simple
+        from jiuwensymbiosis.perception.vision import default_get_grasp_info_simple
 
         api = self._setup()
         api.env.low_level._tf = None
         api.env.low_level._K = None
-        with pytest.raises(RuntimeError):
+        with np.testing.assert_raises(RuntimeError):
             default_get_grasp_info_simple(
                 api,
                 "box",
@@ -304,7 +303,7 @@ class TestDefaultEyeInHandHelpers:
             )
 
     def test_pixel_to_base_xyz_returns_xyz(self):
-        from jiuwensymbiosis.adapters._common.vision import default_pixel_to_base_xyz
+        from jiuwensymbiosis.perception.vision import default_pixel_to_base_xyz
 
         api = self._setup(depth_m=0.5)
         result = default_pixel_to_base_xyz(api, 320.0, 240.0, 0.5, pose_to_tf=_identity_pose_to_tf)

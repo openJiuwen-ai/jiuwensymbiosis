@@ -3,8 +3,7 @@
 """``RobotDriver`` Protocol — the contract a new vendor implements.
 
 This is the smallest surface a per-vendor ``XxxLowLevel`` must expose for the
-cross-vendor scaffolding (Env wrappers, ``_common.skills``, ``_common.vision``)
-to bind onto it.
+cross-vendor scaffolding (Env wrappers, ``perception.vision``) to bind onto it.
 
 Structural typing (``typing.Protocol``, not a base class) is intentional:
 
@@ -27,8 +26,8 @@ Implementer contract:
      — e.g. ``4-DoF (x, y, z, r)`` or ``6-DoF (x, y, z, rx, ry, rz)``.
      The ``XxxEnv.get_observation()`` is what flattens to ``RobotObservation.pose``.
   3. ``move_to_pose_blocking`` speaks FLANGE frame. The api layer's
-     ``goto_xyzr`` is responsible for tip↔flange conversion (so the same
-     ``_common.skills`` works for any tool-offset).
+     ``goto_xyzr`` is responsible for tip↔flange conversion (so the shared
+     motion tools work for any tool-offset).
   4. ``close()`` must be idempotent — it's called from ``Env.disconnect``
      which itself may be invoked twice on error paths.
 

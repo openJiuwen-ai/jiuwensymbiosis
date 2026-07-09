@@ -21,13 +21,11 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-if TYPE_CHECKING:
-    # Type-only: keeps the core ``env`` package free of an ``adapters`` runtime import.
-    from jiuwensymbiosis.adapters._common.protocol import RobotDriver
+from jiuwensymbiosis.env.protocol import RobotDriver
 
 logger = logging.getLogger(__name__)
 

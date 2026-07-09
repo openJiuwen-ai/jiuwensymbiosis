@@ -158,7 +158,7 @@ class TestMakeDetectorSidecar:
 
     def test_returns_callable_factory_when_spawning(self, monkeypatch):
         # Don't actually start a subprocess: stub detector_subprocess.
-        import jiuwensymbiosis.adapters._common.detector_sidecar as ds_mod
+        import jiuwensymbiosis.perception.detector_sidecar as ds_mod
 
         called = {}
 

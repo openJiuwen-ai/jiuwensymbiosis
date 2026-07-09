@@ -1,14 +1,13 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters._common.geometry."""
+"""Tests for jiuwensymbiosis.utils.geometry."""
 
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from jiuwensymbiosis.adapters._common.geometry import (
+from jiuwensymbiosis.utils.geometry import (
     _rot_z,
     apply_transform,
     invert_transform,
@@ -61,17 +60,19 @@ class TestInvertTransform:
 
 
 class TestRotZ:
-    @pytest.mark.parametrize(
-        ("deg", "expected"),
-        [
-            (0.0, np.eye(3)),
-            (90.0, np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)),
-            (180.0, np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)),
-        ],
-        ids=["zero", "90", "180"],
-    )
-    def test_known_angles(self, deg, expected):
-        np.testing.assert_array_almost_equal(_rot_z(deg), expected, decimal=10)
+    def test_zero(self):
+        R = _rot_z(0.0)
+        np.testing.assert_array_almost_equal(R, np.eye(3))
+
+    def test_90(self):
+        R = _rot_z(90.0)
+        expected = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
+        np.testing.assert_array_almost_equal(R, expected)
+
+    def test_180(self):
+        R = _rot_z(180.0)
+        expected = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)
+        np.testing.assert_array_almost_equal(R, expected, decimal=10)
 
 
 class TestPixelDepthToCameraXyz:

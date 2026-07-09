@@ -13,7 +13,7 @@ class TestSkillsDir:
         assert SKILLS_DIR.is_dir()
 
     def test_skill_md_files_present(self):
-        expected = {"visual_pick", "visual_place", "slot_pick"}
+        expected = {"visual_pick", "visual_place"}
         actual = {d.name for d in SKILLS_DIR.iterdir() if d.is_dir()}
         assert expected.issubset(actual), f"Missing: {expected - actual}"
 

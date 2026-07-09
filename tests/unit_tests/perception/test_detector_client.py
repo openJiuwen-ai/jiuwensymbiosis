@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters._common.detector_client."""
+"""Tests for jiuwensymbiosis.perception.detector_client."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.detector_client import _encode_image, init_detector
+from jiuwensymbiosis.perception.detector_client import _encode_image, init_detector
 
 
 class TestInitDetector:
@@ -33,7 +33,7 @@ class TestInitDetector:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("jiuwensymbiosis.adapters._common.detector_client.requests.post", return_value=mock_response):
+        with patch("jiuwensymbiosis.perception.detector_client.requests.post", return_value=mock_response):
             seg_fn = init_detector("http://127.0.0.1:8114")
             img = np.zeros((100, 100, 3), dtype=np.uint8)
             results = seg_fn(img, text_prompt="box")
@@ -45,7 +45,7 @@ class TestInitDetector:
         mock_response.json.return_value = {"results": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("jiuwensymbiosis.adapters._common.detector_client.requests.post", return_value=mock_response):
+        with patch("jiuwensymbiosis.perception.detector_client.requests.post", return_value=mock_response):
             seg_fn = init_detector("http://127.0.0.1:8114")
             img = np.zeros((100, 100, 3), dtype=np.uint8)
             results = seg_fn(img, text_prompt="nothing")
@@ -53,7 +53,7 @@ class TestInitDetector:
 
     def test_seg_fn_server_unreachable(self):
         with patch(
-            "jiuwensymbiosis.adapters._common.detector_client.requests.post",
+            "jiuwensymbiosis.perception.detector_client.requests.post",
             side_effect=Exception("connection refused"),
         ):
             seg_fn = init_detector("http://127.0.0.1:8114")

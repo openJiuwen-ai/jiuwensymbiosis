@@ -19,7 +19,7 @@ from jiuwensymbiosis.adapters.piper.config import PiperConfig
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 if TYPE_CHECKING:
-    from jiuwensymbiosis.adapters._common.protocol import RobotDriver
+    from jiuwensymbiosis.env.protocol import RobotDriver
 
 logger = logging.getLogger(__name__)
 

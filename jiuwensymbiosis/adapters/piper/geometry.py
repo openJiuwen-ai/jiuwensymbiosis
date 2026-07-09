@@ -23,7 +23,7 @@ from dataclasses import astuple, dataclass
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from jiuwensymbiosis.adapters._common.geometry import (
+from jiuwensymbiosis.utils.geometry import (
     apply_transform,
     make_transform,
     pixel_and_depth_to_camera_xyz,

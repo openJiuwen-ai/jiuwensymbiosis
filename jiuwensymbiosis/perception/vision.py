@@ -382,7 +382,7 @@ def default_pixel_to_base_xyz(
     ``pose_to_tf`` converts the env's vendor flange pose to a 4x4 base←flange
     transform (the one vendor-specific step).
     """
-    from jiuwensymbiosis.adapters._common.geometry import (
+    from jiuwensymbiosis.utils.geometry import (
         apply_transform,
         pixel_and_depth_to_camera_xyz,
     )
@@ -435,7 +435,7 @@ def default_get_grasp_info_simple(
     """
     from types import SimpleNamespace
 
-    from jiuwensymbiosis.adapters._common.geometry import (
+    from jiuwensymbiosis.utils.geometry import (
         apply_transform,
         pixel_and_depth_to_camera_xyz,
     )

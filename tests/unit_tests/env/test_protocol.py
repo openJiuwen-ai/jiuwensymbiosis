@@ -1,13 +1,13 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for jiuwensymbiosis.adapters._common.protocol — runtime_checkable."""
+"""Tests for jiuwensymbiosis.env.protocol — runtime_checkable."""
 
 from __future__ import annotations
 
 import inspect
 
-from jiuwensymbiosis.adapters._common.protocol import (
+from jiuwensymbiosis.env.protocol import (
     CameraDriver,
     GripperDriver,
     JointDriver,
@@ -164,12 +164,12 @@ class TestPiperFullDriver:
     """Tests for the composite PiperFullDriver Protocol."""
 
     def test_full_mock_satisfies_composite(self):
-        from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
+        from jiuwensymbiosis.env.protocol import PiperFullDriver
 
         assert isinstance(_FullMockDriver(), PiperFullDriver)
 
     def test_robot_only_does_not_satisfy_composite(self):
-        from jiuwensymbiosis.adapters._common.protocol import PiperFullDriver
+        from jiuwensymbiosis.env.protocol import PiperFullDriver
 
         # A driver implementing only RobotDriver must NOT satisfy the composite.
         assert not isinstance(_MinimalRobotDriver(), PiperFullDriver)
