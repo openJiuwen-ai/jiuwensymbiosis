@@ -35,9 +35,13 @@ __all__ = [
 class TTSBackend(Protocol):
     """Speak text aloud (or no-op)."""
 
-    def speak(self, text: str) -> None: ...
+    def speak(self, text: str) -> None:
+        """Speak ``text`` aloud (or no-op)."""
+        ...
 
-    def preload(self, text: str) -> None: ...
+    def preload(self, text: str) -> None:
+        """Pre-synthesize ``text`` so the next speak is instant (or no-op)."""
+        ...
 
     def wait(self) -> None:
         """Block until any in-flight speech finishes."""
@@ -56,10 +60,12 @@ class NullTTS:
         self.spoken.append(text)
         logger.info("[voice][tts:null] %s", text)
 
-    def preload(self, text: str) -> None:
+    @staticmethod
+    def preload(text: str) -> None:
         return None
 
-    def wait(self) -> None:
+    @staticmethod
+    def wait() -> None:
         return None
 
 
@@ -116,7 +122,8 @@ class ChatTTSBackend:
         else:
             _run()
 
-    def preload(self, text: str) -> None:
+    @staticmethod
+    def preload(text: str) -> None:
         return None
 
     def wait(self) -> None:

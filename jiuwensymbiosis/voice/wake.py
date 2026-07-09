@@ -88,4 +88,5 @@ def split_after_last_wake(
             best_variant = normalized
     if best_idx < 0:
         return None
-    return clean[best_idx + len(best_variant) :].strip()
+    start = best_idx + len(best_variant)
+    return clean[start:].strip()
