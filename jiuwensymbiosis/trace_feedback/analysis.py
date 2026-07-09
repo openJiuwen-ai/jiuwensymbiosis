@@ -148,8 +148,8 @@ def extract_failure_evidence(
                 continue
             if not _is_failed(entry):
                 continue
-            before = [e for e in entries[max(0, i - context_steps) : i] if isinstance(e, dict)]
-            after = [e for e in entries[i + 1 : i + 1 + context_steps] if isinstance(e, dict)]
+            before = [e for e in entries[max(0, i - context_steps): i] if isinstance(e, dict)]  # fmt: skip
+            after = [e for e in entries[i + 1: i + 1 + context_steps] if isinstance(e, dict)]  # fmt: skip
             out.append(_to_evidence(rec, entry, cid, before, after))
     return out
 

@@ -86,6 +86,13 @@ class TestProposePatterns:
         p = propose_skill_patches([c])[0]
         assert "视觉确认" in p.proposed_diff or "消歧" in p.proposed_diff
 
+    def test_current_vision_tool_names_use_vision_template(self):
+        for tool_name in ("get_grasp_info_simple", "pixel_to_base_xyz"):
+            sig = _sig(rail_name=None, kind=None, tool_name=tool_name, reason_norm="")
+            c = _cluster(sig=sig)
+            p = propose_skill_patches([c])[0]
+            assert "视觉确认" in p.proposed_diff or "消歧" in p.proposed_diff
+
     def test_fallback_pattern(self):
         sig = _sig(rail_name=None, kind=None, tool_name="close_gripper", reason_norm="gripper timeout")
         c = _cluster(sig=sig)

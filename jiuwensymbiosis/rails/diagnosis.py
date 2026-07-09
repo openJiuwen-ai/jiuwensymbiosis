@@ -75,7 +75,8 @@ class DiagnosisRail(AgentRail):
 
     async def after_tool_call(self, ctx: Any) -> None:
         """Type A catch-path (``tool_result.success is False``); also the finally
-        hook after ``on_tool_exception`` for Type B (per-step dedup skips re-stage)."""
+        hook after ``on_tool_exception`` for Type B (per-step dedup skips re-stage).
+        """
         self._maybe_stage(ctx)
 
     async def before_model_call(self, ctx: Any) -> None:

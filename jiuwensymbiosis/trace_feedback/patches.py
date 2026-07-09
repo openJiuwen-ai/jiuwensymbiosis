@@ -29,7 +29,7 @@ from typing import Literal
 
 from jiuwensymbiosis.trace_feedback.analysis import FailureCluster, FailureEvidence, FailureSignature
 
-_VISION_TOOLS = frozenset({"analyze_scene", "detect", "get_grasp_info", "pixel_to_base"})
+_VISION_TOOLS = frozenset({"analyze_scene", "get_grasp_info_simple", "pixel_to_base_xyz"})
 _RISKS = (
     "建议基于聚类证据，未在真实硬件验证。",
     "target_skill 未自动确定，需人审确认目标 SKILL.md。",
