@@ -63,7 +63,7 @@ from jiuwensymbiosis.adapters.piper import build_piper_session
 
 def main():
     # 1. 从 YAML 构建本体会话
-    session = build_piper_session.from_yaml("configs/piper/pick_box.yaml")
+    session = build_piper_session.from_yaml("configs/piper/piper.yaml")
 
     # 2. 配置大模型
     model_spec = ModelSpec(
@@ -104,14 +104,14 @@ if __name__ == "__main__":
 
 ```bash
 # 通过命令行入口运行（pip install 后可用）
-piper-pick-demo --config configs/piper/pick_box.yaml --mock
+piper-pick-demo --config configs/piper/piper.yaml --mock
 
 # 或直接运行脚本
-python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock
 
 # 真机模式（需激活 CAN 总线）
 python examples/piper_pick_demo.py \
-    --config configs/piper/pick_box.yaml \
+    --config configs/piper/piper.yaml \
     --max-iter 30 \
     --api-key ""
 ```
