@@ -5,6 +5,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.mixins import (
     JointMotionMixin,
     MotionMixin,
@@ -17,7 +22,7 @@ from jiuwensymbiosis.api.mixins import (
 class TestMixinCapabilities:
     def test_motion_mixin(self):
         assert MotionMixin.capability == "motion.cartesian"
-        for name in ("home", "get_pose", "get_home_pose", "goto_xyzr"):
+        for name in ("home", "get_pose", "get_home_pose", "goto_xyzr", "move_direction"):
             method = getattr(MotionMixin, name, None)
             assert method is not None
             assert hasattr(method, "__robot_tool__")
@@ -45,3 +50,43 @@ class TestMixinCapabilities:
         meta = MotionMixin.home.__robot_tool__
         assert meta.name == "home"
         assert "motion" in meta.tags
+
+
+class _FakeMotionEnv:
+    """Minimal env exposing just what MotionMixin.move_direction needs."""
+
+    z_min_safe = 20.0
+    workspace_bounds = (-300.0, -300.0, 300.0, 300.0)
+
+    def __init__(self):
+        self._pose = SimpleNamespace(x=100.0, y=0.0, z=200.0, rx=180.0, ry=0.0, rz=0.0)
+        self.moved_to = None
+
+    def get_flange_pose(self):
+        return self._pose
+
+    def move_to_flange(self, pose):
+        self.moved_to = pose
+        self._pose = pose
+
+
+class _GenericArm(MotionMixin, BaseRobotApi):
+    """Any robot that composes MotionMixin — NOT SO101-specific."""
+
+
+class TestMoveDirectionIsGeneric:
+    """move_direction lives on MotionMixin, so it works for any motion.cartesian robot."""
+
+    def test_left_moves_plus_y_on_a_generic_arm(self):
+        env = _FakeMotionEnv()
+        api = _GenericArm(env)
+        res = api.move_direction("left", 20)
+        assert res["ok"] is True
+        assert env.moved_to.y == 20.0  # left = +y
+        assert env.moved_to.x == 100.0
+        assert env.moved_to.z == 200.0
+
+    def test_out_of_bounds_raises(self):
+        api = _GenericArm(_FakeMotionEnv())
+        with pytest.raises(ValueError, match="out of"):
+            api.move_direction("right", 10_000)

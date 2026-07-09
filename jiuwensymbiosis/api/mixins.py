@@ -53,6 +53,32 @@ def _pose_to_dict(pose: Any) -> dict:
     return out
 
 
+# Base-frame unit offsets per direction word (arm faces +x; +y is left; +z up).
+_DIRECTION_OFFSETS: dict[str, tuple[float, float, float]] = {
+    "forward": (1.0, 0.0, 0.0),
+    "back": (-1.0, 0.0, 0.0),
+    "backward": (-1.0, 0.0, 0.0),
+    "left": (0.0, 1.0, 0.0),
+    "right": (0.0, -1.0, 0.0),
+    "up": (0.0, 0.0, 1.0),
+    "down": (0.0, 0.0, -1.0),
+}
+
+
+def _check_translation_bounds(env: Any, x: float, y: float, z: float) -> None:
+    """Reject a target below ``env.z_min_safe`` or outside ``env.workspace_bounds``."""
+    z_floor = getattr(env, "z_min_safe", None)
+    if z_floor is not None and z < float(z_floor):
+        raise ValueError(f"move blocked: z={z:.1f} below z_min_safe={float(z_floor):.1f}")
+    bounds = getattr(env, "workspace_bounds", None)
+    if bounds is not None:
+        xmin, ymin, xmax, ymax = bounds
+        if not xmin <= x <= xmax:
+            raise ValueError(f"move blocked: x={x:.1f} out of [{xmin}, {xmax}]")
+        if not ymin <= y <= ymax:
+            raise ValueError(f"move blocked: y={y:.1f} out of [{ymin}, {ymax}]")
+
+
 # =============================================================================
 # Motion
 # =============================================================================
@@ -92,6 +118,45 @@ class MotionMixin:
             cur = self.env.get_flange_pose()
             r = getattr(cur, "rz", getattr(cur, "r", 0.0))
         self.env.move_to_flange(SimpleNamespace(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r)))
+
+    @robot_tool(
+        desc=(
+            "Move the end-effector a relative distance in one cardinal direction. "
+            "direction ∈ {forward, back, left, right, up, down} (forward=+x, left=+y, up=+z, base frame); "
+            "distance_mm is a positive number of millimetres. E.g. '往左移两厘米' → move_direction('left', 20). "
+            "Orientation is preserved."
+        ),
+        tags=["motion"],
+    )
+    def move_direction(self, direction: str, distance_mm: float) -> dict:
+        """Relative Cartesian nudge with a self-contained bounds check.
+
+        ``move_direction`` is NOT in SafetyRail's watch set (the rail only sees
+        ``goto_xyzr`` at the tool layer), so it validates the target against
+        ``env.z_min_safe`` / ``env.workspace_bounds`` here and raises
+        ``ValueError`` on a violation — the agent sees that and self-corrects.
+        A relative translation is frame-agnostic, so tool offset does not matter.
+        """
+        key = (direction or "").strip().lower()
+        if key not in _DIRECTION_OFFSETS:
+            raise ValueError(f"unknown direction {direction!r}; expected one of {sorted(_DIRECTION_OFFSETS)}")
+        dist = float(distance_mm)
+        if dist <= 0:
+            raise ValueError("distance_mm must be positive; the direction controls the sign")
+        ux, uy, uz = _DIRECTION_OFFSETS[key]
+        cur = self.env.get_flange_pose()
+        tx, ty, tz = cur.x + ux * dist, cur.y + uy * dist, cur.z + uz * dist
+        _check_translation_bounds(self.env, tx, ty, tz)
+        target = SimpleNamespace(
+            x=tx,
+            y=ty,
+            z=tz,
+            rx=getattr(cur, "rx", 180.0),
+            ry=getattr(cur, "ry", 0.0),
+            rz=getattr(cur, "rz", getattr(cur, "r", 0.0)),
+        )
+        self.env.move_to_flange(target)
+        return {"ok": True, "direction": key, "distance_mm": dist, "pose": {"x": tx, "y": ty, "z": tz}}
 
 
 class JointMotionMixin:

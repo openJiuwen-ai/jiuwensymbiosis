@@ -1,22 +1,21 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Piper vision-driven pick-box demo (jiuwensymbiosis).
+"""Piper vision-driven robot demo (jiuwensymbiosis).
 
 Builds a Piper session (6-DoF AgileX arm over CAN + parallel gripper + wrist
-RealSense + open-vocab detection). By default the pick-place *workflow* (step ordering, failure
-handling) comes from the capability-generic ``visual_pick`` / ``visual_place``
-SKILL.md (loaded via ``enable_skill=True`` → SkillUseRail + the ``robot_control``
-dispatcher); the YAML ``prompt`` only states the high-level task + task-specific
-constants. Pass ``--no-skill`` to revert to the old fully prompt-driven hybrid
-(the agent orchestrates home / get_grasp_info_simple / goto_xyzr / open_gripper /
-close_gripper directly from a step-by-step prompt).
+RealSense + open-vocab detection). The *workflow* (which skills, step ordering,
+failure handling) comes from the capability-generic SKILL.md files (loaded via
+``enable_skill=True`` → SkillUseRail + the ``robot_control`` dispatcher). The
+**task is not in the config** — give it at run time via ``--query "..."`` or
+``--voice``; the compiler turns it (+ the SKILL.md) into an action sequence.
+Pass ``--no-skill`` to revert to the fully prompt-driven hybrid.
 
 Usage::
 
     PYTHONPATH=/xxx/jiuwensymbiosis/  /xxx/python examples/piper_pick_demo.py
-        --config configs/piper/pick_box.yaml
-        --no-visual-feedback --query "把高盒子放到矮盒子上"
+        --config configs/piper/piper.yaml
+        --no-visual-feedback --query "<你的任务>"
         --max-iter 30 2>&1 | tail -40
 
 For a dry run without hardware (mock arm + gripper), pass ``--mock``.
@@ -51,9 +50,21 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _robot_session_builders() -> dict[str, Any]:
+    """适配器注册表：机器人名 → 会话构建器（暴露 ``.from_yaml(path)``）。
+
+    这是 demo 支持多机器人的关键：新增一款机器人只需在此注册一条，``--robot <name>``
+    即可选中它，其余代码无需改动。当前内置 Piper；其它适配器实现好后加进来即可。
+    """
+    from jiuwensymbiosis.adapters.piper import build_piper_session
+
+    return {"piper": build_piper_session}
+
+
 def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSession:
-    """构建 RobotSession：mock 模式下创建模拟会话，否则从 YAML 配置加载 Piper 适配器。"""
-    if args.mock:
+    """构建 RobotSession：piper 的 --mock 用 MockArmEnv 干跑，否则按 --robot 从注册表加载。"""
+    robot = getattr(args, "robot", "piper")
+    if args.mock and robot == "piper":
         from jiuwensymbiosis.api.base import BaseRobotApi
         from jiuwensymbiosis.api.decorators import robot_tool
         from jiuwensymbiosis.api.mixins import (
@@ -124,9 +135,11 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
         api = _MockPiperApi(env)
         return RobotSession(env=env, api=api, name="piper_mock")
 
-    from jiuwensymbiosis.adapters.piper import build_piper_session
-
-    return cast(RobotSession, build_piper_session.from_yaml(args.config))
+    builders = _robot_session_builders()
+    build = builders.get(robot)
+    if build is None:
+        raise ValueError(f"unknown robot {robot!r}; registered: {sorted(builders)}")
+    return cast(RobotSession, build.from_yaml(args.config))
 
 
 def _build_model_spec(raw: dict[str, Any], args: argparse.Namespace) -> ModelSpec:
@@ -146,13 +159,90 @@ def _build_model_spec(raw: dict[str, Any], args: argparse.Namespace) -> ModelSpe
 
 
 def _resolve_query(raw: dict[str, Any], args: argparse.Namespace) -> str:
-    """解析用户查询：优先取 --query 参数，其次 YAML 中的 prompt 字段，最后返回默认值。"""
+    """解析用户任务：优先 --query，其次 YAML 里可选的 prompt（一般不存在）；都没有返回空串。
+
+    config 不再内置任务——任务由 --query 或 --voice 在运行时给出。返回空串时由调用方
+    （main）要求用户提供，不再默默跑一个默认任务。
+    """
     if args.query:
         return cast(str, args.query)
     body = (raw.get("env", {}).get("cfg", {}) or {}).get("prompt")
     if body:
         return cast(str, body)
-    return "Run the configured pick-box task to completion."
+    return ""
+
+
+def _voice_enabled(args: argparse.Namespace) -> bool:
+    """是否进入语音模式（显式 --voice，或给了一次性文本/音频输入）。"""
+    return bool(args.voice or args.voice_text or args.voice_audio_file)
+
+
+def _run_voice(
+    session: RobotSession,
+    agent_cfg: RobotAgentConfig,
+    conv_id: str,
+    raw: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict:
+    """语音模式：把 VoiceLoop 的 on_command 回调接到 run_robot_task。
+
+    语音层是机器人无关的；这里是它与框架的唯一接缝（文本进、反馈出）。换 N2 时只换
+    session，本函数不变。详见 docs/voice-control-integration-design.md。
+    """
+    import numpy as np
+
+    from jiuwensymbiosis.voice import (
+        FileAudioSource,
+        FixedASRBackend,
+        VoiceConfig,
+        VoiceLoop,
+        result_to_speech,
+    )
+
+    voice_cfg = VoiceConfig.from_dict(raw.get("voice"))
+    if args.tts:
+        voice_cfg.tts_backend = args.tts
+    if args.asr_device:
+        voice_cfg.asr_device = args.asr_device
+    if args.no_wake:
+        voice_cfg.wake_enabled = False
+    logger.info(
+        "  voice : wake=%s(%s) asr=%s@%s tts=%s",
+        voice_cfg.wake_word,
+        "on" if voice_cfg.wake_enabled else "off",
+        voice_cfg.asr_backend,
+        voice_cfg.asr_device,
+        voice_cfg.tts_backend,
+    )
+
+    def on_command(text: str) -> str:
+        logger.info("[voice] 指令 → agent: %s", text)
+        reply = result_to_speech(run_robot_task(session, text, agent_cfg, conversation_id=conv_id))
+        logger.info("[voice] agent → 反馈: %s", reply)
+        return reply
+
+    # 一次性文本/音频用 mock/file 注入；否则用配置里的实时麦克风后端。
+    asr = audio = None
+    one_shot = False
+    if args.voice_text is not None:
+        asr = FixedASRBackend([args.voice_text])
+        audio = FileAudioSource([np.ones(480, dtype=np.int16)])  # 占位音频；FixedASR 忽略内容
+        one_shot = True
+    elif args.voice_audio_file is not None:
+        audio = FileAudioSource([args.voice_audio_file])  # 真实 ASR 走配置后端
+        one_shot = True
+
+    loop = VoiceLoop(voice_cfg, on_command, asr=asr, audio=audio)
+    if one_shot or args.voice_once:
+        cmd = loop.run_once()
+        if cmd:
+            loop.handle_command(cmd)
+        else:
+            logger.info("[voice] 未得到有效指令（--voice-text 需含唤醒词，或加 --no-wake）")
+        loop.wait()
+        return {"ok": True, "mode": "voice", "one_shot": True}
+    loop.run_forever()
+    return {"ok": True, "mode": "voice"}
 
 
 def main() -> int:
@@ -172,6 +262,11 @@ def main() -> int:
         help=("Override the LLM API key (overrides YAML model.api_key)."),
     )
     p.add_argument("--mock", action="store_true", help="Use MockArmEnv — no hardware required.")
+    p.add_argument(
+        "--robot",
+        default="piper",
+        help="选择机器人（见适配器注册表 _robot_session_builders）；默认 piper。加新机器人只需注册一条。",
+    )
     p.add_argument(
         "--no-skill",
         action="store_true",
@@ -195,13 +290,6 @@ def main() -> int:
         "skills), then run an in-process real-time Perceive+Act servo loop with "
         "NO LLM per step. Default: the per-step LLM agent (slow).",
     )
-    p.add_argument(
-        "--pick-object",
-        default=None,
-        help="Fast path only: pick object name. With both --pick-object and "
-        "--place-object set, the planner LLM is skipped entirely (zero-LLM).",
-    )
-    p.add_argument("--place-object", default=None, help="Fast path only: place target object name.")
     # --- fast-path tuning (real-time servo tracking) ---
     p.add_argument(
         "--control-hz",
@@ -226,10 +314,49 @@ def main() -> int:
         ),
     )
     p.add_argument("--debug", action="store_true")
+    # --- voice mode (语音前端；详见 docs/voice-control-integration-design.md) ---
+    p.add_argument(
+        "--voice",
+        action="store_true",
+        help="语音模式：麦克风→唤醒词「九问九问」→ASR→agent→TTS，持续监听(Ctrl-C 退出)。"
+        '读 --config 里可选的 voice: 块，缺省用默认值。需 pip install -e ".[voice]"。',
+    )
+    p.add_argument(
+        "--voice-text",
+        default=None,
+        help="语音模式一次性：直接注入这段转写文本(不需麦克风/funasr)，走完整唤醒→派发流程。",
+    )
+    p.add_argument(
+        "--voice-audio-file",
+        default=None,
+        help="语音模式一次性：对该 WAV 走真实 ASR(需 .[voice] 依赖)，跑一次。",
+    )
+    p.add_argument("--voice-once", action="store_true", help="语音模式只监听一次麦克风指令后退出。")
+    p.add_argument("--no-wake", action="store_true", help="语音模式关闭唤醒词，整句当指令。")
+    p.add_argument("--tts", choices=["null", "chattts"], default=None, help="语音模式覆盖 TTS 后端。")
+    p.add_argument("--asr-device", default=None, help="语音模式覆盖 ASR 设备(cuda:0/cpu)。")
     args = p.parse_args()
+
+    # Configure logging up front so the voice-listening phase (before the first
+    # agent build, which is what otherwise sets logging up) is visible. Without
+    # this, only WARNING+ shows and ``--voice`` looks "stuck" while it is in fact
+    # listening / loading the ASR model — all of which log at INFO.
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     cfg_path = Path(args.config).resolve()
     raw = _load_yaml(cfg_path)
+
+    # 任务不在 config 里：非语音模式必须由 --query 给出；语音模式由说话给出。
+    query = _resolve_query(raw, args)
+    if not _voice_enabled(args) and not query.strip():
+        logger.error(
+            '未提供任务：config 不内置任务。请用 --query "..." 给出要执行的任务，'
+            "或用 --voice / --voice-text / --voice-audio-file 由语音给出。"
+        )
+        return 2
 
     try:
         session = _build_session(args, raw)
@@ -237,7 +364,6 @@ def main() -> int:
         logger.error("failed to import piper adapter (%s).", exc)
         return 2
     spec = _build_model_spec(raw, args)
-    query = _resolve_query(raw, args)
 
     logger.info("=== jiuwensymbiosis piper pick-box demo ===")
     logger.info("  config: %s", cfg_path)
@@ -286,11 +412,12 @@ def main() -> int:
         if args.workspace:
             agent_cfg.workspace = args.workspace
         agent_cfg.exec_mode = "fast" if args.fast else "agent"
-        agent_cfg.fast_pick_object = args.pick_object
-        agent_cfg.fast_place_object = args.place_object
         agent_cfg.exec_config = exec_config
         conv_id = f"piper-demo-{uuid.uuid4().hex[:8]}"
-        result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
+        if _voice_enabled(args):
+            result = _run_voice(session, agent_cfg, conv_id, raw, args)
+        else:
+            result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
 
     logger.info("=== Agent result ===")
     if isinstance(result, dict):
