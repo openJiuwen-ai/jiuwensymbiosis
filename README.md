@@ -63,7 +63,7 @@ from jiuwensymbiosis.adapters.piper import build_piper_session
 
 def main():
     # 1. Build a hardware session from YAML
-    session = build_piper_session.from_yaml("configs/piper/pick_box.yaml")
+    session = build_piper_session.from_yaml("configs/piper/piper.yaml")
 
     # 2. Configure the LLM
     model_spec = ModelSpec(
@@ -104,14 +104,14 @@ Expected output: The agent executes the visual_pick / visual_place skill workflo
 
 ```bash
 # Via console script (after pip install)
-piper-pick-demo --config configs/piper/pick_box.yaml --mock
+piper-pick-demo --config configs/piper/piper.yaml --mock
 
 # Or run the script directly
-python examples/piper_pick_demo.py --config configs/piper/pick_box.yaml --mock
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock
 
 # Real hardware mode (CAN bus must be active)
 python examples/piper_pick_demo.py \
-    --config configs/piper/pick_box.yaml \
+    --config configs/piper/piper.yaml \
     --max-iter 30 \
     --api-key ""
 ```

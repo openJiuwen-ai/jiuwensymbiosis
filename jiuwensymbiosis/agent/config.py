@@ -158,6 +158,19 @@ class RobotAgentConfig:
         trace_dir: Override trace output dir (default ``<workspace>/traces``).
         trace_capture_loggers: Logger-name prefixes whose WARNING+ records are
             captured into the trace.
+        enable_diagnosis: Attach ``DiagnosisRail`` to feed a compact diagnosis
+            of a failed step back into the next LLM turn — current params,
+            relevant recent history, and system state (recovery result / pose).
+            Requires ``enable_tracing=True``; auto-disables (with a warning)
+            when tracing is off. Defaults False.
+        diagnosis_max_chars: Soft cap on the rendered diagnosis message; when
+            exceeded the causal-chain history is dropped first, keeping the
+            current step and system state.
+        diagnosis_history_steps: How many recent related entries to include in
+            the causal chain (same tool or matching rail-event kind).
+        diagnosis_history_kinds: Rail-event ``kind`` values that mark a history
+            entry as relevant to the current failure (default: safety reject
+            + recovery).
         log_level / log_dir: Centralised logging level and file dir
             (see ``jiuwensymbiosis.utils.logging.configure_logging``).
             ``log_dir`` defaults to ``"./logs"`` so framework logs land at
@@ -196,6 +209,11 @@ class RobotAgentConfig:
     trace_console: bool = False
     trace_dir: str | None = None  # default <workspace>/traces
     trace_capture_loggers: list[str] = field(default_factory=lambda: ["jiuwensymbiosis"])
+    # -- Online diagnosis (DiagnosisRail) — requires enable_tracing. --
+    enable_diagnosis: bool = False
+    diagnosis_max_chars: int = 1500
+    diagnosis_history_steps: int = 3
+    diagnosis_history_kinds: tuple[str, ...] = ("reject", "recover")
     # -- Centralised logging --
     log_level: str = "INFO"
     # Default "./logs" so framework logs land at ``logs/jiuwensymbiosis.log``.

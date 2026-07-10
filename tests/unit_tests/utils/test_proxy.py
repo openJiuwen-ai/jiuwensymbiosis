@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 
 from jiuwensymbiosis.utils.proxy import clear_proxy_env
 
@@ -46,3 +48,23 @@ class TestClearProxyEnv:
         # Both upper and lower case should be cleared
         cleared_lower = {k.lower() for k in result}
         assert "http_proxy" in cleared_lower or "HTTP_PROXY" in result
+
+    def test_package_import_stashes_proxy_before_openjiuwen(self):
+        env = os.environ.copy()
+        env["HTTPS_PROXY"] = "http://proxy:8080"
+        env.pop("JIUWEN_LLM_PROXY", None)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; import jiuwensymbiosis; "
+                    "print(os.environ.get('HTTPS_PROXY'), os.environ.get('JIUWEN_LLM_PROXY'))"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+        assert proc.stdout.strip().endswith("None http://proxy:8080")

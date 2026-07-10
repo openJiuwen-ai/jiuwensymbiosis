@@ -1,14 +1,11 @@
-# Piper 夹盒子演示 —— 视觉驱动(VLM) + 平行夹爪 + 黑盒/白盒。
+# Piper 真机配置（硬件 + 模型 + 检测器）—— 与具体任务无关。
 #
-# 视觉驱动夹盒子，要点：
-#   - 笛卡尔运动走 piper_sdk EndPoseCtrl（固件解 IK），无 Pyroki/URDF；
-#   - 反投影用 6-DoF eye-in-hand `T_base_cam = T_base_flange(EndPose) @ T_flange_cam`；
-#   - 本版不写专用 skill，靠 mode=hybrid + 下方 prompt 让 VLM 编排现成工具。
+# 只描述"这台机器人"：机械臂/CAN、腕部相机、标定、工作空间、夹爪、LLM 端点、
+# 开放词表检测器。**不含任何具体任务**——要做什么由用户运行时用 --query 或 --voice
+# 给出，编译器据此 + 各 SKILL.md 决定动作。
 #
-# 启动（真机；CAN 需先激活，sudo 命令手动执行）：
-#   PYTHONPATH=项目路径 python examples/piper_pick_demo.py \
-#       --config configs/piper/pick_box.yaml --max-iter 30
-#   无硬件干跑： 追加 --mock
+# 运动学：笛卡尔走 piper_sdk EndPoseCtrl（固件解 IK）；反投影用 6-DoF eye-in-hand
+# `T_base_cam = T_base_flange(EndPose) @ T_flange_cam`。
 #
 # 真机就位前务必校核：calib(piper_calib.json 的 T_flange_cam / object 锚点)、
 # tool_offset_mm、工具朝下姿态(adapters/piper/api.py _TOOL_DOWN_RX/RY)。
@@ -47,27 +44,15 @@ env:
       camera_resolution: [640, 480]
       camera_fps: 30
 
-    prompt: |
-      把黑色盒子放到白色盒子上面。
-
-      （只说任务，不传物体参数：要抓的物体「黑色盒子」和放置目标「白色盒子」，由你从上面这句话里
-      自己识别，作为 get_grasp_info_simple 的 object_name。换个任务就改这句话即可。）
-
-      抓放的步骤顺序、抓取/放置高度的算法都见 visual_pick / visual_place 技能文档。下面只是本任务约束：
-      - 先读坐标再移动：腕部相机在机械臂移动后会被遮挡，所以 home 后、任何 goto 之前，先把
-        「要抓的物体」和「放置目标」两次 get_grasp_info_simple 的结果都读出来存好；之后不要中途回 home 重拍。
-        识别置信度低就换措辞重试一次。
-      - **所有 z 都用检测返回的值**：抓取下降到检测的 `grasp_z`；放置下降到**放置目标**检测的 `place_z`
-        ——**不要自己估盒高、不要手算 z 偏移**。
-      坐标单位 mm；用 robot_control / 工具调用执行，不要写 run_python 绕过 rails。
+    # 无 prompt/任务字段：任务不进 config，一律由 --query 或 --voice 在运行时给出。
 
 api_servers:
   - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
     device: cuda
     port: 8114
     host: 127.0.0.1
-    gdino_model_id: "IDEA-Research/grounding-dino-base"
-    sam2_model_id: "facebook/sam2.1-hiera-large"
+    gdino_model_id: "IDEA-Research/grounding-dino-base"  # 替换成本地路径
+    sam2_model_id: "facebook/sam2.1-hiera-large"         # 替换成本地路径
     box_threshold: 0.35
     text_threshold: 0.25
     use_sam2: true
