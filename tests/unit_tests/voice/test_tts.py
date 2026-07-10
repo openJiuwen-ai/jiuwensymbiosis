@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+
 import pytest
 
 from jiuwensymbiosis.voice.config import VoiceConfig
@@ -54,3 +57,42 @@ class TestBuildTTSBackend:
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="tts_backend"):
             build_tts_backend(VoiceConfig(tts_backend="espeak"))
+
+
+class TestChatTTSBackend:
+    def test_wait_blocks_before_async_worker_acquires_playback_lock(self, monkeypatch):
+        from jiuwensymbiosis.voice import tts as tts_module
+
+        gate = threading.Event()
+        played = threading.Event()
+        wait_done = threading.Event()
+
+        class GatedThread(threading.Thread):
+            def __init__(self, *, target, daemon):
+                super().__init__(target=lambda: (gate.wait(), target()), daemon=daemon)
+
+        backend = tts_module.ChatTTSBackend("/unused", async_play=True)
+        backend._loaded = True
+        backend._speaker = lambda text: played.set()
+        monkeypatch.setattr(
+            tts_module,
+            "threading",
+            SimpleNamespace(Thread=GatedThread, current_thread=threading.current_thread),
+        )
+
+        backend.speak("最后一句")
+
+        def wait_for_tts():
+            backend.wait()
+            wait_done.set()
+
+        waiter = threading.Thread(target=wait_for_tts)
+        waiter.start()
+        try:
+            assert not wait_done.wait(0.1)
+            gate.set()
+            assert wait_done.wait(1.0)
+            assert played.is_set()
+        finally:
+            gate.set()
+            waiter.join(timeout=1.0)

@@ -90,3 +90,25 @@ class TestMoveDirectionIsGeneric:
         api = _GenericArm(_FakeMotionEnv())
         with pytest.raises(ValueError, match="out of"):
             api.move_direction("right", 10_000)
+
+    @pytest.mark.parametrize("distance", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_distance_never_reaches_driver(self, distance):
+        env = _FakeMotionEnv()
+        env.workspace_bounds = None
+        api = _GenericArm(env)
+
+        with pytest.raises(ValueError, match="finite and positive"):
+            api.move_direction("up", distance)
+
+        assert env.moved_to is None
+
+    def test_non_finite_target_never_reaches_driver(self):
+        env = _FakeMotionEnv()
+        env.workspace_bounds = None
+        env._pose.x = float("nan")
+        api = _GenericArm(env)
+
+        with pytest.raises(ValueError, match="target coordinates must be finite"):
+            api.move_direction("up", 10)
+
+        assert env.moved_to is None

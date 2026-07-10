@@ -83,6 +83,8 @@ class ChatTTSBackend:
         self._speaker = None
         self._loaded = False
         self._lock = threading.Lock()
+        self._threads_lock = threading.Lock()
+        self._threads: set[threading.Thread] = set()
 
     def _ensure_speaker(self):
         if self._loaded:
@@ -114,11 +116,23 @@ class ChatTTSBackend:
             return
 
         def _run():
-            with self._lock:
-                speaker(text)
+            try:
+                with self._lock:
+                    speaker(text)
+            finally:
+                with self._threads_lock:
+                    self._threads.discard(threading.current_thread())
 
         if self.async_play:
-            threading.Thread(target=_run, daemon=True).start()
+            thread = threading.Thread(target=_run, daemon=True)
+            with self._threads_lock:
+                self._threads.add(thread)
+            try:
+                thread.start()
+            except Exception:
+                with self._threads_lock:
+                    self._threads.discard(thread)
+                raise
         else:
             _run()
 
@@ -127,8 +141,15 @@ class ChatTTSBackend:
         return None
 
     def wait(self) -> None:
-        with self._lock:
-            pass
+        while True:
+            with self._threads_lock:
+                threads = tuple(self._threads)
+            if not threads:
+                return
+            current = threading.current_thread()
+            for thread in threads:
+                if thread is not current:
+                    thread.join()
 
 
 def build_tts_backend(config: VoiceConfig) -> TTSBackend:

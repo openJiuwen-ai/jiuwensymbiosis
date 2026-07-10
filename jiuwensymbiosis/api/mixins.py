@@ -27,6 +27,7 @@ detector client and hand-eye calibration — so they stay abstract and raise
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,8 @@ _DIRECTION_OFFSETS: dict[str, tuple[float, float, float]] = {
 
 def _check_translation_bounds(env: Any, x: float, y: float, z: float) -> None:
     """Reject a target below ``env.z_min_safe`` or outside ``env.workspace_bounds``."""
+    if not all(math.isfinite(value) for value in (x, y, z)):
+        raise ValueError(f"move blocked: target coordinates must be finite, got x={x}, y={y}, z={z}")
     z_floor = getattr(env, "z_min_safe", None)
     if z_floor is not None and z < float(z_floor):
         raise ValueError(f"move blocked: z={z:.1f} below z_min_safe={float(z_floor):.1f}")
@@ -141,8 +144,8 @@ class MotionMixin:
         if key not in _DIRECTION_OFFSETS:
             raise ValueError(f"unknown direction {direction!r}; expected one of {sorted(_DIRECTION_OFFSETS)}")
         dist = float(distance_mm)
-        if dist <= 0:
-            raise ValueError("distance_mm must be positive; the direction controls the sign")
+        if not math.isfinite(dist) or dist <= 0:
+            raise ValueError("distance_mm must be finite and positive; the direction controls the sign")
         ux, uy, uz = _DIRECTION_OFFSETS[key]
         cur = self.env.get_flange_pose()
         tx, ty, tz = cur.x + ux * dist, cur.y + uy * dist, cur.z + uz * dist

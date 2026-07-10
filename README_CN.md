@@ -9,7 +9,7 @@
 - **本体解耦**：一套框架适配 SCARA / 6-DoF / 吸盘 / 夹爪等各类构型，新本体只需编写 YAML 配置 + 本体适配层即可接入，无需改动 Agent 核心逻辑。
 - **安全防线内置**：SafetyRail（Z 下限 / 工作空间边界拦截）、RecoveryRail（运动异常自动回零 + 释放末端）、VisualFeedbackRail（每次动作后注入相机帧验证结果），确保 LLM 安全操作物理世界。
 - **视觉闭环**：视觉感知服务以旁路进程运行，配合腕部相机反投影到基座坐标。LLM 只需用自然语言描述目标物体即可获得 3D 抓取位置，无需理解像素与相机内参。
-- **可审计技能工作流**：预置 visual_pick / visual_place / slot_pick 等 SKILL.md 技能文档，LLM 按规范步骤执行而非自由编排，可重现、可审计。
+- **可审计技能工作流**：预置 visual_pick / visual_place 等 SKILL.md 技能文档，LLM 按规范步骤执行而非自由编排，可重现、可审计。
 
 ## 快速开始
 
@@ -154,10 +154,10 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
 ```
 env/         硬件抽象层 (BaseRobotEnv, RobotObservation, MockArmEnv)
 api/         能力织入 + @robot_tool 装饰器 (MotionMixin, SuctionMixin, VisionMixin...)
-tools/       工具构建器 / InProcessCodeTool / RobotControlTool / slot_pick
+tools/       工具构建器 / InProcessCodeTool / RobotControlTool
 agent/       RobotSession + build_robot_agent / build_robot_agent_config + 配置 + MockModel (--mock)
 rails/       安全策略 (SafetyRail, RecoveryRail, VisualFeedbackRail)
-skills/      预置技能 (visual_pick, visual_place, slot_pick)
+skills/      预置技能 (visual_pick, visual_place)
 adapters/    本体适配层 (piper/ + _common/ 通用构建器)
 serving/     视觉感知服务子进程（当前版本：GroundingDINO + SAM2）
 ```
