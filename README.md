@@ -9,7 +9,7 @@
 - **Hardware Decoupling**: A single framework adapts to various form factors including SCARA, 6-DoF, suction cup, and gripper configurations. New hardware only requires a YAML configuration and a hardware adapter layer — no changes to the core agent logic.
 - **Built-in Safety Rails**: SafetyRail (Z-axis lower limit / workspace boundary interception), RecoveryRail (automatic homing on motion failure + end-effector release), and VisualFeedbackRail (camera frame injection after every action for result verification) ensure LLMs operate safely in the physical world.
 - **Visual Closed Loop**: The visual perception service runs as a sidecar process, combined with wrist camera back-projection to base coordinates. The LLM only needs to describe the target object in natural language to obtain 3D grasp poses — no need to understand pixels or camera intrinsics.
-- **Auditable Skill Workflows**: Pre-built SKILL.md skill documents such as visual_pick / visual_place / slot_pick guide the LLM to execute in standardized steps rather than free-form orchestration, ensuring reproducibility and auditability.
+- **Auditable Skill Workflows**: Pre-built SKILL.md skill documents such as visual_pick / visual_place guide the LLM to execute in standardized steps rather than free-form orchestration, ensuring reproducibility and auditability.
 
 ## Quick Start
 
@@ -157,10 +157,10 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
 ```
 env/         Hardware abstraction layer (BaseRobotEnv, RobotObservation, MockArmEnv)
 api/         Capability mixins + @robot_tool decorator (MotionMixin, SuctionMixin, VisionMixin...)
-tools/       Tool builder / InProcessCodeTool / RobotControlTool / slot_pick
+tools/       Tool builder / InProcessCodeTool / RobotControlTool
 agent/       RobotSession + build_robot_agent / build_robot_agent_config + config + MockModel (--mock)
 rails/       Safety policies (SafetyRail, RecoveryRail, VisualFeedbackRail)
-skills/      Built-in skills (visual_pick, visual_place, slot_pick)
+skills/      Built-in skills (visual_pick, visual_place)
 adapters/    Hardware adapter layer (piper/ + _common/ generic builder)
 serving/     Visual perception service subprocess (current version: GroundingDINO + SAM2)
 ```
