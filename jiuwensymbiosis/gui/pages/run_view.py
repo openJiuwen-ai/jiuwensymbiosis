@@ -77,8 +77,8 @@ class RunView:
         self._banner.set_visibility(False)
 
         # 相机框固定高度(不随有/无图片跳变);内层 <img> 用 object-fit:contain 等比缩放、
-        # 不裁剪、不拉伸,空缺处用 #111 补齐。高度用 vh 随窗口自适应,给展开的「运行详情」
-        # 留出空间——想更大/更小只改这一个 42vh。
+        # 不裁剪、不拉伸,空缺处用深色背景补齐。高度用 vh 随窗口自适应,给展开的「运行详情」
+        # 留出空间——想更大/更小只改下面那一处 height 值即可。
         ui.add_head_html("<style>.jw-cam img{object-fit:contain;}</style>")
         with ui.row().classes("w-full no-wrap gap-4"):
             with ui.column().classes("w-1/3 gap-1"):

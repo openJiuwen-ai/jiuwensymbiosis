@@ -40,9 +40,11 @@ def run(*, host: str = "127.0.0.1", port: int = _DEFAULT_PORT, show: bool = True
     # 已有实例在跑(用户又点了一次图标)?别再起第二个(会撞端口而崩),直接把浏览器
     # 指到已在跑的那个页面。仅在需要弹浏览器时(show)这么做;headless/测试照常起。
     if show and _server_already_running(host, port):
-        import webbrowser
+        from nicegui.helpers import schedule_browser
 
-        webbrowser.open(f"http://{host}:{port}")
+        # schedule_browser 在守护线程里开浏览器;join 等它开完再返回,否则进程先退会把线程杀掉。
+        thread, _ = schedule_browser("http", host, port)
+        thread.join(3.0)
         return 0
 
     from nicegui import ui

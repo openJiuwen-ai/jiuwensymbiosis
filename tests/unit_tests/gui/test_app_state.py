@@ -78,7 +78,9 @@ def test_prime_sets_env_for_found_model_and_reports_missing(tmp_path, monkeypatc
     state.set_config("pick_box", _detector_config(use_sam2=True))
     missing = state.prime_detector_models("pick_box")
 
-    assert os.environ["GDINO_MODEL_ID"] == str(snap)  # 本地目录喂给检测器,离线加载
+    # prime 直接写 os.environ,monkeypatch 不追踪也就不会还原;立刻 pop 回收,避免泄漏污染后续测试。
+    gdino_env = os.environ.pop("GDINO_MODEL_ID", None)
+    assert gdino_env == str(snap)  # 本地目录喂给检测器,离线加载
     assert missing == ["SAM2"]
 
 

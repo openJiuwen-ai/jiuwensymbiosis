@@ -62,14 +62,6 @@ class Layout:
             with ui.tab_panel(self._settings_tab):
                 self._settings = SettingsView(self._state.workspace, on_workspace_change=self._set_workspace)
 
-    def _build_about_dialog(self) -> ui.dialog:
-        """居中矩形「关于」弹窗(替代底部滑出的通知条)。"""
-        with ui.dialog() as dialog, ui.card().classes("max-w-md gap-3"):
-            ui.label(APP_NAME).classes("text-lg font-bold")
-            ui.label(ABOUT_TEXT).classes("text-sm leading-relaxed whitespace-pre-wrap")
-            ui.button("了解", on_click=dialog.close).props("flat").classes("self-end")
-        return dialog
-
     def _build_quit_dialog(self) -> ui.dialog:
         """确认后关停整个应用(NiceGUI 服务器随之退出;重开请再点桌面图标/启动脚本)。"""
         with ui.dialog() as dialog, ui.card().classes("gap-3"):
@@ -78,13 +70,6 @@ class Layout:
             with ui.row().classes("self-end gap-2"):
                 ui.button("取消", on_click=dialog.close).props("flat")
                 ui.button("退出", on_click=self._do_quit).props("color=negative")
-        return dialog
-
-    def _build_bye_dialog(self) -> ui.dialog:
-        """退出后的「已关闭」提示:shutdown 会立即断连,先亮这句,避免页面看起来像卡死。"""
-        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
-            ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
-            ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
         return dialog
 
     def _confirm_quit(self) -> None:
@@ -155,6 +140,24 @@ class Layout:
     def _set_workspace(self, workspace: str) -> None:
         self._state.workspace = workspace
         self._history.set_workspace(workspace)
+
+    # ------------------------------------------------------------------ 弹窗构建
+    @staticmethod
+    def _build_about_dialog() -> ui.dialog:
+        """居中矩形「关于」弹窗(替代底部滑出的通知条)。"""
+        with ui.dialog() as dialog, ui.card().classes("max-w-md gap-3"):
+            ui.label(APP_NAME).classes("text-lg font-bold")
+            ui.label(ABOUT_TEXT).classes("text-sm leading-relaxed whitespace-pre-wrap")
+            ui.button("了解", on_click=dialog.close).props("flat").classes("self-end")
+        return dialog
+
+    @staticmethod
+    def _build_bye_dialog() -> ui.dialog:
+        """退出后的「已关闭」提示:shutdown 会立即断连,先亮这句,避免页面看起来像卡死。"""
+        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
+            ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
+            ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
+        return dialog
 
 
 def build_layout(state: AppState) -> Layout:
