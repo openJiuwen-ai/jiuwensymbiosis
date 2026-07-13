@@ -43,6 +43,9 @@ pip install -e ".[unitree]"
 
 # UBTECH Cruzr S2 (pure ROS2 — no vendor SDK; needs rclpy, see docs/ros2.md)
 # pip install -e "."   # no extra needed; just activate ROS2 env (source /opt/ros/humble/setup.bash)
+
+# UBTECH Cruzr S2 navigation (NEUPAN avoidance planner — user-installed, see below)
+# pip install -e ".[nav]"   # extra is a placeholder; install neupan from your local repo
 ```
 
 > **ROS2 backends (optional).** The `camera_source: ros2` camera backend, the
@@ -63,6 +66,28 @@ pip install -e ".[unitree]"
 > (motion raises at call time). For the full guide — config fields, message
 > types, the SLAM responsibility boundary, and per-adapter usage — see
 > **[docs/ros2.md](docs/ros2.md)**.
+
+> **NEUPAN navigation (optional).** The `ubetech_cruzr_s2` adapter drives the
+> base to an odometry-frame goal with obstacle avoidance via the **NEUPAN**
+> planner — a pure library returning `(vx, omega)` that this driver publishes
+> on the cmd_vel topic while closing the loop on odometry + laser scan. NEUPAN
+> is **not on PyPI**; install it from your local NeuPAN repository (it pulls a
+> heavy stack — `torch`, `cvxpy`, `scipy`, `scikit-learn`):
+>
+> ```bash
+> cd /path/to/NeuPAN && pip install -e .          # installs neupan + its deps
+> pip install -e ".[nav]"                         # framework side (extra is a placeholder)
+> ```
+>
+> Then in your YAML set `neupan_config_path` (default `planner.yaml`, resolved
+> relative to the config file — a diff-kinematics template ships at
+> `configs/ubetech_cruzr_s2/planner.yaml`), `ros2_scan_topic` (the robot-side
+> lidar driver's `sensor_msgs/LaserScan` topic — **required** for avoidance),
+> and `ros2_odom_topic` (the SLAM/odometry pose). If `neupan` is not
+> importable at runtime, the driver's `connect()` raises `RuntimeError` with
+> install guidance — motion is unavailable. The nav loop exits on NEUPAN's
+> `arrive` flag or a pure distance check (`neupan_arrive_threshold_m`), and
+> aborts after `neupan_max_collision_count` consecutive collision cycles.
 
 > **Unitree Go2 chassis SDK (optional).** The `unitree_go2` adapter drives the
 > Go2 chassis through the official `unitree_sdk2py` (installed via the

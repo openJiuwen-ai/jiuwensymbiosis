@@ -103,20 +103,27 @@ class UnitreeGo2Env(BaseRobotEnv):
             return
         from jiuwensymbiosis.adapters.unitree_go2.lowlevel import UnitreeGo2Driver
 
-        kwargs: dict[str, Any] = dict(  # mutable builder, conditionally extended below
-            network_interface=self.cfg.network_interface,
-            max_linear_speed_mps=self.cfg.max_linear_speed_mps,
-            max_angular_speed_radps=self.cfg.max_angular_speed_radps,
-            home_xy_yaw_m_deg=self.cfg.home_xy_yaw_m_deg,
-            camera_source=self.cfg.camera_source,
-            ros2_rgb_topic=self.cfg.ros2_rgb_topic,
-            ros2_depth_topic=self.cfg.ros2_depth_topic,
-            ros2_depth_scale_m=self.cfg.ros2_depth_scale_m,
-            ros2_camera_info_topic=self.cfg.ros2_camera_info_topic,
-            ros2_intrinsics=self.cfg.ros2_intrinsics,
-            ros2_odom_topic=self.cfg.ros2_odom_topic,
-            ros2_odom_msg_kind=self.cfg.ros2_odom_msg_kind,
-        )
+        kwargs: dict[str, Any] = {
+            "network_interface": self.cfg.network_interface,
+            "max_linear_speed_mps": self.cfg.max_linear_speed_mps,
+            "max_angular_speed_radps": self.cfg.max_angular_speed_radps,
+            "home_xy_yaw_m_deg": self.cfg.home_xy_yaw_m_deg,
+            "camera_source": self.cfg.camera_source,
+            "ros2_rgb_topic": self.cfg.ros2_rgb_topic,
+            "ros2_depth_topic": self.cfg.ros2_depth_topic,
+            "ros2_depth_scale_m": self.cfg.ros2_depth_scale_m,
+            "ros2_camera_info_topic": self.cfg.ros2_camera_info_topic,
+            "ros2_intrinsics": self.cfg.ros2_intrinsics,
+            "ros2_odom_topic": self.cfg.ros2_odom_topic,
+            "ros2_odom_msg_kind": self.cfg.ros2_odom_msg_kind,
+            "ros2_cmd_vel_topic": self.cfg.ros2_cmd_vel_topic,
+            "ros2_cmd_vel_msg_kind": self.cfg.ros2_cmd_vel_msg_kind,
+            "ros2_scan_topic": self.cfg.ros2_scan_topic,
+            "neupan_config_path": self.cfg.neupan_config_path,
+            "neupan_arrive_threshold_m": self.cfg.neupan_arrive_threshold_m,
+            "neupan_max_collision_count": self.cfg.neupan_max_collision_count,
+            "neupan_control_hz": self.cfg.neupan_control_hz,
+        }
         self._low_level = UnitreeGo2Driver(**kwargs)
         self._low_level.connect()
         self._connected = True
@@ -175,6 +182,16 @@ class UnitreeGo2Env(BaseRobotEnv):
                 "odom": (
                     self._low_level.get_odom_pose()  # type: ignore[attr-defined]
                     if getattr(self.cfg, "ros2_odom_topic", None)
+                    else None
+                ),
+                # Optional ROS2 laser scan (dict of ranges + angle/range limits);
+                # None when no scan backend configured or no message has arrived.
+                # ``_low_level`` is typed ``RobotDriver`` (the base Protocol), but
+                # ``get_scan`` is a ``UnitreeGo2Driver``-specific method with no
+                # sibling Protocol — same pattern as the odom call above.
+                "scan": (
+                    self._low_level.get_scan()  # type: ignore[attr-defined]
+                    if getattr(self.cfg, "ros2_scan_topic", None)
                     else None
                 ),
             },

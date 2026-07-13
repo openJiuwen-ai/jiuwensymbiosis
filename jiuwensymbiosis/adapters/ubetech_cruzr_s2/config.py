@@ -70,6 +70,31 @@ class UbetechCruzrS2Config:
     ros2_odom_topic: str | None = None
     ros2_odom_msg_kind: str = "odometry"  # or pose_stamped / pose_with_covariance_stamped
 
+    # ==================== ROS2 激光雷达 (复用 Ros2Scan) [选填-仅 NEUPAN 导航] ====================
+    # NEUPAN 做避障必须有 LaserScan。scan 必须由机器人端的雷达 driver(或
+    # 深度图→scan 转换器)发布,框架只消费这个 topic。留空则不订阅 scan;
+    # 此时若用了 NEUPAN 导航,导航循环会等 scan 永远拿不到而空转。
+    # Surfaced into ``RobotObservation.extra["scan"]``.
+    ros2_scan_topic: str | None = None
+
+    # ==================== NEUPAN 导航 [选填-仅 motion.cartesian 导航] ====================
+    # 底盘导航走 NEUPAN 规划器(避障 + 路径跟踪),纯库,返回 (vx, omega) 速度
+    # 由本驱动通过 ros2_cmd_vel 发出。用户自行安装 neupan(本地仓库
+    # ``pip install -e .``,依赖 torch/cvxpy/scipy 等重栈),框架 lazy import。
+    # 缺 neupan / 缺 neupan_config_path → 运动指令 raise RuntimeError 带安装指引。
+    # ``neupan_config_path`` 指向 NEUPAN 自己的 planner.yaml(含模型/权重/调参);
+    # 相对路径按 config 文件所在目录解析(与 calib_path 同款)。仓库内置一份
+    # 默认模板于 ``configs/ubetech_cruzr_s2/planner.yaml``(diff 差速模型)。
+    neupan_config_path: str | None = None
+    # 到位距离阈值(米):NEUPAN 自带 arrive 有 index 条件缺陷(避障偏移后常
+    # 失效),驱动额外用纯距离检查补充(仿 go2_point_nav.py 经验)。
+    neupan_arrive_threshold_m: float = 0.1
+    # 连续碰撞帧数上限:NEUPAN 报 info['stop'](min_distance < collision_threshold)
+    # 累计超过此值 → raise RuntimeError(防止卡在障碍物前无限发零速度)。
+    neupan_max_collision_count: int = 100
+    # 导航控制循环频率(Hz)。
+    neupan_control_hz: float = 10.0
+
     # ==================== 安全边界 [选填] ====================
     # Base is 2D-planar; z is not actuated. ``z_min_safe`` stays 0.0 to satisfy
     # the SafetyRail contract (it never triggers on a non-z-actuated base);
@@ -119,4 +144,8 @@ class UbetechCruzrS2Config:
             candidate = (path.parent / cfg.calib_path).resolve()
             if candidate.exists():
                 cfg.calib_path = str(candidate)
+        if cfg.neupan_config_path and not Path(cfg.neupan_config_path).is_absolute():
+            candidate = (path.parent / cfg.neupan_config_path).resolve()
+            if candidate.exists():
+                cfg.neupan_config_path = str(candidate)
         return cfg

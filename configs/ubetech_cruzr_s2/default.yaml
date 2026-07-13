@@ -24,6 +24,17 @@ ros2_camera_info_topic: /cruzr/camera/color/camera_info
 ros2_odom_topic: /odom
 ros2_odom_msg_kind: odometry
 
+# --- ROS2 激光雷达 ---
+# NEUPAN 避障必需。scan 由机器人端雷达 driver 发布。
+ros2_scan_topic: /scan
+
+# --- NEUPAN 导航 ---
+# 用户自装 neupan(本地仓库 `pip install -e .`)。planner.yaml 用仓库内置默认模板。
+neupan_config_path: planner.yaml
+neupan_arrive_threshold_m: 0.1
+neupan_max_collision_count: 100
+neupan_control_hz: 10.0
+
 # --- 安全边界 (底盘 2D 平面;z_min_safe 恒 0.0) ---
 z_min_safe_mm: 0.0
 x_min_m: -5.0

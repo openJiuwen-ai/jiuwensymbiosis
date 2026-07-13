@@ -15,6 +15,13 @@ Pure ROS2 communication (no vendor SDK):
     missing → ``grab_frames()`` returns None (vision degrades, base still moves).
   * **Odometry** → ``Ros2Odom`` (reused from ``adapters/_common``). Lazy rclpy;
     missing → ``get_odom_pose()`` returns None.
+  * **Laser scan** → ``Ros2Scan`` (reused from ``adapters/_common``). Lazy rclpy;
+    missing → ``get_scan()`` returns None. Required by the NEUPAN nav loop.
+  * **Navigation** → NEUPAN planner (lazy import; user-installed). The planner
+    is a pure library returning ``(vx, omega)`` for a differential base; this
+    driver publishes that via the cmd_vel publisher and closes the loop on
+    odometry + scan. Missing neupan / config → ``move_to_pose_blocking`` raises
+    ``RuntimeError`` with install guidance (motion's primary capability).
 
 Frame conventions:
   * The base pose (``get_pose``) is the 2D planar pose from odometry:
@@ -23,207 +30,34 @@ Frame conventions:
     ``RobotDriver`` 6-DoF pose shape — the Env verb ``get_flange_pose`` only
     passes it through; the Api layer decides what the numbers mean.
   * ``tool_offset_mm`` is 0.0 (a base has no flange→tip offset).
+  * NEUPAN speaks its own state convention ``[x, y, theta]`` with **theta in
+    radians** (our odom ``yaw_deg`` is converted at the nav-loop boundary).
 
 Construction never raises (parity with ``Ros2Camera`` / ``Ros2Odom``). The
 only rclpy import happens in ``connect()``; failure degrades every ROS2 side
 to "not started" rather than raising — callers treat that as "ROS2 backend
-unavailable", distinct from a per-motion runtime error.
+unavailable", distinct from a per-motion runtime error. NEUPAN import also
+happens in ``connect()``; a missing neupan package raises there (motion is
+unavailable), with a clear install message.
 """
 
 from __future__ import annotations
 
-import importlib
 import math
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
 from jiuwensymbiosis.adapters._common.ros2_camera import Ros2Camera
+from jiuwensymbiosis.adapters._common.ros2_cmd_vel import Ros2CmdVel
 from jiuwensymbiosis.adapters._common.ros2_odom import Ros2Odom
+from jiuwensymbiosis.adapters._common.ros2_scan import Ros2Scan
 from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# ``msg_kind`` → (ROS2 module, message type name). Add a row here to support
-# another velocity-carrying message type.
-_CMD_VEL_MSG_KINDS: dict[str, tuple[str, str]] = {
-    "twist": ("geometry_msgs.msg", "Twist"),
-    "twist_stamped": ("geometry_msgs.msg", "TwistStamped"),
-}
-
-
-class _Ros2CmdVel:
-    """One ROS2 velocity-command publisher, exposed as a synchronous writer.
-
-    Mirrors ``Ros2Odom``'s surface/lifecycle so the two are interchangeable in
-    spirit behind the adapter driver.
-
-    Lifecycle:
-      * ``__init__`` only stores config.
-      * ``start()`` creates the node + publisher + spin thread. Idempotent.
-      * ``stop()`` tears them down. Idempotent.
-      * ``publish_twist(vx, vy, wz)`` issues one non-blocking velocity command.
-        Returns False (no-op) before ``start()`` succeeds.
-
-    The message type is chosen by ``msg_kind`` (see ``_CMD_VEL_MSG_KINDS``).
-    ``Twist`` carries ``linear.x/y`` + ``angular.z``; ``TwistStamped`` wraps
-    the same ``Twist`` under ``.twist`` with a header (auto-filled by the
-    publisher when ``frame_id`` is empty).
-    """
-
-    def __init__(
-        self,
-        cmd_vel_topic: str,
-        *,
-        msg_kind: str = "twist",
-        log_prefix: str = "[ROS2]",
-    ) -> None:
-        self._cmd_vel_topic = cmd_vel_topic
-        self._log_prefix = log_prefix
-        # Construction must never raise (parity with Ros2Odom/Ros2Camera): an
-        # unknown msg_kind degrades to "twist" + warning rather than ValueError.
-        self._msg_kind = msg_kind
-        if msg_kind not in _CMD_VEL_MSG_KINDS:
-            logger.warning(
-                "%s unknown cmd_vel msg_kind=%r (expected one of %s); falling back to 'twist'.",
-                self._log_prefix,
-                msg_kind,
-                sorted(_CMD_VEL_MSG_KINDS),
-            )
-            self._msg_kind = "twist"
-
-        self._node: Any = None  # rclpy.node.Node once started
-        self._publisher: Any = None  # rclpy.publisher once started
-        self._executor: Any = None  # SingleThreadedExecutor once started
-        self._spin_thread: threading.Thread | None = None
-        self._msg_cls: Any = None  # resolved message class
-        self._owns_rclpy = False  # whether WE called rclpy.init() (so we shutdown)
-
-    # ----------------------------------------------------------------- state
-    @property
-    def is_running(self) -> bool:
-        """True once ``start()`` has created the node + publisher + spin thread."""
-        return self._node is not None
-
-    # ---------------------------------------------------------------- lifecycle
-    def start(self) -> bool:
-        """Create the node + publisher and start the spin thread.
-
-        Idempotent. Returns True on success, False on any failure (with a
-        warning logged). Never raises — missing rclpy / init errors all degrade
-        to ``publish_twist()`` being a no-op.
-        """
-        if self._node is not None:
-            return True
-        mod_name, type_name = _CMD_VEL_MSG_KINDS[self._msg_kind]
-        try:
-            import rclpy
-            from rclpy.executors import SingleThreadedExecutor
-            from rclpy.node import Node
-
-            msg_mod = importlib.import_module(mod_name)
-            self._msg_cls = getattr(msg_mod, type_name)
-        except ImportError:
-            logger.warning(
-                "%s rclpy/%s not available — skipping motion publisher. "
-                "Source /opt/ros/<distro>/setup.bash (under a ROS2-compatible "
-                "interpreter) to enable.",
-                self._log_prefix,
-                mod_name.split(".")[0],
-            )
-            return False
-        try:
-            if not rclpy.ok():
-                rclpy.init(args=None)
-                self._owns_rclpy = True
-            self._node = Node("jiuwensymbiosis_ros2_cmd_vel")
-            self._publisher = self._node.create_publisher(self._msg_cls, self._cmd_vel_topic, 10)
-            self._executor = SingleThreadedExecutor()
-            self._executor.add_node(self._node)
-            self._spin_thread = threading.Thread(
-                target=self._executor.spin,
-                name="ros2_cmd_vel_spin",
-                daemon=True,
-            )
-            self._spin_thread.start()
-            logger.info(
-                "%s ROS2 cmd_vel ready (topic=%s, msg_kind=%s).",
-                self._log_prefix,
-                self._cmd_vel_topic,
-                self._msg_kind,
-            )
-            return True
-        except Exception as e:
-            logger.warning(
-                "%s ROS2 cmd_vel init failed (%s); continuing without motion publisher.",
-                self._log_prefix,
-                e,
-            )
-            self._safe_teardown()
-            return False
-
-    def stop(self) -> None:
-        """Stop the spin thread, destroy the node. Safe to call multiple times."""
-        if self._node is None and self._executor is None:
-            return
-        self._safe_teardown()
-
-    # -------------------------------------------------------------- publish
-    def publish_twist(self, vx: float, vy: float, wz: float) -> bool:
-        """Publish one velocity command (vx, vy m/s; wz rad/s).
-
-        Non-blocking. Returns True if published, False if the publisher isn't
-        running (rclpy missing / start() failed). Never raises.
-        """
-        if self._publisher is None or self._msg_cls is None:
-            return False
-        try:
-            msg = self._msg_cls()
-            twist = msg.twist if self._msg_kind == "twist_stamped" else msg
-            twist.linear.x = float(vx)
-            twist.linear.y = float(vy)
-            twist.linear.z = 0.0
-            twist.angular.x = 0.0
-            twist.angular.y = 0.0
-            twist.angular.z = float(wz)
-            self._publisher.publish(msg)
-            return True
-        except Exception as e:  # best-effort publish; log + continue
-            logger.debug("%s cmd_vel publish failed: %s", self._log_prefix, e)
-            return False
-
-    # ============================================================== private
-    def _safe_teardown(self) -> None:
-        """Best-effort: stop executor, join thread, destroy node, maybe shutdown."""
-        if self._executor is not None:
-            try:
-                self._executor.shutdown()
-            except Exception as e:
-                logger.debug("%s executor.shutdown failed during teardown: %s", self._log_prefix, e)
-        if self._spin_thread is not None and self._spin_thread.is_alive():
-            self._spin_thread.join(timeout=2.0)
-        if self._node is not None:
-            try:
-                self._node.destroy_node()
-            except Exception as e:
-                logger.debug("%s destroy_node failed during teardown: %s", self._log_prefix, e)
-        if self._owns_rclpy:
-            try:
-                import rclpy
-
-                if rclpy.ok():
-                    rclpy.shutdown()
-            except Exception as e:
-                logger.debug("%s rclpy.shutdown failed during teardown: %s", self._log_prefix, e)
-            self._owns_rclpy = False
-        self._node = None
-        self._publisher = None
-        self._executor = None
-        self._spin_thread = None
-        self._msg_cls = None
 
 
 class UbetechCruzrS2Driver:
@@ -252,6 +86,13 @@ class UbetechCruzrS2Driver:
         # ROS2 odometry (optional; None disables odom)
         ros2_odom_topic: str | None = None,
         ros2_odom_msg_kind: str = "odometry",
+        # ROS2 laser scan (optional; required by the NEUPAN nav loop)
+        ros2_scan_topic: str | None = None,
+        # NEUPAN nav (optional; None → move raises at call time with install guidance)
+        neupan_config_path: str | None = None,
+        neupan_arrive_threshold_m: float = 0.1,
+        neupan_max_collision_count: int = 100,
+        neupan_control_hz: float = 10.0,
     ) -> None:
         self._lock = threading.RLock()
         self._max_linear = float(max_linear_speed_mps)
@@ -259,6 +100,10 @@ class UbetechCruzrS2Driver:
         if home_xy_yaw_m_deg is None:
             home_xy_yaw_m_deg = [0.0, 0.0, 0.0]
         self._home_xy_yaw = [float(v) for v in home_xy_yaw_m_deg[:3]]
+        self._neupan_config_path = neupan_config_path
+        self._neupan_arrive_threshold_m = float(neupan_arrive_threshold_m)
+        self._neupan_max_collision_count = int(neupan_max_collision_count)
+        self._neupan_control_hz = float(neupan_control_hz)
         # ``home_pose`` is the vendor Pose object the Env/Api read (RobotDriver
         # contract). 6-DoF shape, but only x/y + rz(yaw) are meaningful here.
         # Stored privately + exposed via ``@property`` to match the Protocol's
@@ -274,9 +119,9 @@ class UbetechCruzrS2Driver:
         )
 
         # --- motion (ROS2 cmd_vel publisher). Lazily started in connect().
-        self._cmd_vel: _Ros2CmdVel | None = None
+        self._cmd_vel: Ros2CmdVel | None = None
         if ros2_cmd_vel_topic:
-            self._cmd_vel = _Ros2CmdVel(
+            self._cmd_vel = Ros2CmdVel(
                 cmd_vel_topic=ros2_cmd_vel_topic,
                 msg_kind=ros2_cmd_vel_msg_kind,
                 log_prefix="[CruzrS2]",
@@ -304,6 +149,15 @@ class UbetechCruzrS2Driver:
                 log_prefix="[CruzrS2]",
             )
 
+        # --- laser scan (optional; required by the NEUPAN nav loop)
+        self._scan: Ros2Scan | None = None
+        if ros2_scan_topic:
+            self._scan = Ros2Scan(scan_topic=ros2_scan_topic, log_prefix="[CruzrS2]")
+
+        # --- NEUPAN planner (lazily built in connect() so __init__ stays cheap
+        #     and never imports torch/cvxpy at construction time)
+        self._planner: Any = None  # neupan.neupan instance once connect()
+
     # ============================================================== lifecycle
     def connect(self) -> None:
         """Start cmd_vel publisher + camera/odom subscriptions.
@@ -323,6 +177,29 @@ class UbetechCruzrS2Driver:
             logger.warning("[CruzrS2] ROS2 camera not started — vision degraded to None.")
         if self._odom is not None and not self._odom.start():
             logger.warning("[CruzrS2] ROS2 odometry not started — odom degraded to None.")
+        if self._scan is not None and not self._scan.start():
+            logger.warning("[CruzrS2] ROS2 laser scan not started — scan degraded to None.")
+
+        # NEUPAN planner: lazily built only when a config path is configured.
+        # Missing neupan package is a hard error (motion unavailable) — same
+        # posture as Go2's missing unitree_sdk2py.
+        if self._neupan_config_path is not None:
+            try:
+                from neupan import neupan as _neupan_mod
+            except ImportError as exc:
+                raise RuntimeError(
+                    "[CruzrS2] neupan not installed. Install from your local NeuPAN "
+                    "repository (`pip install -e .`; pulls torch/cvxpy/scipy). "
+                    'See README "NEUPAN navigation".'
+                ) from exc
+            try:
+                self._planner = _neupan_mod.init_from_yaml(self._neupan_config_path)
+                logger.info(
+                    "[CruzrS2] NEUPAN planner loaded (config=%s).",
+                    self._neupan_config_path,
+                )
+            except Exception as exc:  # init_from_yaml failure is a real motion error
+                raise RuntimeError(f"[CruzrS2] NEUPAN planner init failed: {exc}") from exc
         self._connected = True
         logger.info("[CruzrS2] connected (ROS2 backend).")
 
@@ -343,6 +220,12 @@ class UbetechCruzrS2Driver:
                 self._odom.stop()
             except Exception as e:  # best-effort odom teardown; log + continue
                 logger.debug("[CruzrS2] odom stop failed during teardown: %s", e)
+        if self._scan is not None:
+            try:
+                self._scan.stop()
+            except Exception as e:  # best-effort scan teardown; log + continue
+                logger.debug("[CruzrS2] scan stop failed during teardown: %s", e)
+        self._planner = None
         self._connected = False
         logger.info("[CruzrS2] closed.")
 
@@ -398,6 +281,10 @@ class UbetechCruzrS2Driver:
         """Latest ROS2 odometry pose (meters + quaternion + yaw_deg), or None."""
         return self._odom.grab_pose() if self._odom is not None else None
 
+    def get_scan(self) -> dict | None:
+        """Latest ROS2 laser scan dict, or None (no scan backend / no message)."""
+        return self._scan.grab_scan() if self._scan is not None else None
+
     # ============================================================== camera
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab (rgb, depth_m) from the ROS2 camera, or None if no camera."""
@@ -425,29 +312,125 @@ class UbetechCruzrS2Driver:
 
     # ============================================================== private
     def _move_to_xy_yaw(self, target_x: float, target_y: float, target_yaw_deg: float) -> None:
-        """Drive toward (target_x, target_y, target_yaw) via ROS2 velocity cmds.
+        """Drive toward (target_x, target_y) via the NEUPAN planner + cmd_vel.
 
-        Simple proportional velocity controller: command a velocity proportional
-        to the remaining error, clamped to the configured max speeds, until
-        within tolerance. The exact cmd_vel semantics are vendor-standard but
-        the control-loop tuning is the integration seam a real deployment tunes.
+        Differential-base navigation loop: each tick read odom + scan, ask the
+        NEUPAN planner for ``(vx, omega)`` (vy is 0 for a diff base), clamp to
+        the configured max speeds, and publish via cmd_vel. The loop exits when
+        NEUPAN reports ``arrive`` OR the pure distance to the goal drops below
+        ``neupan_arrive_threshold_m`` (the distance check supplements NEUPAN's
+        own ``check_curve_arrive``, whose path-index condition often fails
+        after obstacle-avoidance deviation — same lesson as
+        ``go2_point_nav.py``). ``target_yaw_deg`` is accepted for the
+        ``home()`` call shape but NEUPAN derives the goal heading itself from
+        ``atan2(dy, dx)`` (a differential base turns to face its target).
+
+        Raises ``RuntimeError`` if cmd_vel isn't running, the planner isn't
+        built, or collisions persist past ``neupan_max_collision_count``.
         """
         if not self._connected or self._cmd_vel is None or not self._cmd_vel.is_running:
             raise RuntimeError("[CruzrS2] cmd_vel not running (call connect() first; needs rclpy).")
+        if self._planner is None:
+            raise RuntimeError(
+                "[CruzrS2] NEUPAN planner not built (no neupan_config_path; "
+                "set it in config + `pip install -e .` in your NeuPAN repo)."
+            )
         for v, name in ((target_x, "x"), (target_y, "y"), (target_yaw_deg, "yaw")):
             if not math.isfinite(v):
                 raise ValueError(f"[CruzrS2] non-finite {name}={v}")
-        # TODO(integration): tune kp / tol / timeout per deployment. The
-        # structure below is the control loop skeleton; the exact settling is
-        # filled in per robot. Left as a seam so the adapter wires up end-to-end
-        # without the control gains nailed down.
+
         logger.info(
-            "[CruzrS2] move → (x=%.3f m, y=%.3f m, yaw=%.2f deg) [ROS2 cmd_vel]",
+            "[CruzrS2] nav → (x=%.3f m, y=%.3f m) [NEUPAN + cmd_vel]",
             target_x,
             target_y,
-            target_yaw_deg,
         )
-        # Placeholder: publish a zero-velocity settle marker. A real driver
-        # commands v=clamp(kp*err, vmax) each tick and polls get_pose() until
-        # within tol. Left as a seam so the adapter wires up end-to-end.
-        self._cmd_vel.publish_twist(0.0, 0.0, 0.0)
+        try:
+            self._nav_loop(target_x, target_y)
+        finally:
+            # Unconditional stop: never leave a velocity hanging after the loop,
+            # whether it exited via arrival, collision-cap, or exception.
+            self._cmd_vel.publish_twist(0.0, 0.0, 0.0)
+
+    def _nav_loop(self, target_x: float, target_y: float) -> None:
+        """NEUPAN control loop. Caller guarantees cmd_vel running + planner built."""
+        planner = self._planner
+        cmd_vel = self._cmd_vel  # bound locally: caller (_move_to_xy_yaw) guards non-None
+        if cmd_vel is None:
+            raise RuntimeError("[CruzrS2] cmd_vel not running (call connect() first; needs rclpy).")
+        period = 1.0 / self._neupan_control_hz if self._neupan_control_hz > 0 else 0.1
+        threshold = self._neupan_arrive_threshold_m
+        max_collision = self._neupan_max_collision_count
+
+        # Wait for an initial pose so the planner has a real start state.
+        start = self._odom_state()
+        if start is None:
+            raise RuntimeError("[CruzrS2] no odometry yet — cannot start nav (start SLAM/odom first).")
+
+        # Goal heading follows the start→goal direction (diff base faces target).
+        goal_theta = math.atan2(target_y - start[1, 0], target_x - start[0, 0])
+        goal = np.array([[target_x], [target_y], [goal_theta]])
+        planner.update_initial_path_from_goal(start, goal)
+        # Override NEUPAN's threshold so it actually controls arrival (its
+        # index-based check dominates otherwise).
+        try:
+            planner.ipath.arrive_threshold = threshold
+        except (AttributeError, TypeError):
+            logger.debug("[CruzrS2] planner has no settable ipath.arrive_threshold; using distance check only.")
+
+        collision_count = 0
+        while True:
+            loop_start = time.monotonic()
+
+            state = self._odom_state()
+            scan = self.get_scan()
+            # Need both a fresh pose and a scan to plan; otherwise hold (no
+            # velocity) and wait for data rather than planning blind.
+            if state is None or scan is None or not scan.get("ranges"):
+                cmd_vel.publish_twist(0.0, 0.0, 0.0)
+                self._sleep_remaining(loop_start, period)
+                continue
+
+            points = planner.scan_to_point(
+                state, scan, scan_offset=[0, 0, 0], angle_range=[-math.pi, math.pi], down_sample=2
+            )
+            action, info = planner(state, points, None)
+
+            # Arrival: NEUPAN's flag OR pure distance (index-based check is unreliable).
+            dist = float(np.hypot(state[0, 0] - target_x, state[1, 0] - target_y))
+            if info.get("arrive") or dist < threshold:
+                logger.info("[CruzrS2] nav arrived (dist=%.3f m, arrive=%s).", dist, info.get("arrive"))
+                return
+
+            if info.get("stop"):
+                collision_count += 1
+                cmd_vel.publish_twist(0.0, 0.0, 0.0)
+                if collision_count >= max_collision:
+                    raise RuntimeError(
+                        f"[CruzrS2] nav aborted: collisions persisted {collision_count} cycles "
+                        f"(min_distance={float(planner.min_distance):.3f} m)."
+                    )
+            else:
+                collision_count = 0
+                vx = float(action[0, 0])
+                wz = float(action[1, 0])  # diff model: action is [vx, omega], vy is unused
+                # Safety envelope: clamp to configured hardware limits before publish.
+                vx = max(-self._max_linear, min(self._max_linear, vx))
+                wz = max(-self._max_angular, min(self._max_angular, wz))
+                cmd_vel.publish_twist(vx, 0.0, wz)
+
+            self._sleep_remaining(loop_start, period)
+
+    def _odom_state(self) -> np.ndarray | None:
+        """Current pose as a NEUPAN-shaped ``[[x],[y],[theta_rad]]`` column, or None."""
+        odom = self.get_odom_pose()
+        if odom is None:
+            return None
+        return np.array([[float(odom["x"])], [float(odom["y"])], [math.radians(float(odom["yaw_deg"]))]])
+
+    @staticmethod
+    def _sleep_remaining(loop_start: float, period: float) -> None:
+        """Sleep the unused fraction of the control period (busy-loop guard)."""
+        elapsed = time.monotonic() - loop_start
+        remaining = period - elapsed
+        if remaining > 0:
+            time.sleep(remaining)

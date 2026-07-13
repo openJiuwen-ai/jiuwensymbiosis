@@ -17,6 +17,8 @@ class _MockLowLevel:
     # Default odom pose (mirrors the real driver's self._odom-driven return);
     # tests override this attribute to simulate "no message yet".
     _odom_pose = {"x": 1.0, "y": 2.0, "z": 0.0, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0, "yaw_deg": 30.0}
+    # Default laser scan (mirrors the real driver's self._scan-driven return).
+    _scan = {"ranges": [1.0, 2.0], "angle_min": -3.14, "angle_max": 3.14, "range_min": 0.1, "range_max": 10.0}
 
     def close(self):
         self._connected = False
@@ -33,6 +35,9 @@ class _MockLowLevel:
 
     def get_odom_pose(self):
         return self._odom_pose
+
+    def get_scan(self):
+        return self._scan
 
 
 class TestUnitreeGo2EnvConstruction:
@@ -112,7 +117,7 @@ class TestUnitreeGo2EnvObservation:
     def test_get_observation_surfaces_pose_and_odom(self):
         from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
 
-        cfg = UnitreeGo2Config(ros2_odom_topic="/odom")
+        cfg = UnitreeGo2Config(ros2_odom_topic="/odom", ros2_scan_topic="/scan")
         env = UnitreeGo2Env(cfg)
         env.low_level = _MockLowLevel()
         obs = env.get_observation()
@@ -128,6 +133,8 @@ class TestUnitreeGo2EnvObservation:
             "qw": 1.0,
             "yaw_deg": 30.0,
         }
+        # scan surfaced into extra (ranges + angle/range limits).
+        assert obs.extra["scan"] == _MockLowLevel._scan
         assert obs.extra["z_min_safe"] == 0.0
 
     def test_get_observation_odom_none_when_no_odom_topic(self):
@@ -138,6 +145,15 @@ class TestUnitreeGo2EnvObservation:
         env.low_level = _MockLowLevel()
         obs = env.get_observation()
         assert obs.extra["odom"] is None
+
+    def test_get_observation_scan_none_when_no_scan_topic(self):
+        from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
+
+        # No ros2_scan_topic configured → extra["scan"] is None even with a driver.
+        env = UnitreeGo2Env(UnitreeGo2Config())
+        env.low_level = _MockLowLevel()
+        obs = env.get_observation()
+        assert obs.extra["scan"] is None
 
     def test_get_observation_odom_none_when_driver_returns_none(self):
         from jiuwensymbiosis.adapters.unitree_go2.env import UnitreeGo2Env
