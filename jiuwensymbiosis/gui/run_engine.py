@@ -158,6 +158,11 @@ class RunEngine:
             conv_id = f"gui-{uuid.uuid4().hex[:8]}"
             with session:
                 self._emit_initial_frame(session)
+                # 连接已完成,接下来 run_robot_task 先做 fast 的唯一云端大模型调用(编译动作序列),
+                # 通常要等十几~几十秒。给个明确提示:这段是在等云侧模型响应,不是本地卡死。
+                # 第一条执行指令的叙述到达后会自动覆盖。mock 无云端,不提示。
+                if not self._mock:
+                    self.narration("等待云侧服务响应中…")
                 result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
             self._events.put(
                 (

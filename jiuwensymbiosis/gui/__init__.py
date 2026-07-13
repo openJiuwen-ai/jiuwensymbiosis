@@ -27,7 +27,7 @@ APP_NAME = "Jiuwen Symbiosis"
 
 ABOUT_TEXT = (
     "Jiuwen Symbiosis 是基于 openjiuwen 的具身智能体框架，一个专为具身智能打造的Symbiosis(共生)架构，"
-    "面向具身智能场景提供构型无关的工具、安全策略与多智能体协同能力。"
+    "面向具身智能场景提供构型无关的工具、安全策略与多智能体协同能力。\n\n"
     "通过能力织入（Capability Mixin）架构，一套代码适配 SCARA / 6-DoF / 吸盘 / 夹爪等不同构型的本体；"
     "内置安全防线与视觉反馈闭环，让大模型安全地操控物理世界。"
 )

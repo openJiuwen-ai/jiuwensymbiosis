@@ -147,3 +147,28 @@ def test_runner_missing_detection_fails_cleanly():
     res = run_sequence(_session(api), steps, action_index=_index(api))
     # detection returns ok=False → not bound → the goto referencing g.x fails clean
     assert res["ok"] is False
+
+
+def test_runner_aborts_at_bind_step_when_detection_ran_but_returned_not_ok():
+    # Mimics the REAL ability executor: the tool RAN (executor ok=True) but the
+    # detection RESULT is ok=False (e.g. no valid depth at the target). Must abort
+    # AT the detection step with the real cause — not skip the bind and let a later
+    # goto reach the driver with an unresolved "<bind>.field" string.
+    api = _FakeApi(_GRASP_OBJ)
+
+    def executor(op, params):
+        assert op == "get_grasp_info_simple", f"goto must not run after a failed detection, got {op!r}"
+        return {"ok": True, "result": {"ok": False, "reason": "no_depth"}}
+
+    raw = [
+        {"op": "get_grasp_info_simple", "params": {"object_name": "white box"}, "bind": "w"},
+        {"op": "goto_xyzr", "params": {"x": "w.position[0]", "y": "w.position[1]", "z": "w.place_z"}},
+    ]
+    steps = parse_sequence(raw, allowed_ops=set(_index(api)))
+    res = run_sequence(_session(api), steps, executor=executor)
+
+    assert res["ok"] is False
+    failed = res["steps"][-1]
+    assert failed["op"] == "get_grasp_info_simple" and not failed["ok"]
+    assert "white box" in failed["reason"] and "no_depth" in failed["reason"]
+    assert ("home",) in api.calls  # safe retreat ran

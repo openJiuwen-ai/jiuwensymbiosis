@@ -53,10 +53,22 @@ def outcome_from_result(result: dict[str, Any]) -> Outcome:
     if not result.get("ok"):
         return Outcome("失败", "运行失败,已在下方「错误诊断」给出原因与处理建议。", True)
     payload = result.get("result")
+    # fast 路径的结果形状是 {"ok", "steps_done", "steps":[...], ...},没有 result_type;
+    # 外层 RunEngine 的 ok 只表示"没抛异常",真正成败看这里的内层 ok——否则一步 failed
+    # 也会落到最后的"成功"分支。
+    if isinstance(payload, dict) and "steps_done" in payload:
+        if payload.get("ok"):
+            return Outcome("成功", "完成", False)
+        failed = next((s for s in payload.get("steps", []) if isinstance(s, dict) and not s.get("ok")), None)
+        if failed is not None:
+            reason = str(failed.get("reason", "")).strip()
+            head = f"第 {failed.get('i')} 步（{failed.get('op', '')}）失败"
+            return Outcome("未完成", f"未完成:{head}：{reason}" if reason else f"未完成:{head}。", False)
+        return Outcome("未完成", "未完成:动作序列未跑完。", False)
     rtype = payload.get("result_type") if isinstance(payload, dict) else ""
     summary = payload.get("output") if isinstance(payload, dict) else payload
     if rtype == "stopped":
         return Outcome("已停止", f"已停止:{summary}", False)
     if rtype == "error":
         return Outcome("未完成", incomplete_message(str(summary)), False)
-    return Outcome("成功", f"完成:{summary}", False)
+    return Outcome("成功", f"完成:{summary}" if summary else "完成", False)

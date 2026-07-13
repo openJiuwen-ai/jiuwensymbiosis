@@ -234,7 +234,7 @@ def _fallback_tasks() -> dict[str, TaskDef]:
             key="pick_box",
             body_key="piper",
             display_name="拾取盒子",
-            description="视觉识别并把黑色盒子抓取放置到白色盒子上。",
+            description="把黑色盒子抓起来放到白色盒子上。",
             config_relpath="piper/piper.yaml",
             default_query="把黑色盒子抓起来放到白色盒子上。",
             agent_defaults={"enable_skill": True},

@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from nicegui import ui
+from nicegui import app, ui
 
 from jiuwensymbiosis.gui import ABOUT_TEXT, APP_NAME, registry
 from jiuwensymbiosis.gui.app_state import AppState
@@ -34,11 +34,14 @@ class Layout:
         self._build()
 
     def _build(self) -> None:
+        about = self._build_about_dialog()
+        self._quit_dialog = self._build_quit_dialog()
+        self._bye_dialog = self._build_bye_dialog()
         with ui.header().classes("items-center justify-between"):
             ui.label(APP_NAME).classes("text-lg font-bold")
-            ui.button("关于", on_click=lambda: ui.notify(ABOUT_TEXT, multi_line=True, close_button="好")).props(
-                "flat color=white"
-            )
+            with ui.row().classes("items-center gap-1"):
+                ui.button("关于", on_click=about.open).props("flat color=white")
+                ui.button("退出", on_click=self._confirm_quit).props("flat color=white")
 
         with ui.tabs().classes("w-full") as self._tabs:
             self._home_tab = ui.tab("主页")
@@ -58,6 +61,35 @@ class Layout:
                 self._history = HistoryView(self._state.workspace)
             with ui.tab_panel(self._settings_tab):
                 self._settings = SettingsView(self._state.workspace, on_workspace_change=self._set_workspace)
+
+    def _build_quit_dialog(self) -> ui.dialog:
+        """确认后关停整个应用(NiceGUI 服务器随之退出;重开请再点桌面图标/启动脚本)。"""
+        with ui.dialog() as dialog, ui.card().classes("gap-3"):
+            ui.label("退出 Jiuwen Symbiosis？").classes("text-base font-bold")
+            ui.label("将关闭本应用（后台服务一并停止）。重新打开请再次点击桌面图标。").classes("text-sm")
+            with ui.row().classes("self-end gap-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button("退出", on_click=self._do_quit).props("color=negative")
+        return dialog
+
+    def _confirm_quit(self) -> None:
+        """点「退出」:运行中先拦一下(避免中途杀掉真机任务),否则弹确认框。"""
+        if self._state.is_busy():
+            ui.notify("有任务正在运行，请先到「运行」页点「■ 停止」再退出。", type="warning")
+            return
+        self._quit_dialog.open()
+
+    def _do_quit(self) -> None:
+        """确认退出:先关确认框、亮「已关闭」、尝试关标签页,延时后再停服务器。
+
+        ``app.shutdown()`` 会立刻断开与浏览器的连接,之后任何 UI 更新都送不到;所以先把
+        「已关闭」提示 + ``window.close()`` 发出去,再用 ``ui.timer`` 延时停服务器。标签页能
+        否真关取决于浏览器(手动打开的标签多数会拦脚本关闭,拦了就靠「已关闭」提示)。
+        """
+        self._quit_dialog.close()
+        self._bye_dialog.open()
+        ui.run_javascript("window.close()")
+        ui.timer(0.6, app.shutdown, once=True)
 
     # ------------------------------------------------------------------ 导航
     def _goto(self, tab: object) -> None:
@@ -86,6 +118,14 @@ class Layout:
             ui.notify("已有任务在运行,请等待其结束或先停止。", type="warning")
             return
         self._state.current_task = task_key
+        # 真机运行前先把已下好的本地视觉模型喂给检测器(避免它去 huggingface.co 联网下载
+        # 933MB 卡住);找不到就直接展示「错误诊断」引导用户定位/换镜像,而非空跑到超时。
+        if not self._state.mock:
+            missing = self._state.prime_detector_models(task_key)
+            if missing:
+                self._goto(self._run_tab)
+                self._run.show_model_help(missing)
+                return
         task = registry.get_task(task_key)
         model = self._state.config_for_task(task_key)
         engine = RunEngine(task, model.data, mock=self._state.mock, workspace=self._state.workspace)
@@ -100,6 +140,24 @@ class Layout:
     def _set_workspace(self, workspace: str) -> None:
         self._state.workspace = workspace
         self._history.set_workspace(workspace)
+
+    # ------------------------------------------------------------------ 弹窗构建
+    @staticmethod
+    def _build_about_dialog() -> ui.dialog:
+        """居中矩形「关于」弹窗(替代底部滑出的通知条)。"""
+        with ui.dialog() as dialog, ui.card().classes("max-w-md gap-3"):
+            ui.label(APP_NAME).classes("text-lg font-bold")
+            ui.label(ABOUT_TEXT).classes("text-sm leading-relaxed whitespace-pre-wrap")
+            ui.button("了解", on_click=dialog.close).props("flat").classes("self-end")
+        return dialog
+
+    @staticmethod
+    def _build_bye_dialog() -> ui.dialog:
+        """退出后的「已关闭」提示:shutdown 会立即断连,先亮这句,避免页面看起来像卡死。"""
+        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
+            ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
+            ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
+        return dialog
 
 
 def build_layout(state: AppState) -> Layout:

@@ -9,9 +9,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from jiuwensymbiosis.gui import registry
+from jiuwensymbiosis.gui import local_models, registry
 from jiuwensymbiosis.gui.config_model import ConfigModel
 from jiuwensymbiosis.gui.run_engine import RunEngine, default_workspace
 from jiuwensymbiosis.utils.logging import get_logger
@@ -48,6 +49,10 @@ class AppState:
         # 默认开启轨迹记录,让「历史」页开箱即用。
         if model.get("agent.enable_tracing") is None:
             model.set("agent.enable_tracing", True)
+        # 任务指令:配置未提供 prompt 时(piper.yaml 任务无关化后不含 prompt),用任务的默认
+        # 指令预填,让「配置 → 基础」的「任务指令」框开箱即有内容(用户可改;不改就用它)。
+        if not model.get("env.cfg.prompt"):
+            model.set("env.cfg.prompt", task.default_query)
         self._configs[task_key] = model
         return model
 
@@ -62,3 +67,33 @@ class AppState:
 
     def is_busy(self) -> bool:
         return self.engine is not None and self.engine.is_running()
+
+    def prime_detector_models(self, task_key: str) -> list[str]:
+        """真机运行前把已下好的本地视觉模型目录喂给检测器,返回仍缺失的模型名。
+
+        检测器的 ``gdino_model_id`` / ``sam2_model_id`` 优先读同名环境变量;指向本地快照目录
+        可直接离线加载,绕过「联网下载 / 已缓存却仍在线校验」的卡顿。任务不含视觉检测器、或
+        用户已自行设过环境变量(如经诊断页)则不干预。
+        """
+        servers = self.config_for_task(task_key).data.get("api_servers")
+        if not isinstance(servers, list):
+            return []
+        detector = next(
+            (s for s in servers if isinstance(s, dict) and "grounding_dino" in str(s.get("_target_", "")).lower()),
+            None,
+        )
+        if detector is None:
+            return []  # 该任务不使用视觉检测器
+        needed = [("GroundingDINO", "GDINO_MODEL_ID", local_models.GDINO_REPO, local_models.looks_like_gdino_dir)]
+        if detector.get("use_sam2", True):
+            needed.append(("SAM2", "SAM2_MODEL_ID", local_models.SAM2_REPO, local_models.looks_like_sam2_dir))
+        missing: list[str] = []
+        for name, env_var, repo_id, validator in needed:
+            if os.environ.get(env_var):
+                continue  # 用户已指定,尊重
+            found = local_models.detect_local_model(repo_id, validator)
+            if found is not None:
+                os.environ[env_var] = str(found)
+            else:
+                missing.append(name)
+        return missing
