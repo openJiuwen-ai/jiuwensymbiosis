@@ -76,21 +76,26 @@ class RunView:
         )
         self._banner.set_visibility(False)
 
+        # 相机框固定高度(不随有/无图片跳变);内层 <img> 用 object-fit:contain 等比缩放、
+        # 不裁剪、不拉伸,空缺处用 #111 补齐。高度用 vh 随窗口自适应,给展开的「运行详情」
+        # 留出空间——想更大/更小只改这一个 42vh。
+        ui.add_head_html("<style>.jw-cam img{object-fit:contain;}</style>")
         with ui.row().classes("w-full no-wrap gap-4"):
-            with ui.column().classes("w-3/5 gap-1"):
+            with ui.column().classes("w-1/3 gap-1"):
                 self._camera = (
-                    ui.interactive_image().classes("w-full rounded").style("background:#111; min-height:320px;")
+                    ui.interactive_image().classes("w-full rounded jw-cam").style("background:#111; height:42vh;")
                 )
                 self._live_btn = ui.button("↩ 回到实时画面", on_click=self._back_to_live).props("flat dense")
                 self._live_btn.set_visibility(False)
                 self._narration = (
                     ui.label("—").classes("w-full text-center font-bold").style("font-size:16px; padding:6px;")
                 )
-            with ui.column().classes("w-2/5 gap-1"):
+            with ui.column().classes("w-2/3 gap-1"):
                 ui.label("执行步骤(点击展开原始细节):").classes("text-sm text-gray-600")
-                with ui.scroll_area().classes("w-full h-64 border rounded"):
+                # 与相机框一致用 vh 固定高度,画面比例协调;内容超出时框内自带滚动条。
+                with ui.scroll_area().classes("w-full border rounded").style("height:30vh"):
                     self._timeline = ui.column().classes("w-full gap-1")
-                with ui.scroll_area().classes("w-full h-40 border rounded p-2"):
+                with ui.scroll_area().classes("w-full border rounded p-2").style("height:12vh"):
                     self._detail = ui.label("点击左侧某一步查看原始工具调用与参数…").classes(
                         "whitespace-pre-wrap font-mono text-xs text-gray-700"
                     )
@@ -103,9 +108,9 @@ class RunView:
                 self._diag_tab = ui.tab("错误诊断")
             with ui.tab_panels(self._tabs, value=log_tab).classes("w-full"):
                 with ui.tab_panel(log_tab):
-                    self._log = ui.log(max_lines=1000).classes("w-full h-56 font-mono text-xs")
+                    self._log = ui.log(max_lines=1000).classes("w-full font-mono text-xs").style("height:15vh")
                 with ui.tab_panel(safety_tab):
-                    self._safety = ui.log(max_lines=400).classes("w-full h-56 font-mono text-xs")
+                    self._safety = ui.log(max_lines=400).classes("w-full font-mono text-xs").style("height:15vh")
                 with ui.tab_panel(self._diag_tab):
                     self._build_diagnosis()
 
@@ -145,8 +150,33 @@ class RunView:
         self._running = True
         self._t0 = time.monotonic()
         self._set_badge("运行中")
+        # 首次运行要连接硬件、拉起检测服务、编译动作序列,第一条指令出现前会有空档;
+        # 先在当前动作行给出加载提示,第一步的叙述到达后自动替换。
+        self._narration.set_text("加载中，请稍等…")
         self._stop_btn.enable()
         engine.start()
+
+    def show_model_help(self, missing: list[str]) -> None:
+        """真机运行前发现视觉模型缺失:直接展示「错误诊断」的自动检测/镜像/填目录,而非空跑到超时。"""
+        self._reset()
+        self._set_badge("未完成")
+        names = "、".join(missing)
+        self._narration.set_text(
+            f"视觉检测模型未就绪({names})。请在下方「错误诊断」用「自动检测」定位本机已下好的模型目录、"
+            "或「一键更换」国内镜像后,重新点击「运行」。"
+        )
+        diag = Diagnosis(
+            title="视觉检测模型未就绪",
+            cause=f"未在本机缓存找到 {names};直接联网下载 GroundingDINO/SAM2 可能很慢或卡住(连不上 huggingface.co)。",
+            steps=(
+                "点「自动检测」在本机缓存里定位已下好的模型目录,确认后点「使用这些地址」。",
+                "或点「一键更换」切到国内镜像重新下载。",
+            ),
+            fixes=(FIX_USE_LOCAL_MODEL, FIX_USE_HF_MIRROR),
+        )
+        self._show_diagnosis(diag)
+        self._drawer.open()
+        self._tabs.set_value(self._diag_tab)
 
     def _reset(self) -> None:
         self._rows.clear()

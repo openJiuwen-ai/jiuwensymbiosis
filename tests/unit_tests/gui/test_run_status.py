@@ -30,6 +30,13 @@ def test_outcome_success_is_green_status():
     assert "完成:好了" in outcome.narration
 
 
+def test_outcome_success_without_summary_drops_none_suffix():
+    outcome = run_status.outcome_from_result({"ok": True, "result": {"result_type": "answer", "output": None}})
+    assert outcome.status == "成功"
+    assert outcome.narration == "完成"
+    assert "None" not in outcome.narration
+
+
 def test_outcome_max_iterations_is_incomplete_not_success():
     outcome = run_status.outcome_from_result(
         {"ok": True, "result": {"result_type": "error", "output": "Max iterations reached without completion"}}
@@ -51,3 +58,28 @@ def test_outcome_failure_flags_diagnosis():
     outcome = run_status.outcome_from_result({"ok": False, "error": "boom"})
     assert outcome.status == "失败"
     assert outcome.is_failure is True
+
+
+def test_outcome_fast_path_step_failure_is_not_success():
+    # fast 结果形状：外层 ok=True(没抛异常)，但内层 steps 有 failed → 不能显示成功。
+    result = {
+        "ok": True,
+        "result": {
+            "ok": False,
+            "steps_done": 8,
+            "steps": [
+                {"i": 6, "op": "goto_xyzr", "ok": True},
+                {"i": 7, "op": "get_grasp_info_simple", "ok": False, "reason": "no_valid_depth"},
+            ],
+        },
+    }
+    outcome = run_status.outcome_from_result(result)
+    assert outcome.status == "未完成"  # 非绿色「成功」
+    assert outcome.status != "成功" and not outcome.narration.startswith("完成")
+    assert "第 7 步" in outcome.narration and "no_valid_depth" in outcome.narration
+
+
+def test_outcome_fast_path_success_is_green():
+    result = {"ok": True, "result": {"ok": True, "steps_done": 13, "steps": [{"i": 0, "op": "home", "ok": True}]}}
+    outcome = run_status.outcome_from_result(result)
+    assert outcome.status == "成功" and outcome.narration == "完成"
