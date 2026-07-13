@@ -259,7 +259,19 @@ def run_sequence(
                 if not res.get("ok"):
                     raise RuntimeError(res.get("reason") or f"{step.op} failed")
                 result = res.get("result")
-                if step.bind and isinstance(result, dict) and result.get("ok"):
+                if step.bind:
+                    # A bind step must yield a usable detection; a detection that
+                    # ran but returned ok=False (e.g. no valid depth at the target)
+                    # would otherwise silently skip the bind and let a later
+                    # "<bind>.field" reference reach a motion tool unresolved
+                    # (a cryptic "str + float" crash). Abort here with the real cause.
+                    if not (isinstance(result, dict) and result.get("ok")):
+                        reason = result.get("reason", "unknown") if isinstance(result, dict) else "no result"
+                        target = params.get("object_name", step.bind)
+                        raise RuntimeError(
+                            f"detection for {target!r} produced no usable result (reason={reason}); "
+                            f"later steps read '{step.bind}.<field>' — aborting instead of crashing downstream"
+                        )
                     env[step.bind] = normalize_detection(result)
                 if step.op in _GRIP_CLOSE_OPS:
                     holding = True
