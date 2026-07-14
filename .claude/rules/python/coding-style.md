@@ -84,5 +84,10 @@ subclassed with additional fields. See `skills/python-patterns`.
   resort. First fix the lint issue. If justified, use the scoped form with
   the rule code **and** a reason — `# noqa: C408  # ...` — never a bare
   `# noqa` (hides unrelated violations). Keep ≤120 cols.
+- **Instance method that never uses `self`/`cls`** — decorate it
+  `@staticmethod` (or `@classmethod`). The CI check **G.CLS.07** flags
+  methods that don't access the instance. Put `@staticmethod` helpers at the
+  end of the class (match `rails/safety.py`, `voice/tts.py`, `gui/bridge.py`),
+  not interleaved with instance methods.
 
 See `skills/python-patterns` for correct patterns and detailed examples.

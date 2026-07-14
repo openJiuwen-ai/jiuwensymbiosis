@@ -31,6 +31,7 @@ TOOL_LABELS: dict[str, str] = {
     "get_pose": "读取当前位姿",
     "get_home_pose": "读取初始位姿",
     "get_grasp_info_simple": "识别并定位物体",
+    "track_detect": "识别并定位物体",
     "analyze_scene": "观察场景",
     "pixel_to_base_xyz": "计算物体坐标",
     "open_gripper": "张开夹爪",

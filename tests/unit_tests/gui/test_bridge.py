@@ -90,6 +90,91 @@ async def test_non_motion_tool_has_no_frame(session):
     assert [e[0] for e in emitter.events] == ["start", "narration", "finish"]
 
 
+class _ToolOutput:
+    """openjiuwen ToolOutput 的最小替身:工具没抛异常、以 success/内层结果标记失败。"""
+
+    def __init__(self, success: bool, error: str = "", data: Any = None) -> None:
+        self.success = success
+        self.error = error
+        self.data = data
+
+
+async def test_structured_failure_result_marks_step_failed(session):
+    """工具没抛异常但返回 {ok: False}(如检测未命中,fast 路径常见)应标失败,而非打勾。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    ctx = _Ctx(
+        _Inputs("get_grasp_info_simple", {"object_name": "red block"}, tool_result={"ok": False, "reason": "miss"})
+    )
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is False
+
+
+async def test_tooloutput_object_failure_marks_step_failed_with_error(session):
+    """真实运行返回的是 ToolOutput(success=False, error=...) 对象(非 dict);也要标失败并带错误。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    out = _ToolOutput(success=False, error="[Piper] EndPose target OUT OF REACH")
+    ctx = _Ctx(_Inputs("goto_xyzr", {"x": 401.5, "y": -201.7, "z": 395.3}, tool_result=out))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is False
+    assert "OUT OF REACH" in finish["error"]
+
+
+async def test_tool_call_ok_but_inner_result_not_ok_marks_step_failed(session):
+    """工具调用成功(success=True)但被包装的 api 结果内层 ok=False(如检测 no_valid_depth):
+    RobotControlTool 把 api 返回放在 data['result'] 里,该步也应标失败。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    out = _ToolOutput(
+        success=True,
+        data={"action": "get_grasp_info_simple", "result": {"ok": False, "reason": "no_valid_depth"}},
+    )
+    ctx = _Ctx(_Inputs("get_grasp_info_simple", {"object_name": "black box"}, tool_result=out))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is False
+    assert "no_valid_depth" in finish["error"]
+
+
+async def test_tool_call_with_inner_result_ok_stays_success(session):
+    """内层结果 ok=True 时仍算成功,不误判。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    out = _ToolOutput(success=True, data={"action": "get_grasp_info_simple", "result": {"ok": True, "object": "box"}})
+    ctx = _Ctx(_Inputs("get_grasp_info_simple", {"object_name": "box"}, tool_result=out))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is True
+
+
+async def test_non_dict_result_defaults_ok_true(session):
+    """返回非 dict / 无 ok 键时按成功处理(默认 True)。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    ctx = _Ctx(_Inputs("get_pose", {}, tool_result="0.1 0.2 0.3"))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is True
+
+
 async def test_safety_rejection_emits_failed_step_and_safety_event(session):
     emitter = _Emitter()
     rail = UIBridgeRail(emitter, session)

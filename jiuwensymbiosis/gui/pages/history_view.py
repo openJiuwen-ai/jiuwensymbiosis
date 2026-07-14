@@ -83,14 +83,9 @@ class HistoryView:
         if self._selected is None:
             ui.notify("请先选择一条轨迹。", type="warning")
             return
-        try:
-            data = json.loads(self._selected.read_text(encoding="utf-8"))
-            from jiuwensymbiosis.agent.trace_html import render_trace_html
+        # 经已在跑的本机 HTTP 服务打开(而非 file://:后者会被部分浏览器沙箱拒绝)。渲染在
+        # /replay 路由里按需完成;这里只告诉路由该用哪个工作区,再让浏览器指过去。
+        from jiuwensymbiosis.gui import app as gui_app
 
-            html = render_trace_html(data, trace_path=self._selected)
-            out_path = self._selected.with_suffix(".html")
-            out_path.write_text(html, encoding="utf-8")
-        except (OSError, json.JSONDecodeError, ImportError) as exc:
-            ui.notify(f"打开失败:{exc}", type="negative")
-            return
-        webbrowser.open(out_path.as_uri())
+        gui_app.set_replay_workspace(self._workspace)
+        webbrowser.open(gui_app.replay_url(self._selected.stem))

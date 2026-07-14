@@ -49,6 +49,34 @@ def _extract(ctx: Any) -> tuple[str, dict]:
     return humanize.unwrap_robot_control(name, args)
 
 
+def _result_ok_error(result: Any) -> tuple[bool, str]:
+    """从工具返回值判定这一步成功与否 + 错误串。
+
+    工具未抛异常≠成功,且分两层失败,都要认(否则失败步会误打 ✅):
+    1. **工具调用本身失败**:越界/驱动报错等 → ``ToolOutput.success`` 为假(``.error`` 里带因)。
+    2. **调用成功但结果自报失败**:检测跑了却没有可用结果(``no_valid_depth`` 等)→
+       ``success`` 为真,但被包装的 api 返回内层 ``ok`` 为假。``RobotControlTool`` 把 api 返回
+       放在 ``data["result"]``(见 robot_control_tool.invoke),剥出来看内层 ``ok``。
+
+    兼容 ``ToolOutput`` 对象(``.success`` / ``.error`` / ``.data``)与直接返回的 dict。取不到
+    失败标记时按成功处理(默认 True),不给正常步骤误判失败。
+    """
+    if isinstance(result, dict):
+        ok = result.get("ok", result.get("success", True))
+        err = result.get("error") or result.get("reason") or ""
+        data = result.get("data")
+    else:
+        ok = getattr(result, "success", getattr(result, "ok", True))
+        err = getattr(result, "error", "") or ""
+        data = getattr(result, "data", None)
+    if not ok:
+        return False, str(err)
+    inner = data.get("result") if isinstance(data, dict) and "result" in data else data
+    if isinstance(inner, dict) and inner.get("ok") is False:
+        return False, str(inner.get("reason") or inner.get("error") or "")
+    return True, str(err)
+
+
 class UIBridgeRail(AgentRail):
     """把工具调用事件桥接到界面 emitter。
 
@@ -98,23 +126,24 @@ class UIBridgeRail(AgentRail):
         self._emit_started(self._counter, name, params)
 
     async def after_tool_call(self, ctx: Any) -> None:
-        """一步成功:发出"步骤完成",并在运动/抓取后刷新相机画面。"""
+        """一步结束(未抛异常):按返回值判成败发出"步骤完成",运动/抓取后刷新相机画面。"""
         name, params = _extract(ctx)
         idx, dur = self._close(ctx)
         result = getattr(getattr(ctx, "inputs", None), "tool_result", None)
-        self._safe(
-            self.emitter.step_finished,
-            {
-                "index": idx,
-                "tool": name,
-                "label": humanize.friendly_label(name, params),
-                "ok": True,
-                "duration_s": dur,
-                "output": summarize_output(result),
-                "params": params,
-                "assistant_text": self._turn_text,
-            },
-        )
+        ok, err = _result_ok_error(result)
+        info = {
+            "index": idx,
+            "tool": name,
+            "label": humanize.friendly_label(name, params),
+            "ok": ok,
+            "duration_s": dur,
+            "output": summarize_output(result),
+            "params": params,
+            "assistant_text": self._turn_text,
+        }
+        if not ok and err:
+            info["error"] = err  # 失败步详情按 error 展示(与 on_tool_exception 一致)
+        self._safe(self.emitter.step_finished, info)
         if name in humanize.FRAME_AFTER_TOOLS:
             self._grab_frame()
 

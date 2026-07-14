@@ -52,6 +52,10 @@ def test_not_busy_before_any_run():
     assert AppState().is_busy() is False
 
 
+def test_default_is_real_hardware_not_mock():
+    assert AppState().mock is False  # 默认真机模式(点运行即尝试连接机械臂)
+
+
 def _detector_config(use_sam2=True):
     return ConfigModel.from_dict(
         {"api_servers": [{"_target_": "x.grounding_dino_sam2_server.main", "use_sam2": use_sam2}]}

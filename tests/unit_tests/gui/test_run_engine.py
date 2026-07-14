@@ -57,6 +57,20 @@ def test_mock_run_frames_are_encoded_data_uris(tmp_path):
     assert all(isinstance(uri, str) and uri.startswith("data:image/jpeg;base64,") for uri in frames)
 
 
+def test_clone_reuses_same_params_with_independent_config(tmp_path):
+    task = registry.get_task("pick_box")
+    config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}}
+    engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
+
+    twin = engine.clone()
+
+    assert twin is not engine
+    assert twin._task is task and twin._mock is True and twin._workspace == str(tmp_path)
+    assert twin._config.data == engine._config.data
+    twin._config.set("env.cfg.prompt", "改了")  # 深拷贝:动克隆不影响原引擎
+    assert engine._config.get("env.cfg.prompt") == "把黑盒放到白盒上"
+
+
 def test_drain_is_empty_before_start(tmp_path):
     engine = RunEngine(registry.get_task("pick_box"), {}, mock=True, workspace=str(tmp_path))
     assert engine.drain() == []

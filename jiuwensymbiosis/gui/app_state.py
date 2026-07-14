@@ -28,7 +28,7 @@ class AppState:
     def __init__(self, workspace: str | None = None) -> None:
         self.workspace = workspace or default_workspace()
         self.current_task: str | None = None
-        self.mock = True
+        self.mock = False
         self.engine: RunEngine | None = None
         self._configs: dict[str, ConfigModel] = {}
 
