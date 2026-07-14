@@ -32,10 +32,13 @@ __all__ = ["RunView"]
 class RunView:
     """实时监看页。``on_stop`` 停止本次运行,``on_fix`` 把一键修复补丁沉淀进配置。"""
 
-    def __init__(self, *, on_stop: Callable[[], None], on_fix: Callable[[dict], None]) -> None:
+    def __init__(
+        self, *, on_stop: Callable[[], None], on_fix: Callable[[dict], None], on_rerun: Callable[[], None]
+    ) -> None:
         """搭建状态条、主视觉区、步骤时间线与技术抽屉,并挂上拉取事件的定时器。"""
         self._on_stop = on_stop
         self._on_fix = on_fix
+        self._on_rerun = on_rerun
         self._engine: Any = None
         self._running = False
         self._t0 = 0.0
@@ -70,6 +73,8 @@ class RunView:
             self._timer_label = ui.label("00:00").classes("font-mono")
             self._stop_btn = ui.button("■ 停止", on_click=self._on_stop_clicked).props("color=negative")
             self._stop_btn.disable()
+            self._rerun_btn = ui.button("↻ 重新执行", on_click=self._on_rerun_clicked).props("color=primary")
+            self._rerun_btn.disable()
 
         self._banner = (
             ui.label().classes("w-full").style("background:#fff3cd; color:#7a5b00; padding:6px; border-radius:4px;")
@@ -179,6 +184,7 @@ class RunView:
         self._tabs.set_value(self._diag_tab)
 
     def _reset(self) -> None:
+        self._rerun_btn.disable()
         self._rows.clear()
         self._details.clear()
         self._step_frames.clear()
@@ -257,6 +263,7 @@ class RunView:
     def _on_run_finished(self, result: dict) -> None:
         self._running = False
         self._stop_btn.disable()
+        self._rerun_btn.enable()  # 任何终态(成功/失败/未完成/已停止)都可同配置重跑
         outcome = outcome_from_result(result)
         self._set_badge(outcome.status)
         self._narration.set_text(outcome.narration)
@@ -293,6 +300,10 @@ class RunView:
         self._stop_btn.disable()
         self._narration.set_text("正在停止…")
         self._on_stop()
+
+    def _on_rerun_clicked(self) -> None:
+        self._rerun_btn.disable()
+        self._on_rerun()
 
     # ------------------------------------------------------------------ 错误诊断
     def _show_diagnosis(self, diag: Diagnosis) -> None:

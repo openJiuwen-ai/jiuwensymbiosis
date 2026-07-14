@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwensymbiosis.gui import humanize
+
 __all__ = ["STATUS_COLORS", "Outcome", "incomplete_message", "outcome_from_result"]
 
 # 状态徽章配色(与运行页徽章一致)。「未完成」用橙红,明确区别于绿色「成功」。
@@ -62,8 +64,11 @@ def outcome_from_result(result: dict[str, Any]) -> Outcome:
         failed = next((s for s in payload.get("steps", []) if isinstance(s, dict) and not s.get("ok")), None)
         if failed is not None:
             reason = str(failed.get("reason", "")).strip()
-            head = f"第 {failed.get('i')} 步（{failed.get('op', '')}）失败"
-            return Outcome("未完成", f"未完成:{head}：{reason}" if reason else f"未完成:{head}。", False)
+            # 不用 fast 内部步序号:它 0 起、且含不进右侧时间线的 track_detect,与时间线编号对不上。
+            # 改为描述失败的动作(与时间线同一套友好名),编号交给时间线自己。
+            label = humanize.friendly_label(str(failed.get("op", "")), {})
+            head = f"{label} 这一步失败"
+            return Outcome("未完成", f"未完成:{head}:{reason}" if reason else f"未完成:{head}。", False)
         return Outcome("未完成", "未完成:动作序列未跑完。", False)
     rtype = payload.get("result_type") if isinstance(payload, dict) else ""
     summary = payload.get("output") if isinstance(payload, dict) else payload

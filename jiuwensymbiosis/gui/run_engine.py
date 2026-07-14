@@ -91,6 +91,14 @@ class RunEngine:
         self._thread: Thread | None = None
         self._stop = False
 
+    def clone(self) -> RunEngine:
+        """以同样的任务/配置/模拟开关/工作区新建一个引擎(供运行页「重新执行」)。
+
+        用引擎自身持有的参数而非当前界面状态,保证「同配置重跑」——与运行后用户是否又改了
+        配置、切了模拟开关无关。配置深拷贝,互不影响。
+        """
+        return RunEngine(self._task, copy.deepcopy(self._config.data), mock=self._mock, workspace=self._workspace)
+
     # -------------------------------------------------- UIBridgeRail emitter 接口
     def step_started(self, info: dict) -> None:
         self._events.put(("step_started", info))

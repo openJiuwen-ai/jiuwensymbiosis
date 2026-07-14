@@ -104,6 +104,22 @@ Mirror the source path in test paths:
 | `jiuwensymbiosis/rails/safety_rail.py` | `tests/unit_tests/rails/test_safety_rail.py` |
 | `jiuwensymbiosis/adapters/piper/api.py` | `tests/unit_tests/adapters/test_piper_api.py` |
 
+## Env Vars Written by Code-Under-Test
+
+If the code under test writes `os.environ[...]` directly (not via
+`monkeypatch`), clean it up yourself — otherwise it leaks into later tests
+(ordering-dependent failures, a CI finding):
+
+```python
+missing = state.prime_detector_models("pick_box")
+gdino = os.environ.pop("GDINO_MODEL_ID", None)  # pop BEFORE asserting
+assert gdino == str(snap)
+```
+
+Do **not** use `monkeypatch.delenv` for this: it records the *code-written*
+value and re-sets it at teardown, so the var still leaks. Pop **before** the
+asserts so a failing assert can't skip the cleanup.
+
 ## Credentials in Tests
 
 Never hardcode real model API keys or hardware endpoints. Use `MockModel`

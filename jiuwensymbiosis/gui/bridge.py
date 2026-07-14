@@ -49,6 +49,23 @@ def _extract(ctx: Any) -> tuple[str, dict]:
     return humanize.unwrap_robot_control(name, args)
 
 
+def _result_ok_error(result: Any) -> tuple[bool, str]:
+    """从工具返回值判定这一步成功与否 + 错误串。
+
+    工具未抛异常≠成功:失败常以「携带成功标记的返回值」汇报(如越界、检测未命中,
+    fast 路径尤甚)。兼容两种形态——openjiuwen 的 ``ToolOutput``(``.success`` / ``.error``
+    属性)与直接返回的 dict(``ok`` / ``success`` 键,原因在 ``error`` / ``reason``)。
+    取不到成功标记时按成功处理(默认 True),不给正常步骤误判失败。
+    """
+    if isinstance(result, dict):
+        ok = result.get("ok", result.get("success", True))
+        err = result.get("error") or result.get("reason") or ""
+    else:
+        ok = getattr(result, "success", getattr(result, "ok", True))
+        err = getattr(result, "error", "") or ""
+    return bool(ok), str(err)
+
+
 class UIBridgeRail(AgentRail):
     """把工具调用事件桥接到界面 emitter。
 
@@ -98,23 +115,24 @@ class UIBridgeRail(AgentRail):
         self._emit_started(self._counter, name, params)
 
     async def after_tool_call(self, ctx: Any) -> None:
-        """一步成功:发出"步骤完成",并在运动/抓取后刷新相机画面。"""
+        """一步结束(未抛异常):按返回值判成败发出"步骤完成",运动/抓取后刷新相机画面。"""
         name, params = _extract(ctx)
         idx, dur = self._close(ctx)
         result = getattr(getattr(ctx, "inputs", None), "tool_result", None)
-        self._safe(
-            self.emitter.step_finished,
-            {
-                "index": idx,
-                "tool": name,
-                "label": humanize.friendly_label(name, params),
-                "ok": True,
-                "duration_s": dur,
-                "output": summarize_output(result),
-                "params": params,
-                "assistant_text": self._turn_text,
-            },
-        )
+        ok, err = _result_ok_error(result)
+        info = {
+            "index": idx,
+            "tool": name,
+            "label": humanize.friendly_label(name, params),
+            "ok": ok,
+            "duration_s": dur,
+            "output": summarize_output(result),
+            "params": params,
+            "assistant_text": self._turn_text,
+        }
+        if not ok and err:
+            info["error"] = err  # 失败步详情按 error 展示(与 on_tool_exception 一致)
+        self._safe(self.emitter.step_finished, info)
         if name in humanize.FRAME_AFTER_TOOLS:
             self._grab_frame()
 

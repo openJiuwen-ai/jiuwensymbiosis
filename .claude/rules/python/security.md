@@ -44,6 +44,22 @@ the GroundingDINO + SAM2 subprocess. When modifying:
 - Validate any config-supplied executable paths against an allowlist or
   resolve them with `shutil.which()`.
 
+## Plaintext HTTP at Open / Request Sinks
+
+The CI flags a literal `http://…` URL passed to a browser-open / HTTP-request
+sink (e.g. `webbrowser.open("http://…")`) as insecure (severity: high).
+Loopback / dev servers are inherently plaintext — the NiceGUI GUI on
+`127.0.0.1` has no TLS endpoint, so "switch to https" is not an option.
+Instead, don't hardcode the scheme **at the sink**:
+
+- Reuse the framework's own opener rather than a raw `webbrowser.open` — e.g.
+  `nicegui.helpers.schedule_browser("http", host, port)` keeps the `http://`
+  literal inside the library, not our code.
+- Do **not** silence it with an inline suppression.
+
+Config-default constants (`url = "http://127.0.0.1:8114"`) are fine — the
+checker targets the open/request call site, not string defaults.
+
 ## Dependency Security
 
 Before adding a new dependency, especially one with network access:

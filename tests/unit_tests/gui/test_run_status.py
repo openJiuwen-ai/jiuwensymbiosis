@@ -76,7 +76,25 @@ def test_outcome_fast_path_step_failure_is_not_success():
     outcome = run_status.outcome_from_result(result)
     assert outcome.status == "未完成"  # 非绿色「成功」
     assert outcome.status != "成功" and not outcome.narration.startswith("完成")
-    assert "第 7 步" in outcome.narration and "no_valid_depth" in outcome.narration
+    # 不再引用 fast 内部步序号(0 起、含不进时间线的 track_detect,和右侧时间线对不上);
+    # 改为描述失败的动作(与时间线同一套友好名)+ 原因。
+    assert "第 7 步" not in outcome.narration
+    assert "识别并定位物体" in outcome.narration and "no_valid_depth" in outcome.narration
+
+
+def test_outcome_fast_path_track_detect_failure_names_action_and_reason():
+    result = {
+        "ok": True,
+        "result": {
+            "ok": False,
+            "steps_done": 1,
+            "steps": [{"i": 0, "op": "track_detect", "ok": False, "reason": "target 'red block' not detected"}],
+        },
+    }
+    outcome = run_status.outcome_from_result(result)
+    assert outcome.status == "未完成"
+    assert "识别并定位物体" in outcome.narration  # 友好动作名
+    assert "red block" in outcome.narration  # reason 里的物体名对用户可见
 
 
 def test_outcome_fast_path_success_is_green():

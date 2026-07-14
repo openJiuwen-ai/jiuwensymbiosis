@@ -42,7 +42,7 @@ class HomeView:
             ).props("outlined dense")
             self._caps = ui.label("").classes("text-green-700 text-sm")
             ui.space()
-            self._mock = ui.switch("🧪 模拟模式(不连接硬件)", value=True, on_change=lambda e: self._set_mock(e.value))
+            self._mock = ui.switch("🧪 模拟模式(不连接硬件)", value=False, on_change=lambda e: self._set_mock(e.value))
         self._current = ui.label("").classes("text-blue-600 font-bold")
         ui.label("点任务选择它;再用下方的「运行」「配置」操作当前选中的任务。").classes("text-gray-500 text-sm")
         with ui.scroll_area().classes("w-full grow border rounded"):
@@ -50,7 +50,7 @@ class HomeView:
         with ui.row().classes("gap-2"):
             self._run_btn = ui.button("▶ 运行", on_click=self._run_current).props("color=primary")
             self._cfg_btn = ui.button("⚙ 配置", on_click=self._config_current)
-        self._set_mock(True)
+        self._set_mock(False)
         self._refresh_cards()
 
     def is_mock(self) -> bool:
