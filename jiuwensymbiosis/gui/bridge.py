@@ -52,18 +52,29 @@ def _extract(ctx: Any) -> tuple[str, dict]:
 def _result_ok_error(result: Any) -> tuple[bool, str]:
     """从工具返回值判定这一步成功与否 + 错误串。
 
-    工具未抛异常≠成功:失败常以「携带成功标记的返回值」汇报(如越界、检测未命中,
-    fast 路径尤甚)。兼容两种形态——openjiuwen 的 ``ToolOutput``(``.success`` / ``.error``
-    属性)与直接返回的 dict(``ok`` / ``success`` 键,原因在 ``error`` / ``reason``)。
-    取不到成功标记时按成功处理(默认 True),不给正常步骤误判失败。
+    工具未抛异常≠成功,且分两层失败,都要认(否则失败步会误打 ✅):
+    1. **工具调用本身失败**:越界/驱动报错等 → ``ToolOutput.success`` 为假(``.error`` 里带因)。
+    2. **调用成功但结果自报失败**:检测跑了却没有可用结果(``no_valid_depth`` 等)→
+       ``success`` 为真,但被包装的 api 返回内层 ``ok`` 为假。``RobotControlTool`` 把 api 返回
+       放在 ``data["result"]``(见 robot_control_tool.invoke),剥出来看内层 ``ok``。
+
+    兼容 ``ToolOutput`` 对象(``.success`` / ``.error`` / ``.data``)与直接返回的 dict。取不到
+    失败标记时按成功处理(默认 True),不给正常步骤误判失败。
     """
     if isinstance(result, dict):
         ok = result.get("ok", result.get("success", True))
         err = result.get("error") or result.get("reason") or ""
+        data = result.get("data")
     else:
         ok = getattr(result, "success", getattr(result, "ok", True))
         err = getattr(result, "error", "") or ""
-    return bool(ok), str(err)
+        data = getattr(result, "data", None)
+    if not ok:
+        return False, str(err)
+    inner = data.get("result") if isinstance(data, dict) and "result" in data else data
+    if isinstance(inner, dict) and inner.get("ok") is False:
+        return False, str(inner.get("reason") or inner.get("error") or "")
+    return True, str(err)
 
 
 class UIBridgeRail(AgentRail):

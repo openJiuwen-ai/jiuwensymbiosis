@@ -91,12 +91,12 @@ async def test_non_motion_tool_has_no_frame(session):
 
 
 class _ToolOutput:
-    """openjiuwen ToolOutput 的最小替身:工具没抛异常、以 success 标记失败。"""
+    """openjiuwen ToolOutput 的最小替身:工具没抛异常、以 success/内层结果标记失败。"""
 
-    def __init__(self, success: bool, error: str = "") -> None:
+    def __init__(self, success: bool, error: str = "", data: Any = None) -> None:
         self.success = success
         self.error = error
-        self.data = None
+        self.data = data
 
 
 async def test_structured_failure_result_marks_step_failed(session):
@@ -127,6 +127,39 @@ async def test_tooloutput_object_failure_marks_step_failed_with_error(session):
     finish = next(d for k, d in emitter.events if k == "finish")
     assert finish["ok"] is False
     assert "OUT OF REACH" in finish["error"]
+
+
+async def test_tool_call_ok_but_inner_result_not_ok_marks_step_failed(session):
+    """工具调用成功(success=True)但被包装的 api 结果内层 ok=False(如检测 no_valid_depth):
+    RobotControlTool 把 api 返回放在 data['result'] 里,该步也应标失败。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    out = _ToolOutput(
+        success=True,
+        data={"action": "get_grasp_info_simple", "result": {"ok": False, "reason": "no_valid_depth"}},
+    )
+    ctx = _Ctx(_Inputs("get_grasp_info_simple", {"object_name": "black box"}, tool_result=out))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is False
+    assert "no_valid_depth" in finish["error"]
+
+
+async def test_tool_call_with_inner_result_ok_stays_success(session):
+    """内层结果 ok=True 时仍算成功,不误判。"""
+    emitter = _Emitter()
+    rail = UIBridgeRail(emitter, session)
+    out = _ToolOutput(success=True, data={"action": "get_grasp_info_simple", "result": {"ok": True, "object": "box"}})
+    ctx = _Ctx(_Inputs("get_grasp_info_simple", {"object_name": "box"}, tool_result=out))
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    finish = next(d for k, d in emitter.events if k == "finish")
+    assert finish["ok"] is True
 
 
 async def test_non_dict_result_defaults_ok_true(session):
