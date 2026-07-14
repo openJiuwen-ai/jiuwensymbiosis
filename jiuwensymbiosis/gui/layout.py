@@ -37,11 +37,14 @@ class Layout:
     def _build(self) -> None:
         about = self._build_about_dialog()
         self._quit_dialog = self._build_quit_dialog()
+        self._restart_dialog = self._build_restart_dialog()
         self._bye_dialog = self._build_bye_dialog()
+        self._restarting_dialog = self._build_restarting_dialog()
         with ui.header().classes("items-center justify-between"):
             ui.label(APP_NAME).classes("text-lg font-bold")
             with ui.row().classes("items-center gap-1"):
                 ui.button("关于", on_click=about.open).props("flat color=white")
+                ui.button("重启", on_click=self._confirm_restart).props("flat color=white")
                 ui.button("退出", on_click=self._confirm_quit).props("flat color=white")
 
         with ui.tabs().classes("w-full") as self._tabs:
@@ -73,12 +76,38 @@ class Layout:
                 ui.button("退出", on_click=self._do_quit).props("color=negative")
         return dialog
 
+    def _build_restart_dialog(self) -> ui.dialog:
+        """确认后重启整个应用:关停当前服务器并拉起一个新的(硬件/检测服务一并重连)。"""
+        with ui.dialog() as dialog, ui.card().classes("gap-3"):
+            ui.label("重启 Jiuwen Symbiosis？").classes("text-base font-bold")
+            ui.label("将关停当前应用并重新启动(硬件/检测服务一并重连)。浏览器会自动打开新页面。").classes("text-sm")
+            with ui.row().classes("self-end gap-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button("重启", on_click=self._do_restart).props("color=primary")
+        return dialog
+
     def _confirm_quit(self) -> None:
         """点「退出」:运行中先拦一下(避免中途杀掉真机任务),否则弹确认框。"""
         if self._state.is_busy():
             ui.notify("有任务正在运行，请先到「运行」页点「■ 停止」再退出。", type="warning")
             return
         self._quit_dialog.open()
+
+    def _confirm_restart(self) -> None:
+        """点「重启」:运行中先拦一下(避免中途杀掉真机任务),否则弹确认框。"""
+        if self._state.is_busy():
+            ui.notify("有任务正在运行，请先到「运行」页点「■ 停止」再重启。", type="warning")
+            return
+        self._restart_dialog.open()
+
+    def _do_restart(self) -> None:
+        """确认重启:拉起接替进程(它等本进程让出端口后自己起服务器),亮「正在重启」再延时关停本进程。"""
+        from jiuwensymbiosis.gui.app import spawn_replacement
+
+        self._restart_dialog.close()
+        self._restarting_dialog.open()
+        spawn_replacement()
+        ui.timer(0.8, app.shutdown, once=True)
 
     def _do_quit(self) -> None:
         """确认退出:先关确认框、亮「已关闭」、尝试关标签页,延时后再停服务器。
@@ -185,6 +214,14 @@ class Layout:
         with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
             ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
             ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
+        return dialog
+
+    @staticmethod
+    def _build_restarting_dialog() -> ui.dialog:
+        """重启中提示:shutdown 会立即断连,先亮这句,新页面稍候由接替进程自动打开。"""
+        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
+            ui.label("正在重启 Jiuwen Symbiosis…").classes("text-lg font-bold")
+            ui.label("新页面稍候自动打开,可关闭此标签页。").classes("text-sm text-gray-600")
         return dialog
 
 

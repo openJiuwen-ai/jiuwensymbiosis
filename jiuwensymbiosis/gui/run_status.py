@@ -30,11 +30,16 @@ STATUS_COLORS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Outcome:
-    """一次运行结束后的界面呈现:状态标签、叙述文案、是否需要展开错误诊断。"""
+    """一次运行结束后的界面呈现:状态标签、叙述文案、是否需要展开错误诊断。
+
+    ``detail`` 是详细原因(多为英文技术串):相机下方只显示简短的 ``narration``,``detail``
+    交给界面转入「错误诊断」+ 原始日志,避免长英文糊在主视觉区。
+    """
 
     status: str
     narration: str
     is_failure: bool
+    detail: str = ""
 
 
 def incomplete_message(summary: str) -> str:
@@ -64,12 +69,13 @@ def outcome_from_result(result: dict[str, Any]) -> Outcome:
         failed = next((s for s in payload.get("steps", []) if isinstance(s, dict) and not s.get("ok")), None)
         if failed is not None:
             reason = str(failed.get("reason", "")).strip()
-            # 不用 fast 内部步序号:它 0 起、且含不进右侧时间线的 track_detect,与时间线编号对不上。
-            # 改为描述失败的动作(与时间线同一套友好名),编号交给时间线自己。
+            # 相机下方只留简短「未完成」;失败的动作 + 原因(多为英文)放进 detail,由界面转交
+            # 「错误诊断」。动作名用与时间线同一套友好名,不引用 fast 内部步序号(0 起、含不进
+            # 时间线的 track_detect,与时间线编号对不上)。
             label = humanize.friendly_label(str(failed.get("op", "")), {})
-            head = f"{label} 这一步失败"
-            return Outcome("未完成", f"未完成:{head}:{reason}" if reason else f"未完成:{head}。", False)
-        return Outcome("未完成", "未完成:动作序列未跑完。", False)
+            detail = f"{label} 这一步失败:{reason}" if reason else f"{label} 这一步失败。"
+            return Outcome("未完成", "未完成", False, detail=detail)
+        return Outcome("未完成", "未完成", False, detail="动作序列未跑完。")
     rtype = payload.get("result_type") if isinstance(payload, dict) else ""
     summary = payload.get("output") if isinstance(payload, dict) else payload
     if rtype == "stopped":

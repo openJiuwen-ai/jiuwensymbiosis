@@ -91,6 +91,21 @@ _ARM_CAN = Diagnosis(
     cause="错误可能是源于连不上机械臂(CAN 接口没激活,或线没接好)。",
     steps=("确认 CAN 已激活、线缆已接;或先用「模拟模式」不接硬件跑一遍验证流程。",),
 )
+_NO_CAMERA = Diagnosis(
+    title="没读到相机画面",
+    cause="错误可能是源于相机没连上/没被识别到(没插好、被别的程序占用,或配置里相机序列号不对),视觉拿不到画面。",
+    steps=("确认相机已插好、未被其它程序占用;并在「配置」里核对相机序列号/分辨率后重试。",),
+)
+_NO_DETECTION = Diagnosis(
+    title="没识别到目标物体",
+    cause="错误可能是源于视觉没能识别/定位到目标物体(物体不在画面里、被遮挡,或深度/光照不佳),动作序列因此中止。",
+    steps=("确认目标物体在相机视野内、没被挡住、光照充足;必要时调整物体摆放或相机角度后重试。",),
+)
+_OUT_OF_REACH = Diagnosis(
+    title="目标超出机械臂可达范围",
+    cause="错误可能是源于目标位置超出了机械臂的可达空间或关节限位,动作被中止(机械臂已停在原地)。",
+    steps=("把目标移到机械臂工作范围内(更靠近基座)后重试;并确认标定/工作区设置正确。",),
+)
 _FALLBACK = Diagnosis(
     title="运行失败",
     cause="暂时无法自动判断具体原因。",
@@ -136,6 +151,12 @@ _RULES: tuple[tuple[_Matcher, Diagnosis], ...] = (
     ),
     (lambda err, both: _has(both, "out of memory", "cuda oom", "cublas_status_alloc_failed"), _GPU_OOM),
     (lambda err, both: _has(both, "can_left", "socketcan", "no such device", "serial", "can0"), _ARM_CAN),
+    (lambda err, both: _has(err, "out of reach", "exceeds_limit", "out_of_reach"), _OUT_OF_REACH),
+    # no_camera / detector_unavailable 必须排在「没识别到目标物体」之前:它们也含
+    # "produced no usable result" 子串,否则相机/检测器问题会被误诊成"物体没识别到"。
+    (lambda err, both: _has(both, "no_camera", "no camera"), _NO_CAMERA),
+    (lambda err, both: _has(both, "detector_unavailable"), _MODEL_NOT_READY),
+    (lambda err, both: _has(err, "produced no usable result", "not detected", "no_valid_depth"), _NO_DETECTION),
 )
 
 

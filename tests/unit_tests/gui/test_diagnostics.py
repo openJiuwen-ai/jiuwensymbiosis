@@ -70,6 +70,35 @@ def test_llm_endpoint_unreachable_not_confused_with_detector():
     assert "连不上" in d.title
 
 
+def test_detection_miss_is_no_detection_card():
+    # fast 路径检测未命中中止:错误诊断给中文卡,而非把英文糊在相机下方
+    d = diagnose(
+        "RuntimeError: detection for 'black box' produced no usable result (reason=no_valid_depth); "
+        "later steps read 'black_box.<field>' — aborting instead of crashing downstream"
+    )
+    assert d.title == "没识别到目标物体"
+    assert d.fixes == ()
+
+
+def test_out_of_reach_is_reach_card():
+    d = diagnose("RuntimeError: [Piper] EndPose target OUT OF REACH — Arm Status=TARGET_POS_EXCEEDS_LIMIT")
+    assert "可达" in d.title
+
+
+def test_no_camera_is_camera_card_not_no_detection():
+    # 相机没连上时 reason=no_camera 也被包进 "produced no usable result",不能误诊成"没识别到物体"
+    d = diagnose(
+        "RuntimeError: detection for 'black box' produced no usable result (reason=no_camera); aborting"
+    )
+    assert d.title == "没读到相机画面"
+
+
+def test_detector_unavailable_routes_to_model_not_ready():
+    d = diagnose("RuntimeError: detection for 'box' produced no usable result (reason=detector_unavailable); aborting")
+    assert "模型" in d.title
+    assert FIX_USE_LOCAL_MODEL in d.fixes
+
+
 def test_fallback_is_conservative():
     d = diagnose("some totally unexpected traceback with no known signature")
     assert d.title == "运行失败"

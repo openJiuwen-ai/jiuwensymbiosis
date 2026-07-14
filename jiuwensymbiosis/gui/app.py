@@ -18,7 +18,7 @@ from pathlib import Path
 from jiuwensymbiosis.gui import APP_NAME
 from jiuwensymbiosis.utils.logging import configure_logging
 
-__all__ = ["run", "clear_instance_marker", "set_replay_workspace", "replay_url"]
+__all__ = ["run", "clear_instance_marker", "spawn_replacement", "set_replay_workspace", "replay_url"]
 
 # 默认监听端口。仅绑定回环地址,不对外暴露。
 _DEFAULT_PORT = 8770
@@ -76,6 +76,20 @@ def clear_instance_marker() -> None:
 def _healthy_instance_marked(port: int) -> bool:
     """该端口是否有健康实例标记(供新启动的进程判断要不要直接把浏览器指过去)。"""
     return _marker_path(port).exists()
+
+
+def spawn_replacement() -> None:
+    """为「重启」拉起一个接替本进程的新 GUI 进程;调用方随后关停本进程。
+
+    先撤健康标记:新进程会看到端口仍被占但无标记,据此判定「旧实例在退」,等端口让出后
+    自己起服务器(而非只把浏览器指过来)——与手动重开走同一套单实例逻辑。分离式启动
+    (``start_new_session``),使新进程不随本进程退出而被带走。命令固定、无用户输入、不走 shell。
+    """
+    import subprocess
+    import sys
+
+    clear_instance_marker()
+    subprocess.Popen([sys.executable, "-m", "jiuwensymbiosis.gui"], start_new_session=True)
 
 
 # 历史回放:经已在跑的本机 HTTP 服务打开,而非 file://。后者会被部分浏览器(如 snap/flatpak

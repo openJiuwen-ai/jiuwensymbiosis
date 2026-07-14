@@ -57,3 +57,19 @@ def test_resolve_trace_returns_none_for_missing_or_no_workspace(tmp_path):
     (tmp_path / "traces").mkdir()
     assert app._resolve_trace("nope", str(tmp_path)) is None  # 文件不存在
     assert app._resolve_trace("gui-abc", None) is None  # 无工作区
+
+
+def test_spawn_replacement_clears_marker_and_launches_entry(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(app, "_INSTANCE_MARKER", None)
+    monkeypatch.setattr(app, "_marker_path", lambda port: tmp_path / f"gui-{port}.lock")
+    app._mark_instance_healthy(8770)
+    calls: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+
+    app.spawn_replacement()
+
+    assert app._healthy_instance_marked(8770) is False  # 先撤标记 → 接替进程会等端口让出后自己起
+    assert calls and "jiuwensymbiosis.gui" in calls[0][0][0]  # 拉起同一入口
+    assert calls[0][1].get("start_new_session") is True  # 分离式,不随本进程退出被带走

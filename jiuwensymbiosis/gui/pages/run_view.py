@@ -268,17 +268,25 @@ class RunView:
         self._set_badge(outcome.status)
         self._narration.set_text(outcome.narration)
         if outcome.is_failure:
-            err = str(result.get("error", "")).strip()
-            self._show_diagnosis(diagnose(err, str(result.get("log_tail", ""))))
-            if err:
-                self._log.push(f"ERROR 运行失败: {err}")
-            self._drawer.open()
-            self._tabs.set_value(self._diag_tab)
+            self._route_to_diagnosis(str(result.get("error", "")).strip(), result, "ERROR 运行失败")
+            return
+        # 未完成且带详细原因(fast 内层步骤失败,原因多为英文):相机下方只留简短「未完成」,
+        # 详细原因交给「错误诊断」+ 原始日志,而不是糊在主视觉区。
+        if outcome.detail:
+            self._route_to_diagnosis(outcome.detail, result, "WARNING 未完成")
             return
         payload = result.get("result")
         summary = payload.get("output") if isinstance(payload, dict) else payload
         if outcome.status == "未完成" and summary:
             self._log.push(f"WARNING 未完成: {summary}")
+
+    def _route_to_diagnosis(self, err: str, result: dict, log_prefix: str) -> None:
+        """把详细原因交给「错误诊断」(规则表翻成中文卡)+ 原始日志,展开抽屉并切到诊断页。"""
+        self._show_diagnosis(diagnose(err, str(result.get("log_tail", ""))))
+        if err:
+            self._log.push(f"{log_prefix}: {err}")
+        self._drawer.open()
+        self._tabs.set_value(self._diag_tab)
 
     # ------------------------------------------------------------------ 步骤/相机交互
     def _select(self, idx: int) -> None:
