@@ -1,7 +1,10 @@
 **__pycache__**
 **_cache**
 *.pyc
-*.egg-info/
 logs/
 *.local.yaml
 .codegraph
+build/
+dist/
+*.egg*
+plans/
