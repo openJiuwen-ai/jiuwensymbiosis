@@ -49,6 +49,9 @@ class AppState:
         # 默认开启轨迹记录,让「历史」页开箱即用。
         if model.get("agent.enable_tracing") is None:
             model.set("agent.enable_tracing", True)
+        # 默认用快速模式(fast):真机运行更快、可重复;模拟模式下 run_engine 会强制回逐步。
+        if model.get("agent.exec_mode") is None:
+            model.set("agent.exec_mode", "fast")
         # 任务指令:配置未提供 prompt 时(piper.yaml 任务无关化后不含 prompt),用任务的默认
         # 指令预填,让「配置 → 基础」的「任务指令」框开箱即有内容(用户可改;不改就用它)。
         if not model.get("env.cfg.prompt"):

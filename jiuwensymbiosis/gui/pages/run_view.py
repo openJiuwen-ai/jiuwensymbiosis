@@ -60,6 +60,16 @@ class RunView:
             "run_finished": self._on_run_finished,
         }
 
+        # 错误诊断区的 UI 句柄:真正构建在 _build_diagnosis,此处先声明。
+        self._diag_title: Any = None
+        self._diag_cause: Any = None
+        self._diag_steps: Any = None
+        self._method1_box: Any = None
+        self._gdino_input: Any = None
+        self._sam2_input: Any = None
+        self._method2_box: Any = None
+        self._diag_hint: Any = None
+
         self._build()
         ui.timer(0.1, self._drain)
         ui.timer(0.5, self._tick)
@@ -90,7 +100,7 @@ class RunView:
                 self._camera = (
                     ui.interactive_image().classes("w-full rounded jw-cam").style("background:#111; height:42vh;")
                 )
-                self._live_btn = ui.button("↩ 回到实时画面", on_click=self._back_to_live).props("flat dense")
+                self._live_btn = ui.button("↩ 回到最终画面", on_click=self._back_to_live).props("flat dense")
                 self._live_btn.set_visibility(False)
                 self._narration = (
                     ui.label("—").classes("w-full text-center font-bold").style("font-size:16px; padding:6px;")
@@ -394,7 +404,7 @@ class RunView:
         lines: list[str] = []
         thought = str(info.get("assistant_text", "")).strip()
         if thought:
-            lines.append(f"AI 说明:{thought}")
+            lines.append(f"Agent 分析:{thought}")
             lines.append("")
         lines += [
             f"工具:{info.get('tool', '')}",
