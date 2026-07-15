@@ -37,6 +37,10 @@ pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu12
 
 # Piper hardware (installs piper_sdk)
 pip install -e ".[piper]"
+
+# SO-101 hardware (installs LeRobot; version 0.6.x requires Python 3.12;
+# installing full at the same time avoids reinstalling torch)
+pip install -e ".[full,so101]" --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
 Or install from the pinned requirements file for reproducibility:
@@ -161,7 +165,7 @@ tools/       Tool builder / InProcessCodeTool / RobotControlTool
 agent/       RobotSession + build_robot_agent / build_robot_agent_config + config + MockModel (--mock)
 rails/       Safety policies (SafetyRail, RecoveryRail, VisualFeedbackRail)
 skills/      Built-in skills (visual_pick, visual_place)
-adapters/    Hardware adapter layer (piper/ + _common/ generic builder)
+adapters/    Hardware adapter layer (piper/ + so101/ + _common/ generic builder)
 serving/     Visual perception service subprocess (current version: GroundingDINO + SAM2)
 ```
 
@@ -170,7 +174,7 @@ serving/     Visual perception service subprocess (current version: GroundingDIN
 * **Tool Layer**: `build_robot_tools` automatically wraps `@robot_tool` methods as openjiuwen tools; `RobotControlTool` provides a single-entry dispatch pattern; `InProcessCodeTool` supports in-process Python script execution.
 * **Agent Layer**: `RobotSession` manages the hardware lifecycle and sidecar processes; `build_robot_agent` constructs a callable DeepAgent in one step.
 * **Safety Policy Layer**: Subclasses of openjiuwen AgentRail that insert safety checks, exception recovery, and visual feedback before and after tool invocations.
-* **Hardware Adapter Layer**: `piper/` demonstrates how to integrate a specific hardware platform; `_common/builder.py` provides a generic polymorphic session factory.
+* **Hardware Adapter Layer**: `piper/` and `so101/` demonstrate how to integrate specific hardware platforms; `_common/builder.py` provides a generic polymorphic session factory.
 
 ## Adding New Hardware
 
