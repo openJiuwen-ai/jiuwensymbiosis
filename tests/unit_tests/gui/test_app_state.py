@@ -15,6 +15,7 @@ def test_config_for_task_applies_agent_defaults_and_tracing():
     state = AppState()
     model = state.config_for_task("pick_box")
     assert model.get("agent.enable_tracing") is True  # 默认开启轨迹记录
+    assert model.get("agent.exec_mode") == "fast"  # 默认快速模式
 
 
 def test_config_for_task_prefills_prompt_from_default_query():

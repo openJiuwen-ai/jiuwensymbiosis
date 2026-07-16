@@ -99,7 +99,9 @@ class ConfigView:
             return num_i.classes("w-64")
         if spec.kind == "float":
             start_f = float(value) if isinstance(value, int | float) else 0.0
-            num_f = ui.number(spec.label, value=start_f, precision=3)
+            num_f = ui.number(
+                spec.label, value=start_f, min=spec.min_value, max=spec.max_value, step=spec.step, precision=3
+            )
             num_f.on_value_change(lambda e, p=path: self._set(p, float(e.value) if e.value is not None else 0.0))
             return num_f.classes("w-64")
         if spec.kind == "choice":

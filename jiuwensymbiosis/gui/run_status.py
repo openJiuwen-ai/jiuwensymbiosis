@@ -1,11 +1,10 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""运行状态与结果文案(纯逻辑,无 Qt / 无 nicegui)。
+"""Run-end status + narration: map a ``run_finished`` result to a status badge and one-line narration.
 
-把「运行结束结果 → 状态徽章 + 一句话叙述」的判定从视图里剥出来独立单测。关键约束:
-agent 循环结束但未真正完成任务(``result_type=="error"``,最典型是达到最大步数)必须
-显示为**非绿色的「未完成」**,而不是成功。
+Key rule: when the agent loop ends without truly completing the task (``result_type=="error"``, most
+often hitting the max step count) it must show as a **non-green "incomplete"** state, not success.
 """
 
 from __future__ import annotations
@@ -17,7 +16,8 @@ from jiuwensymbiosis.gui import humanize
 
 __all__ = ["STATUS_COLORS", "Outcome", "incomplete_message", "outcome_from_result"]
 
-# 状态徽章配色(与运行页徽章一致)。「未完成」用橙红,明确区别于绿色「成功」。
+# Status badge colors (match the run page badges). "Incomplete" uses orange-red to clearly distinguish
+# it from green "success".
 STATUS_COLORS: dict[str, str] = {
     "准备中": "#888",
     "运行中": "#2a6bd0",
@@ -30,10 +30,11 @@ STATUS_COLORS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Outcome:
-    """一次运行结束后的界面呈现:状态标签、叙述文案、是否需要展开错误诊断。
+    """How a finished run is presented: status label, narration text, and whether to open diagnostics.
 
-    ``detail`` 是详细原因(多为英文技术串):相机下方只显示简短的 ``narration``,``detail``
-    交给界面转入「错误诊断」+ 原始日志,避免长英文糊在主视觉区。
+    ``detail`` holds the detailed cause (often an English technical string): the area under the camera
+    shows only the short ``narration``; ``detail`` is routed to the 「错误诊断」 tab + raw log so a long
+    English string doesn't clutter the main view.
     """
 
     status: str
@@ -43,7 +44,7 @@ class Outcome:
 
 
 def incomplete_message(summary: str) -> str:
-    """把 agent 的「未完成」兜底结果译成一句面向用户的中文说明。"""
+    """Turn the agent's "incomplete" fallback result into one user-facing Chinese sentence."""
     if "Max iterations reached without completion" in summary:
         return (
             "未完成:达到最大步数仍未完成任务。可在「执行方式 → 最大步数」调高上限;"
@@ -53,25 +54,26 @@ def incomplete_message(summary: str) -> str:
 
 
 def outcome_from_result(result: dict[str, Any]) -> Outcome:
-    """从 ``run_finished`` 结果推导状态徽章与叙述。
+    """Derive the status badge and narration from a ``run_finished`` result.
 
-    失败(``ok`` 为假)交由调用方另跑 ``diagnose`` 渲染诊断页,故 ``is_failure=True``。
+    On failure (``ok`` false) the caller runs ``diagnose`` to render the diagnostics page, so
+    ``is_failure=True``.
     """
     if not result.get("ok"):
         return Outcome("失败", "运行失败,已在下方「错误诊断」给出原因与处理建议。", True)
     payload = result.get("result")
-    # fast 路径的结果形状是 {"ok", "steps_done", "steps":[...], ...},没有 result_type;
-    # 外层 RunEngine 的 ok 只表示"没抛异常",真正成败看这里的内层 ok——否则一步 failed
-    # 也会落到最后的"成功"分支。
+    # The fast path's result shape is {"ok", "steps_done", "steps":[...], ...} with no result_type;
+    # the outer RunEngine ok only means "no exception raised", so real success/failure is this inner
+    # ok — otherwise a failed step would fall through to the final "success" branch.
     if isinstance(payload, dict) and "steps_done" in payload:
         if payload.get("ok"):
             return Outcome("成功", "完成", False)
         failed = next((s for s in payload.get("steps", []) if isinstance(s, dict) and not s.get("ok")), None)
         if failed is not None:
             reason = str(failed.get("reason", "")).strip()
-            # 相机下方只留简短「未完成」;失败的动作 + 原因(多为英文)放进 detail,由界面转交
-            # 「错误诊断」。动作名用与时间线同一套友好名,不引用 fast 内部步序号(0 起、含不进
-            # 时间线的 track_detect,与时间线编号对不上)。
+            # Keep only a short 「未完成」 under the camera; the failed op + reason (often English) go
+            # into detail, routed to 「错误诊断」. Use the same friendly name as the timeline, not fast's
+            # internal step index (0-based, includes off-timeline track_detect, so it wouldn't match).
             label = humanize.friendly_label(str(failed.get("op", "")), {})
             detail = f"{label} 这一步失败:{reason}" if reason else f"{label} 这一步失败。"
             return Outcome("未完成", "未完成", False, detail=detail)

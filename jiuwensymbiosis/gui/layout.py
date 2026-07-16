@@ -19,12 +19,14 @@ from jiuwensymbiosis.gui.pages.history_view import HistoryView
 from jiuwensymbiosis.gui.pages.home_view import HomeView
 from jiuwensymbiosis.gui.pages.run_view import RunView
 from jiuwensymbiosis.gui.pages.settings_view import SettingsView
+from jiuwensymbiosis.gui.pages.tools_view import ToolsView
 from jiuwensymbiosis.gui.run_engine import RunEngine
 
 __all__ = ["build_layout", "Layout"]
 
 _HISTORY = "历史"
 _CONFIG = "配置"
+_TOOLS = "工具"
 
 
 class Layout:
@@ -51,6 +53,7 @@ class Layout:
             self._home_tab = ui.tab("主页")
             self._config_tab = ui.tab("配置")
             self._run_tab = ui.tab("运行")
+            self._tools_tab = ui.tab(_TOOLS)
             self._history_tab = ui.tab(_HISTORY)
             self._settings_tab = ui.tab("设置")
 
@@ -61,6 +64,8 @@ class Layout:
                 self._config = ConfigView(on_run=self._run_current_config, on_back=lambda: self._goto(self._home_tab))
             with ui.tab_panel(self._run_tab):
                 self._run = RunView(on_stop=self._stop_run, on_fix=self._state.apply_fix, on_rerun=self._rerun)
+            with ui.tab_panel(self._tools_tab):
+                self._tools = ToolsView(self._state)
             with ui.tab_panel(self._history_tab):
                 self._history = HistoryView(self._state.workspace)
             with ui.tab_panel(self._settings_tab):
@@ -104,6 +109,8 @@ class Layout:
         """确认重启:拉起接替进程(它等本进程让出端口后自己起服务器),亮「正在重启」再延时关停本进程。"""
         from jiuwensymbiosis.gui.app import spawn_replacement
 
+        # 释放相机/CAN,免得接替进程重连硬件时被占用。
+        self._tools.stop_preview()
         self._restart_dialog.close()
         self._restarting_dialog.open()
         spawn_replacement()
@@ -132,12 +139,18 @@ class Layout:
 
     def _on_nav(self, e: object) -> None:
         val = getattr(e, "value", None)
+        if val != _TOOLS:
+            # 离开工具页即请求停掉相机预览,释放 RealSense/CAN,免得正常运行时相机被占用。
+            self._tools.stop_preview(wait=False)
         if val == _HISTORY:
             self._history.set_workspace(self._state.workspace)
         elif val == _CONFIG:
             # 切标签进配置页也按当前选中任务 + 当前模拟开关重建(与点卡片进入行为一致):
             # 主页改了选中任务或模拟↔真机后,配置页据此更新,因仿真置灰的控件恢复可点。
             self._sync_config_view()
+        elif val == _TOOLS:
+            # 进工具页按当前模拟开关/选中任务/配置重算前置校验(主页改动后据此更新引导)。
+            self._tools.refresh()
 
     # ------------------------------------------------------------------ 配置 / 运行
     def _open_config(self, task_key: str) -> None:
@@ -164,6 +177,8 @@ class Layout:
         if self._state.is_busy():
             ui.notify("已有任务在运行,请等待其结束或先停止。", type="warning")
             return
+        # 开始正常运行前,确保工具页的相机预览已停止并释放硬件(阻塞等待,否则相机被占用)。
+        self._tools.stop_preview()
         self._state.current_task = task_key
         # 真机运行前先把已下好的本地视觉模型喂给检测器(避免它去 huggingface.co 联网下载
         # 933MB 卡住);找不到就直接展示「错误诊断」引导用户定位/换镜像,而非空跑到超时。

@@ -37,12 +37,32 @@ from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["RunEngine", "QueueLogHandler", "default_workspace"]
+__all__ = ["RunEngine", "QueueLogHandler", "default_workspace", "resolve_real_session_config"]
 
 
 def default_workspace() -> str:
     """GUI 默认工作区(轨迹/会话落盘处)。"""
     return str(Path.home() / ".jiuwensymbiosis" / "gui_workspace")
+
+
+def resolve_real_session_config(config_data: dict[str, Any], config_dir: Path) -> dict[str, Any]:
+    """深拷贝配置,并把相对 ``env.cfg.low_level.calib_path`` 解析成相对 ``config_dir`` 的绝对路径。
+
+    真机会话经 ``from_dict`` 构建,没有文件上下文(不像 ``from_yaml`` 会相对 yaml 目录解析),
+    相对标定路径需在此绝对化,否则按运行目录找不到标定文件会导致连接失败。深拷贝避免改到
+    界面在用的那份配置。
+    """
+    data = copy.deepcopy(config_data)
+    env = data.get("env")
+    cfg = env.get("cfg") if isinstance(env, dict) else None
+    low_level = cfg.get("low_level") if isinstance(cfg, dict) else None
+    if isinstance(low_level, dict):
+        calib = low_level.get("calib_path")
+        if isinstance(calib, str) and calib and not Path(calib).is_absolute():
+            resolved = (config_dir / calib).resolve()
+            if resolved.exists():
+                low_level["calib_path"] = str(resolved)
+    return data
 
 
 class QueueLogHandler(logging.Handler):
@@ -218,23 +238,8 @@ class RunEngine:
         return session, agent_cfg, str(query)
 
     def _real_session_config(self) -> dict[str, Any]:
-        """真机会话所用配置 = 界面编辑过的完整配置(深拷贝,避免改到界面在用的那份)。
-
-        另把相对 ``calib_path`` 解析成绝对路径:真机会话经 ``from_dict`` 构建,没有文件
-        上下文,不像 ``from_yaml`` 会相对 yaml 所在目录解析,否则标定文件按运行目录找不到
-        会导致连接失败。
-        """
-        data = copy.deepcopy(self._config.data)
-        env = data.get("env")
-        cfg = env.get("cfg") if isinstance(env, dict) else None
-        low_level = cfg.get("low_level") if isinstance(cfg, dict) else None
-        if isinstance(low_level, dict):
-            calib = low_level.get("calib_path")
-            if isinstance(calib, str) and calib and not Path(calib).is_absolute():
-                resolved = (self._task.config_path().parent / calib).resolve()
-                if resolved.exists():
-                    low_level["calib_path"] = str(resolved)
-        return data
+        """真机会话所用配置 = 界面编辑过的完整配置(深拷贝 + 相对 calib_path 绝对化)。"""
+        return resolve_real_session_config(self._config.data, self._task.config_path().parent)
 
     def _emit_initial_frame(self, session: Any) -> None:
         """连接后先推一帧初始相机画面,让主视觉区不为空。"""

@@ -40,7 +40,6 @@ class HomeView:
                 value=bodies[0].key if bodies else None,
                 on_change=lambda _e: self._refresh_cards(),
             ).props("outlined dense")
-            self._caps = ui.label("").classes("text-green-700 text-sm")
             ui.space()
             self._mock = ui.switch("🧪 模拟模式(不连接硬件)", value=False, on_change=lambda e: self._set_mock(e.value))
         self._current = ui.label("").classes("text-blue-600 font-bold")
@@ -89,8 +88,6 @@ class HomeView:
 
     def _refresh_cards(self) -> None:
         body_key = self._body.value
-        body = registry.get_body(body_key)
-        self._caps.set_text("能力:" + " · ".join(body.capability_badges))
         self._list.clear()
         self._cards = {}
         tasks = registry.tasks_for_body(body_key)

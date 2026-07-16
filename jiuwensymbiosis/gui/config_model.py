@@ -44,7 +44,9 @@ class FieldSpec:
             存回 dict 的是底层值。
         help: 一句话说明(悬停提示)。
         default: 字段缺省值(路径不存在时表单显示它;应与框架真实默认一致)。
-        min_value: 数字类字段(int)的下限,例如最大步数最小为 1。
+        min_value / max_value: 数字类字段(int/float)的上下限,喂给 ``ui.number`` 的
+            ``min`` / ``max`` —— 上下箭头步进不会越界(如温度限 [0, 2])。
+        step: 数字类字段每次步进的增量(缺省走控件默认 1;如温度用 0.1)。
         on_value / off_value: ``kind="bool"`` 时若给出,复选框存的不是 True/False
             而是这两个值(如 exec_mode 的 ``"fast"`` / ``"agent"``)。
         disable_in_mock: 模拟模式下置灰该字段(如 fast 需真实模型+硬件)。
@@ -57,7 +59,9 @@ class FieldSpec:
     choices: tuple[tuple[str, str], ...] = ()
     help: str = ""
     default: Any = None
-    min_value: int | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    step: float | None = None
     on_value: Any = None
     off_value: Any = None
     disable_in_mock: bool = False
@@ -99,11 +103,11 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "bool",
         "执行方式",
         help=(
-            "开:开头用一次 LLM 规划出整条动作序列,之后不再逐步调用 LLM——更快、可"
-            "重复,但适应性弱,且需真实模型与(真机)伺服。关:逐步智能体(默认,"
-            "每步问一次 LLM)。模拟模式不可用(无真实模型)。"
+            "开(默认):开头用一次 LLM 规划出整条动作序列,之后不再逐步调用 LLM——更快、"
+            "可重复,但适应性弱,且需真实模型与(真机)伺服。关:逐步智能体,每步问一次"
+            "LLM。模拟模式不可用(无真实模型),届时自动回退逐步。"
         ),
-        default="agent",
+        default="fast",
         on_value="fast",
         off_value="agent",
         disable_in_mock=True,
@@ -162,7 +166,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
     FieldSpec("model.model_name", "模型名称", "str", "模型"),
     FieldSpec("model.api_base", "服务端点", "str", "模型", help="不要包含 /chat/completions。"),
     FieldSpec("model.api_key", "API Key", "str", "模型", help="留空表示端点无需鉴权。"),
-    FieldSpec("model.temperature", "采样温度", "float", "模型"),
+    FieldSpec("model.temperature", "采样温度", "float", "模型", min_value=0.0, max_value=2.0, step=0.1),
 )
 
 
