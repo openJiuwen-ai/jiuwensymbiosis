@@ -361,7 +361,7 @@ def _build_tools(
     if mode in ("code", "hybrid"):
         tools.append(make_inproc_code_tool(session.globals_provider))
     if enable_skill:
-        tools.append(RobotControlTool(session.api))
+        tools.append(RobotControlTool(session.api, env=session.env))
     if extra_tools:
         tools.extend(extra_tools)
     return tools
