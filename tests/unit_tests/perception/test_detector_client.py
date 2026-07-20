@@ -52,14 +52,19 @@ class TestInitDetector:
             assert results == []
 
     def test_seg_fn_server_unreachable(self):
-        with patch(
-            "jiuwensymbiosis.perception.detector_client.requests.post",
-            side_effect=Exception("connection refused"),
+        with (
+            patch(
+                "jiuwensymbiosis.perception.detector_client.requests.post",
+                side_effect=Exception("connection refused"),
+            ) as post,
+            patch("jiuwensymbiosis.perception.detector_client.time.sleep") as sleep,
         ):
             seg_fn = init_detector("http://127.0.0.1:8114")
             img = np.zeros((100, 100, 3), dtype=np.uint8)
             results = seg_fn(img, text_prompt="box")
             assert results == []
+            assert post.call_count == 3
+            assert [call.args[0] for call in sleep.call_args_list] == [1.0, 2.0]
 
 
 class TestEncodeImage:

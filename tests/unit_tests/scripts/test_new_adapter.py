@@ -83,12 +83,27 @@ def cleanup():
         shutil.rmtree(REPO_ROOT / "configs" / name, ignore_errors=True)
 
 
-@pytest.mark.parametrize("spec", PRESETS, ids=lambda s: s.name)
-def test_generated_adapter_passes_checks(spec, cleanup):
-    cleanup.append(spec.name)
+@pytest.fixture(scope="module")
+def generated_presets():
+    """Generate shared presets once for all read-only structural checks."""
+    generated: dict[str, subprocess.CompletedProcess] = {}
+    try:
+        for spec in PRESETS:
+            proc = _run_generator(spec)
+            generated[spec.name] = proc
+            if proc.returncode != 0:
+                pytest.fail(f"generator failed for {spec.name}:\n{proc.stdout}\n{proc.stderr}")
+        yield generated
+    finally:
+        for spec in PRESETS:
+            shutil.rmtree(REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name, ignore_errors=True)
+            shutil.rmtree(REPO_ROOT / "configs" / spec.name, ignore_errors=True)
 
-    proc = _run_generator(spec)
-    assert proc.returncode == 0, f"generator failed:\n{proc.stdout}\n{proc.stderr}"
+
+@pytest.mark.parametrize("spec", PRESETS, ids=lambda s: s.name)
+def test_generated_adapter_passes_checks(spec, generated_presets):
+    proc = generated_presets[spec.name]
+    assert proc.returncode == 0
 
     adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
     for fname in ("__init__.py", "config.py", "lowlevel.py", "env.py", "api.py", "session.py"):
@@ -107,20 +122,16 @@ def test_generated_adapter_passes_checks(spec, cleanup):
 
 
 @pytest.mark.parametrize("spec", PRESETS, ids=lambda s: s.name)
-def test_capabilities_aligned_in_env(spec, cleanup):
-    cleanup.append(spec.name)
-    assert _run_generator(spec).returncode == 0
-
+def test_capabilities_aligned_in_env(spec, generated_presets):
+    assert generated_presets[spec.name].returncode == 0
     env_text = (REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name / "env.py").read_text(encoding="utf-8")
     for cap in spec.capabilities:
         assert f'"{cap}"' in env_text, f"capability {cap} missing from env.py"
 
 
 @pytest.mark.parametrize("spec", PRESETS, ids=lambda s: s.name)
-def test_driver_methods_marked_pending(spec, cleanup):
-    cleanup.append(spec.name)
-    assert _run_generator(spec).returncode == 0
-
+def test_driver_methods_marked_pending(spec, generated_presets):
+    assert generated_presets[spec.name].returncode == 0
     adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
     pending = checks.scan_pending(adapter_dir)
     # The driver's lifecycle + motion methods are always generated as mocks.
@@ -129,7 +140,7 @@ def test_driver_methods_marked_pending(spec, cleanup):
         assert method in pending["lowlevel.py"], f"{method} not flagged pending"
 
 
-def test_generated_adapter_is_black_clean(cleanup):
+def test_generated_adapter_is_black_clean(generated_presets):
     """The generator auto-formats its output, so black --check is a no-op.
 
     black is optional / best-effort (see ``checks.format_with_black``): skip
@@ -141,8 +152,7 @@ def test_generated_adapter_is_black_clean(cleanup):
         pytest.skip("black not installed")
 
     spec = PRESETS[1]
-    cleanup.append(spec.name)
-    assert _run_generator(spec).returncode == 0
+    assert generated_presets[spec.name].returncode == 0
 
     adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
     proc = subprocess.run(
