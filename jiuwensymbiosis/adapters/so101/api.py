@@ -17,10 +17,10 @@ Two overrides fix contract mismatches with the LeRobot percentage gripper:
   has NO parameters (the SO-101 gripper is two-state percentage, not mm/N).
   Python keeps the mixin-compatible ``width_mm``/``force_n`` params but ignores
   them — no fake unit conversion.
-- ``goto_pose`` uses a FLAT signature ``(x, y, z, rx, ry, rz)`` because
-  ``SafetyRail.before_tool_call`` reads only top-level ``args.get("x"/"y"/"z")``
-  and does NOT unpack a nested ``pose={...}``. A flat shape is the only way the
-  rail's Z/XY boundary check fires automatically.
+- ``goto_pose`` takes a nested ``pose: So101Pose`` value object (six fields
+  describing one Cartesian pose). ``SafetyRail.before_tool_call`` unpacks the
+  nested ``pose`` object to read ``x``/``y``/``z`` for Z-floor / XY-bound
+  checks, so the rail still fires automatically without top-level scalars.
 """
 
 from __future__ import annotations
@@ -136,43 +136,57 @@ class So101Api(
             cur = self.env.get_flange_pose()
             r = getattr(cur, "rz", getattr(cur, "r", 0.0))
         # Milestone A: top-down approach (rx=180, ry=0) like the default mixin,
-        # but routed through the flat goto_pose so the same IK path is used.
-        self.goto_pose(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r))
+        # but routed through goto_pose so the same IK path is used.
+        self.goto_pose(So101Pose(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r)))
 
     @robot_tool(
         desc=(
             "Move the SO-101 control frame to absolute (x, y, z, rx, ry, rz) "
             "in mm/deg, base frame. Position is strongly constrained; orientation "
             "is best-effort (5-DoF underactuated arm). SafetyRail checks x/y/z "
-            "bounds before this runs."
+            "bounds before this runs (reads the nested pose object)."
         ),
         capability="motion.cartesian",
         tags=["motion"],
+        input_params={
+            "type": "object",
+            "properties": {
+                "pose": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "z": {"type": "number"},
+                        "rx": {"type": "number"},
+                        "ry": {"type": "number"},
+                        "rz": {"type": "number"},
+                    },
+                    "required": ["x", "y", "z", "rx", "ry", "rz"],
+                }
+            },
+            "required": ["pose"],
+        },
     )
-    def goto_pose(
-        self,
-        x: float,
-        y: float,
-        z: float,
-        rx: float,
-        ry: float,
-        rz: float,
-    ) -> None:
-        """Move to an absolute Cartesian pose via flat parameters.
+    def goto_pose(self, pose: So101Pose) -> None:
+        """Move to an absolute Cartesian pose.
 
-        Flat (not nested ``pose={...}``) so ``SafetyRail.before_tool_call`` can
-        read ``x``/``y``/``z`` from top-level tool args and apply Z/XY bounds.
+        Accepts a ``So101Pose`` or a dict with ``x/y/z/rx/ry/rz`` keys (the
+        LLM-facing tool schema and ``RobotControlTool`` deliver a dict/JSON
+        object). SafetyRail unpacks the nested ``pose`` object to read
+        ``x``/``y``/``z`` for Z-floor / XY-bound checks before this runs.
         """
-        self.env.move_to_flange(
-            So101Pose(
-                x=float(x),
-                y=float(y),
-                z=float(z),
-                rx=float(rx),
-                ry=float(ry),
-                rz=float(rz),
-            )
+        if isinstance(pose, dict):
+            pose = So101Pose(**pose)
+        logger.info(
+            "[So101Api] goto_pose -> (x=%.2f, y=%.2f, z=%.2f, rx=%.2f, ry=%.2f, rz=%.2f)",
+            pose.x,
+            pose.y,
+            pose.z,
+            pose.rx,
+            pose.ry,
+            pose.rz,
         )
+        self.env.move_to_flange(pose)
 
     # ============================================================  Vision
     # Desktop-fixed eye-to-hand: ``tf_base_cam`` is a CONSTANT (camera-in-base),

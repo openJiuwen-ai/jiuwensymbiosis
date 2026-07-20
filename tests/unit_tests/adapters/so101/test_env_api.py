@@ -7,7 +7,7 @@ Covers:
 - So101Env capabilities, read-only property setters (AttributeError), joint_limits
   ordering over ARM_JOINT_ORDER, observation extra.
 - So101Api structure: @robot_tool methods present, no VisionMixin tools.
-- So101Api delegates: open/close_gripper -> set_end_effector, goto_pose flat ->
+- So101Api delegates: open/close_gripper -> set_end_effector, goto_pose(pose) ->
   move_to_flange(So101Pose), goto_xyzr preserves r.
 - build_robot_tools gating: SO-101 tools emitted only for the milestone-A caps.
 """
@@ -239,11 +239,18 @@ class TestSo101ApiStructure:
         meta = So101Api.close_gripper.__robot_tool__
         assert meta.input_params == {"type": "object", "properties": {}}
 
-    def test_goto_pose_input_params_exposes_six_scalars(self):
+    def test_goto_pose_input_params_exposes_nested_pose(self):
         meta = So101Api.goto_pose.__robot_tool__
-        props = meta.input_params.get("properties", {})
+        top = meta.input_params
+        assert top.get("type") == "object"
+        assert top.get("required") == ["pose"]
+        pose_schema = top.get("properties", {}).get("pose")
+        assert isinstance(pose_schema, dict)
+        assert pose_schema.get("type") == "object"
+        pose_props = pose_schema.get("properties", {})
         for key in ("x", "y", "z", "rx", "ry", "rz"):
-            assert key in props, f"goto_pose input_params missing {key}"
+            assert key in pose_props, f"goto_pose pose.properties missing {key}"
+        assert set(pose_schema.get("required", [])) == {"x", "y", "z", "rx", "ry", "rz"}
 
 
 class TestSo101ApiDelegates:
@@ -274,10 +281,20 @@ class TestSo101ApiDelegates:
         api.close_gripper(force_n=42.0)
         env.set_end_effector.assert_called_once_with(True)
 
-    def test_goto_pose_flat_routes_to_move_to_flange_so101pose(self):
+    def test_goto_pose_routes_to_move_to_flange_so101pose(self):
         api, _env, driver = _build_api()
-        api.goto_pose(100.0, 200.0, 300.0, 180.0, 0.0, 45.0)
+        api.goto_pose(So101Pose(100.0, 200.0, 300.0, 180.0, 0.0, 45.0))
         assert any(c[0] == "move" for c in driver.log)
+        move = [c for c in driver.log if c[0] == "move"][0]
+        pose = move[1]
+        assert isinstance(pose, So101Pose)
+        assert pose.x == 100.0 and pose.z == 300.0 and pose.rz == 45.0
+
+    def test_goto_pose_accepts_dict_from_llm_json_object(self):
+        # The LLM / RobotControlTool delivers pose as a JSON object (dict at
+        # runtime); goto_pose must coerce it to So101Pose before delegating.
+        api, _env, driver = _build_api()
+        api.goto_pose({"x": 100.0, "y": 200.0, "z": 300.0, "rx": 180.0, "ry": 0.0, "rz": 45.0})
         move = [c for c in driver.log if c[0] == "move"][0]
         pose = move[1]
         assert isinstance(pose, So101Pose)

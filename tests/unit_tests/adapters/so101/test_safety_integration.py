@@ -3,11 +3,12 @@
 
 """SafetyRail integration with the SO-101 adapter (no LeRobot).
 
-The critical contract: ``goto_pose`` uses a FLAT ``(x, y, z, rx, ry, rz)``
-signature so ``SafetyRail.before_tool_call`` can read ``x``/``y``/``z`` from
-top-level tool args and apply Z-floor + XY-bound checks. A nested
-``pose={...}`` would bypass the rail (it only unpacks top-level keys).
-``move_joint`` is also watched for soft-limit pre-checks.
+The critical contract: ``goto_pose`` ships its coordinates inside a nested
+``pose={...}`` object (one Cartesian pose as a value object), and
+``SafetyRail.before_tool_call`` unpacks that nested object to read
+``x``/``y``/``z`` for Z-floor + XY-bound checks. ``goto_xyzr`` keeps its
+coordinates top-level and is covered the same way. ``move_joint`` is also
+watched for soft-limit pre-checks.
 """
 
 from __future__ import annotations
@@ -48,14 +49,14 @@ def _make_session(
     return RobotSession(env=env, api=So101Api(env), name="so101-test")  # api bound but unused: rail reads env only
 
 
-class TestSafetyRailGotoPoseFlat:
+class TestSafetyRailGotoPoseNested:
     @pytest.mark.asyncio
     async def test_above_z_floor_passes(self):
         session = _make_session(z_floor_mm=50.0)
         rail = SafetyRail(session, z_floor_mm=50.0)
         ctx = FakeCtx(
             tool_name="goto_pose",
-            tool_args={"x": 100, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0},
+            tool_args={"pose": {"x": 100, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}},
         )
         await rail.before_tool_call(ctx)  # must not raise
 
@@ -65,7 +66,7 @@ class TestSafetyRailGotoPoseFlat:
         rail = SafetyRail(session, z_floor_mm=50.0)
         ctx = FakeCtx(
             tool_name="goto_pose",
-            tool_args={"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0},
+            tool_args={"pose": {"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0}},
         )
         with pytest.raises(ValueError, match="below z_floor"):
             await rail.before_tool_call(ctx)
@@ -79,15 +80,29 @@ class TestSafetyRailGotoPoseFlat:
         rail = SafetyRail(session, xy_bounds_mm=(0.0, -300.0, 500.0, 300.0))
         ctx = FakeCtx(
             tool_name="goto_pose",
-            tool_args={"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0},
+            tool_args={"pose": {"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}},
         )
         with pytest.raises(ValueError, match="out of bounds"):
             await rail.before_tool_call(ctx)
 
     @pytest.mark.asyncio
+    async def test_goto_xyzr_flat_still_covered(self):
+        # Regression: goto_xyzr keeps top-level x/y/z; the nested-pose flatten
+        # logic must not change its observable behaviour. A low-Z goto_xyzr
+        # call is still rejected.
+        session = _make_session(z_floor_mm=50.0)
+        rail = SafetyRail(session, z_floor_mm=50.0)
+        ctx = FakeCtx(
+            tool_name="goto_xyzr",
+            tool_args={"x": 100, "y": 0, "z": 30, "r": 0},
+        )
+        with pytest.raises(ValueError, match="below z_floor"):
+            await rail.before_tool_call(ctx)
+
+    @pytest.mark.asyncio
     async def test_goto_pose_is_in_watch_tools(self):
-        # Structural: the flat goto_pose must be one of SafetyRail's watched tools,
-        # else its Z/XY check never fires regardless of signature.
+        # Structural: goto_pose must be one of SafetyRail's watched tools, else
+        # its Z/XY check never fires regardless of signature shape.
         session = _make_session()
         rail = SafetyRail(session, z_floor_mm=50.0)
         assert "goto_pose" in rail.watch_tools

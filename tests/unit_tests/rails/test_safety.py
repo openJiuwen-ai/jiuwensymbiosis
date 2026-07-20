@@ -154,9 +154,53 @@ class TestSafetyRailStringToolArgs:
                 '{"x": 250, "y": 0, "z": 200, "r": 0}',
                 None,
             ),
+            # SO-101 nested pose (goto_pose ships x/y/z inside a pose object);
+            # SafetyRail must unpack it for Z/XY checks.
+            (
+                {"z_floor_mm": 50.0},
+                "goto_pose",
+                '{"pose": {"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0}}',
+                "below z_floor",
+            ),
+            (
+                {"xy_bounds_mm": (0, -300, 500, 300)},
+                "goto_pose",
+                '{"pose": {"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}}',
+                "out of bounds",
+            ),
+            (
+                {"z_floor_mm": 50.0, "xy_bounds_mm": (0, -300, 500, 300)},
+                "robot_control",
+                '{"action": "goto_pose", "params": {"pose": {"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0}}}',
+                "below z_floor",
+            ),
+            (
+                {"xy_bounds_mm": (0, -300, 500, 300)},
+                "robot_control",
+                '{"action": "goto_pose", "params": {"pose": {"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}}}',
+                "out of bounds",
+            ),
+            (
+                {"z_floor_mm": 50.0, "xy_bounds_mm": (0, -300, 500, 300)},
+                "goto_pose",
+                '{"pose": {"x": 250, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}}',
+                None,
+            ),
             ({"z_floor_mm": 50.0}, "goto_xyzr", "not-json{", None),
         ],
-        ids=["direct-z-low", "direct-x-out", "robot-control-z-low", "robot-control-x-out", "safe", "malformed"],
+        ids=[
+            "direct-z-low",
+            "direct-x-out",
+            "robot-control-z-low",
+            "robot-control-x-out",
+            "safe",
+            "nested-pose-z-low",
+            "nested-pose-x-out",
+            "robot-control-nested-pose-z-low",
+            "robot-control-nested-pose-x-out",
+            "nested-pose-safe",
+            "malformed",
+        ],
     )
     async def test_string_args_policy(self, mock_session, rail_kwargs, tool_name, tool_args, error_match):
         rail = SafetyRail(mock_session, **rail_kwargs)
