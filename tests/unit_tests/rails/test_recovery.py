@@ -43,6 +43,16 @@ class TestRecoveryRail:
         await rail.on_tool_exception(ctx)
         assert any(expected_call in c for c in mock_session.api._call_log)
 
+    @pytest.mark.asyncio
+    async def test_typed_safe_failure_skips_recovery(self, mock_session):
+        class SafeFailure(RuntimeError):
+            skip_recovery = True
+
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=SafeFailure("not reached"))
+        await rail.on_tool_exception(ctx)
+        assert mock_session.api._call_log == []
+
 
 class TestRecoveryRailTraceSink:
     @pytest.mark.asyncio

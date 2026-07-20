@@ -14,6 +14,9 @@ Notes:
 - Recovery actions themselves are NOT railed (they wrap the env directly,
   not the api), so a recovery failure is logged but does not crash the
   rail.
+- Adapter-specific exceptions may set ``skip_recovery = True`` when the command
+  was rejected before leaving the arm in an unsafe state; those are surfaced to
+  the caller without an automatic home move.
 """
 
 from __future__ import annotations
@@ -47,6 +50,14 @@ class RecoveryRail(AgentRail):
 
     async def on_tool_exception(self, ctx: Any) -> None:
         """Recover to a safe state after a motion/grasp tool exception."""
+        # Some adapters raise a typed "not reached" error after rejecting a
+        # compensation command.  The arm is already in its last validated safe
+        # pose; blindly homing can be less safe (and destroys the useful current
+        # pose).  Adapters opt out without making this generic rail import them.
+        exception = getattr(ctx, "exception", None)
+        if bool(getattr(exception, "skip_recovery", False)):
+            logger.warning("RecoveryRail: skipping recovery for %s: %s", type(exception).__name__, exception)
+            return
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
         tool_args = getattr(inputs, "tool_args", None)
