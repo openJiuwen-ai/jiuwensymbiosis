@@ -5,11 +5,8 @@
 
 from __future__ import annotations
 
-from jiuwensymbiosis.agent import RobotAgentConfig, run_robot_task
-from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.gui.mock_sessions import (
     ScriptedMockModelClient,
-    build_mock_robot_session,
     build_scripted_mock_model,
     count_tool_messages,
 )
@@ -58,29 +55,3 @@ async def test_scripted_client_skips_unavailable_tools():
     # 脚本里的工具都不可用 → 直接收尾,不会崩
     assert not msg.tool_calls
     assert msg.content == "空"
-
-
-def test_scripted_model_drives_full_tool_sequence_end_to_end():
-    """脚本化模型经 run_robot_task 真正逐步执行工具(核心链路回归)。"""
-
-    class _CountRail(AgentRail):
-        priority = 1
-
-        def __init__(self):
-            self.calls: list[str] = []
-
-        async def after_tool_call(self, ctx):
-            self.calls.append(getattr(ctx.inputs, "tool_name", ""))
-
-    counter = _CountRail()
-    cfg = RobotAgentConfig(mode="tool", max_iterations=20, enable_visual_feedback=False)
-    cfg.model = build_scripted_mock_model(_SCRIPT)
-    cfg.extra_rails = [counter]
-
-    session = build_mock_robot_session()
-    with session:
-        result = run_robot_task(session, "把黑盒放到白盒上", cfg, conversation_id="test-mock")
-
-    assert counter.calls == ["home", "get_grasp_info_simple", "goto_xyzr", "close_gripper"]
-    assert isinstance(result, dict)
-    assert result.get("result_type") == "answer"

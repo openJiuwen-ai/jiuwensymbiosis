@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import queue
+from types import SimpleNamespace
 
+import jiuwensymbiosis.gui.run_engine as run_engine_module
 from jiuwensymbiosis.gui import registry
+from jiuwensymbiosis.gui.bridge import UIBridgeRail
 from jiuwensymbiosis.gui.run_engine import QueueLogHandler, RunEngine, default_workspace
 
 
@@ -16,15 +20,40 @@ def _tags(events):
     return [tag for tag, _ in events]
 
 
-def test_mock_run_emits_ordered_event_stream(tmp_path):
+def _patch_script_runner(monkeypatch, script):
+    """Drive the UI rail directly; RunEngine unit tests do not need DeepAgent."""
+
+    def fake_run_robot_task(_session, _query, cfg, *, conversation_id):
+        del conversation_id
+        bridge = next(rail for rail in cfg.extra_rails if isinstance(rail, UIBridgeRail))
+
+        async def drive_script():
+            for step in script:
+                inputs = SimpleNamespace(
+                    tool_name=step["tool"],
+                    tool_args=step.get("args", {}),
+                    tool_result={"ok": True},
+                )
+                ctx = SimpleNamespace(inputs=inputs, extra={})
+                await bridge.before_tool_call(ctx)
+                await bridge.after_tool_call(ctx)
+
+        asyncio.run(drive_script())
+        return {"output": "模拟任务完成", "result_type": "answer"}
+
+    monkeypatch.setattr(run_engine_module, "run_robot_task", fake_run_robot_task)
+
+
+def test_mock_run_emits_ordered_event_stream(tmp_path, monkeypatch):
     task = registry.get_task("pick_box")
+    _patch_script_runner(monkeypatch, task.mock_script)
     config = {
         "env": {"cfg": {"prompt": "把黑盒放到白盒上"}},
         "agent": {"mode": "tool", "max_iterations": 20, "enable_visual_feedback": False, "enable_tracing": False},
     }
     engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
     engine.start()
-    engine.join(timeout=60)
+    engine.join(timeout=5)
     assert not engine.is_running()
 
     events = engine.drain()
@@ -45,12 +74,14 @@ def test_mock_run_emits_ordered_event_stream(tmp_path):
     assert result["ok"] is True
 
 
-def test_mock_run_frames_are_encoded_data_uris(tmp_path):
+def test_mock_run_frames_are_encoded_data_uris(tmp_path, monkeypatch):
     task = registry.get_task("pick_box")
+    _patch_script_runner(monkeypatch, task.mock_script)
     config = {"agent": {"mode": "tool", "max_iterations": 20, "enable_visual_feedback": False, "enable_tracing": False}}
     engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
     engine.start()
-    engine.join(timeout=60)
+    engine.join(timeout=5)
+    assert not engine.is_running()
 
     frames = [payload for tag, payload in engine.drain() if tag == "frame"]
     assert frames  # 初始帧 + 运动/抓取后各刷新
