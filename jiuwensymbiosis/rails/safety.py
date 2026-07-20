@@ -140,7 +140,28 @@ class SafetyRail(AgentRail):
             self._check_joint_limits(tool_name, args)
             return
 
-        z = args.get("z")
+        # goto_pose ships x/y/z inside a nested ``pose`` object (one Cartesian
+        # pose as a value object); goto_xyzr keeps them top-level. Flatten the
+        # nested pose so the Z/XY checks below cover the SO-101 ``goto_pose``
+        # signature. Missing fields fall through to None — same "no param → no
+        # rejection" path as a flat call missing a coordinate.
+        #
+        # NOTE: this only unpacks SO-101's ``x/y/z`` field names. Piper's
+        # ``goto_pose`` uses ``x_mm/y_mm/z_mm`` in the FLANGE frame, while the
+        # rail's ``z_min_safe`` is the TIP-frame floor — different coordinate
+        # systems. Unpacking ``z_mm`` against ``z_min_safe`` would let a
+        # flange-Z below the tip floor pass the pre-check (false safety).
+        # Piper's nested pose is therefore NOT unpacked here; its driver-level
+        # ``check_flange_z`` remains the enforcement. A future change that
+        # exposes ``flange_z_min_safe`` on PiperEnv could close that gap.
+        pose_obj = args.get("pose") if tool_name == "goto_pose" else None
+        if isinstance(pose_obj, dict):
+            x = pose_obj.get("x")
+            y = pose_obj.get("y")
+            z = pose_obj.get("z")
+        else:
+            x, y, z = args.get("x"), args.get("y"), args.get("z")
+
         z_floor = self._resolve_z_floor()
         if z is not None and z_floor is not None and float(z) < float(z_floor):
             reason = f"z={z} below z_floor={z_floor}"
@@ -150,7 +171,6 @@ class SafetyRail(AgentRail):
         xy_bounds = self._resolve_xy_bounds()
         if xy_bounds is not None:
             xmin, ymin, xmax, ymax = xy_bounds
-            x, y = args.get("x"), args.get("y")
             if x is not None and not xmin <= float(x) <= xmax:
                 reason = f"x={x} out of bounds [{xmin}, {xmax}]"
                 self._notify_reject(tool_name, reason)

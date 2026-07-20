@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SO-101 kinematics-only model for LeRobot RobotKinematics.
+
+  This model intentionally contains no inertial, visual, collision, mesh, or
+  transmission elements. The original full robot description is preserved as
+  so101_new_calib_full.urdf.bak in the source tree.
+-->
+<robot name="so101_new_calib_kinematics">
+  <link name="base_link"/>
+  <link name="shoulder_link"/>
+  <link name="upper_arm_link"/>
+  <link name="lower_arm_link"/>
+  <link name="wrist_link"/>
+  <link name="gripper_link"/>
+  <link name="gripper_frame_link"/>
+
+  <joint name="shoulder_pan" type="revolute">
+    <origin xyz="0.0388353 -8.97657e-09 0.0624" rpy="3.14159 4.18253e-17 -3.14159"/>
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.91986" upper="1.91986"/>
+  </joint>
+
+  <joint name="shoulder_lift" type="revolute">
+    <origin xyz="-0.0303992 -0.0182778 -0.0542" rpy="-1.5708 -1.5708 0"/>
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.74533" upper="1.74533"/>
+  </joint>
+
+  <joint name="elbow_flex" type="revolute">
+    <origin xyz="-0.11257 -0.028 1.73763e-16" rpy="-3.63608e-16 8.74301e-16 1.5708"/>
+    <parent link="upper_arm_link"/>
+    <child link="lower_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.69" upper="1.69"/>
+  </joint>
+
+  <joint name="wrist_flex" type="revolute">
+    <origin xyz="-0.1349 0.0052 3.62355e-17" rpy="4.02456e-15 8.67362e-16 -1.5708"/>
+    <parent link="lower_arm_link"/>
+    <child link="wrist_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.65806" upper="1.65806"/>
+  </joint>
+
+  <joint name="wrist_roll" type="revolute">
+    <origin xyz="5.55112e-17 -0.0611 0.0181" rpy="1.5708 0.0486795 3.14159"/>
+    <parent link="wrist_link"/>
+    <child link="gripper_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-2.74385" upper="2.84121"/>
+  </joint>
+
+  <joint name="gripper_frame_joint" type="fixed">
+    <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 3.14159 0"/>
+    <parent link="gripper_link"/>
+    <child link="gripper_frame_link"/>
+  </joint>
+</robot>

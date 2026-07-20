@@ -1,0 +1,71 @@
+# SO-101 机械臂配置模板（5-DoF + 平行夹爪，基于 LeRobot 0.6.x SOFollower）
+# 复制此文件到 configs/so101/so101.yaml 后按真机情况修改。
+# 标注: [必填] / [选填] / [真机风险]
+# 单位约定: 关节 = 度, 夹爪 = 0..100 百分比, 位移 = mm, 姿态 = intrinsic XYZ Euler 度
+
+# ==================== 基本信息与连接 [必填] ====================
+name: "so101"
+port: "/dev/ttyUSB0"          # [必填] 串口设备路径；用 `lerobot-find-port` 确认
+robot_id: "so101"             # [必填] 必须与 `lerobot-calibrate --robot.id=` 一致
+calibration_dir: null        # [选填] 标定目录；null 用 LeRobot 默认 (~/.cache/lerobot/calibration/)
+disable_torque_on_disconnect: true  # [选填] 断开时是否释放扭矩
+max_relative_target: 5.0      # [选填] 单次电机目标增量上限 (度)。必须为 float，不能是 dict
+# settle_overcompensate=true 时不能把 max_relative_target 设为 null；否则请关闭过补偿。
+# [必填-真机门禁] 仅在示教确认安全 home、收紧软限位并完成低速验收后改为 true。
+# false 时 Driver.connect() 会在打开串口前拒绝连接。
+safety_validated: false
+
+# ==================== 运动学 [必填/选填] ====================
+home_joints_deg: [0.0, 0.0, 0.0, 0.0, 0.0]   # [必填] 安全 home 关节位 (5 项, ARM_JOINT_ORDER)
+joint_limits:                 # [必填] 关节软限位, 键必须恰为 5 个 ARM_JOINT_ORDER
+  shoulder_pan: [-90.0, 90.0]
+  shoulder_lift: [-90.0, 90.0]
+  elbow_flex: [-90.0, 90.0]
+  wrist_flex: [-90.0, 90.0]
+  wrist_roll: [-150.0, 150.0]  # URDF 机械极限约 -157.2..162.8；软件限位必须更窄
+# urdf_path: null             # [选填] null -> 随包发布的 so101_new_calib.urdf
+ik_target_frame: "gripper_frame_link"  # [选填] IK 控制帧, 必须存在于 URDF
+ik_orientation_weight: 0.01  # [选填] IK 姿态权重 (越小越偏向位置)
+ik_position_tolerance_mm: 3.0        # [选填] 位置残差上限, 超限则拒绝下发
+ik_orientation_tolerance_deg: null  # [选填] null=只记录姿态残差不拒绝; 设值则超限拒绝
+
+# ==================== 运动与到位 [选填] ====================
+trajectory_hz: 30.0           # [选填] 轨迹下发频率
+max_joint_step_deg: 2.0       # [选填] 关节插值单步上限 (度), 越小越平滑越慢
+joint_tolerance_deg: 1.5      # [选填] 到位判定容差 (度)
+settle_samples: 3             # [选填] 连续多少次到位才退出
+move_timeout_s: 30.0          # [选填] 单次运动超时 (秒), 超时抛 TimeoutError
+settle_overcompensate: true   # [选填] PD 误差补偿；要求 max_relative_target 非 null
+
+# ==================== 安全边界 [选填] ====================
+z_min_safe_mm: 30.0           # [选填] 控制/Z 向安全下限 (SafetyRail 用)
+# workspace_bounds: [0.0, -300.0, 500.0, 300.0]  # [选填] (xmin, ymin, xmax, ymax) mm
+
+# ==================== 夹爪 (两态百分比) [选填-仅 grasp.parallel] ====================
+gripper_open_pos: 100.0       # [选填] 全开百分比位置
+gripper_close_pos: 0.0        # [选填] 全闭百分比位置
+gripper_tolerance: 2.0        # [选填] 真实夹爪观测的到位容差（百分比位置）
+gripper_timeout_s: 5.0        # [选填] 到位循环超时（秒）
+gripper_settle_s: 0.0         # [选填] 确认到位后的额外停留（秒）
+
+# ==================== 视觉/检测（可选） ====================
+# camera_serial: "123456789"  # 配置后才会暴露 vision.* 工具；null=无相机
+# calib_path: "calibration/so101_eye_to_hand.json"
+# detector:
+#   url: "http://127.0.0.1:8114"
+#   spawn: false               # true 时由 session 自动启动检测 sidecar
+#                              # spawn=true 时 sidecar 地址从 url 自动推导
+
+# ==================== 任务 [选填] ====================
+# task_prompt: "把红色方块放到目标区"  # [选填] 任务提示词
+
+# ==================== 真机风险提示 ====================
+# 1. 首次部署必须先运行 `lerobot-calibrate --robot.id=so101` 生成标定文件，
+#    否则驱动 connect() 会在标定预检阶段直接报错，不进入交互标定。
+# 2. 关节软限位以真机和官方资料为准；上表数值仅为占位，务必实测收紧。
+# 3. tool_offset_mm 在里程碑 A 固定为 0.0；若真实 TCP 与 gripper_frame_link 不同，
+#    不要用单一 Z 标量近似，应后续以完整 SE(3) TCP 变换实现。
+# 4. z_min_safe / workspace_bounds 是 TCP 边界，不等于整臂碰撞检测；真机验收必须
+#    覆盖连杆碰桌、底座、自碰风险。
+# 5. max_relative_target 是 LeRobot 透传的单次电机增量最后一道限制；本适配器传 float。
+# 6. 未完成真机验收前保持 safety_validated=false；不要仅为绕过门禁而改成 true。

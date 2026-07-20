@@ -32,19 +32,25 @@ from typing import Any
 from jiuwensymbiosis.agent.abstractions import Tool, ToolCard, ToolOutput
 
 
-def _build_action_index(api: Any) -> dict[str, Callable[..., Any]]:
+def _build_action_index(api: Any, env: Any = None) -> dict[str, Callable[..., Any]]:
     """扫描 ``type(api).__mro__`` 收集 ``@robot_tool`` 标注的方法，按 ``meta.name`` 索引。
 
     与 ``builder.py`` 的扫描策略一致：
 
     - ``seen`` 按 ``attr_name`` 去重（子类 override 优先）。
-    - ``meta.capability`` 不在 ``api.capabilities`` 时跳过。
+    - capability gate 与 ``build_robot_tools`` 一致：传入 ``env`` 时使用
+      ``api.capabilities & env.capabilities``，否则仅使用 API 能力。
 
     返回 ``{action_name: bound_method}``。
     """
-    api_caps = getattr(api, "capabilities", None) or frozenset()
+    api_caps = frozenset(getattr(api, "capabilities", None) or frozenset())
+    effective_caps = api_caps
+    if env is not None:
+        env_caps = frozenset(getattr(env, "capabilities", None) or frozenset())
+        effective_caps = api_caps & env_caps
     index: dict[str, Callable[..., Any]] = {}
     seen: set[str] = set()
+    api_type = type(api)
     for cls in type(api).__mro__:
         for attr_name, attr_value in cls.__dict__.items():
             if attr_name in seen:
@@ -55,7 +61,14 @@ def _build_action_index(api: Any) -> dict[str, Callable[..., Any]]:
             if meta is None:
                 continue
             seen.add(attr_name)
-            if meta.capability and meta.capability not in api_caps:
+            owning_capability = meta.capability
+            if owning_capability is None:
+                for owner in api_type.__mro__:
+                    cap = owner.__dict__.get("capability")
+                    if isinstance(cap, str) and attr_name in owner.__dict__:
+                        owning_capability = cap
+                        break
+            if owning_capability and owning_capability not in effective_caps:
                 continue
             index[meta.name] = getattr(api, attr_name)
     return index
@@ -99,12 +112,13 @@ class RobotControlTool(Tool):
         self,
         api: Any,
         *,
+        env: Any = None,
         name: str = "robot_control",
         description: str | None = None,
         agent_id: str | None = None,
     ) -> None:
         self._api = api
-        self._action_index: dict[str, Callable[..., Any]] = _build_action_index(api)
+        self._action_index: dict[str, Callable[..., Any]] = _build_action_index(api, env=env)
         tool_id = f"{name}_{agent_id}" if agent_id else f"{name}_{uuid.uuid4().hex}"
         card = ToolCard(
             id=tool_id,

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jiuwensymbiosis.agent.abstractions import ToolOutput
@@ -22,6 +24,13 @@ class TestBuildActionIndex:
         index = _build_action_index(mock_api)
         for method in index.values():
             assert callable(method)
+
+    def test_env_capabilities_gate_actions(self, mock_api):
+        env = SimpleNamespace(capabilities=frozenset({"motion.cartesian"}))
+        index = _build_action_index(mock_api, env=env)
+        assert "goto_xyzr" in index
+        assert "close_gripper" not in index
+        assert "get_image" not in index
 
 
 class TestRobotControlTool:
