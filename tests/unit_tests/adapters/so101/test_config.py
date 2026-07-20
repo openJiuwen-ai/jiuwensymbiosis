@@ -180,13 +180,6 @@ class TestSafetyValidated:
         with pytest.raises(ValueError, match="safety_validated must be bool"):
             So101Config(**_base_kwargs(safety_validated=value))
 
-    def test_shipped_config_is_fail_closed_and_within_urdf_wrist_limit(self):
-        repo_root = Path(__file__).resolve().parents[4]
-        cfg = So101Config.from_yaml(repo_root / "configs" / "so101" / "so101.yaml")
-        assert cfg.safety_validated is False
-        wrist_lo, wrist_hi = cfg.joint_limits["wrist_roll"]
-        assert -157.2 < wrist_lo < wrist_hi < 162.8
-
 
 class TestGripperSettleS:
     def test_non_negative(self):

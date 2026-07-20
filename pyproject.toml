@@ -86,11 +86,8 @@ include = ["jiuwensymbiosis*"]
 [tool.setuptools.package-data]
 jiuwensymbiosis = [
     "skills/**/SKILL.md",
-    # SO-101 adapter description assets (URDF + meshes), for RobotKinematics FK/IK.
+    # SO-101 kinematics-only URDF for RobotKinematics FK/IK.
     "adapters/so101/description/**/*.urdf",
-    "adapters/so101/description/**/*.xml",
-    "adapters/so101/description/**/*.stl",
-    "adapters/so101/description/**/*.part",
     "adapters/so101/description/**/*.md",
 ]
 
