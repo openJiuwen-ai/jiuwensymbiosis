@@ -38,7 +38,7 @@ def test_parse_valid_sequence():
         {"op": "track_detect", "params": {"object_name": "目标"}, "bind": "t"},
         {"op": "goto_xyzr", "params": {"x": "t.x", "y": "t.y", "z": "t.z + lift"}},
     ]
-    steps = parse_sequence(raw, allowed_ops=_ALLOWED)
+    steps = parse_sequence(raw, allowed_ops=_ALLOWED, special_ops={"track_detect"})
     assert [s.op for s in steps] == ["home", "track_detect", "goto_xyzr"]
     assert steps[1].is_detection() and steps[1].bind == "t"
     assert not steps[0].is_detection()
@@ -47,32 +47,74 @@ def test_parse_valid_sequence():
 def test_parse_arbitrary_ops_from_vocabulary():
     # Any op present in the (dynamic) vocabulary validates — nothing is special-cased.
     vocab = frozenset({"wave", "spin", "honk"})
-    steps = parse_sequence([{"op": "wave"}, {"op": "honk"}], allowed_ops=vocab)
+    steps = parse_sequence([{"op": "wave"}, {"op": "honk"}], allowed_ops=vocab, special_ops=frozenset())
     assert [s.op for s in steps] == ["wave", "honk"]
 
 
 def test_parse_rejects_non_list():
     with pytest.raises(SequenceError):
-        parse_sequence({"op": "home"}, allowed_ops=_ALLOWED)
+        parse_sequence({"op": "home"}, allowed_ops=_ALLOWED, special_ops=frozenset())
 
 
 def test_parse_rejects_unknown_op():
     with pytest.raises(SequenceError, match="unknown op"):
-        parse_sequence([{"op": "fly_to_moon"}], allowed_ops=_ALLOWED)
+        parse_sequence([{"op": "fly_to_moon"}], allowed_ops=_ALLOWED, special_ops=frozenset())
 
 
 def test_parse_allows_track_detect_even_if_not_in_api():
-    # track_detect is the runner-implemented compound op, always allowed.
+    # track_detect is the runner-implemented compound op; it must be explicitly
+    # authorized via special_ops (no implicit default).
     steps = parse_sequence(
         [{"op": "track_detect", "params": {"object_name": "x"}, "bind": "p"}],
         allowed_ops=frozenset(),
+        special_ops={"track_detect"},
     )
     assert steps[0].op == "track_detect"
 
 
+def test_parse_track_grasp_requires_explicit_special_op_and_validates_approach():
+    raw = [{"op": "track_grasp", "params": {"object_name": "banana", "approach_mm": 40}, "bind": "banana"}]
+    # A known special op must be explicitly authorized via special_ops; it
+    # cannot sneak in through allowed_ops (which would bypass its validator).
+    with pytest.raises(SequenceError, match="not authorized in special_ops"):
+        parse_sequence(raw, allowed_ops={"track_grasp"}, special_ops=frozenset())
+    with pytest.raises(SequenceError, match="not authorized in special_ops"):
+        parse_sequence(raw, allowed_ops=frozenset(), special_ops=frozenset())
+    steps = parse_sequence(raw, allowed_ops=frozenset(), special_ops={"track_grasp"})
+    assert steps[0].op == "track_grasp"
+    with pytest.raises(SequenceError, match=r"\[30, 100\]"):
+        parse_sequence(
+            [{"op": "track_grasp", "params": {"object_name": "banana", "approach_mm": 10}, "bind": "banana"}],
+            allowed_ops=frozenset(),
+            special_ops={"track_grasp"},
+        )
+    with pytest.raises(SequenceError, match=r"\[30, 100\]"):
+        parse_sequence(
+            [{"op": "track_grasp", "params": {"object_name": "banana", "approach_mm": 101}, "bind": "banana"}],
+            allowed_ops=frozenset(),
+            special_ops={"track_grasp"},
+        )
+
+
+def test_parse_special_ops_default_does_not_implicitly_authorize():
+    # special_ops defaults to an empty set, so omitting it stays compatible
+    # with legacy callers — but a known special op is still NOT implicitly
+    # authorized: it is rejected with a SequenceError (not a TypeError, and
+    # never silently let through).
+    with pytest.raises(SequenceError, match="not authorized in special_ops"):
+        parse_sequence(
+            [{"op": "track_detect", "params": {"object_name": "x"}, "bind": "p"}],
+            allowed_ops=frozenset(),
+        )
+
+
 def test_parse_rejects_track_detect_without_object():
     with pytest.raises(SequenceError, match="object_name"):
-        parse_sequence([{"op": "track_detect", "params": {}, "bind": "p"}], allowed_ops=_ALLOWED)
+        parse_sequence(
+            [{"op": "track_detect", "params": {}, "bind": "p"}],
+            allowed_ops=_ALLOWED,
+            special_ops={"track_detect"},
+        )
 
 
 def test_parse_rejects_bad_bind_identifier():
@@ -80,17 +122,18 @@ def test_parse_rejects_bad_bind_identifier():
         parse_sequence(
             [{"op": "track_detect", "params": {"object_name": "x"}, "bind": "1bad"}],
             allowed_ops=_ALLOWED,
+            special_ops={"track_detect"},
         )
 
 
 def test_parse_rejects_missing_op():
     with pytest.raises(SequenceError, match="op"):
-        parse_sequence([{"params": {}}], allowed_ops=_ALLOWED)
+        parse_sequence([{"params": {}}], allowed_ops=_ALLOWED, special_ops=frozenset())
 
 
 def test_parse_rejects_bad_params_type():
     with pytest.raises(SequenceError, match="params"):
-        parse_sequence([{"op": "home", "params": [1, 2]}], allowed_ops=_ALLOWED)
+        parse_sequence([{"op": "home", "params": [1, 2]}], allowed_ops=_ALLOWED, special_ops=frozenset())
 
 
 def test_parse_rejects_track_detect_without_bind():
@@ -99,6 +142,7 @@ def test_parse_rejects_track_detect_without_bind():
         parse_sequence(
             [{"op": "track_detect", "params": {"object_name": "black box"}}],
             allowed_ops=_ALLOWED,
+            special_ops={"track_detect"},
         )
 
 
@@ -111,7 +155,7 @@ def test_parse_rejects_reference_to_unbound_binding():
         {"op": "goto_xyzr", "params": {"x": "black_box.position[0]", "z": "black_box.grasp_z + 40"}},
     ]
     with pytest.raises(SequenceError, match="unbound"):
-        parse_sequence(raw, allowed_ops=_ALLOWED)
+        parse_sequence(raw, allowed_ops=_ALLOWED, special_ops={"track_detect"})
 
 
 def test_parse_accepts_reference_matching_prior_bind():
@@ -119,7 +163,7 @@ def test_parse_accepts_reference_matching_prior_bind():
         {"op": "track_detect", "params": {"object_name": "black box"}, "bind": "black_box"},
         {"op": "goto_xyzr", "params": {"x": "black_box.position[0]", "z": "black_box.grasp_z + 40"}},
     ]
-    steps = parse_sequence(raw, allowed_ops=_ALLOWED)
+    steps = parse_sequence(raw, allowed_ops=_ALLOWED, special_ops={"track_detect"})
     assert steps[1].op == "goto_xyzr"
 
 
@@ -130,7 +174,7 @@ def test_parse_rejects_forward_reference_before_bind():
         {"op": "track_detect", "params": {"object_name": "x"}, "bind": "pick"},
     ]
     with pytest.raises(SequenceError, match="unbound"):
-        parse_sequence(raw, allowed_ops=_ALLOWED)
+        parse_sequence(raw, allowed_ops=_ALLOWED, special_ops={"track_detect"})
 
 
 def test_referenced_binding_names_ignores_literals_and_bare_names():

@@ -175,7 +175,7 @@ _COMPILER_SYSTEM = (
     "动作序列是一个 JSON 数组，每个元素是一步：\n"
     '  {"op": "<动作名>", "params": {<参数>}, "bind": "<可选:绑定名>"}\n'
     "规则：\n"
-    "- op 只能用【可用动作】清单里的名字，或特殊动作 track_detect。\n"
+    "- op 只能用【可用动作】清单里的名字，或【特殊动作】中列出的名字。\n"
     "- **凡是“产生坐标供后续步骤读取”的那一步都必须带 bind**（不管用哪个检测/感知动作，只要它的结果"
     '被后面的步骤读，就必须绑定）：该步把结果绑定到 <bind>，后续步骤才能用 "<bind>.字段" 读取。具体有哪些'
     "字段、各代表什么，完全由该技能 SKILL.md 决定，不要臆造 SKILL.md 里没有的字段。\n"
@@ -217,6 +217,7 @@ def compile_sequence(
     api_base: str,
     api_key: str = "",
     model_name: str,
+    special_ops: frozenset[str] | set[str] = frozenset(),
     timeout_s: float = 90.0,
     temperature: float = 0.0,
     proxy: str | None = None,
@@ -243,10 +244,15 @@ def compile_sequence(
         RuntimeError: if the LLM call fails, or every attempt yields a sequence
             that fails schema validation.
     """
+    active_special_ops = frozenset(special_ops)
+    special_text = ", ".join(sorted(active_special_ops)) or "无"
     user = (
         f"任务：{query}\n\n"
         f"【可用技能】(SKILL.md)：\n{_format_skills_md(skills_md)}\n\n"
-        f"【可用动作】：{', '.join(action_vocab)}, track_detect\n\n"
+        f"【可用动作】：{', '.join(action_vocab)}\n"
+        f"【特殊动作】：{special_text}\n\n"
+        "特殊动作的用途、参数和 workflow 替换规则只按 SKILL.md 执行；"
+        "未被 SKILL.md 选用的特殊动作不要自行插入。\n\n"
         "请输出展开后的动作序列 JSON 数组。"
     )
     last_err: str | None = None
@@ -283,7 +289,9 @@ def compile_sequence(
             correction = "\n\n上次回复没有包含合法的 JSON 数组。请只输出一个 JSON 数组，不要任何解释或 markdown。"
             continue
         try:
-            parse_sequence(data, allowed_ops=allowed_ops)  # validate only; keep raw dicts
+            parse_sequence(
+                data, allowed_ops=allowed_ops, special_ops=active_special_ops
+            )  # validate only; keep raw dicts
         except SequenceError as exc:
             last_err = str(exc)
             logger.warning("[compiler] attempt %d: invalid sequence: %s", attempt, exc)

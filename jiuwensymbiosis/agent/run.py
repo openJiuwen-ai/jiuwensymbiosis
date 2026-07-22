@@ -32,6 +32,7 @@ from typing import Any
 
 from jiuwensymbiosis.agent.builder import build_robot_agent
 from jiuwensymbiosis.agent.config import RobotAgentConfig
+from jiuwensymbiosis.agent.fast.sequence import TRACK_DETECT, TRACK_GRASP
 from jiuwensymbiosis.agent.session import RobotSession
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,32 @@ def run_robot_task(
     return asyncio.run(agent.invoke({"query": query, "conversation_id": conv_id}))
 
 
+def _resolve_fast_special_ops(
+    caps: frozenset[str] | set[str],
+    api: Any,
+    env: Any,
+) -> frozenset[str]:
+    """Derive the authorized fast-path special ops from session capabilities.
+
+    ``ServoBinding`` needs ``api.get_pose`` plus at least one dispatch sink —
+    ``api.servo_to_tip`` OR ``env.servo_to_flange`` (it falls back to the env
+    verb). Requiring both would wrongly disable tracking for an adapter that
+    only implements the env sink.
+    """
+    has_grasp = bool(caps & {"grasp.parallel", "grasp.suction"})
+    binding_available = callable(getattr(api, "get_pose", None)) and (
+        callable(getattr(api, "servo_to_tip", None)) or callable(getattr(env, "servo_to_flange", None))
+    )
+    if "vision.eye_to_hand" in caps:
+        if {"motion.servo", "vision.detection"} <= caps and has_grasp and binding_available:
+            return frozenset({TRACK_GRASP})
+        return frozenset()
+    if {"motion.servo", "vision.detection"} <= caps and binding_available:
+        # Eye-in-hand adapters: relative tracking via track_detect.
+        return frozenset({TRACK_DETECT})
+    return frozenset()
+
+
 def run_fast_task(
     session: RobotSession,
     query: str,
@@ -147,12 +174,16 @@ def run_fast_task(
     vocab = sorted(action_index)
     skills_md = DEFAULT_REGISTRY.skills_markdown()
 
+    caps = set(getattr(session.env, "capabilities", frozenset()))
+    special_ops = _resolve_fast_special_ops(caps, session.api, session.env)
+
     try:
         raw = compile_sequence(
             query,
             skills_md=skills_md,
             action_vocab=vocab,
             allowed_ops=set(action_index),
+            special_ops=special_ops,
             api_base=spec.api_base,
             api_key=spec.api_key,
             model_name=spec.model_name,
@@ -162,7 +193,7 @@ def run_fast_task(
         logger.error("[fast] sequence compiler unavailable/failed: %s", exc)
         return {"ok": False, "reason": f"compile_failed: {exc}", "query": query}
 
-    steps = parse_sequence(raw, allowed_ops=set(action_index))
+    steps = parse_sequence(raw, allowed_ops=set(action_index), special_ops=special_ops)
     logger.info("[fast] compiled %d-step sequence for task=%r", len(steps), query)
 
     # The trace run token (JSON filename + frames subdir) derives from this; the
