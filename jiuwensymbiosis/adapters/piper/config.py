@@ -163,6 +163,32 @@ class PiperConfig:
         return cfg
 
 
+def _server_value(server: dict[str, Any], field_name: str, default: Any) -> Any:
+    """Return an api-server value, treating explicit YAML null as absent."""
+    value = server.get(field_name, default)
+    return default if value is None else value
+
+
+def _server_number(server: dict[str, Any], field_name: str, default: int | float, converter: Any) -> Any:
+    """Convert one numeric detector field with a configuration-specific error."""
+    value = _server_value(server, field_name, default)
+    type_name = "an integer" if converter is int else "a number"
+    if isinstance(value, bool):
+        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be {type_name}, got {value!r}.")
+    try:
+        return converter(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be {type_name}, got {value!r}.") from exc
+
+
+def _server_bool(server: dict[str, Any], field_name: str, default: bool) -> bool:
+    """Read one boolean detector field without truthiness coercion."""
+    value = _server_value(server, field_name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be bool, got {value!r}.")
+    return value
+
+
 def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServerConfig:
     """If the YAML lists the detection server, copy its connection + model knobs.
     Recognizes the entry by ``_target_`` containing
@@ -171,23 +197,25 @@ def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServer
     for s in api_servers or []:
         if not isinstance(s, dict):
             continue
-        target = s.get("_target_", "").lower()
+        target = str(s.get("_target_") or "").lower()
         if "grounding_dino" not in target and "gdino" not in target:
             continue
-        host = s.get("host", "127.0.0.1")
-        port = int(s.get("port", 8114))
         defaults = DetectorServerConfig()
+        host = _server_value(s, "host", defaults.host)
+        port = _server_number(s, "port", defaults.port, int)
         return DetectorServerConfig(
             url=f"http://{host}:{port}",
             spawn=True,
             host=host,
             port=port,
-            device=s.get("device", "cuda"),
-            gdino_model_id=os.environ.get("GDINO_MODEL_ID") or s.get("gdino_model_id", defaults.gdino_model_id),
-            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or s.get("sam2_model_id", defaults.sam2_model_id),
-            box_threshold=float(s.get("box_threshold", defaults.box_threshold)),
-            text_threshold=float(s.get("text_threshold", defaults.text_threshold)),
-            use_sam2=bool(s.get("use_sam2", defaults.use_sam2)),
+            device=_server_value(s, "device", defaults.device),
+            startup_timeout_s=_server_number(s, "startup_timeout_s", defaults.startup_timeout_s, float),
+            gdino_model_id=os.environ.get("GDINO_MODEL_ID")
+            or _server_value(s, "gdino_model_id", defaults.gdino_model_id),
+            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or _server_value(s, "sam2_model_id", defaults.sam2_model_id),
+            box_threshold=_server_number(s, "box_threshold", defaults.box_threshold, float),
+            text_threshold=_server_number(s, "text_threshold", defaults.text_threshold, float),
+            use_sam2=_server_bool(s, "use_sam2", defaults.use_sam2),
         )
     defaults = DetectorServerConfig()
     return DetectorServerConfig(

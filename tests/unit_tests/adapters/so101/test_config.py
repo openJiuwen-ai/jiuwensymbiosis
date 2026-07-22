@@ -135,6 +135,65 @@ class TestDetectorConfig:
         )
         assert cfg.detector.gdino_model_id == "env-gdino"
 
+    def test_env_override_without_api_servers(self, monkeypatch):
+        monkeypatch.setenv("GDINO_MODEL_ID", "env-only-gdino")
+        monkeypatch.setenv("SAM2_MODEL_ID", "env-only-sam2")
+
+        cfg = So101Config.from_dict(_base_kwargs())
+
+        assert cfg.detector.spawn is False
+        assert cfg.detector.gdino_model_id == "env-only-gdino"
+        assert cfg.detector.sam2_model_id == "env-only-sam2"
+
+    @pytest.mark.parametrize(
+        ("field_name", "expected"),
+        [
+            ("port", 8114),
+            ("startup_timeout_s", 300.0),
+            ("box_threshold", 0.35),
+            ("text_threshold", 0.25),
+            ("use_sam2", True),
+        ],
+    )
+    def test_api_server_null_uses_field_default(self, field_name, expected):
+        cfg = So101Config.from_dict(
+            {
+                **_base_kwargs(),
+                "api_servers": [{"_target_": "x.grounding_dino_sam2_server", field_name: None}],
+            }
+        )
+        assert getattr(cfg.detector, field_name) == expected
+
+    @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
+    def test_invalid_api_server_number_names_field(self, field_name):
+        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+            So101Config.from_dict(
+                {
+                    **_base_kwargs(),
+                    "api_servers": [{"_target_": "x.grounding_dino_sam2_server", field_name: "bad"}],
+                }
+            )
+
+    @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_api_server_boolean_is_rejected_for_number(self, field_name, value):
+        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+            So101Config.from_dict(
+                {
+                    **_base_kwargs(),
+                    "api_servers": [{"_target_": "x.grounding_dino_sam2_server", field_name: value}],
+                }
+            )
+
+    def test_invalid_api_server_boolean_names_field(self):
+        with pytest.raises(ValueError, match=r"api_servers detector\.use_sam2"):
+            So101Config.from_dict(
+                {
+                    **_base_kwargs(),
+                    "api_servers": [{"_target_": "x.grounding_dino_sam2_server", "use_sam2": "false"}],
+                }
+            )
+
 
 class TestMaxRelativeTargetDirectConstruction:
     """Direct So101Config(...) bypasses from_dict; post_init must enforce too."""

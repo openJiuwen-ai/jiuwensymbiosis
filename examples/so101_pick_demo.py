@@ -63,13 +63,15 @@ def _fast_preflight(session: Any) -> list[str]:
     caps = set(getattr(session.env, "capabilities", frozenset()))
     required = {"motion.servo", "vision.eye_to_hand", "vision.detection", "grasp.parallel"}
     missing = sorted(required - caps)
-    binding = {
+    required_bindings = {
         "api.get_pose": getattr(session.api, "get_pose", None),
-        "api.servo_to_tip": getattr(session.api, "servo_to_tip", None),
-        "env.servo_to_flange": getattr(session.env, "servo_to_flange", None),
         "api.get_grasp_info_simple": getattr(session.api, "get_grasp_info_simple", None),
     }
-    missing.extend(name for name, fn in binding.items() if not callable(fn))
+    missing.extend(name for name, fn in required_bindings.items() if not callable(fn))
+    servo_to_tip = getattr(session.api, "servo_to_tip", None)
+    servo_to_flange = getattr(session.env, "servo_to_flange", None)
+    if not callable(servo_to_tip) and not callable(servo_to_flange):
+        missing.append("api.servo_to_tip or env.servo_to_flange")
     driver = getattr(session.env, "low_level", None)
     if driver is not None and not bool(getattr(driver, "has_calibration", False)):
         missing.append("loaded eye-to-hand calibration (T_base_cam)")

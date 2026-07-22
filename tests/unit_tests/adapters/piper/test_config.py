@@ -104,6 +104,39 @@ class TestExtractDetectorFromApiServers:
         cfg = _extract_detector_from_api_servers(servers)
         assert cfg.url == "http://127.0.0.1:8114"
 
+    @pytest.mark.parametrize(
+        ("field_name", "expected"),
+        [
+            ("port", 8114),
+            ("startup_timeout_s", 300.0),
+            ("box_threshold", 0.35),
+            ("text_threshold", 0.25),
+            ("use_sam2", True),
+        ],
+    )
+    def test_null_uses_field_default(self, field_name, expected):
+        servers = [{"_target_": "x.grounding_dino_sam2_server", field_name: None}]
+        cfg = _extract_detector_from_api_servers(servers)
+        assert getattr(cfg, field_name) == expected
+
+    @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
+    def test_invalid_number_names_field(self, field_name):
+        servers = [{"_target_": "x.grounding_dino_sam2_server", field_name: "bad"}]
+        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+            _extract_detector_from_api_servers(servers)
+
+    @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_boolean_is_rejected_for_number(self, field_name, value):
+        servers = [{"_target_": "x.grounding_dino_sam2_server", field_name: value}]
+        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+            _extract_detector_from_api_servers(servers)
+
+    def test_invalid_boolean_names_field(self):
+        servers = [{"_target_": "x.grounding_dino_sam2_server", "use_sam2": "false"}]
+        with pytest.raises(ValueError, match=r"api_servers detector\.use_sam2"):
+            _extract_detector_from_api_servers(servers)
+
 
 class TestPiperConfigFromYaml:
     def test_from_yaml(self, tmp_path):

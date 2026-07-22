@@ -15,8 +15,29 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "control_hz",
+        "max_lin_step_mm",
+        "max_ang_step_deg",
+        "pos_tol_mm",
+        "ang_tol_deg",
+        "timeout_s",
+        "lost_target_grace_s",
+        "settle_ticks",
+    ],
+)
+@pytest.mark.parametrize("value", [True, False])
+def test_servo_config_rejects_boolean_numeric_fields(field_name, value):
+    with pytest.raises(ValueError, match=rf"ServoConfig\.{field_name}"):
+        ServoConfig(**{field_name: value})
 
 
 def test_staleness_none_keeps_target_alive():

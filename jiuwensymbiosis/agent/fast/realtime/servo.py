@@ -69,9 +69,11 @@ class ServoConfig:
             ("timeout_s", self.timeout_s),
             ("lost_target_grace_s", self.lost_target_grace_s),
         ):
-            if not (isinstance(val, (int, float)) and math.isfinite(float(val)) and float(val) > 0):
+            if isinstance(val, bool) or not (
+                isinstance(val, (int, float)) and math.isfinite(float(val)) and float(val) > 0
+            ):
                 raise ValueError(f"ServoConfig.{name} must be finite and > 0, got {val!r}.")
-        if isinstance(self.settle_ticks, float) or not isinstance(self.settle_ticks, int):
+        if isinstance(self.settle_ticks, bool) or not isinstance(self.settle_ticks, int):
             raise ValueError(f"ServoConfig.settle_ticks must be int, got {self.settle_ticks!r}.")
         if self.settle_ticks < 1:
             raise ValueError(f"ServoConfig.settle_ticks must be >= 1, got {self.settle_ticks}.")
