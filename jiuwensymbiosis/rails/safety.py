@@ -133,6 +133,17 @@ class SafetyRail(AgentRail):
                 tool_name = str(action)
                 args = params
 
+        self.validate_motion(tool_name, args)
+
+    def validate_motion(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Synchronously apply the rail's motion policy without callback overhead.
+
+        Real-time servo bindings call :meth:`validate_pose` (the flat-key fast
+        path) on every target pose before dispatch. The normal tool path
+        delegates here from ``before_tool_call``, so both paths share one
+        Z/XY/joint policy implementation.
+        """
+
         if tool_name not in self.watch_tools:
             return
 
@@ -156,14 +167,60 @@ class SafetyRail(AgentRail):
         # exposes ``flange_z_min_safe`` on PiperEnv could close that gap.
         pose_obj = args.get("pose") if tool_name == "goto_pose" else None
         if isinstance(pose_obj, dict):
-            x = pose_obj.get("x")
-            y = pose_obj.get("y")
-            z = pose_obj.get("z")
+            x, y, z = pose_obj.get("x"), pose_obj.get("y"), pose_obj.get("z")
         else:
             x, y, z = args.get("x"), args.get("y"), args.get("z")
 
+        self._apply_xyz_policy(x, y, z, tool_name=tool_name)
+
+    def validate_pose(self, pose: Any, *, tool_name: str = "servo_to_pose") -> None:
+        """Flat-key fast path for real-time servo ticks.
+
+        ``ServoBinding.servo_to`` calls this on every target pose. Unlike
+        :meth:`validate_motion`, it takes the pose dict directly (no ``{"pose": …}``
+        wrapper, no tool-name dispatch) and skips the string-arg coercion the
+        ``before_tool_call`` path needs — so a 30–200 Hz servo loop pays only
+        the finite + Z-floor + XY-bounds check, with the correct ``tool_name``
+        in any trace reject event (not a synthesized ``goto_pose``).
+        """
+        if isinstance(pose, dict):
+            x, y, z = pose.get("x"), pose.get("y"), pose.get("z")
+        else:
+            x = getattr(pose, "x", None)
+            y = getattr(pose, "y", None)
+            z = getattr(pose, "z", None)
+        self._apply_xyz_policy(x, y, z, tool_name=tool_name)
+
+    def _apply_xyz_policy(self, x: Any, y: Any, z: Any, *, tool_name: str) -> None:
+        """Shared Z-floor + XY-bounds + finite check for one Cartesian target.
+
+        ``x``/``y``/``z`` are the raw coordinate values (numbers, numeric
+        strings, or ``None`` for "absent"). ``None`` means "no coordinate
+        supplied" → that axis is skipped (same "no param → no rejection"
+        contract as the tool path). Non-numeric / non-finite values raise.
+        """
+
+        def _coerce(name: str, raw: Any) -> float | None:
+            if raw is None:
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                reason = f"{name} is not a number: {raw!r}"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.") from None
+            if not math.isfinite(value):
+                reason = f"{name} is non-finite: {raw!r}"
+                self._notify_reject(tool_name, reason)
+                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+            return value
+
+        cx = _coerce("x", x)
+        cy = _coerce("y", y)
+        cz = _coerce("z", z)
+
         z_floor = self._resolve_z_floor()
-        if z is not None and z_floor is not None and float(z) < float(z_floor):
+        if cz is not None and z_floor is not None and cz < float(z_floor):
             reason = f"z={z} below z_floor={z_floor}"
             self._notify_reject(tool_name, reason)
             raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}. Either raise z, or call home() first.")
@@ -171,11 +228,11 @@ class SafetyRail(AgentRail):
         xy_bounds = self._resolve_xy_bounds()
         if xy_bounds is not None:
             xmin, ymin, xmax, ymax = xy_bounds
-            if x is not None and not xmin <= float(x) <= xmax:
+            if cx is not None and not xmin <= cx <= xmax:
                 reason = f"x={x} out of bounds [{xmin}, {xmax}]"
                 self._notify_reject(tool_name, reason)
                 raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
-            if y is not None and not ymin <= float(y) <= ymax:
+            if cy is not None and not ymin <= cy <= ymax:
                 reason = f"y={y} out of bounds [{ymin}, {ymax}]"
                 self._notify_reject(tool_name, reason)
                 raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")

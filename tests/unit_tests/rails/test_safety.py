@@ -22,6 +22,11 @@ GOTO_ARGS = {"x": 100, "y": 0, "z": 200, "r": 0}
 
 
 class TestSafetyRailZFloor:
+    def test_sync_validation_reuses_same_policy(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        with pytest.raises(ValueError, match="below z_floor"):
+            rail.validate_motion("goto_pose", {"pose": {"x": 100, "y": 0, "z": 30}})
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("tool_name", "tool_args"),
@@ -42,6 +47,11 @@ class TestSafetyRailZFloor:
         ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 30, "r": 0})
         with pytest.raises(ValueError, match="below z_floor"):
             await rail.before_tool_call(ctx)
+
+    def test_sync_validation_rejects_non_finite_coordinate(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        with pytest.raises(ValueError, match="non-finite"):
+            rail.validate_motion("goto_pose", {"pose": {"x": 100, "y": 0, "z": float("nan")}})
 
 
 class TestSafetyRailXYBounds:
@@ -351,3 +361,99 @@ class TestSafetyRailJointLimits:
         mock_session.env.joint_limits = None
         rail = SafetyRail(mock_session)
         assert rail._resolve_joint_limits() is None
+
+
+class TestSafetyRailValidatePose:
+    """The flat-key fast path ServoBinding.servo_to calls every servo tick.
+
+    Pins parity with validate_motion (same _apply_xyz_policy core) and the
+    servo-specific tool_name in any trace reject event. The tool path
+    (before_tool_call → validate_motion) is covered above; these exercise the
+    servo entry directly so a future refactor of one entry can't silently
+    diverge from the other.
+    """
+
+    def test_within_bounds_passes(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, xy_bounds_mm=(0, -300, 500, 300))
+        rail.validate_pose({"x": 250, "y": 0, "z": 200, "rz": 0})  # no raise
+
+    def test_z_below_floor_raises(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        with pytest.raises(ValueError, match="below z_floor"):
+            rail.validate_pose({"x": 100, "y": 0, "z": 30, "rz": 0})
+
+    @pytest.mark.parametrize(
+        "pose",
+        [
+            {"x": 600, "y": 0, "z": 200, "rz": 0},
+            {"x": 250, "y": -400, "z": 200, "rz": 0},
+        ],
+        ids=["x-out", "y-out"],
+    )
+    def test_out_of_bounds_raises(self, mock_session, pose):
+        rail = SafetyRail(mock_session, xy_bounds_mm=(0, -300, 500, 300))
+        with pytest.raises(ValueError, match="out of bounds"):
+            rail.validate_pose(pose)
+
+    @pytest.mark.parametrize(
+        ("bad", "match"),
+        [
+            ({"x": float("nan"), "y": 0, "z": 200, "rz": 0}, "non-finite"),
+            ({"x": 100, "y": float("inf"), "z": 200, "rz": 0}, "non-finite"),
+            ({"x": "not-a-number", "y": 0, "z": 200, "rz": 0}, "not a number"),
+        ],
+        ids=["nan-x", "inf-y", "non-numeric-x"],
+    )
+    def test_non_finite_or_non_numeric_raises(self, mock_session, bad, match):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0)
+        with pytest.raises(ValueError, match=match):
+            rail.validate_pose(bad)
+
+    def test_missing_coords_skipped_not_rejected(self, mock_session):
+        # Same "no param → no rejection" contract as the tool path: a pose
+        # missing x/y/z skips that axis rather than raising (the servo caller
+        # always supplies all three, but the core must not false-positive).
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, xy_bounds_mm=(0, -300, 500, 300))
+        rail.validate_pose({"z": 200, "rz": 0})  # no x/y → no XY check, no raise
+
+    @pytest.mark.parametrize(
+        "pose",
+        [
+            {"x": 250, "y": 0, "z": 200, "rz": 0},
+            {"x": 100, "y": 0, "z": 30, "rz": 0},  # below z_floor=50
+            {"x": 600, "y": 0, "z": 200, "rz": 0},  # x out of bounds
+            {"x": float("nan"), "y": 0, "z": 200, "rz": 0},  # non-finite
+        ],
+        ids=["pass", "z-below", "x-out", "nan"],
+    )
+    def test_validate_pose_matches_validate_motion(self, mock_session, pose):
+        """Flat pose dict and the wrapped goto_pose form must agree on every case."""
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, xy_bounds_mm=(0, -300, 500, 300))
+        motion_exc: ValueError | None = None
+        try:
+            rail.validate_motion("goto_pose", {"pose": pose})
+        except ValueError as exc:
+            motion_exc = exc
+        pose_exc: ValueError | None = None
+        try:
+            rail.validate_pose(pose)
+        except ValueError as exc:
+            pose_exc = exc
+        assert (motion_exc is None) == (pose_exc is None)
+
+    def test_reject_notifies_sink_with_servo_tool_name(self, mock_session):
+        sink = RecordingRailSink()
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, trace_sink=sink)
+        with pytest.raises(ValueError, match="below z_floor"):
+            rail.validate_pose({"x": 100, "y": 0, "z": 30, "rz": 0})
+        assert sink.events
+        rail_name, kind, detail, success = sink.events[0]
+        assert rail_name == "SafetyRail"
+        assert kind == "reject"
+        assert success is False
+        assert detail["tool_name"] == "servo_to_pose"
+
+    def test_no_sink_does_not_raise(self, mock_session):
+        rail = SafetyRail(mock_session, z_floor_mm=50.0, trace_sink=None)
+        with pytest.raises(ValueError, match="below z_floor"):
+            rail.validate_pose({"x": 100, "y": 0, "z": 30, "rz": 0})  # no crash with sink=None

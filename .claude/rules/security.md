@@ -28,10 +28,15 @@ alwaysApply: false
 This is jiuwensymbiosis's most important "security" surface — code that
 can move real hardware.
 
-- **Never bypass `SafetyRail`**: the Z-floor (`z_min_safe`) and XY
-  workspace bounds checks in `jiuwensymbiosis/rails/safety_rail.py` run
-  before every `goto_xyzr` / `goto_pose`. Do not call driver motion methods
-  directly, skipping the rail.
+- **Never bypass `SafetyRail` policy**: the Z-floor (`z_min_safe`) and XY
+  workspace bounds checks in `jiuwensymbiosis/rails/safety.py` run before
+  every `goto_xyzr` / `goto_pose`. High-frequency `motion.servo` is the only
+  callback exception: each tick must call a synchronous `SafetyRail` policy
+  entry point before dispatch — `SafetyRail.validate_motion()` for the tool
+  path or `SafetyRail.validate_pose()` for the flat-key servo fast path (both
+  reuse the same `_apply_xyz_policy()` core), and the driver must
+  independently enforce Cartesian, IK/FK, joint, step, and velocity limits at
+  the hardware boundary. Ordinary motion must not call driver methods directly.
 - **`z_min_safe` is a hard floor**: adapter envs must expose it as a
   property reflecting the real arm's collision limit. Do not set it to a
   permissive value to "make tests pass" on real hardware.
