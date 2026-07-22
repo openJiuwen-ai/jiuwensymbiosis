@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,39 @@ def _is_finite(value: float) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
+def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServerConfig:
+    """Pick the GroundingDINO+SAM2 server entry from a top-level ``api_servers:`` list.
+
+    Mirrors piper's loader so SO-101 YAMLs use the same ``api_servers:`` shape
+    (``_target_`` containing ``grounding_dino``/``gdino`` identifies the detector).
+    ``GDINO_MODEL_ID`` / ``SAM2_MODEL_ID`` env vars override the YAML model ids,
+    letting the GUI prime local offline model dirs without editing YAML.
+    """
+    defaults = DetectorServerConfig()
+    for s in api_servers or []:
+        if not isinstance(s, dict):
+            continue
+        target = str(s.get("_target_", "")).lower()
+        if "grounding_dino" not in target and "gdino" not in target:
+            continue
+        host = s.get("host", "127.0.0.1")
+        port = int(s.get("port", 8114))
+        return DetectorServerConfig(
+            url=f"http://{host}:{port}",
+            spawn=True,
+            host=host,
+            port=port,
+            device=s.get("device", "cuda"),
+            startup_timeout_s=float(s.get("startup_timeout_s", defaults.startup_timeout_s)),
+            gdino_model_id=os.environ.get("GDINO_MODEL_ID") or s.get("gdino_model_id", defaults.gdino_model_id),
+            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or s.get("sam2_model_id", defaults.sam2_model_id),
+            box_threshold=float(s.get("box_threshold", defaults.box_threshold)),
+            text_threshold=float(s.get("text_threshold", defaults.text_threshold)),
+            use_sam2=bool(s.get("use_sam2", defaults.use_sam2)),
+        )
+    return DetectorServerConfig()  # no detector entry -> fail-closed defaults (spawn=False)
+
+
 @dataclass
 class So101Config:
     """SO-101 adapter configuration.
@@ -173,6 +207,24 @@ class So101Config:
     # --- motion & settle ---
     trajectory_hz: float = 30.0
     max_joint_step_deg: float = 2.0
+    # Real-time Cartesian servo joint slew cap.  Kept separate from the
+    # blocking-path interpolation cap because servo commands are generated one
+    # tick at a time from a live encoder seed.
+    servo_max_joint_step_deg: float = 1.0
+    # Real-time servo velocity enforcement (hardware-boundary safety). The
+    # caller's tick rate is untrusted (a busy-loop or a misconfigured
+    # ``control_hz`` can call ``servo_to_pose`` far faster than the arm can
+    # track), so the driver caps the *actual* joint velocity itself rather than
+    # trusting per-call step clipping alone.
+    #   - servo_min_send_period_s: minimum elapsed time between two dispatched
+    #     servo actions; a call within this window is skipped (non-blocking
+    #     semantics: no accumulation, no catch-up burst).
+    #   - servo_max_joint_vel_dps: hard deg/s cap. The per-call step is
+    #     re-clipped against ``vel_cap = servo_max_joint_vel_dps * dt`` where
+    #     ``dt`` is the real inter-send interval, so speed is independent of
+    #     the caller's tick rate.
+    servo_min_send_period_s: float = 0.02
+    servo_max_joint_vel_dps: float = 30.0
     # Settle "arrived" tolerance (deg, joint space, max norm). The settle loop
     # returns once max|actual - target| <= this for ``settle_samples`` consecutive
     # reads. Default 1.5: paired with ``settle_overcompensate=True`` the servo now
@@ -240,9 +292,6 @@ class So101Config:
     # Open-vocabulary detection server (GroundingDINO + SAM2). The session
     # builder spawns it as a sidecar when detector.spawn=True (piper-style).
     detector: DetectorServerConfig = field(default_factory=DetectorServerConfig)
-    # Backward-compatible flat alias.  New YAML should use detector.url; when
-    # this alias is supplied it overrides detector.url in __post_init__.
-    detector_service_url: str | None = None
 
     # --- grasp geometry (eye-to-hand projection → grasp/place z) ---
     # Constant base-frame Z correction added to every detection (piper: 0).
@@ -289,13 +338,12 @@ class So101Config:
         if "joint_limits" in kw and kw["joint_limits"] is not None:
             kw["joint_limits"] = _normalise_joint_limits(kw["joint_limits"])
 
-        # ``detector`` may live beside the flat fields or inside the legacy
-        # ``env.cfg.low_level`` mapping.  Do not drop it when the nested layout
-        # is selected, and retain the flat alias for old deployments.
+        # ``api_servers`` is the unified detector config shape (same as piper):
+        # a top-level (or ``env.cfg``) list whose ``_target_`` identifies the
+        # GroundingDINO+SAM2 server entry. Extracted into ``cfg.detector``.
         env_cfg = data.get("env", {}).get("cfg", {}) if isinstance(data.get("env"), dict) else {}
-        raw_detector = kw.get("detector", data.get("detector", env_cfg.get("detector")))
-        if raw_detector is not None:
-            kw["detector"] = DetectorServerConfig.from_dict(raw_detector)
+        api_servers = data.get("api_servers") or env_cfg.get("api_servers") or []
+        kw["detector"] = _extract_detector_from_api_servers(api_servers)
 
         if "camera_resolution" in kw and kw["camera_resolution"] is not None:
             cr = kw["camera_resolution"]
@@ -450,6 +498,9 @@ class So101Config:
             ("z_min_safe_mm", self.z_min_safe_mm),
             ("trajectory_hz", self.trajectory_hz),
             ("max_joint_step_deg", self.max_joint_step_deg),
+            ("servo_max_joint_step_deg", self.servo_max_joint_step_deg),
+            ("servo_min_send_period_s", self.servo_min_send_period_s),
+            ("servo_max_joint_vel_dps", self.servo_max_joint_vel_dps),
             ("joint_tolerance_deg", self.joint_tolerance_deg),
             ("settle_samples", self.settle_samples),
             ("move_timeout_s", self.move_timeout_s),
@@ -468,6 +519,12 @@ class So101Config:
             raise ValueError(f"So101Config: trajectory_hz must be > 0, got {self.trajectory_hz}.")
         if self.max_joint_step_deg <= 0:
             raise ValueError(f"So101Config: max_joint_step_deg must be > 0, got {self.max_joint_step_deg}.")
+        if self.servo_max_joint_step_deg <= 0:
+            raise ValueError(f"So101Config: servo_max_joint_step_deg must be > 0, got {self.servo_max_joint_step_deg}.")
+        if self.servo_min_send_period_s <= 0:
+            raise ValueError(f"So101Config: servo_min_send_period_s must be > 0, got {self.servo_min_send_period_s}.")
+        if self.servo_max_joint_vel_dps <= 0:
+            raise ValueError(f"So101Config: servo_max_joint_vel_dps must be > 0, got {self.servo_max_joint_vel_dps}.")
         if self.joint_tolerance_deg <= 0:
             raise ValueError(f"So101Config: joint_tolerance_deg must be > 0, got {self.joint_tolerance_deg}.")
         if self.move_timeout_s <= 0:
@@ -552,12 +609,6 @@ class So101Config:
         # --- detector sidecar -------------------------------------------------
         if not isinstance(self.detector, DetectorServerConfig):
             self.detector = DetectorServerConfig.from_dict(self.detector)
-        if self.detector_service_url is not None:
-            if not isinstance(self.detector_service_url, str) or not self.detector_service_url:
-                raise ValueError("So101Config: detector_service_url must be a non-empty string or None.")
-            # Keep old flat configs working while making the nested config the
-            # canonical source consumed by session.py and make_detector_sidecar.
-            self.detector.url = self.detector_service_url
 
 
 def _normalise_joint_limits(raw: Any) -> dict[str, tuple[float, float]]:

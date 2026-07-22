@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +97,20 @@ class So101PoseConvergenceError(RuntimeError):
 # --------------------------------------------------------------------- helpers
 def _is_finite(value: float) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _require_finite_so101_pose(pose: So101Pose, *, label: str) -> None:
+    """Reject non-finite Cartesian pose values before any IK or dispatch."""
+    for name, value in (
+        ("x", pose.x),
+        ("y", pose.y),
+        ("z", pose.z),
+        ("rx", pose.rx),
+        ("ry", pose.ry),
+        ("rz", pose.rz),
+    ):
+        if not _is_finite(value):
+            raise ValueError(f"{label}: {name} must be finite, got {value!r}.")
 
 
 def _arm_action(q: list[float] | np.ndarray) -> dict[str, float]:
@@ -198,6 +212,12 @@ class So101Driver:
         # ``max_relative_target``). Recorded per plan §A3 so clipping is
         # observable — completion is still judged from real observation.
         self._last_sent_action: dict[str, float] | None = None
+
+        # Real-time servo velocity gate: monotonic timestamp of the last
+        # dispatched servo action. ``servo_to_pose`` enforces a minimum
+        # inter-send interval and a deg/s cap derived from the real ``dt``,
+        # so actual joint velocity is independent of the caller's tick rate.
+        self._servo_last_send_t: float = 0.0
 
         # URDF resolution: explicit > packaged.
         self._urdf_path: str = self._resolve_urdf_path()
@@ -313,6 +333,7 @@ class So101Driver:
             self._robot = robot
             self._kin = kin
             self._connected = True
+            self._servo_last_send_t = 0.0
 
             # Vision (milestone B): when a camera is configured, opening it is
             # part of the connection contract. Agent tools are commonly built
@@ -417,6 +438,7 @@ class So101Driver:
         self._robot = None
         self._kin = None
         self._connected = False
+        self._servo_last_send_t = 0.0
 
     def close(self) -> None:
         """Alias of :meth:`disconnect` for callers expecting ``close()``."""
@@ -728,6 +750,117 @@ class So101Driver:
         if self._cfg.pose_convergence_max_iters > 0:
             self._converge_to_pose(pose, q_target, timeout_s=kwargs.get("timeout_s"))
 
+    def servo_to_pose(self, pose: Any) -> None:
+        """Issue one non-blocking Cartesian servo command.
+
+        Exactly one IK solve from the live encoder seed and one ``send_action``;
+        the caller's real-time loop calls this again each tick. The IK solution
+        is checked for residual/error and the dispatched waypoint is slew-limited
+        and checked against the SO-101 safety envelope. Velocity (inter-send
+        interval + deg/s cap) is enforced here, not by the caller.
+        """
+        self._require_connected()
+        target = self._coerce_servo_pose(pose)
+        _require_finite_so101_pose(target, label="servo_to_pose target")
+        self._check_cartesian_bounds(target, label="servo_to_pose target")
+
+        # Min inter-send interval: a call within this window is a no-op
+        # (non-blocking; skipped calls do not accumulate or catch up).
+        now = time.monotonic()
+        min_period = float(self._cfg.servo_min_send_period_s)
+        first_send = self._servo_last_send_t == 0.0
+        if not first_send and (now - self._servo_last_send_t) < min_period:
+            return
+
+        q_current = np.asarray(self.get_angles(), dtype=float)
+        self._validate_joint_vector(q_current.tolist(), label="servo_to_pose current")
+        target_matrix = np.asarray(pose_mm_deg_to_matrix_m(target), dtype=float)
+        try:
+            q_ik = np.asarray(
+                self._kin.inverse_kinematics(
+                    q_current,
+                    target_matrix,
+                    position_weight=1.0,
+                    orientation_weight=float(self._cfg.ik_orientation_weight),
+                ),
+                dtype=float,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize vendor IK failures
+            raise ValueError(f"servo_to_pose: IK raised {exc!r}.") from exc
+
+        self._validate_ik_solution(q_ik, target_matrix, label="servo_to_pose IK")
+        # Re-clip the step against vel_cap = max_joint_vel_dps * dt; first send
+        # uses one min_period (timestamp 0 is not a real instant).
+        dt = min_period if first_send else now - self._servo_last_send_t
+        vel_cap = float(self._cfg.servo_max_joint_vel_dps) * dt
+        max_step = min(float(self._cfg.servo_max_joint_step_deg), vel_cap)
+        q_cmd = q_current + np.clip(q_ik - q_current, -max_step, max_step)
+        self._validate_joint_waypoint(np.asarray(q_cmd, dtype=float), label="servo_to_pose command")
+        self._send_action(_arm_action(q_cmd.tolist()))
+        self._servo_last_send_t = time.monotonic()
+
+    @staticmethod
+    def _coerce_servo_pose(pose: Any) -> So101Pose:
+        """Coerce a complete mapping/attribute-bag into ``So101Pose``."""
+        if isinstance(pose, So101Pose):
+            return pose
+        if isinstance(pose, Mapping):
+
+            def get(key: str) -> Any:
+                return pose.get(key)
+        else:
+
+            def get(key: str) -> Any:
+                return getattr(pose, key, None)
+
+        missing: list[str] = []
+        values: dict[str, Any] = {}
+        for name in ("x", "y", "z", "rx", "ry"):
+            value = get(name)
+            if value is None:
+                missing.append(name)
+            else:
+                values[name] = value
+        rz = get("rz")
+        if rz is None:
+            rz = get("r")
+        if rz is None:
+            missing.append("rz (or r)")
+        else:
+            values["rz"] = rz
+        if missing:
+            raise TypeError(f"SO-101 servo pose missing required fields: {', '.join(missing)}.")
+        try:
+            return So101Pose(**{name: float(value) for name, value in values.items()})
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"SO-101 servo pose contains non-numeric fields: {pose!r}.") from exc
+
+    def _validate_ik_solution(self, q: np.ndarray, desired_matrix: np.ndarray, *, label: str) -> None:
+        """Validate an IK solution against the requested pose and safety envelope."""
+        self._validate_joint_vector(np.asarray(q, dtype=float).tolist(), label=label)
+        self._check_joint_limits(np.asarray(q, dtype=float), label=label)
+        fk_matrix = np.asarray(self._kin.forward_kinematics(q), dtype=float)
+        fk_pose = matrix_m_to_pose_mm_deg(fk_matrix)
+        desired_pose = matrix_m_to_pose_mm_deg(desired_matrix)
+        pos_err = position_error_mm(fk_pose, desired_pose)
+        if not _is_finite(pos_err):
+            raise ValueError(f"{label}: IK position residual non-finite: {pos_err}.")
+        if pos_err > self._cfg.ik_position_tolerance_mm:
+            raise ValueError(
+                f"{label}: IK position residual {pos_err:.3f} mm exceeds "
+                f"tolerance {self._cfg.ik_position_tolerance_mm} mm."
+            )
+        if self._cfg.ik_orientation_tolerance_deg is not None:
+            ori_err = orientation_error_deg(fk_pose, desired_pose)
+            if not _is_finite(ori_err):
+                raise ValueError(f"{label}: IK orientation residual non-finite: {ori_err}.")
+            if ori_err > self._cfg.ik_orientation_tolerance_deg:
+                raise ValueError(
+                    f"{label}: IK orientation residual {ori_err:.3f} deg exceeds "
+                    f"tolerance {self._cfg.ik_orientation_tolerance_deg} deg."
+                )
+        self._check_cartesian_bounds(fk_pose, label=f"{label} FK")
+
     def _dispatch_pose_move(
         self,
         pose: So101Pose,
@@ -904,31 +1037,7 @@ class So101Driver:
 
         def validate_waypoint(q: np.ndarray, matrix: np.ndarray, label: str) -> None:
             """Validate a waypoint; raise on failure (no silent skip)."""
-            self._validate_joint_vector(q.tolist(), label=label)
-            self._check_joint_limits(q, label=label)
-            fk_matrix = np.asarray(self._kin.forward_kinematics(q), dtype=float)
-            fk_pose = matrix_m_to_pose_mm_deg(fk_matrix)
-            wp_pose = matrix_m_to_pose_mm_deg(matrix)
-            pos_err = position_error_mm(fk_pose, wp_pose)
-            if not _is_finite(pos_err):
-                raise ValueError(f"{label}: IK position residual non-finite: {pos_err}.")
-            if pos_err > self._cfg.ik_position_tolerance_mm:
-                raise ValueError(
-                    f"{label}: IK position residual {pos_err:.3f} mm exceeds "
-                    f"tolerance {self._cfg.ik_position_tolerance_mm} mm."
-                )
-            if self._cfg.ik_orientation_tolerance_deg is not None:
-                ori_err = orientation_error_deg(fk_pose, wp_pose)
-                if not _is_finite(ori_err):
-                    raise ValueError(f"{label}: IK orientation residual non-finite: {ori_err}.")
-                if ori_err > self._cfg.ik_orientation_tolerance_deg:
-                    raise ValueError(
-                        f"{label}: IK orientation residual {ori_err:.3f} deg exceeds "
-                        f"tolerance {self._cfg.ik_orientation_tolerance_deg} deg."
-                    )
-            # Cartesian bounds on the FK pose: the arm may reach a safe commanded
-            # target at an unsafe intermediate FK pose (e.g. dipping below z_min).
-            self._check_cartesian_bounds(fk_pose, label=label)
+            self._validate_ik_solution(q, matrix, label=label)
 
         accepted: list[np.ndarray] = []
         # Seed chain: starts at the current joint config, then tracks each step's

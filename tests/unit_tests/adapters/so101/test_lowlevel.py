@@ -18,6 +18,9 @@ these tests run in the standard unit-test environment. They cover:
 
 from __future__ import annotations
 
+import math
+import time
+
 import numpy as np
 import pytest
 
@@ -546,6 +549,141 @@ class TestConnect:
 
 
 class TestReachability:
+    def test_servo_to_pose_first_command_obeys_step_and_velocity_limits(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0, servo_max_joint_step_deg=1.0)
+        driver, follower, sleep_log = _make_driver(cfg, tmp_path)
+        driver.connect()
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        sent_before = len(follower.sent_actions)
+
+        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+
+        sent = follower.sent_actions[sent_before:]
+        assert len(sent) == 1
+        # First dispatch uses one 20ms send period: 30 deg/s * 0.02s = 0.6 deg,
+        # tighter than the configured 1.0-degree per-call cap.
+        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.6)
+        assert sleep_log == []
+
+    def test_servo_to_pose_rejects_bad_ik_before_send(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0, ik_position_tolerance_mm=0.1)
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+
+        class BadKin(FakeKinematics):
+            def inverse_kinematics(self, current, desired, position_weight=1.0, orientation_weight=0.01):
+                return np.zeros(5)
+
+        driver._kin = BadKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
+        sent_before = len(follower.sent_actions)
+        with pytest.raises(ValueError, match="position residual"):
+            driver.servo_to_pose(So101Pose(100.0, 200.0, 300.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_servo_to_pose_rejects_when_not_connected(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0)
+        driver, _follower, _ = _make_driver(cfg, tmp_path)
+        with pytest.raises(RuntimeError, match="before connect"):
+            driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+
+    def test_servo_to_pose_rejects_non_finite_target(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0)
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        sent_before = len(follower.sent_actions)
+        with pytest.raises(ValueError, match="must be finite"):
+            driver.servo_to_pose(So101Pose(float("nan"), 0.0, 70.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_servo_to_pose_rejects_target_below_z_floor(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=50.0, workspace_bounds=(0.0, -300.0, 500.0, 300.0))
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        sent_before = len(follower.sent_actions)
+        with pytest.raises(ValueError, match="below driver z_min_safe"):
+            driver.servo_to_pose(So101Pose(10.0, 0.0, 10.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_servo_to_pose_rejects_target_outside_xy_bounds(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0, workspace_bounds=(0.0, -300.0, 500.0, 300.0))
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        sent_before = len(follower.sent_actions)
+        # x=-50 is outside [0, 500]
+        with pytest.raises(ValueError, match="out of workspace x"):
+            driver.servo_to_pose(So101Pose(-50.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_servo_to_pose_rejects_orientation_residual(self, tmp_path):
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            ik_position_tolerance_mm=10.0,
+            ik_orientation_tolerance_deg=0.1,  # tight: any orientation drift rejects
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+
+        class DriftKin(FakeKinematics):
+            # Exact position but FK orientation differs from the requested one
+            # (returns the requested joints, but forward_kinematics applies a
+            # fixed rotation offset so the orientation residual is nonzero).
+            def forward_kinematics(self, q):
+                mat = super().forward_kinematics(q)
+                # Inject a small rotation about z so orientation residual > 0.1 deg.
+                theta = math.radians(1.0)
+                rot = np.array(
+                    [
+                        [math.cos(theta), -math.sin(theta), 0, 0],
+                        [math.sin(theta), math.cos(theta), 0, 0],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1],
+                    ]
+                )
+                return (rot @ np.asarray(mat)).tolist()
+
+        driver._kin = DriftKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
+        sent_before = len(follower.sent_actions)
+        with pytest.raises(ValueError, match="orientation residual"):
+            driver.servo_to_pose(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_servo_to_pose_enforces_min_send_period(self, tmp_path):
+        cfg = _make_cfg(z_min_safe_mm=10.0, servo_min_send_period_s=1.0)
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        sent_after_first = len(follower.sent_actions)
+        # Second call within the min send period must be skipped (no new action).
+        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        assert len(follower.sent_actions) == sent_after_first
+
+    def test_servo_to_pose_enforces_max_joint_vel_dps(self, tmp_path):
+        # With a tiny servo_max_joint_vel_dps and a large inter-send interval
+        # (simulated by manually rewinding _servo_last_send_t far into the past),
+        # the velocity cap rather than the per-call step cap binds.
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            servo_min_send_period_s=1e-6,
+            servo_max_joint_step_deg=10.0,
+            servo_max_joint_vel_dps=1.0,  # 1 deg/s
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        # Pretend the previous send was 0.5s ago → vel_cap = 1.0 * 0.5 = 0.5 deg,
+        # tighter than servo_max_joint_step_deg=10, so q_cmd is clipped to 0.5 deg.
+        driver._servo_last_send_t = time.monotonic() - 0.5
+        sent_before = len(follower.sent_actions)
+        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        sent = follower.sent_actions[sent_before:]
+        assert len(sent) == 1
+        # vel_cap (≈0.5 deg, not the 10 deg step cap) binds: elbow ≈ 5.5, well
+        # below the 7.0 a step-cap-only path would allow. abs=0.01 covers the
+        # few-µs IK/validate overhead in dt (do not tighten to an exact dt).
+        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.5, abs=0.01)
+        assert sent[0]["elbow_flex.pos"] < 7.0
+
     def test_move_to_pose_rejects_position_residual_when_unreachable(self, tmp_path):
         # FakeKinematics IK is exact for x/y/z but a mismatch on orientation is
         # inherent for 5-DoF. Use a config with a tight position tolerance and a
@@ -588,11 +726,8 @@ class TestReachability:
         # Force an orientation mismatch: target has nonzero Euler rz, but
         # FakeKinematics IK always zeroes rx/ry/rz, so FK residual = the full
         # target orientation magnitude, exceeding 0.001 deg at every waypoint.
-        # The orientation failure is a subdivisible candidate, but the fake IK
-        # can't improve with a closer seed, so the cap is hit and the path is
-        # rejected. Either the orientation-residual message or the final cap
-        # message is acceptable; the contract is "reject before dispatch".
-        with pytest.raises(ValueError, match="orientation residual|unreachable via a continuous"):
+        # The seed-chain planner rejects the first invalid waypoint before send.
+        with pytest.raises(ValueError, match="orientation residual"):
             driver.move_to_pose_blocking(So101Pose(10.0, 20.0, 300.0, 0, 0, 45.0))
         assert len(follower.sent_actions) == sent_before
 
@@ -604,9 +739,8 @@ class TestReachability:
 
         # Sabotage the fake IK so it returns a joint config that FK cannot match
         # the desired position. IK always returns zeros — FK of zeros = origin,
-        # far from any non-origin desired. The position failure is subdivisible,
-        # but the fake IK can't improve with a closer seed, so the cap is hit and
-        # the path is rejected before dispatch.
+        # far from any non-origin desired. The first invalid seed-chain waypoint
+        # is rejected before dispatch.
         follower._arm = [0.0, 0.0, 0.0, 0.0, 0.0]
 
         class BadKin(FakeKinematics):
@@ -615,7 +749,7 @@ class TestReachability:
                 return np.zeros(5)
 
         driver._kin = BadKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
-        with pytest.raises(ValueError, match="position residual|unreachable via a continuous"):
+        with pytest.raises(ValueError, match="position residual"):
             driver.move_to_pose_blocking(So101Pose(100.0, 200.0, 300.0, 0, 0, 0))
         assert len(follower.sent_actions) == sent_before
 
@@ -670,7 +804,7 @@ class TestCartesianSafetyChecks:
         driver._kin = _DriftKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
         sent_before = len(follower.sent_actions)
 
-        with pytest.raises(ValueError, match="below driver z_min_safe|unreachable via a continuous"):
+        with pytest.raises(ValueError, match="below driver z_min_safe"):
             driver.move_to_pose_blocking(So101Pose(0.0, 0.0, 26.0, 0, 0, 0))
         assert len(follower.sent_actions) == sent_before
 

@@ -139,6 +139,22 @@ class So101Api(
         # but routed through goto_pose so the same IK path is used.
         self.goto_pose(So101Pose(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r)))
 
+    def servo_to_tip(self, pose: dict) -> None:
+        """Issue one non-blocking servo command toward a TIP-frame pose.
+
+        SO-101 milestone-A geometry has ``tool_offset_mm == 0`` and uses the
+        same base/control frame for the tip and flange.  The real-time runner
+        uses ``rz`` internally to match :meth:`get_pose`; ``r`` remains an
+        accepted compatibility alias for callers using the SCARA convention.
+        """
+        x = float(pose["x"])
+        y = float(pose["y"])
+        z = float(pose["z"])
+        rz = pose.get("rz", pose.get("r"))
+        if rz is None:
+            rz = float(self.env.get_flange_pose().rz)
+        self.env.servo_to_flange({"x": x, "y": y, "z": z, "rx": 180.0, "ry": 0.0, "rz": float(rz)})
+
     @robot_tool(
         desc=(
             "Move the SO-101 control frame to absolute (x, y, z, rx, ry, rz) "

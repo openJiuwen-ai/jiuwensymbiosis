@@ -41,13 +41,15 @@ class So101Env(BaseRobotEnv):
         {
             "motion.cartesian",
             "motion.joint",
+            "motion.servo",
             "grasp.parallel",
             "vision.camera",
             "vision.depth",
             "vision.detection",
+            "vision.eye_to_hand",
         }
     )
-    _BASE_CAPABILITIES = frozenset({"motion.cartesian", "motion.joint", "grasp.parallel"})
+    _BASE_CAPABILITIES = frozenset({"motion.cartesian", "motion.joint", "grasp.parallel", "motion.servo"})
     name = "so101"
 
     def __init__(self, cfg: So101Config) -> None:
@@ -67,14 +69,14 @@ class So101Env(BaseRobotEnv):
         """
         caps = set(self._BASE_CAPABILITIES)
         if self.cfg.camera_serial:
-            caps.update({"vision.camera", "vision.depth", "vision.detection"})
+            caps.update({"vision.camera", "vision.depth", "vision.detection", "vision.eye_to_hand"})
         return frozenset(caps)
 
     def _capabilities_for_driver(self, driver: Any) -> frozenset[str]:
         """Confirm vision capabilities from the connected driver's camera state."""
         caps = set(self._capabilities_for_config())
         if self.cfg.camera_serial and getattr(driver, "camera_available", True) is False:
-            caps.difference_update({"vision.camera", "vision.depth", "vision.detection"})
+            caps.difference_update({"vision.camera", "vision.depth", "vision.detection", "vision.eye_to_hand"})
         return frozenset(caps)
 
     # --- controlled penetration point (read-only) ---------------------------

@@ -64,11 +64,17 @@ class TestMaxRelativeTarget:
 
 
 class TestDetectorConfig:
-    def test_nested_detector_is_preserved(self):
+    def test_api_servers_detector_extracted(self):
         cfg = So101Config.from_dict(
             {
                 **_base_kwargs(camera_serial="camera"),
-                "detector": {"url": "http://127.0.0.1:9000", "spawn": True, "port": 9000},
+                "api_servers": [
+                    {
+                        "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server.main",
+                        "host": "127.0.0.1",
+                        "port": 9000,
+                    },
+                ],
             }
         )
         assert cfg.detector.url == "http://127.0.0.1:9000"
@@ -76,32 +82,58 @@ class TestDetectorConfig:
         assert cfg.detector.port == 9000
 
     def test_spawn_address_is_derived_from_url(self):
+        # The extractor builds url="http://localhost:9123"; DetectorServerConfig
+        # __post_init__ then derives host/port back from that url (spawn=True).
         cfg = So101Config.from_dict(
             {
                 **_base_kwargs(camera_serial="camera"),
-                "detector": {"url": "http://localhost:9123", "spawn": True},
+                "api_servers": [
+                    {
+                        "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server.main",
+                        "host": "localhost",
+                        "port": 9123,
+                    },
+                ],
             }
         )
         assert cfg.detector.host == "localhost"
         assert cfg.detector.port == 9123
 
+    def test_no_api_servers_yields_fail_closed_default(self):
+        # No api_servers entry -> DetectorServerConfig() default (spawn=False).
+        cfg = So101Config.from_dict({**_base_kwargs(camera_serial="camera")})
+        assert cfg.detector.url == "http://127.0.0.1:8114"
+        assert cfg.detector.spawn is False
+
     def test_unknown_detector_field_is_rejected(self):
+        # DetectorServerConfig.from_dict still rejects unknown keys — the
+        # extractor does not go through from_dict, but the class contract holds.
+        from jiuwensymbiosis.adapters.so101.config import DetectorServerConfig
+
         with pytest.raises(ValueError, match="unknown detector fields.*spwan"):
-            So101Config.from_dict(
-                {
-                    **_base_kwargs(camera_serial="camera"),
-                    "detector": {"spwan": True},
-                }
-            )
+            DetectorServerConfig.from_dict({"spwan": True})
 
     def test_spawn_rejects_non_http_url(self):
+        # __post_init__ rejects https (non-http) url when spawn=True.
+        from jiuwensymbiosis.adapters.so101.config import DetectorServerConfig
+
         with pytest.raises(ValueError, match="absolute http URL"):
-            So101Config.from_dict(
-                {
-                    **_base_kwargs(camera_serial="camera"),
-                    "detector": {"url": "https://localhost:9123", "spawn": True},
-                }
-            )
+            DetectorServerConfig(url="https://localhost:9123", spawn=True)
+
+    def test_api_servers_env_override(self, monkeypatch):
+        monkeypatch.setenv("GDINO_MODEL_ID", "env-gdino")
+        cfg = So101Config.from_dict(
+            {
+                **_base_kwargs(camera_serial="camera"),
+                "api_servers": [
+                    {
+                        "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server.main",
+                        "gdino_model_id": "IDEA-Research/grounding-dino-base",
+                    },
+                ],
+            }
+        )
+        assert cfg.detector.gdino_model_id == "env-gdino"
 
 
 class TestMaxRelativeTargetDirectConstruction:
