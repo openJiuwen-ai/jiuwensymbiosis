@@ -107,12 +107,13 @@ class TestSo101EnvCapabilities:
                 "motion.cartesian",
                 "motion.joint",
                 "grasp.parallel",
+                "motion.servo",
             }
         )
 
     def test_vision_capabilities_present(self):
         env = _make_env(camera_serial="test-camera")
-        for cap in ("vision.camera", "vision.depth", "vision.detection"):
+        for cap in ("vision.camera", "vision.depth", "vision.detection", "vision.eye_to_hand"):
             assert cap in env.capabilities
 
     def test_failed_camera_start_removes_vision_capabilities(self):

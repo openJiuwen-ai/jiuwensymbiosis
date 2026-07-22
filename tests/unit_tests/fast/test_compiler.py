@@ -29,6 +29,12 @@ _GOOD_SEQUENCE = [
     {"op": "close_gripper"},
 ]
 
+_GOOD_TRACK_GRASP_SEQUENCE = [
+    {"op": "home"},
+    {"op": "track_grasp", "params": {"object_name": "banana", "approach_mm": 40}, "bind": "banana"},
+    {"op": "close_gripper"},
+]
+
 
 def _patch_chat(monkeypatch, reply):
     captured = {}
@@ -48,6 +54,7 @@ def _compile(**overrides):
         "skills_md": _SKILLS_MD,
         "action_vocab": _VOCAB,
         "allowed_ops": set(_VOCAB),
+        "special_ops": frozenset({"track_detect"}),
         "api_base": "http://x",
         "model_name": "m",
     }
@@ -67,6 +74,28 @@ def test_compile_prompt_includes_skill_md_and_vocab(monkeypatch):
     # full SKILL.md text + vocab + track_detect are all in the prompt
     assert "visual_pick" in cap["user"] and "抓取 workflow" in cap["user"]
     assert "goto_xyzr" in cap["user"] and "track_detect" in cap["user"]
+
+
+def test_compile_uses_runtime_special_ops(monkeypatch):
+    cap = _patch_chat(monkeypatch, json.dumps(_GOOD_TRACK_GRASP_SEQUENCE))
+    out = _compile(special_ops=frozenset({"track_grasp"}))
+    assert [s["op"] for s in out] == ["home", "track_grasp", "close_gripper"]
+    assert "track_grasp" in cap["user"]
+    assert "track_detect" not in cap["user"].split("【特殊动作】：", 1)[1].split("\n", 1)[0]
+    # The generic planner advertises availability only. Skill-specific workflow
+    # rewrites belong to SKILL.md, not Python conditionals in planner.py.
+    assert "必须将标准 workflow" not in cap["user"]
+    assert "absolute approach+descend" not in cap["user"]
+
+
+def test_compile_takes_special_op_policy_from_skill_markdown(monkeypatch):
+    skill_rule = "若 track_grasp 可用，用它替换本 skill 的检测和下降步骤。"
+    cap = _patch_chat(monkeypatch, json.dumps(_GOOD_TRACK_GRASP_SEQUENCE))
+    _compile(
+        skills_md=[{"name": "custom_pick", "markdown": f"# custom_pick\n{skill_rule}"}],
+        special_ops=frozenset({"track_grasp"}),
+    )
+    assert skill_rule in cap["user"]
 
 
 def test_compile_tolerates_code_fence(monkeypatch):

@@ -44,6 +44,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         "vision.camera",  # raw image stream available
         "vision.depth",  # depth stream available
         "vision.detection",  # high-level object detection
+        "vision.eye_to_hand",  # camera is fixed in the robot base/world frame
         "sorting.command",  # opaque sorting protocol (no Cartesian motion)
         "speech.tts",  # text-to-speech available
     }

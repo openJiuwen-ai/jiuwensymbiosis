@@ -21,6 +21,7 @@ class TestKnownCapabilities:
             "vision.camera",
             "vision.depth",
             "vision.detection",
+            "vision.eye_to_hand",
             "sorting.command",
             "speech.tts",
         }

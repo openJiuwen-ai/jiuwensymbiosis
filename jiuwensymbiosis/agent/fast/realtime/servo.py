@@ -57,6 +57,29 @@ class ServoConfig:
     timeout_s: float = 20.0  # hard timeout for one servo move
     lost_target_grace_s: float = 3.0  # abort if no target this long
 
+    def __post_init__(self) -> None:
+        # Reject non-finite / non-positive tuning; clamp control_hz to the
+        # hardware-validated band (<=0 would busy-loop with period=0).
+        for name, val in (
+            ("control_hz", self.control_hz),
+            ("max_lin_step_mm", self.max_lin_step_mm),
+            ("max_ang_step_deg", self.max_ang_step_deg),
+            ("pos_tol_mm", self.pos_tol_mm),
+            ("ang_tol_deg", self.ang_tol_deg),
+            ("timeout_s", self.timeout_s),
+            ("lost_target_grace_s", self.lost_target_grace_s),
+        ):
+            if isinstance(val, bool) or not (
+                isinstance(val, (int, float)) and math.isfinite(float(val)) and float(val) > 0
+            ):
+                raise ValueError(f"ServoConfig.{name} must be finite and > 0, got {val!r}.")
+        if isinstance(self.settle_ticks, bool) or not isinstance(self.settle_ticks, int):
+            raise ValueError(f"ServoConfig.settle_ticks must be int, got {self.settle_ticks!r}.")
+        if self.settle_ticks < 1:
+            raise ValueError(f"ServoConfig.settle_ticks must be >= 1, got {self.settle_ticks}.")
+        if not (1.0 <= float(self.control_hz) <= 200.0):
+            raise ValueError(f"ServoConfig.control_hz must be in [1, 200] (hardware-validated), got {self.control_hz}.")
+
 
 @dataclass
 class ServoResult:
@@ -125,10 +148,15 @@ class ServoController:
         read_pose: ``() -> Pose`` current tip pose (dict).
         servo_to: ``(Pose) -> None`` non-blocking pose command.
         target_provider: ``() -> Optional[Pose]`` latest goal pose; ``None`` =
-            no target this tick (hold position).
+            hold position for this tick, then abort with ``target_lost`` if no
+            target recovers within ``lost_target_grace_s``.
         config: ``ServoConfig``.
         on_tick: optional ``(tick_info: dict) -> None`` progress callback.
         should_continue: optional ``() -> bool``; return False to stop early.
+        target_is_live: optional detector-progress watchdog. Returning False
+            aborts immediately as ``target_lost`` without adding another grace
+            period; useful when a cached target can remain non-None while its
+            detector has stalled.
     """
 
     def __init__(
@@ -140,6 +168,7 @@ class ServoController:
         config: ServoConfig | None = None,
         on_tick: Callable[[dict], None] | None = None,
         should_continue: Callable[[], bool] | None = None,
+        target_is_live: Callable[[], bool] | None = None,
     ) -> None:
         self._read_pose = read_pose
         self._servo_to = servo_to
@@ -147,11 +176,12 @@ class ServoController:
         self._cfg = config or ServoConfig()
         self._on_tick = on_tick
         self._should_continue = should_continue
+        self._target_is_live = target_is_live
 
     def run(self) -> ServoResult:
         """Run the control loop until reached / timeout / target lost / stopped."""
         cfg = self._cfg
-        period = 1.0 / cfg.control_hz if cfg.control_hz > 0 else 0.0
+        period = 1.0 / cfg.control_hz  # __post_init__ guarantees control_hz in [1, 200]
         t0 = time.monotonic()
         last_target_t = t0
         in_tol = 0
@@ -165,6 +195,9 @@ class ServoController:
 
             if self._should_continue is not None and not self._should_continue():
                 return ServoResult(False, "stopped", ticks, tick_start - t0, last_pose, last_target)
+
+            if self._target_is_live is not None and not self._target_is_live():
+                return ServoResult(False, "target_lost", ticks, tick_start - t0, last_pose, last_target)
 
             cur: Pose | None
             try:

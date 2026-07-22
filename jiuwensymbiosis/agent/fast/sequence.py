@@ -38,13 +38,16 @@ numeric expression (e.g. ``"红杯子"``) is left as the literal string.
 from __future__ import annotations
 
 import ast
+import math
 import operator
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-# The compound real-time op the runner implements (not a raw @robot_tool action).
+# Compound real-time ops implemented by the runner (not raw @robot_tool actions).
 TRACK_DETECT = "track_detect"
+TRACK_GRASP = "track_grasp"
+KNOWN_SPECIAL_OPS = frozenset({TRACK_DETECT, TRACK_GRASP})
 
 
 class SequenceError(ValueError):
@@ -112,25 +115,68 @@ def referenced_binding_names(value: Any) -> set[str]:
     return roots
 
 
-def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set) -> list[ActionStep]:
+def _validate_track_detect(params: Mapping[str, Any], bind: str | None, *, index: int) -> None:
+    obj = params.get("object_name")
+    if not isinstance(obj, str) or not obj:
+        raise SequenceError(f"step {index}: track_detect requires params.object_name")
+    if not bind:
+        raise SequenceError(f"step {index}: track_detect requires a bind name")
+
+
+def _validate_track_grasp(params: Mapping[str, Any], bind: str | None, *, index: int) -> None:
+    obj = params.get("object_name")
+    if not isinstance(obj, str) or not obj:
+        raise SequenceError(f"step {index}: track_grasp requires params.object_name")
+    if not bind:
+        raise SequenceError(f"step {index}: track_grasp requires a bind name")
+    approach = params.get("approach_mm")
+    if isinstance(approach, bool) or not isinstance(approach, (int, float)):
+        raise SequenceError(f"step {index}: track_grasp requires numeric approach_mm")
+    if not math.isfinite(float(approach)) or not 30.0 <= float(approach) <= 100.0:
+        raise SequenceError(f"step {index}: track_grasp approach_mm must be finite and in [30, 100]")
+
+
+_SPECIAL_OP_VALIDATORS = {
+    TRACK_DETECT: _validate_track_detect,
+    TRACK_GRASP: _validate_track_grasp,
+}
+
+
+def parse_sequence(
+    raw: Any,
+    *,
+    allowed_ops: Mapping[str, Any] | frozenset | set,
+    special_ops: frozenset[str] | set[str] = frozenset(),
+) -> list[ActionStep]:
     """Validate a raw action sequence (the LLM output) into ``list[ActionStep]``.
 
     Args:
         raw: the LLM-produced sequence — must be a ``list`` of ``dict`` steps.
         allowed_ops: the set/collection of action names the runner can execute
-            (the api action vocabulary). ``track_detect`` is always allowed in
-            addition. Membership is tested with ``in``.
+            (the api action vocabulary). A name in ``KNOWN_SPECIAL_OPS`` is
+            **never** authorized via ``allowed_ops`` — it must be explicitly
+            listed in ``special_ops``.
+        special_ops: runner-owned compound operations authorized for this
+            session. Defaults to empty — so callers that use no special ops
+            stay compatible (``parse_sequence(raw, allowed_ops=...)`` still
+            works), and ``track_detect`` / ``track_grasp`` are never implicitly
+            authorized: an empty set rejects any special op with a
+            ``SequenceError`` rather than silently letting it through.
 
     Returns:
         Validated steps, in order.
 
     Raises:
         SequenceError: on a non-list payload, a malformed step, an unknown op, a
-            ``track_detect`` missing ``object_name`` / ``bind``, or a param
+            a special op missing ``object_name`` / ``bind``, or a param
             expression that reads a binding no earlier step produced.
     """
     if not isinstance(raw, list):
         raise SequenceError(f"sequence must be a list, got {type(raw).__name__}")
+    active_special_ops = frozenset(special_ops)
+    unknown_special = active_special_ops - KNOWN_SPECIAL_OPS
+    if unknown_special:
+        raise SequenceError(f"unknown special ops: {sorted(unknown_special)}")
     steps: list[ActionStep] = []
     bound: set[str] = set()  # binding names produced by earlier steps' `bind`
     for i, item in enumerate(raw):
@@ -139,7 +185,15 @@ def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set
         op = item.get("op")
         if not isinstance(op, str) or not op:
             raise SequenceError(f"step {i}: missing/invalid 'op'")
-        if op != TRACK_DETECT and op not in allowed_ops:
+        if op in KNOWN_SPECIAL_OPS:
+            # Known special ops need explicit special_ops authorization — they
+            # must not sneak in via allowed_ops (would skip their schema check).
+            if op not in active_special_ops:
+                raise SequenceError(
+                    f"step {i}: special op {op!r} not authorized in special_ops"
+                    f" (known special ops require explicit authorization)"
+                )
+        elif op not in allowed_ops:
             raise SequenceError(f"step {i}: unknown op {op!r} (not a known action)")
         params = item.get("params") or {}
         if not isinstance(params, dict):
@@ -147,15 +201,9 @@ def parse_sequence(raw: Any, *, allowed_ops: Mapping[str, Any] | frozenset | set
         bind = item.get("bind")
         if bind is not None and (not isinstance(bind, str) or not bind.isidentifier()):
             raise SequenceError(f"step {i}: 'bind' must be a valid identifier, got {bind!r}")
-        if op == TRACK_DETECT:
-            obj = params.get("object_name")
-            if not isinstance(obj, str) or not obj:
-                raise SequenceError(f"step {i}: track_detect requires params.object_name")
-            if not bind:
-                raise SequenceError(
-                    f"step {i}: track_detect must have a 'bind' name — its detection is read "
-                    f"later as <bind>.field; without it the reference resolves to nothing"
-                )
+        validator = _SPECIAL_OP_VALIDATORS.get(op) if op in active_special_ops else None
+        if validator is not None:
+            validator(params, bind, index=i)
         # Every binding a param reads via <name>.field / <name>[i] must already
         # be produced by an earlier step's `bind`. Catches the LLM naming its
         # bind one thing and referencing another (e.g. object_name 'red cup'

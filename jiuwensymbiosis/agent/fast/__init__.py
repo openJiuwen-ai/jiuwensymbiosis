@@ -7,8 +7,8 @@ runner executes it with no per-step LLM + real-time tracking.
 Single source of truth = each skill's ``SKILL.md`` (the same file the agent
 reads). Pipeline:
 
-    compile_sequence(query, skills_md, action_vocab, ...)  # 1 LLM call
-        → parse_sequence(raw, allowed_ops) → run_sequence(session, steps)
+    compile_sequence(query, skills_md, action_vocab, special_ops=...)  # 1 LLM call
+        → parse_sequence(raw, allowed_ops, special_ops=...) → run_sequence(session, steps)
 
 Add a skill = add a ``SKILL.md`` directory (auto-discovered by the registry) or
 ``register_skill_dir(path)``. No Python executor per skill.
@@ -23,7 +23,14 @@ from jiuwensymbiosis.agent.fast.registry import (
     register_skill_dir,
 )
 from jiuwensymbiosis.agent.fast.runner import SkillExecConfig, run_sequence
-from jiuwensymbiosis.agent.fast.sequence import ActionStep, SequenceError, parse_sequence
+from jiuwensymbiosis.agent.fast.sequence import (
+    KNOWN_SPECIAL_OPS,
+    TRACK_DETECT,
+    TRACK_GRASP,
+    ActionStep,
+    SequenceError,
+    parse_sequence,
+)
 
 __all__ = [
     # config
@@ -34,6 +41,9 @@ __all__ = [
     "run_sequence",
     "ActionStep",
     "SequenceError",
+    "TRACK_DETECT",
+    "TRACK_GRASP",
+    "KNOWN_SPECIAL_OPS",
     # legacy skill planner (skill-name selection only)
     "plan_skills",
     # registry

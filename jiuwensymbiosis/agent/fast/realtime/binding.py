@@ -27,6 +27,7 @@ import logging
 from typing import Any, cast
 
 from jiuwensymbiosis.agent.fast.realtime.streaming import StreamingFrameSource
+from jiuwensymbiosis.rails.safety import SafetyRail
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class ServoBinding:
                 "This body does not declare it."
             )
         self._servo_to_tip = getattr(self.api, "servo_to_tip", None)
+        self._safety = SafetyRail(session)
         self.frames = StreamingFrameSource(self._grab_frame, max_hz=frame_max_hz, name="servo")
 
     # ------------------------------------------------------------------ motion
@@ -56,6 +58,7 @@ class ServoBinding:
 
     def servo_to(self, pose: Pose) -> None:
         """Non-blocking command toward a TIP-frame ``pose`` (controller sink)."""
+        self._safety.validate_pose(pose)
         if self._servo_to_tip is not None:
             self._servo_to_tip(pose)
         else:
