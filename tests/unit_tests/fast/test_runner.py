@@ -185,7 +185,9 @@ def test_track_grasp_real_controller_follows_moving_detection():
 
     assert result["ok"] is True
     assert api.detection_calls >= 3
-    assert api.pose["x"] == 30.0
+    # The controller is allowed to finish inside its configured Cartesian
+    # tolerance once the moving detector stabilises at x=30.
+    assert api.pose["x"] == pytest.approx(30.0, abs=1.0)
     assert len(set(api.env.servo_x)) >= 3
     assert ("close",) in api.calls
 
@@ -624,6 +626,23 @@ def test_safe_retreat_homes_when_release_raises():
 
     runner_module._safe_retreat(types.SimpleNamespace(api=_FailingReleaseApi(), env=None))
     assert calls == ["open", "home"]
+
+
+def test_safe_retreat_prefers_recovery_home():
+    calls: list[str] = []
+
+    class _RecoveryApi:
+        def open_gripper(self):
+            calls.append("open")
+
+        def recovery_home(self):
+            calls.append("recovery_home")
+
+        def home(self):
+            calls.append("home")
+
+    runner_module._safe_retreat(types.SimpleNamespace(api=_RecoveryApi(), env=None))
+    assert calls == ["open", "recovery_home"]
 
 
 def test_servo_binding_applies_safety_rail_policy_before_dispatch():

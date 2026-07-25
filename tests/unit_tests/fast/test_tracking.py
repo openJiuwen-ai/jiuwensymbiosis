@@ -13,11 +13,13 @@ exceeds a configured ``staleness_s`` is still seen as "a frame arrived".
 
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
+from scipy.spatial.transform import Rotation
 
-from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController
+from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, _slew
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
 
 
@@ -38,6 +40,46 @@ from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
 def test_servo_config_rejects_boolean_numeric_fields(field_name, value):
     with pytest.raises(ValueError, match=rf"ServoConfig\.{field_name}"):
         ServoConfig(**{field_name: value})
+
+
+def test_slew_limits_xyz_as_one_translation_vector():
+    """A diagonal target must not exceed the configured Cartesian step."""
+    step = _slew(
+        {"x": 0.0, "y": 0.0, "z": 0.0},
+        {"x": 6.0, "y": 6.0, "z": 6.0},
+        max_lin=6.0,
+        max_ang=5.0,
+    )
+    distance = sum(float(step[key]) ** 2 for key in ("x", "y", "z")) ** 0.5
+    assert distance == pytest.approx(6.0)
+    assert step["x"] == pytest.approx(step["y"])
+    assert step["y"] == pytest.approx(step["z"])
+
+
+def test_slew_limits_complete_orientation_on_so3_shortest_path():
+    current = {"x": 0.0, "y": 0.0, "z": 0.0, "rx": 10.0, "ry": 20.0, "rz": 30.0}
+    target = {"x": 0.0, "y": 0.0, "z": 0.0, "rx": 150.0, "ry": -40.0, "rz": -120.0}
+    step = _slew(current, target, max_lin=5.0, max_ang=4.0)
+    current_rotation = Rotation.from_euler("xyz", [current[key] for key in ("rx", "ry", "rz")], degrees=True)
+    step_rotation = Rotation.from_euler("xyz", [step[key] for key in ("rx", "ry", "rz")], degrees=True)
+    assert math.degrees((current_rotation.inv() * step_rotation).magnitude()) == pytest.approx(4.0)
+
+
+def test_servo_result_preserves_typed_driver_error_code():
+    class DriverError(ValueError):
+        code = "ik_unreachable"
+
+    def fail(_pose):
+        raise DriverError("no solution")
+
+    result = ServoController(
+        lambda: {"x": 0.0, "y": 0.0, "z": 0.0},
+        fail,
+        lambda: {"x": 10.0, "y": 0.0, "z": 0.0},
+        config=ServoConfig(control_hz=200.0),
+    ).run()
+    assert result.error_code == "ik_unreachable"
+    assert result.as_dict()["error_code"] == "ik_unreachable"
 
 
 def test_staleness_none_keeps_target_alive():
