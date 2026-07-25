@@ -78,7 +78,9 @@ class RecoveryRail(AgentRail):
                         break
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("RecoveryRail: %s failed: %s", stop_method, exc)
-        home = getattr(api, "home", None)
+        home = getattr(api, "recovery_home", None)
+        if not callable(home):
+            home = getattr(api, "home", None)
         if callable(home):
             try:
                 home()
