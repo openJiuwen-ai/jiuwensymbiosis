@@ -94,7 +94,7 @@ fix: has-staged-changes
 	@$(RUFF) check --fix $(CHANGED_FILES)
 
 test:
-	@$(PYTEST) tests/unit_tests/
+	@PYTHONPATH="" $(PYTEST) tests/unit_tests/
 
 test-all:
-	@$(PYTEST)
+	@PYTHONPATH="" $(PYTEST)
