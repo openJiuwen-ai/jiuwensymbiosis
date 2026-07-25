@@ -9,14 +9,19 @@ port: "/dev/ttyUSB0"          # [必填] 串口设备路径；用 `lerobot-find-
 robot_id: "so101"             # [必填] 必须与 `lerobot-calibrate --robot.id=` 一致
 calibration_dir: null        # [选填] 标定目录；null 用 LeRobot 默认 (~/.cache/lerobot/calibration/)
 disable_torque_on_disconnect: true  # [选填] 断开时是否释放扭矩
-max_relative_target: 5.0      # [选填] 单次电机目标增量上限 (度)。必须为 float，不能是 dict
-# settle_overcompensate=true 时不能把 max_relative_target 设为 null；否则请关闭过补偿。
+max_relative_target: null     # 驱动统一限速；非 null 仅用于旧配置兼容，返回值不一致会立即停止
 # [必填-真机门禁] 仅在示教确认安全 home、收紧软限位并完成低速验收后改为 true。
 # false 时 Driver.connect() 会在打开串口前拒绝连接。
+# home_use_init_pose: true 可豁免此门禁（见下方运动学段）。
 safety_validated: false
 
 # ==================== 运动学 [必填/选填] ====================
-home_joints_deg: [0.0, 0.0, 0.0, 0.0, 0.0]   # [必填] 安全 home 关节位 (5 项, ARM_JOINT_ORDER)
+# [选填-免每次手填] true=connect 时把当前关节角记作 home，免去每次换初始位
+# 都手填一组关节角。开启后会豁免上方 safety_validated 门禁（必须先上电才能
+# 读当前角），并允许下方 home_joints_deg 缺省。语义：操作者手动摆好安全观察
+# 位再上电。connect 仍校验当前角在 joint_limits 软限位内，越限则拒绝。
+home_use_init_pose: false
+home_joints_deg: [0.0, 0.0, 0.0, 0.0, 0.0]   # [必填] 安全 home 关节位 (5 项, ARM_JOINT_ORDER)；home_use_init_pose=true 时可缺省
 joint_limits:                 # [必填] 关节软限位, 键必须恰为 5 个 ARM_JOINT_ORDER
   shoulder_pan: [-90.0, 90.0]
   shoulder_lift: [-90.0, 90.0]
@@ -28,19 +33,26 @@ ik_target_frame: "gripper_frame_link"  # [选填] IK 控制帧, 必须存在于 
 ik_orientation_weight: 0.01  # [选填] IK 姿态权重 (越小越偏向位置)
 ik_position_tolerance_mm: 3.0        # [选填] 位置残差上限, 超限则拒绝下发
 ik_orientation_tolerance_deg: null  # [选填] null=只记录姿态残差不拒绝; 设值则超限拒绝
+# 普通笛卡尔移动默认保持当前姿态，避免 5-DoF 机械臂被无条件约束到顶视姿态。
+# 可选 preserve / grasp / top_down；grasp 需要先完成下方真机示教。
+cartesian_orientation_policy: preserve
+# 真机示教并验证后填写，例如 {rx: 145.0, ry: -10.0, rz: 90.0}。
+# 未标定时保持 null，显式使用 grasp 策略会安全拒绝。
+grasp_orientation: null
 
 # ==================== 运动与到位 [选填] ====================
-trajectory_hz: 30.0           # [选填] 轨迹下发频率
-max_joint_step_deg: 2.0       # [选填] 关节插值单步上限 (度), 越小越平滑越慢
-servo_max_joint_step_deg: 1.0  # [选填] fast 视觉伺服单 tick 关节限速（独立于上项）
-joint_tolerance_deg: 1.5      # [选填] 到位判定容差 (度)
-settle_samples: 3             # [选填] 连续多少次到位才退出
-move_timeout_s: 30.0          # [选填] 单次运动超时 (秒), 超时抛 TimeoutError
-settle_overcompensate: true   # [选填] PD 误差补偿；要求 max_relative_target 非 null
+# 运动参数可只用 profile：safe / balanced / fast。下面的具体字段若填写，
+# 会覆盖 profile 对应默认值；不填写则由代码提供经过验证的默认值。
+motion_profile: safe
+settle_overcompensate: true   # [选填] 有界 PD 误差补偿（内部 gain=0.5）
 
 # ==================== 安全边界 [选填] ====================
 z_min_safe_mm: 30.0           # [选填] 控制/Z 向安全下限 (SafetyRail 用)
 # workspace_bounds: [0.0, -300.0, 500.0, 300.0]  # [选填] (xmin, ymin, xmax, ymax) mm
+table_z_mm: null              # [真机标定] base frame 中桌面 Z；null 时不启用实体最低点模型
+gripper_lowest_offset_mm: 0.0 # [真机标定] 控制帧到夹爪最低实体点的向下距离
+payload_protrusion_mm: 0.0    # [真机标定] 抓持物低于夹爪最低点的最大距离
+minimum_floor_margin_mm: 8.0  # 抓取目标相对 z_min 及桌面模型的最小余量
 
 # ==================== 夹爪 (两态百分比) [选填-仅 grasp.parallel] ====================
 gripper_open_pos: 100.0       # [选填] 全开百分比位置
@@ -48,6 +60,11 @@ gripper_close_pos: 0.0        # [选填] 全闭百分比位置
 gripper_tolerance: 2.0        # [选填] 真实夹爪观测的到位容差（百分比位置）
 gripper_timeout_s: 5.0        # [选填] 到位循环超时（秒）
 gripper_settle_s: 0.0         # [选填] 确认到位后的额外停留（秒）
+# 关闭时至少移动该距离后若连续稳定，可判为接触物体；打开时不启用。
+gripper_contact_min_travel: 5.0
+gripper_contact_stall_tolerance: 0.5
+gripper_contact_stall_samples: 5
+gripper_contact_hold_offset: 1.0  # 接触后仅保留少量闭合预紧，避免持续顶全闭目标
 
 # ==================== 视觉/检测（可选） ====================
 # camera_serial: "123456789"  # 配置后才会暴露 vision.* 工具；null=无相机
@@ -78,5 +95,5 @@ gripper_settle_s: 0.0         # [选填] 确认到位后的额外停留（秒）
 #    不要用单一 Z 标量近似，应后续以完整 SE(3) TCP 变换实现。
 # 4. z_min_safe / workspace_bounds 是 TCP 边界，不等于整臂碰撞检测；真机验收必须
 #    覆盖连杆碰桌、底座、自碰风险。
-# 5. max_relative_target 是 LeRobot 透传的单次电机增量最后一道限制；本适配器传 float。
+# 5. 关节与夹爪限速由驱动统一执行；保持 max_relative_target=null，避免 LeRobot 二次逐轴裁剪。
 # 6. 未完成真机验收前保持 safety_validated=false；不要仅为绕过门禁而改成 true。

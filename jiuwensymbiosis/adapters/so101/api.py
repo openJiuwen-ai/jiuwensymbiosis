@@ -26,7 +26,7 @@ Two overrides fix contract mismatches with the LeRobot percentage gripper:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -96,7 +96,7 @@ class So101Api(
         """
         del width_mm  # ignored: SO-101 is two-state, no width calibration yet.
         self.env.set_end_effector(False)
-        return {"ok": True, "state": "open"}
+        return self._gripper_response("open")
 
     @robot_tool(
         desc="Close the SO-101 gripper to the configured fully-closed percentage position.",
@@ -111,33 +111,52 @@ class So101Api(
         """
         del force_n  # ignored: SO-101 is two-state, no force calibration yet.
         self.env.set_end_effector(True)
-        return {"ok": True, "state": "closed"}
+        return self._gripper_response("closed")
+
+    def _gripper_response(self, default_state: str) -> dict:
+        """Merge driver gripper detail into the API response."""
+        response: dict[str, Any] = {"ok": True, "state": default_state}
+        detail = self.env.last_gripper_result
+        if detail:
+            response.update(detail)
+        return response
+
+    def retreat_home(self) -> None:
+        """Return home through the payload-aware SO-101 retreat path."""
+        self._ll().retreat_home()
+
+    def recovery_home(self) -> None:
+        """Return home through the SO-101 recovery retreat path."""
+        self._ll().recovery_home()
 
     # --- cartesian overrides -------------------------------------------------
     @robot_tool(
         desc=(
-            "Move the SO-101 control frame to absolute (x, y, z[, r]) in mm/deg, "
-            "base frame. Position is strongly constrained; orientation is "
-            "best-effort (5-DoF underactuated arm). If r is omitted, the current "
-            "roll about Z is preserved. Default approach is top-down (rx=180, ry=0)."
+            "Move the SO-101 control frame to absolute (x, y, z[, r]) in mm/deg, base frame. "
+            "orientation_policy is preserve (keep live orientation), grasp (use the calibrated "
+            "grasp orientation), or top_down (legacy rx=180, ry=0). If omitted, the configured "
+            "policy is used; r overrides the selected rz."
         ),
         capability="motion.cartesian",
         tags=["motion"],
     )
-    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
+    def goto_xyzr(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        r: float | None = None,
+        orientation_policy: str | None = None,
+    ) -> None:
         """Move the control frame to ``(x, y, z[, r])`` mm/deg, base frame.
 
         SO-101 is a 5-DoF underactuated arm: position is the strong constraint,
         orientation is best-effort (the IK solver weights position higher via
-        ``ik_orientation_weight``). If ``r`` is omitted, preserve the current
-        roll about Z.
+        ``ik_orientation_weight``). General motion defaults to preserving the
+        live orientation instead of silently imposing a top-down pose.
         """
-        if r is None:
-            cur = self.env.get_flange_pose()
-            r = getattr(cur, "rz", getattr(cur, "r", 0.0))
-        # Milestone A: top-down approach (rx=180, ry=0) like the default mixin,
-        # but routed through goto_pose so the same IK path is used.
-        self.goto_pose(So101Pose(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r)))
+        rx, ry, rz = self._resolve_orientation(orientation_policy, rz_override=r)
+        self.goto_pose(So101Pose(x=float(x), y=float(y), z=float(z), rx=rx, ry=ry, rz=rz))
 
     def servo_to_tip(self, pose: dict) -> None:
         """Issue one non-blocking servo command toward a TIP-frame pose.
@@ -147,13 +166,65 @@ class So101Api(
         uses ``rz`` internally to match :meth:`get_pose`; ``r`` remains an
         accepted compatibility alias for callers using the SCARA convention.
         """
+        if not isinstance(pose, Mapping):
+            raise TypeError(f"servo_to_tip pose must be a mapping, got {type(pose).__name__}.")
         x = float(pose["x"])
         y = float(pose["y"])
         z = float(pose["z"])
-        rz = pose.get("rz", pose.get("r"))
-        if rz is None:
-            rz = float(self.env.get_flange_pose().rz)
-        self.env.servo_to_flange({"x": x, "y": y, "z": z, "rx": 180.0, "ry": 0.0, "rz": float(rz)})
+        policy = pose.get("orientation_policy")
+        explicit_rz = pose.get("rz", pose.get("r"))
+        rx, ry, rz = self._resolve_orientation(
+            policy,
+            rz_override=explicit_rz,
+            rx_override=pose.get("rx"),
+            ry_override=pose.get("ry"),
+        )
+        self.env.servo_to_flange({"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+
+    def _resolve_orientation(
+        self,
+        policy: Any,
+        *,
+        rz_override: Any = None,
+        rx_override: Any = None,
+        ry_override: Any = None,
+    ) -> tuple[float, float, float]:
+        """Resolve a complete orientation without imposing an accidental pose."""
+        cur = self.env.get_flange_pose()
+        current = (
+            float(getattr(cur, "rx", 180.0)),
+            float(getattr(cur, "ry", 0.0)),
+            float(getattr(cur, "rz", getattr(cur, "r", 0.0))),
+        )
+        selected = policy
+        if selected is None:
+            selected = getattr(self.env.cfg, "cartesian_orientation_policy", "preserve")
+        if not isinstance(selected, str):
+            raise ValueError(f"orientation_policy must be a string, got {type(selected).__name__}.")
+        selected = selected.strip().lower()
+
+        if selected == "preserve":
+            base = current
+        elif selected == "top_down":
+            base = (180.0, 0.0, current[2])
+        elif selected == "grasp":
+            configured = getattr(self.env.cfg, "grasp_orientation", None)
+            if configured is None:
+                raise ValueError(
+                    "orientation_policy='grasp' requires cfg.grasp_orientation with calibrated rx/ry/rz values."
+                )
+            base = (float(configured["rx"]), float(configured["ry"]), float(configured["rz"]))
+        else:
+            raise ValueError(f"orientation_policy must be one of ['grasp', 'preserve', 'top_down'], got {selected!r}.")
+
+        values = (
+            base[0] if rx_override is None else float(rx_override),
+            base[1] if ry_override is None else float(ry_override),
+            base[2] if rz_override is None else float(rz_override),
+        )
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError(f"resolved orientation must be finite, got {values!r}.")
+        return values
 
     @robot_tool(
         desc=(
@@ -370,7 +441,7 @@ class So101Api(
         z_floor = self.env.z_min_safe
         grasp_z = top_z + self._grasp_z_offset_mm
         if z_floor is not None:
-            grasp_z = max(grasp_z, float(z_floor))
+            grasp_z = max(grasp_z, float(z_floor) + float(self.env.cfg.minimum_floor_margin_mm))
         place_z = top_z + self._chip_thickness_mm
         x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
         logger.info(

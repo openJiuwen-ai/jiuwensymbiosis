@@ -20,17 +20,24 @@ Public surface mirrors the other adapters::
 from __future__ import annotations
 
 from jiuwensymbiosis.adapters.so101.api import So101Api
-from jiuwensymbiosis.adapters.so101.config import So101Config
+from jiuwensymbiosis.adapters.so101.config import So101Config, So101MotionProfile
 from jiuwensymbiosis.adapters.so101.env import So101Env
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
-from jiuwensymbiosis.adapters.so101.lowlevel import So101PoseConvergenceError
+from jiuwensymbiosis.adapters.so101.lowlevel import (
+    So101CartesianServoError,
+    So101HardwareSendMismatch,
+    So101PoseConvergenceError,
+)
 from jiuwensymbiosis.adapters.so101.session import build_so101_session
 
 __all__ = [
     "So101Config",
+    "So101MotionProfile",
     "So101Env",
     "So101Api",
     "So101Pose",
+    "So101CartesianServoError",
+    "So101HardwareSendMismatch",
     "So101PoseConvergenceError",
     "build_so101_session",
 ]

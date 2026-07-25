@@ -52,6 +52,7 @@ class _SpyDriver:
 
     def __init__(self) -> None:
         self.log: list = []
+        self.last_gripper_result: dict | None = None
         self.z_min_safe = 30.0
         self.tool_offset_mm = 0.0
         self.home_pose = So101Pose(10.0, 20.0, 30.0, 0.0, 0.0, 0.0)
@@ -72,10 +73,13 @@ class _SpyDriver:
         self.log.append("home")
 
     def get_pose(self) -> So101Pose:
-        return So101Pose(1.0, 2.0, 3.0, 180.0, 0.0, 7.0)
+        return So101Pose(1.0, 2.0, 3.0, 135.0, -8.0, 7.0)
 
     def move_to_pose_blocking(self, pose, *args, **kwargs) -> None:
         self.log.append(("move", pose))
+
+    def servo_to_pose(self, pose) -> None:
+        self.log.append(("servo", pose))
 
     def move_joint_blocking(self, q, *, timeout_s=30.0) -> None:
         self.log.append(("joint", list(q)))
@@ -171,7 +175,7 @@ class TestSo101EnvObservation:
         env = _make_env()
         env._inner = _SpyDriver()
         obs = env.get_observation()
-        assert obs.pose == {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 180.0, "ry": 0.0, "rz": 7.0}
+        assert obs.pose == {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 135.0, "ry": -8.0, "rz": 7.0}
 
     def test_observation_rgb_depth_none_without_camera(self):
         """A driver without grab_frames yields rgb/depth=None (camera read is best-effort)."""
@@ -269,6 +273,24 @@ class TestSo101ApiDelegates:
         env.set_end_effector.assert_called_once_with(True)
         assert result["state"] == "closed"
 
+    def test_close_gripper_exposes_contact_result(self):
+        api, _env, driver = _build_api()
+        driver.last_gripper_result = {
+            "ok": True,
+            "state": "contact",
+            "position": 30.0,
+            "target": 10.0,
+            "hold_target": 29.0,
+        }
+        result = api.close_gripper()
+        assert result == {
+            "ok": True,
+            "state": "contact",
+            "position": 30.0,
+            "target": 10.0,
+            "hold_target": 29.0,
+        }
+
     def test_open_gripper_ignores_width_mm(self):
         api, env, _driver = _build_api()
         env.set_end_effector = MagicMock()
@@ -301,21 +323,54 @@ class TestSo101ApiDelegates:
         assert isinstance(pose, So101Pose)
         assert pose.x == 100.0 and pose.z == 300.0 and pose.rz == 45.0
 
-    def test_goto_xyzr_preserves_r_when_omitted(self):
+    def test_goto_xyzr_defaults_to_configured_preserve_policy(self):
         api, _env, driver = _build_api()
-        # get_flange_pose returns rz=7.0; goto_xyzr with r=None must reuse it.
+        # The SO-101 default preserves the complete live orientation, avoiding
+        # an accidental 5-DoF top-down constraint during a translation.
         api.goto_xyzr(10.0, 20.0, 30.0)
         move = [c for c in driver.log if c[0] == "move"][0]
         pose = move[1]
         assert pose.rz == 7.0
-        assert pose.rx == 180.0  # top-down default
-        assert pose.ry == 0.0
+        assert pose.rx == 135.0
+        assert pose.ry == -8.0
 
     def test_goto_xyzr_explicit_r_overrides(self):
         api, _env, driver = _build_api()
         api.goto_xyzr(10.0, 20.0, 30.0, 45.0)
         pose = [c for c in driver.log if c[0] == "move"][0][1]
         assert pose.rz == 45.0
+        assert pose.rx == 135.0
+        assert pose.ry == -8.0
+
+    def test_goto_xyzr_explicit_top_down_policy_keeps_legacy_pose(self):
+        api, _env, driver = _build_api()
+        api.goto_xyzr(10.0, 20.0, 30.0, orientation_policy="top_down")
+        pose = [c for c in driver.log if c[0] == "move"][0][1]
+        assert (pose.rx, pose.ry, pose.rz) == (180.0, 0.0, 7.0)
+
+    def test_goto_xyzr_grasp_policy_uses_calibrated_orientation(self):
+        api, env, driver = _build_api()
+        env.cfg.grasp_orientation = {"rx": 150.0, "ry": -12.0, "rz": 80.0}
+        api.goto_xyzr(10.0, 20.0, 30.0, orientation_policy="grasp")
+        pose = [c for c in driver.log if c[0] == "move"][0][1]
+        assert (pose.rx, pose.ry, pose.rz) == (150.0, -12.0, 80.0)
+
+    def test_goto_xyzr_grasp_policy_requires_calibration(self):
+        api, _env, _driver = _build_api()
+        with pytest.raises(ValueError, match="requires cfg.grasp_orientation"):
+            api.goto_xyzr(10.0, 20.0, 30.0, orientation_policy="grasp")
+
+    def test_servo_to_tip_preserves_live_orientation_when_missing(self):
+        api, _env, driver = _build_api()
+        api.servo_to_tip({"x": 10.0, "y": 20.0, "z": 30.0})
+        pose = [c for c in driver.log if c[0] == "servo"][0][1]
+        assert pose == {"x": 10.0, "y": 20.0, "z": 30.0, "rx": 135.0, "ry": -8.0, "rz": 7.0}
+
+    def test_servo_to_tip_honours_explicit_orientation(self):
+        api, _env, driver = _build_api()
+        api.servo_to_tip({"x": 10.0, "y": 20.0, "z": 30.0, "rx": 140.0, "ry": -5.0, "rz": 45.0})
+        pose = [c for c in driver.log if c[0] == "servo"][0][1]
+        assert pose == {"x": 10.0, "y": 20.0, "z": 30.0, "rx": 140.0, "ry": -5.0, "rz": 45.0}
 
     def test_home_reaches_driver(self):
         api, _env, driver = _build_api()
@@ -341,7 +396,7 @@ class TestSo101ApiDelegates:
         assert isinstance(pose, So101Pose), f"expected So101Pose, got {type(pose).__name__}"
         # up = +z, so z went 3.0 -> 53.0; orientation preserved from current.
         assert pose.z == pytest.approx(53.0, abs=1e-9)
-        assert pose.rx == 180.0 and pose.ry == 0.0 and pose.rz == 7.0
+        assert pose.rx == 135.0 and pose.ry == -8.0 and pose.rz == 7.0
 
     @pytest.mark.parametrize(
         "pose",

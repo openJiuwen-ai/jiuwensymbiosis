@@ -29,6 +29,80 @@ from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
 _ARM_JOINT_SET = frozenset(ARM_JOINT_ORDER)
 
 
+# Motion controls are grouped behind a small profile.  YAML can still override
+# any individual value; ``None`` means "use the selected profile default".
+@dataclass(frozen=True)
+class So101MotionProfile:
+    """Resolved user-level motion policy; per-tick limits are derived properties."""
+
+    control_hz: float
+    max_joint_vel_dps: float
+    max_cartesian_vel_mm_s: float
+    tracking_error_deg: float
+    joint_tolerance_deg: float
+    settle_samples: int
+    move_timeout_s: float
+    settle_resend_period_s: float
+    settle_drift_abort_samples: int
+    table_clearance_mm: float
+    settle_gain: float
+
+    @property
+    def joint_step_deg(self) -> float:
+        return self.max_joint_vel_dps / self.control_hz
+
+    @property
+    def cartesian_step_mm(self) -> float:
+        return self.max_cartesian_vel_mm_s / self.control_hz
+
+    @property
+    def send_period_s(self) -> float:
+        return 1.0 / self.control_hz
+
+
+_MOTION_PROFILES: dict[str, So101MotionProfile] = {
+    "safe": So101MotionProfile(
+        control_hz=10.0,
+        max_joint_vel_dps=20.0,
+        max_cartesian_vel_mm_s=30.0,
+        tracking_error_deg=2.0,
+        joint_tolerance_deg=1.0,
+        settle_samples=3,
+        move_timeout_s=45.0,
+        settle_resend_period_s=0.25,
+        settle_drift_abort_samples=3,
+        table_clearance_mm=20.0,
+        settle_gain=0.5,
+    ),
+    "balanced": So101MotionProfile(
+        control_hz=20.0,
+        max_joint_vel_dps=35.0,
+        max_cartesian_vel_mm_s=60.0,
+        tracking_error_deg=3.0,
+        joint_tolerance_deg=1.5,
+        settle_samples=3,
+        move_timeout_s=30.0,
+        settle_resend_period_s=0.2,
+        settle_drift_abort_samples=5,
+        table_clearance_mm=25.0,
+        settle_gain=0.5,
+    ),
+    "fast": So101MotionProfile(
+        control_hz=30.0,
+        max_joint_vel_dps=50.0,
+        max_cartesian_vel_mm_s=100.0,
+        tracking_error_deg=4.0,
+        joint_tolerance_deg=2.0,
+        settle_samples=3,
+        move_timeout_s=30.0,
+        settle_resend_period_s=0.15,
+        settle_drift_abort_samples=5,
+        table_clearance_mm=30.0,
+        settle_gain=0.4,
+    ),
+}
+
+
 @dataclass
 class DetectorServerConfig:
     """Connection and spawn settings for the GroundingDINO/SAM2 sidecar.
@@ -177,8 +251,22 @@ class So101Config:
 
     # --- required safety config ---
     port: str
-    home_joints_deg: list[float]
-    joint_limits: dict[str, tuple[float, float]]
+    # home_joints_deg: required unless home_use_init_pose=True (then connect()
+    # reads the current joints and uses them as home). Defaults to None so the
+    # dataclass accepts omission; __post_init__ enforces the rule.
+    home_joints_deg: list[float] | None = None
+    # joint_limits is required (home_use_init_pose still needs it as the soft-limit
+    # safety net). Defaults to None; __post_init__ enforces it.
+    joint_limits: dict[str, tuple[float, float]] | None = None
+    # Treat the startup joint pose as home so operators don't have to hand-fill
+    # home_joints_deg for every new park position.
+    # True: exempts the safety_validated fail-closed gate (connecting is the
+    # only way to read the current joints) and lets home_joints_deg default;
+    # connect() overwrites the runtime home with the live pose. The startup
+    # pose is still checked against joint_limits. Mirrors piper's
+    # home_use_init_pose (operator parks a safe observation pose).
+    # False (default): legacy behavior (home_joints_deg required + gate enforced).
+    home_use_init_pose: bool = False
 
     # Fail-closed gate: home_joints_deg / joint_limits ship as unverified
     # placeholders. connect() refuses to open hardware until the operator
@@ -193,10 +281,11 @@ class So101Config:
     calibration_dir: str | None = None
     disable_torque_on_disconnect: bool = True
     # Native motor units: 5 arm joints in degree, gripper 0..100 percentage.
-    # Float only: LeRobot's ensure_safe_goal_position requires dict keys to match
-    # the action keys EXACTLY, which is incompatible with our split arm/gripper
-    # actions. We always pass a float, applied per-action by the driver.
-    max_relative_target: float | None = 5.0
+    # LeRobot's ensure_safe_goal_position requires dict keys to match the action
+    # keys EXACTLY, which is incompatible with our split arm/gripper actions, so
+    # the driver applies a float per-action. None disables per-axis LeRobot
+    # clipping and the driver enforces a uniform velocity cap instead.
+    max_relative_target: float | None = None
 
     # --- kinematics ---
     urdf_path: str | None = None  # None -> packaged so101_new_calib.urdf
@@ -204,6 +293,16 @@ class So101Config:
     ik_orientation_weight: float = 0.01
     ik_position_tolerance_mm: float = 3.0
     ik_orientation_tolerance_deg: float | None = None  # None -> record only, never hard-reject
+    # Orientation policy used by ``So101Api.goto_xyzr`` when the caller does
+    # not select one explicitly:
+    # - preserve: keep the live flange rx/ry/rz (best general-purpose choice
+    #   for this underactuated 5-DoF arm);
+    # - grasp: use the calibrated ``grasp_orientation`` below;
+    # - top_down: legacy rx=180, ry=0, preserving/overriding rz.
+    cartesian_orientation_policy: str = "preserve"
+    # Calibrated grasp orientation in base-frame XYZ Euler degrees. ``None``
+    # keeps the adapter safe until a real pose has been taught and verified.
+    grasp_orientation: dict[str, float] | None = None
 
     # Cartesian path planning: the planner splits the SE(3) path start->target
     # into N = ceil(max(translation_mm, rotation_deg) / cartesian_interp_step_mm)
@@ -214,7 +313,7 @@ class So101Config:
     # on real IK for z +/-50 mm, vs 3-30 mm with the prior SE(3) bisection (which
     # re-solved from a stale seed and oscillated between two branches under the
     # jump/residual tolerance squeeze). Smaller = smoother/slower; must be > 0.
-    cartesian_interp_step_mm: float = 1.0
+    cartesian_interp_step_mm: float | None = None
     # Optional ease-in-out (sin^2) weighting on the interpolation parameter so the
     # first/last steps move least (better IK convergence at path ends). Default
     # False (linear) for predictability; the seed chain already gives sub-mm
@@ -235,12 +334,13 @@ class So101Config:
     pose_convergence_tolerance_mm: float = 1.0
 
     # --- motion & settle ---
-    trajectory_hz: float = 30.0
-    max_joint_step_deg: float = 2.0
+    motion_profile: str = "safe"
+    trajectory_hz: float | None = None
+    max_joint_step_deg: float | None = None
     # Real-time Cartesian servo joint slew cap.  Kept separate from the
     # blocking-path interpolation cap because servo commands are generated one
     # tick at a time from a live encoder seed.
-    servo_max_joint_step_deg: float = 1.0
+    servo_max_joint_step_deg: float | None = None
     # Real-time servo velocity enforcement (hardware-boundary safety). The
     # caller's tick rate is untrusted (a busy-loop or a misconfigured
     # ``control_hz`` can call ``servo_to_pose`` far faster than the arm can
@@ -253,19 +353,19 @@ class So101Config:
     #     re-clipped against ``vel_cap = servo_max_joint_vel_dps * dt`` where
     #     ``dt`` is the real inter-send interval, so speed is independent of
     #     the caller's tick rate.
-    servo_min_send_period_s: float = 0.02
-    servo_max_joint_vel_dps: float = 30.0
+    servo_min_send_period_s: float | None = None
+    servo_max_joint_vel_dps: float | None = None
     # Settle "arrived" tolerance (deg, joint space, max norm). The settle loop
     # returns once max|actual - target| <= this for ``settle_samples`` consecutive
-    # reads. Default 1.5: paired with ``settle_overcompensate=True`` the servo now
-    # reaches the target (over-compensation closes the STS3215 PD steady-state
-    # error), so the tolerance can be tight (~0.5mm end-effector). Still > encoder
-    # read noise to avoid false non-convergence. With ``settle_overcompensate=False``
+    # reads. The selected motion profile supplies the default; paired with
+    # ``settle_overcompensate=True`` the servo can close the STS3215 PD steady-state
+    # error without widening the tolerance. Still keep it above encoder read noise.
+    # With ``settle_overcompensate=False``
     # keep this >= ~3.5 to cover the ~2.46 deg elbow steady-state error (else the
     # settle loop times out -- re-sending the bare target cannot close PD error).
-    joint_tolerance_deg: float = 1.5
-    settle_samples: int = 3
-    move_timeout_s: float = 30.0
+    joint_tolerance_deg: float | None = None
+    settle_samples: int | None = None
+    move_timeout_s: float | None = None
     # Settle-loop tuning (true-robot safety). The arm settle loop re-sends the
     # final joint target after the interpolation sweep so a LeRobot-clipped goal
     # can still be driven to completion. Re-sending at ``trajectory_hz`` (30 Hz)
@@ -275,36 +375,53 @@ class So101Config:
     # rate; ``settle_drift_abort_samples`` aborts if the max joint error grows
     # for that many consecutive re-sends (servo under load moving the wrong way).
     # 0 for either restores legacy behavior (re-send at trajectory_hz / no abort).
-    settle_resend_period_s: float = 0.2
-    settle_drift_abort_samples: int = 5
+    settle_resend_period_s: float | None = None
+    settle_drift_abort_samples: int | None = None
     # Settle real-time over-compensation (software I term for STS3215 PD). The
     # STS3215 firmware position-loop I term is inert (PID experiment: I=2/5/50
     # zero movement), so a gravity-loaded joint (elbow_flex) settles at
     # ``target - e`` instead of ``target`` (~2.46 deg elbow error -> ~9mm TCP x
-    # drift at home). With this ON, the settle loop re-sends ``target + e``
-    # (``e = target - actual``, read fresh from the encoder each re-send) instead
-    # of the bare ``target``: the servo parks AT ``target`` in one over-command,
-    # so home / move_joint reach the configured joint angles (verified elbow
-    # 0.000 deg vs 2.462 deg baseline). Falls back to the bare target if the
+    # drift at home). With this ON, the settle loop re-sends
+    # ``target + gain * integral(target - actual)`` (bounded internal gain 0.5)
+    # instead of the bare ``target``. Falls back to the bare target if the
     # over-command would break a soft limit (fail-closed). False = legacy (re-send
     # bare target; then keep ``joint_tolerance_deg`` >= ~3.5 to avoid timeout).
     settle_overcompensate: bool = True
 
     # --- safety bounds ---
     z_min_safe_mm: float = 30.0
+    # Upper Z bound (mm) on the control frame ``gripper_frame_link``. None ->
+    # no upper check (legacy behaviour). Set to reject Cartesian targets that
+    # drive the arm to an awkward/too-high posture (e.g. a 5-DoF IK solution
+    # that reaches a high z at a near-singular elbow). Must be > z_min_safe_mm.
+    z_max_safe_mm: float | None = None
     workspace_bounds: tuple[float, float, float, float] | None = None
+    table_z_mm: float | None = None
+    gripper_lowest_offset_mm: float = 0.0
+    payload_protrusion_mm: float = 0.0
+    minimum_floor_margin_mm: float = 8.0
 
     # --- gripper (two-state percentage) ---
     gripper_open_pos: float = 100.0
     gripper_close_pos: float = 0.0
-    # Polling settle loop for the gripper: under the default max_relative_target
-    # a single send_action cannot move 0->100 or 100->0 in one step, so set_gripper
-    # re-sends the target until the observed gripper position converges within
+    # Polling settle loop for the gripper: the driver sends bounded 5-percent
+    # steps until the observed gripper position converges within
     # gripper_tolerance, bounded by gripper_timeout_s. gripper_settle_s is an
     # optional post-converge dwell (kept for back-compat with the old contract).
     gripper_tolerance: float = 2.0
     gripper_timeout_s: float = 5.0
     gripper_settle_s: float = 0.0
+    # A closing gripper may stop before ``gripper_close_pos`` because an object
+    # is held. Treat that as contact only after it has moved meaningfully toward
+    # close and then remained stable for several observations. Opening never
+    # uses this shortcut and must still reach its configured target.
+    gripper_contact_min_travel: float = 5.0
+    gripper_contact_stall_tolerance: float = 0.5
+    gripper_contact_stall_samples: int = 5
+    # Replace the full-close target after contact with the observed contact
+    # position plus this small close-direction preload. Zero holds exactly at
+    # contact; a small positive value resists slipping without sustained stall.
+    gripper_contact_hold_offset: float = 1.0
 
     # --- vision (milestone B): eye-to-hand desktop RealSense ---
     # Camera is a desktop-fixed D405 (eye-to-hand), NOT wrist-mounted. The
@@ -332,6 +449,23 @@ class So101Config:
 
     task_prompt: str | None = None
     name: str = "so101"
+    _motion_overrides: tuple[str, ...] = field(init=False, repr=False, default=())
+
+    @property
+    def motion_runtime(self) -> So101MotionProfile:
+        """Return the selected profile's user-level velocity and safety policy."""
+        return _MOTION_PROFILES[self.motion_profile]
+
+    def motion_summary(self) -> str:
+        """One-line resolved motion configuration for startup logging."""
+        runtime = self.motion_runtime
+        source = "profile" if not self._motion_overrides else f"profile+override({','.join(self._motion_overrides)})"
+        return (
+            f"profile={self.motion_profile} control_hz={float(self.trajectory_hz):g} "
+            f"joint_velocity={float(self.servo_max_joint_vel_dps):g}deg/s "
+            f"cartesian_velocity={runtime.max_cartesian_vel_mm_s:g}mm/s "
+            f"tracking_error={runtime.tracking_error_deg:g}deg source={source}"
+        )
 
     # ----------------------------------------------------------------- loaders
     @classmethod
@@ -351,6 +485,93 @@ class So101Config:
         kw: dict[str, Any] = (
             {k: v for k, v in ll.items() if not k.startswith("_")} if isinstance(ll, dict) and ll else dict(data)
         )
+
+        # Optional grouped motion block for new YAMLs.  Keep the legacy flat
+        # keys compatible, but reject conflicting duplicates instead of
+        # silently choosing one spelling.
+        motion = kw.pop("motion", None)
+        if motion is not None:
+            if not isinstance(motion, dict):
+                raise ValueError(f"So101Config: motion must be a mapping, got {type(motion).__name__}.")
+            motion_aliases = {
+                "profile": "motion_profile",
+                "motion_profile": "motion_profile",
+                "trajectory_hz": "trajectory_hz",
+                "max_joint_step_deg": "max_joint_step_deg",
+                "servo_max_joint_step_deg": "servo_max_joint_step_deg",
+                "servo_min_send_period_s": "servo_min_send_period_s",
+                "servo_max_joint_vel_dps": "servo_max_joint_vel_dps",
+                "joint_tolerance_deg": "joint_tolerance_deg",
+                "settle_samples": "settle_samples",
+                "move_timeout_s": "move_timeout_s",
+                "settle_resend_period_s": "settle_resend_period_s",
+                "settle_drift_abort_samples": "settle_drift_abort_samples",
+                "cartesian_interp_step_mm": "cartesian_interp_step_mm",
+            }
+            unknown_motion = set(motion) - set(motion_aliases)
+            if unknown_motion:
+                raise ValueError(f"So101Config: unknown motion fields: {sorted(unknown_motion)}.")
+            for name, value in motion.items():
+                canonical = motion_aliases[name]
+                if canonical in kw and kw[canonical] != value:
+                    raise ValueError(
+                        f"So101Config: conflicting motion.{name} and flat {canonical} values; specify one."
+                    )
+                kw[canonical] = value
+
+        grouped_aliases: dict[str, dict[str, str]] = {
+            "safety": {
+                "validated": "safety_validated",
+                "home_use_init_pose": "home_use_init_pose",
+                "home_joints_deg": "home_joints_deg",
+                "joint_limits": "joint_limits",
+                "z_min_mm": "z_min_safe_mm",
+                "z_max_mm": "z_max_safe_mm",
+                "table_z_mm": "table_z_mm",
+                "workspace_xy": "workspace_bounds",
+                "gripper_lowest_offset_mm": "gripper_lowest_offset_mm",
+                "payload_protrusion_mm": "payload_protrusion_mm",
+                "minimum_floor_margin_mm": "minimum_floor_margin_mm",
+            },
+            "gripper": {
+                "open_position": "gripper_open_pos",
+                "close_position": "gripper_close_pos",
+                "tolerance": "gripper_tolerance",
+                "timeout_s": "gripper_timeout_s",
+                "contact_min_travel": "gripper_contact_min_travel",
+                "contact_stall_tolerance": "gripper_contact_stall_tolerance",
+                "contact_stall_samples": "gripper_contact_stall_samples",
+                "contact_hold_offset": "gripper_contact_hold_offset",
+            },
+            "camera": {
+                "serial": "camera_serial",
+                "calibration": "calib_path",
+                "resolution": "camera_resolution",
+                "fps": "camera_fps",
+            },
+            "grasp": {
+                "z_offset_mm": "grasp_z_offset_mm",
+                "minimum_floor_margin_mm": "minimum_floor_margin_mm",
+                "payload_protrusion_mm": "payload_protrusion_mm",
+                "orientation": "grasp_orientation",
+            },
+        }
+        for group_name, aliases in grouped_aliases.items():
+            grouped = kw.pop(group_name, None)
+            if grouped is None:
+                continue
+            if not isinstance(grouped, dict):
+                raise ValueError(f"So101Config: {group_name} must be a mapping, got {type(grouped).__name__}.")
+            unknown = set(grouped) - set(aliases)
+            if unknown:
+                raise ValueError(f"So101Config: unknown {group_name} fields: {sorted(unknown)}.")
+            for name, value in grouped.items():
+                canonical = aliases[name]
+                if canonical in kw and kw[canonical] != value:
+                    raise ValueError(
+                        f"So101Config: conflicting {group_name}.{name} and flat {canonical} values; specify one."
+                    )
+                kw[canonical] = value
 
         if "workspace_bounds" in kw and kw["workspace_bounds"] is not None:
             wb = kw["workspace_bounds"]
@@ -445,26 +666,75 @@ class So101Config:
 
     def __post_init__(self) -> None:
         """Validate required fields, value finiteness, ordering and ranges."""
+        # Resolve profile-backed controls before the common validation below so
+        # every consumer (driver, env and tests) sees concrete numeric values.
+        if not isinstance(self.motion_profile, str):
+            raise ValueError(f"So101Config: motion_profile must be one of {sorted(_MOTION_PROFILES)}.")
+        self.motion_profile = self.motion_profile.strip().lower()
+        if self.motion_profile not in _MOTION_PROFILES:
+            raise ValueError(
+                f"So101Config: motion_profile must be one of {sorted(_MOTION_PROFILES)}, got {self.motion_profile!r}."
+            )
+        profile = _MOTION_PROFILES[self.motion_profile]
+        resolved_hz = float(self.trajectory_hz) if self.trajectory_hz is not None else profile.control_hz
+        resolved_joint_velocity = (
+            float(self.servo_max_joint_vel_dps)
+            if self.servo_max_joint_vel_dps is not None
+            else profile.max_joint_vel_dps
+        )
+        profile_defaults: dict[str, float | int] = {
+            "trajectory_hz": resolved_hz,
+            "max_joint_step_deg": resolved_joint_velocity / resolved_hz,
+            "servo_max_joint_step_deg": resolved_joint_velocity / resolved_hz,
+            "servo_min_send_period_s": 1.0 / resolved_hz,
+            "servo_max_joint_vel_dps": resolved_joint_velocity,
+            "joint_tolerance_deg": profile.joint_tolerance_deg,
+            "settle_samples": profile.settle_samples,
+            "move_timeout_s": profile.move_timeout_s,
+            "settle_resend_period_s": profile.settle_resend_period_s,
+            "settle_drift_abort_samples": profile.settle_drift_abort_samples,
+            "cartesian_interp_step_mm": profile.max_cartesian_vel_mm_s / resolved_hz,
+        }
+        self._motion_overrides = tuple(name for name in profile_defaults if getattr(self, name) is not None)
+        for name, default in profile_defaults.items():
+            if getattr(self, name) is None:
+                setattr(self, name, default)
+
         # --- required fields ---
         if not self.port or not isinstance(self.port, str):
             raise ValueError("So101Config: 'port' is required (str), e.g. '/dev/ttyUSB0'.")
         if not isinstance(self.safety_validated, bool):
             raise ValueError(f"So101Config: safety_validated must be bool, got {type(self.safety_validated).__name__}.")
+        if not isinstance(self.home_use_init_pose, bool):
+            raise ValueError(
+                f"So101Config: home_use_init_pose must be bool, got {type(self.home_use_init_pose).__name__}."
+            )
 
         if self.home_joints_deg is None:
-            raise ValueError("So101Config: 'home_joints_deg' is required (5 floats, deg).")
-        if not isinstance(self.home_joints_deg, (list, tuple)):
-            raise ValueError(f"So101Config: home_joints_deg must be a list, got {type(self.home_joints_deg).__name__}.")
-        if len(self.home_joints_deg) != len(ARM_JOINT_ORDER):
-            raise ValueError(
-                f"So101Config: home_joints_deg must have {len(ARM_JOINT_ORDER)} arm joints "
-                f"({list(ARM_JOINT_ORDER)}), got {len(self.home_joints_deg)}."
-            )
-        for i, v in enumerate(self.home_joints_deg):
-            if not _is_finite(v):
-                raise ValueError(f"So101Config: home_joints_deg[{i}] is not finite: {v!r}.")
-        # Freeze into a plain list of floats (drop tuple/numpy surprises).
-        self.home_joints_deg = [float(v) for v in self.home_joints_deg]
+            if self.home_use_init_pose:
+                # connect() overwrites this with the live startup pose, so leave
+                # it None and skip the length check here.
+                pass
+            else:
+                raise ValueError(
+                    "So101Config: 'home_joints_deg' is required (5 floats, deg), "
+                    "or set home_use_init_pose: true to use the startup pose as home."
+                )
+        else:
+            if not isinstance(self.home_joints_deg, (list, tuple)):
+                raise ValueError(
+                    f"So101Config: home_joints_deg must be a list, got {type(self.home_joints_deg).__name__}."
+                )
+            if len(self.home_joints_deg) != len(ARM_JOINT_ORDER):
+                raise ValueError(
+                    f"So101Config: home_joints_deg must have {len(ARM_JOINT_ORDER)} arm joints "
+                    f"({list(ARM_JOINT_ORDER)}), got {len(self.home_joints_deg)}."
+                )
+            for i, v in enumerate(self.home_joints_deg):
+                if not _is_finite(v):
+                    raise ValueError(f"So101Config: home_joints_deg[{i}] is not finite: {v!r}.")
+            # Freeze into a plain list of floats (drop tuple/numpy surprises).
+            self.home_joints_deg = [float(v) for v in self.home_joints_deg]
 
         # --- joint_limits: exactly the 5 arm joints, by ARM_JOINT_ORDER ---
         if self.joint_limits is None:
@@ -494,6 +764,36 @@ class So101Config:
                 float(self.workspace_bounds[2]),
                 float(self.workspace_bounds[3]),
             )
+
+        # --- Cartesian orientation policy ---
+        policies = {"preserve", "grasp", "top_down"}
+        if not isinstance(self.cartesian_orientation_policy, str):
+            raise ValueError(
+                "So101Config: cartesian_orientation_policy must be one of "
+                f"{sorted(policies)}, got {self.cartesian_orientation_policy!r}."
+            )
+        self.cartesian_orientation_policy = self.cartesian_orientation_policy.strip().lower()
+        if self.cartesian_orientation_policy not in policies:
+            raise ValueError(
+                "So101Config: cartesian_orientation_policy must be one of "
+                f"{sorted(policies)}, got {self.cartesian_orientation_policy!r}."
+            )
+        if self.grasp_orientation is not None:
+            if not isinstance(self.grasp_orientation, dict):
+                raise ValueError(
+                    "So101Config: grasp_orientation must be a mapping with exactly rx/ry/rz degree values, or null."
+                )
+            expected = {"rx", "ry", "rz"}
+            keys = set(self.grasp_orientation)
+            if keys != expected:
+                raise ValueError(
+                    f"So101Config: grasp_orientation keys must be exactly {sorted(expected)}, got {sorted(keys)}."
+                )
+            if not all(_is_finite(self.grasp_orientation[name]) for name in expected):
+                raise ValueError(
+                    f"So101Config: grasp_orientation values must be finite, got {self.grasp_orientation!r}."
+                )
+            self.grasp_orientation = {name: float(self.grasp_orientation[name]) for name in ("rx", "ry", "rz")}
 
         # --- max_relative_target: float-only, validated + normalised on construction ---
         # The from_dict loader also normalises ints -> float and rejects dicts,
@@ -526,6 +826,9 @@ class So101Config:
         # --- safety/IK finiteness ---
         for name, val in (
             ("z_min_safe_mm", self.z_min_safe_mm),
+            ("gripper_lowest_offset_mm", self.gripper_lowest_offset_mm),
+            ("payload_protrusion_mm", self.payload_protrusion_mm),
+            ("minimum_floor_margin_mm", self.minimum_floor_margin_mm),
             ("trajectory_hz", self.trajectory_hz),
             ("max_joint_step_deg", self.max_joint_step_deg),
             ("servo_max_joint_step_deg", self.servo_max_joint_step_deg),
@@ -541,12 +844,32 @@ class So101Config:
         ):
             if not _is_finite(val):
                 raise ValueError(f"So101Config: {name} must be finite, got {val!r}.")
+        if self.z_max_safe_mm is not None:
+            if not _is_finite(self.z_max_safe_mm):
+                raise ValueError(f"So101Config: z_max_safe_mm must be finite, got {self.z_max_safe_mm!r}.")
+            if self.z_max_safe_mm <= self.z_min_safe_mm:
+                raise ValueError(
+                    f"So101Config: z_max_safe_mm ({self.z_max_safe_mm}) must be > z_min_safe_mm ({self.z_min_safe_mm})."
+                )
+            self.z_max_safe_mm = float(self.z_max_safe_mm)
+        if self.table_z_mm is not None:
+            if not _is_finite(self.table_z_mm):
+                raise ValueError(f"So101Config: table_z_mm must be finite, got {self.table_z_mm!r}.")
+            self.table_z_mm = float(self.table_z_mm)
         if isinstance(self.settle_samples, float) or not isinstance(self.settle_samples, int):
             raise ValueError(f"So101Config: settle_samples must be int, got {self.settle_samples!r}.")
         if self.settle_samples < 1:
             raise ValueError(f"So101Config: settle_samples must be >= 1, got {self.settle_samples}.")
         if self.trajectory_hz <= 0:
             raise ValueError(f"So101Config: trajectory_hz must be > 0, got {self.trajectory_hz}.")
+        if self.gripper_lowest_offset_mm < 0:
+            raise ValueError(
+                f"So101Config: gripper_lowest_offset_mm must be >= 0, got {self.gripper_lowest_offset_mm}."
+            )
+        if self.payload_protrusion_mm < 0:
+            raise ValueError(f"So101Config: payload_protrusion_mm must be >= 0, got {self.payload_protrusion_mm}.")
+        if self.minimum_floor_margin_mm < 0:
+            raise ValueError(f"So101Config: minimum_floor_margin_mm must be >= 0, got {self.minimum_floor_margin_mm}.")
         if self.max_joint_step_deg <= 0:
             raise ValueError(f"So101Config: max_joint_step_deg must be > 0, got {self.max_joint_step_deg}.")
         if self.servo_max_joint_step_deg <= 0:
@@ -567,12 +890,6 @@ class So101Config:
             raise ValueError(f"So101Config: cartesian_ease_in_out must be bool, got {self.cartesian_ease_in_out!r}.")
         if not isinstance(self.settle_overcompensate, bool):
             raise ValueError(f"So101Config: settle_overcompensate must be bool, got {self.settle_overcompensate!r}.")
-        if self.settle_overcompensate and self.max_relative_target is None:
-            raise ValueError(
-                "So101Config: settle_overcompensate=True requires a finite "
-                "max_relative_target; disable settle_overcompensate when LeRobot "
-                "relative-target clipping is intentionally disabled."
-            )
         if isinstance(self.pose_convergence_max_iters, bool) or not isinstance(self.pose_convergence_max_iters, int):
             raise ValueError(
                 "So101Config: pose_convergence_max_iters must be a non-negative "
@@ -603,6 +920,9 @@ class So101Config:
             ("gripper_tolerance", self.gripper_tolerance),
             ("gripper_timeout_s", self.gripper_timeout_s),
             ("gripper_settle_s", self.gripper_settle_s),
+            ("gripper_contact_min_travel", self.gripper_contact_min_travel),
+            ("gripper_contact_stall_tolerance", self.gripper_contact_stall_tolerance),
+            ("gripper_contact_hold_offset", self.gripper_contact_hold_offset),
         ):
             if not _is_finite(val):
                 raise ValueError(f"So101Config: {name} must be finite, got {val!r}.")
@@ -616,6 +936,27 @@ class So101Config:
             raise ValueError(f"So101Config: gripper_timeout_s must be > 0, got {self.gripper_timeout_s}.")
         if self.gripper_settle_s < 0:
             raise ValueError(f"So101Config: gripper_settle_s must be >= 0, got {self.gripper_settle_s}.")
+        if self.gripper_contact_min_travel <= 0:
+            raise ValueError(
+                f"So101Config: gripper_contact_min_travel must be > 0, got {self.gripper_contact_min_travel}."
+            )
+        if self.gripper_contact_stall_tolerance <= 0:
+            raise ValueError(
+                f"So101Config: gripper_contact_stall_tolerance must be > 0, got {self.gripper_contact_stall_tolerance}."
+            )
+        if self.gripper_contact_hold_offset < 0:
+            raise ValueError(
+                f"So101Config: gripper_contact_hold_offset must be >= 0, got {self.gripper_contact_hold_offset}."
+            )
+        if (
+            isinstance(self.gripper_contact_stall_samples, bool)
+            or not isinstance(self.gripper_contact_stall_samples, int)
+            or self.gripper_contact_stall_samples < 1
+        ):
+            raise ValueError(
+                "So101Config: gripper_contact_stall_samples must be a positive int, "
+                f"got {self.gripper_contact_stall_samples!r}."
+            )
 
         # --- vision (milestone B): eye-to-hand camera + grasp geometry ---
         if self.camera_serial is not None and not isinstance(self.camera_serial, str):
