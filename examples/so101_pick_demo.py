@@ -90,17 +90,17 @@ def main() -> int:
     parser.add_argument("--mode", choices=["tool", "code", "hybrid"], default="hybrid")
     parser.add_argument("--no-visual-feedback", action="store_true")
     parser.add_argument("--max-iter", type=int, default=30)
-    parser.add_argument("--control-hz", type=float, default=10.0)
-    parser.add_argument("--servo-step-mm", type=float, default=5.0)
+    parser.add_argument("--control-hz", type=float, default=None, help="Override motion-profile servo rate")
+    parser.add_argument("--servo-step-mm", type=float, default=None, help="Override motion-profile Cartesian step")
     parser.add_argument("--workspace", default=None)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.fast and args.no_skill:
         parser.error("--no-skill is incompatible with --fast: fast compilation uses SKILL.md")
-    if not (1.0 <= args.control_hz <= 100.0):
+    if args.control_hz is not None and not (1.0 <= args.control_hz <= 100.0):
         parser.error(f"--control-hz must be in [1, 100], got {args.control_hz}")
-    if not (0.5 <= args.servo_step_mm <= 50.0):
+    if args.servo_step_mm is not None and not (0.5 <= args.servo_step_mm <= 50.0):
         parser.error(f"--servo-step-mm must be in [0.5, 50], got {args.servo_step_mm}")
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -116,8 +116,16 @@ def main() -> int:
         from jiuwensymbiosis.agent.fast import SkillExecConfig
         from jiuwensymbiosis.agent.fast.realtime import ServoConfig
 
+        so101_cfg = getattr(session.env, "cfg", None)
+        default_control_hz = float(getattr(so101_cfg, "trajectory_hz", 10.0))
+        runtime = getattr(so101_cfg, "motion_runtime", None)
+        cartesian_velocity = float(getattr(runtime, "max_cartesian_vel_mm_s", 30.0))
+        default_servo_step_mm = cartesian_velocity / default_control_hz
         exec_config = SkillExecConfig(
-            servo=ServoConfig(control_hz=args.control_hz, max_lin_step_mm=args.servo_step_mm),
+            servo=ServoConfig(
+                control_hz=args.control_hz if args.control_hz is not None else default_control_hz,
+                max_lin_step_mm=args.servo_step_mm if args.servo_step_mm is not None else default_servo_step_mm,
+            ),
         )
 
     logger.info("=== SO-101 eye-to-hand visual pick ===")

@@ -25,7 +25,12 @@ import numpy as np
 import pytest
 
 from jiuwensymbiosis.adapters.so101.config import So101Config
-from jiuwensymbiosis.adapters.so101.geometry import So101Pose, matrix_m_to_pose_mm_deg, position_error_mm
+from jiuwensymbiosis.adapters.so101.geometry import (
+    So101Pose,
+    matrix_m_to_pose_mm_deg,
+    pose_mm_deg_to_matrix_m,
+    position_error_mm,
+)
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER, So101Driver, So101PoseConvergenceError
 
 from .lowlevel_helpers import FakeFollower, FakeKinematics, fake_lerobot_import, make_calib_file
@@ -47,6 +52,10 @@ def _make_cfg(**overrides) -> So101Config:
         "max_relative_target": 5.0,
         "gripper_settle_s": 0.0,  # avoid real sleep in tests by default
         "trajectory_hz": 1000.0,  # near-zero period so settle loop is fast
+        "servo_min_send_period_s": 0.02,
+        "servo_max_joint_vel_dps": 30.0,
+        "servo_max_joint_step_deg": 1.0,
+        "cartesian_interp_step_mm": 1.0,
         "settle_samples": 1,
         "move_timeout_s": 5.0,
         "max_joint_step_deg": 2.0,
@@ -91,12 +100,12 @@ class TestSetGripper:
 
         driver.set_gripper(on=True)
 
-        assert len(follower.sent_actions) == 1
-        action = follower.sent_actions[0]
+        assert len(follower.sent_actions) == 10
+        action = follower.sent_actions[-1]
         assert set(action.keys()) == {"gripper.pos"}
         assert action["gripper.pos"] == cfg.gripper_close_pos
         # Waited the configured settle time via the injected sleep.
-        assert sleep_log == [pytest.approx(0.1, abs=1e-9)]
+        assert sleep_log[-1] == pytest.approx(0.1, abs=1e-9)
 
     def test_open_sends_open_target(self, tmp_path):
         cfg = _make_cfg(gripper_settle_s=0.0)
@@ -105,7 +114,7 @@ class TestSetGripper:
 
         driver.set_gripper(on=False)
 
-        action = follower.sent_actions[0]
+        action = follower.sent_actions[-1]
         assert action["gripper.pos"] == cfg.gripper_open_pos
 
     def test_no_arm_keys_in_gripper_action(self, tmp_path):
@@ -168,6 +177,73 @@ class TestSetGripper:
         # The last recorded action is the requested gripper target.
         assert driver._last_sent_action is not None
         assert "gripper.pos" in driver._last_sent_action
+
+    def test_close_stable_after_meaningful_travel_is_contact_success(self, tmp_path):
+        """Meaningful closing travel followed by stable reads means contact."""
+        cfg = _make_cfg(
+            gripper_close_pos=0.0,
+            gripper_tolerance=2.0,
+            gripper_contact_min_travel=5.0,
+            gripper_contact_stall_tolerance=0.25,
+            gripper_contact_stall_samples=3,
+            gripper_timeout_s=1.0,
+            gripper_settle_s=0.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        position = 50.0
+        requested_actions: list[dict[str, float]] = []
+
+        def contact_at_30(action):
+            nonlocal position
+            requested_actions.append(dict(action))
+            if "gripper.pos" in action:
+                position = max(30.0, position - 5.0)
+            return {"gripper.pos": position}
+
+        follower.clip_fn = contact_at_30
+        driver.set_gripper(on=True)
+
+        result = driver.last_gripper_result
+        assert result is not None
+        assert result["state"] == "contact"
+        assert result["position"] == pytest.approx(30.0)
+        assert result["hold_target"] == pytest.approx(29.0)
+        assert requested_actions[-1] == {"gripper.pos": pytest.approx(29.0)}
+        assert follower.sent_actions[-1] == {"gripper.pos": pytest.approx(30.0)}
+        assert len(follower.sent_actions) >= 7  # detection sequence plus low-preload hold
+
+    def test_close_without_minimum_travel_still_times_out(self, tmp_path):
+        """A near-immediate mechanical jam must not be mistaken for contact."""
+        cfg = _make_cfg(
+            gripper_close_pos=0.0,
+            gripper_contact_min_travel=5.0,
+            gripper_contact_stall_samples=2,
+            gripper_timeout_s=0.05,
+            gripper_settle_s=0.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+
+        follower.clip_fn = lambda action: {"gripper.pos": 48.0}
+        with pytest.raises(TimeoutError, match=r"start=50\.000, observed=48\.000, target=0\.000"):
+            driver.set_gripper(on=True)
+
+    def test_open_stable_before_target_still_times_out(self, tmp_path):
+        """Contact inference is closing-only; opening must reach its target."""
+        cfg = _make_cfg(
+            gripper_open_pos=100.0,
+            gripper_contact_min_travel=5.0,
+            gripper_contact_stall_samples=2,
+            gripper_timeout_s=0.05,
+            gripper_settle_s=0.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+
+        follower.clip_fn = lambda action: {"gripper.pos": 70.0}
+        with pytest.raises(TimeoutError, match="gripper timeout"):
+            driver.set_gripper(on=False)
 
     def test_settle_loop_is_throttled_by_trajectory_hz(self, tmp_path):
         """The gripper settle loop must NOT hammer the serial bus at full speed:
@@ -315,21 +391,17 @@ class TestSettleEdgeCases:
 
         follower.clip_fn = clip
 
-        with pytest.raises(TimeoutError, match="move timeout"):
+        with pytest.raises(RuntimeError, match="hardware_send_mismatch|modified validated action"):
             driver.move_joint_blocking([6.0, 0.0, 0.0, 0.0, 0.0])
 
         # (a) The driver recorded the *actual* (clipped) last target returned by
         # send_action, not the requested one — clipping is observable.
         assert driver._last_sent_action is not None
         assert driver._last_sent_action["shoulder_pan.pos"] == pytest.approx(5.0, abs=1e-9)
-        # (b) The settle loop re-sent the requested final target (6.0 -> clipped
-        # to 5.0) at least once after the interpolation sweep; the sweep itself
-        # sends the last waypoint exactly once, so >=2 clipped actions means a
-        # re-send happened in the settle loop.
         clipped_sends = [
             a["shoulder_pan.pos"] for a in follower.sent_actions if abs(a["shoulder_pan.pos"] - 5.0) < 1e-9
         ]
-        assert len(clipped_sends) >= 2, "expected the clipped target re-sent in the settle loop"
+        assert len(clipped_sends) == 1
 
     def test_stall_times_out_instead_of_looping(self, tmp_path):
         """If the arm never converges (stall), the settle loop must raise
@@ -409,6 +481,7 @@ class TestSettleEdgeCases:
             settle_resend_period_s=0.05,
             settle_drift_abort_samples=0,  # stable error -> don't abort, hit timeout
             trajectory_hz=1000.0,  # interpolation period 0.001s, much smaller than resend
+            settle_overcompensate=False,
         )
         driver, follower, sleep_log = _make_driver(cfg, tmp_path)
         driver.connect()
@@ -423,16 +496,13 @@ class TestSettleEdgeCases:
 
         follower.clip_fn = clip
 
-        with pytest.raises(TimeoutError, match="move timeout"):
+        with pytest.raises(RuntimeError, match="hardware_send_mismatch|modified validated action"):
             driver.move_joint_blocking([6.0, 0.0, 0.0, 0.0, 0.0])
 
         # Settle re-sends (after the interpolation sweep) should sleep ~0.05s
         # each, not the 0.001s interpolation period. Filter out the tiny
         # interpolation sleeps and assert the settle sleeps are at the throttle.
-        settle_sleeps = [s for s in sleep_log if s >= 0.04]
-        assert len(settle_sleeps) >= 2, f"expected throttled settle re-sends, got {sleep_log}"
-        for s in settle_sleeps:
-            assert 0.04 <= s <= 0.06, f"settle sleep {s} not at throttle 0.05s"
+        assert not [s for s in sleep_log if s >= 0.04]
 
 
 class TestConnect:
@@ -547,8 +617,84 @@ class TestConnect:
         driver.connect()
         assert driver._kin.target_frame_name == "gripper_frame_link"
 
+    def test_home_use_init_pose_overrides_unvalidated_gate(self, tmp_path):
+        """home_use_init_pose=True bypasses the safety_validated fail-closed
+        gate (connecting is the only way to read current joints) and uses the
+        startup joint pose as home_joints_deg at runtime."""
+        kw = {"home_joints_deg": None, "safety_validated": False, "home_use_init_pose": True}
+        cfg = _make_cfg(**kw)
+        follower = FakeFollower(config=None)
+        follower.calibration_fpath = make_calib_file(tmp_path)
+        # Park the (fake) arm at a non-zero startup pose within soft limits.
+        follower._arm = [5.0, -5.0, 10.0, -10.0, 0.0]
+        driver = So101Driver(
+            cfg,
+            so_follower_factory=lambda robot_cfg: follower,
+            kinematics_factory=FakeKinematics,
+            lerobot_import=fake_lerobot_import,
+        )
+        driver.connect()
+        assert driver._connected is True
+        # Runtime home was overwritten with the startup pose, not None.
+        expected_home = [5.0, -5.0, 10.0, -10.0, 0.0]
+        assert cfg.home_joints_deg == expected_home
+        # And home() dispatches that overwritten pose.
+        driver.home()
+        last = follower.sent_actions[-1]
+        for i, name in enumerate(ARM_JOINT_ORDER):
+            assert last[f"{name}.pos"] == pytest.approx(expected_home[i], abs=1e-9)
+
+    def test_home_use_init_pose_refuses_pose_outside_soft_limits(self, tmp_path):
+        """Even with home_use_init_pose=True, a startup pose outside joint_limits
+        is rejected at Step 8 (the soft-limit safety net), so an operator who
+        parked the arm illegally is refused rather than trusting an illegal home."""
+        kw = {"home_joints_deg": None, "safety_validated": False, "home_use_init_pose": True}
+        cfg = _make_cfg(**kw)
+        follower = FakeFollower(config=None)
+        follower.calibration_fpath = make_calib_file(tmp_path)
+        # shoulder_pan soft limit is (-90, 90); 120.0 is outside.
+        follower._arm = [120.0, 0.0, 0.0, 0.0, 0.0]
+        driver = So101Driver(
+            cfg,
+            so_follower_factory=lambda robot_cfg: follower,
+            kinematics_factory=FakeKinematics,
+            lerobot_import=fake_lerobot_import,
+        )
+        with pytest.raises(ValueError, match="home_joints_deg.*out of soft limits"):
+            driver.connect()
+        assert driver._connected is False
+
 
 class TestReachability:
+    def test_servo_cartesian_search_preserves_fk_progress_for_coupled_joints(self, tmp_path):
+        """Joint-wise clipping must not turn an upward Cartesian step downward."""
+
+        class CoupledKinematics:
+            def forward_kinematics(self, q):
+                q = np.asarray(q, dtype=float)
+                # The full IK solution for z=101 is (10, -8).  Clipping both
+                # joints to +0.6/-0.6 would produce z=99.94 (down), whereas a
+                # Cartesian fraction preserves the positive FK direction.
+                z = 100.0 + 0.9 * q[0] + q[1]
+                return pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, z, 0.0, 0.0, 0.0))
+
+            def inverse_kinematics(self, _current, desired, position_weight=1.0, orientation_weight=0.01):
+                target_z = matrix_m_to_pose_mm_deg(np.asarray(desired, dtype=float)).z
+                delta = target_z - 100.0
+                return np.array([10.0 * delta, -8.0 * delta, 0.0, 0.0, 0.0])
+
+        cfg = _make_cfg(z_min_safe_mm=10.0, servo_max_joint_step_deg=1.0)
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        driver._kin = CoupledKinematics()
+        driver.servo_to_pose(So101Pose(0.0, 0.0, 101.0, 0.0, 0.0, 0.0))
+
+        sent = follower.sent_actions[-1]
+        sent_q = np.array([sent[f"{name}.pos"] for name in ARM_JOINT_ORDER])
+        sent_z = matrix_m_to_pose_mm_deg(driver._kin.forward_kinematics(sent_q)).z
+        assert sent_q[0] > 0.0 and sent_q[1] < 0.0
+        assert sent_z > 100.0
+
     def test_servo_to_pose_first_command_obeys_step_and_velocity_limits(self, tmp_path):
         cfg = _make_cfg(z_min_safe_mm=10.0, servo_max_joint_step_deg=1.0)
         driver, follower, sleep_log = _make_driver(cfg, tmp_path)
@@ -562,7 +708,9 @@ class TestReachability:
         assert len(sent) == 1
         # First dispatch uses one 20ms send period: 30 deg/s * 0.02s = 0.6 deg,
         # tighter than the configured 1.0-degree per-call cap.
-        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.6)
+        # The Cartesian alpha search refines the largest safe candidate with a
+        # finite number of IK solves; allow its sub-0.0001-degree quantization.
+        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.06, abs=1e-4)
         assert sleep_log == []
 
     def test_servo_to_pose_rejects_bad_ik_before_send(self, tmp_path):
@@ -616,7 +764,7 @@ class TestReachability:
 
     def test_servo_to_pose_rejects_orientation_residual(self, tmp_path):
         cfg = _make_cfg(
-            z_min_safe_mm=10.0,
+            z_min_safe_mm=-500.0,
             ik_position_tolerance_mm=10.0,
             ik_orientation_tolerance_deg=0.1,  # tight: any orientation drift rejects
         )
@@ -644,7 +792,7 @@ class TestReachability:
         driver._kin = DriftKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
         sent_before = len(follower.sent_actions)
         with pytest.raises(ValueError, match="orientation residual"):
-            driver.servo_to_pose(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 0.0))
+            driver.servo_to_pose(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 90.0))
         assert len(follower.sent_actions) == sent_before
 
     def test_servo_to_pose_enforces_min_send_period(self, tmp_path):
@@ -807,6 +955,34 @@ class TestCartesianSafetyChecks:
         with pytest.raises(ValueError, match="below driver z_min_safe"):
             driver.move_to_pose_blocking(So101Pose(0.0, 0.0, 26.0, 0, 0, 0))
         assert len(follower.sent_actions) == sent_before
+
+    def test_target_above_z_ceiling_rejected_before_send(self, tmp_path):
+        """Symmetric to the z-floor: a target above z_max_safe is rejected
+        before any action is sent. Guards against too-high/awkward postures."""
+        cfg = _make_cfg(z_min_safe_mm=-10.0, z_max_safe_mm=50.0)
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        sent_before = len(follower.sent_actions)
+
+        # Target z=60 > z_max_safe=50. Must reject before any action.
+        with pytest.raises(ValueError, match="above driver z_max_safe"):
+            driver.move_to_pose_blocking(So101Pose(0.0, 0.0, 60.0, 0, 0, 0))
+        assert len(follower.sent_actions) == sent_before
+
+    def test_z_ceiling_none_does_not_reject(self, tmp_path):
+        """Default z_max_safe_mm=None means no upper check — a high target is
+        not rejected. Preserves the legacy behaviour for configs that don't set
+        the ceiling."""
+        cfg = _make_cfg(z_min_safe_mm=-500.0)  # z_max_safe_mm left at None
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        # Safe start well above the floor; FakeKinematics FK z = joint[2]*10.
+        follower._arm = [0.0, 0.0, 30.0, 0.0, 0.0]
+        sent_before = len(follower.sent_actions)
+
+        driver.move_to_pose_blocking(So101Pose(0.0, 0.0, 300.0, 0, 0, 0))
+        # No ceiling -> high target dispatched without rejection.
+        assert len(follower.sent_actions) > sent_before
 
     def test_safe_target_dispatches_and_settles(self, tmp_path):
         """Sanity: a fully-safe target (z, xy within bounds) does dispatch."""
@@ -1195,6 +1371,21 @@ class TestPoseConvergence:
 
 
 class TestHome:
+    def test_home_uses_direct_fk_validated_joint_path(self, tmp_path):
+        cfg = _make_cfg(home_joints_deg=[0.0, 0.0, 0.0, 0.0, 0.0])
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        # Fake FK maps elbow_flex to Z. Home must interpolate directly toward
+        # the configured joint target without an extra Cartesian lift.
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+
+        driver.home()
+
+        elbow_commands = [action["elbow_flex.pos"] for action in follower.sent_actions]
+        assert elbow_commands[0] < 5.0
+        assert max(elbow_commands) < 5.0
+        assert elbow_commands[-1] == pytest.approx(0.0, abs=1e-6)
+
     def test_home_moves_to_configured_joints(self, tmp_path):
         cfg = _make_cfg(home_joints_deg=[5.0, -5.0, 10.0, -10.0, 0.0])
         driver, follower, _ = _make_driver(cfg, tmp_path)
@@ -1216,3 +1407,40 @@ class TestHome:
         assert pose.x == pytest.approx(10.0, abs=1e-6)
         assert pose.y == pytest.approx(20.0, abs=1e-6)
         assert pose.z == pytest.approx(30.0, abs=1e-6)
+
+    def test_home_rejects_joint_path_that_dips_below_both_endpoints(self, tmp_path):
+        cfg = _make_cfg(
+            home_joints_deg=[10.0, 0.0, 0.0, 0.0, 0.0],
+            z_min_safe_mm=10.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+
+        class DippingKinematics:
+            def forward_kinematics(self, q):
+                q0 = float(np.asarray(q, dtype=float)[0])
+                z = (q0 - 5.0) ** 2
+                return pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, z, 0.0, 0.0, 0.0))
+
+        driver._kin = DippingKinematics()
+
+        with pytest.raises(ValueError, match="below driver z_min_safe"):
+            driver.home()
+        assert follower.sent_actions == []
+
+    def test_payload_lowest_point_is_checked_against_table(self, tmp_path):
+        cfg = _make_cfg(
+            table_z_mm=0.0,
+            gripper_lowest_offset_mm=10.0,
+            payload_protrusion_mm=20.0,
+            minimum_floor_margin_mm=8.0,
+        )
+        driver, _, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        driver._holding_payload = True
+
+        with pytest.raises(ValueError, match="effective lowest z"):
+            driver._validate_joint_waypoint(
+                np.array([0.0, 0.0, 3.0, 0.0, 0.0]),
+                label="payload",
+            )

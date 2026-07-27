@@ -31,6 +31,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from scipy.spatial.transform import Rotation
+
 logger = logging.getLogger(__name__)
 
 Pose = dict[str, float]
@@ -91,10 +93,12 @@ class ServoResult:
     elapsed_s: float
     final_pose: Pose | None
     target_pose: Pose | None
+    error: str | None = None
+    error_code: str | None = None
 
     def as_dict(self) -> dict:
         """Flatten to a plain dict for tool/agent return values."""
-        return {
+        result = {
             "ok": self.ok,
             "reason": self.reason,
             "ticks": self.ticks,
@@ -102,6 +106,11 @@ class ServoResult:
             "final_pose": self.final_pose,
             "target_pose": self.target_pose,
         }
+        if self.error:
+            result["error"] = self.error
+        if self.error_code:
+            result["error_code"] = self.error_code
+        return result
 
 
 def _pose_error(cur: Pose, tgt: Pose) -> tuple[float, float]:
@@ -120,6 +129,33 @@ def _pose_error(cur: Pose, tgt: Pose) -> tuple[float, float]:
 def _slew(cur: Pose, tgt: Pose, max_lin: float, max_ang: float) -> Pose:
     """Return a pose one slew-limited step from ``cur`` toward ``tgt``."""
     nxt: Pose = dict(cur)
+
+    # Limit the translational *vector*, rather than clipping x/y/z
+    # independently.  Independent clipping lets a diagonal move travel up to
+    # ``sqrt(3) * max_lin`` in one tick, which is both harder on the arm and
+    # makes the effective speed depend on the direction of the target.  Keep
+    # the angular channels independent because their units/axes are different.
+    linear_keys = [k for k in _LINEAR_KEYS if k in tgt and k in cur]
+    if linear_keys:
+        linear_delta = {k: float(tgt[k]) - float(cur[k]) for k in linear_keys}
+        linear_norm = math.sqrt(sum(delta * delta for delta in linear_delta.values()))
+        scale = min(1.0, float(max_lin) / linear_norm) if linear_norm > 0.0 else 1.0
+        for k in linear_keys:
+            nxt[k] = float(cur[k]) + linear_delta[k] * scale
+
+    angular_keys = [key for key in ("rx", "ry", "rz") if key in tgt and key in cur]
+    if len(angular_keys) == 3:
+        current_rotation = Rotation.from_euler("xyz", [float(cur[key]) for key in angular_keys], degrees=True)
+        target_rotation = Rotation.from_euler("xyz", [float(tgt[key]) for key in angular_keys], degrees=True)
+        relative_rotvec = (current_rotation.inv() * target_rotation).as_rotvec()
+        angle_deg = math.degrees(math.sqrt(sum(float(value) ** 2 for value in relative_rotvec)))
+        rotation_scale = min(1.0, float(max_ang) / angle_deg) if angle_deg > 0.0 else 1.0
+        next_euler = (current_rotation * Rotation.from_rotvec(relative_rotvec * rotation_scale)).as_euler(
+            "xyz", degrees=True
+        )
+        for key, value in zip(angular_keys, next_euler, strict=True):
+            nxt[key] = float(value)
+
     for k, v in tgt.items():
         v = float(v)
         if k not in cur:
@@ -127,11 +163,14 @@ def _slew(cur: Pose, tgt: Pose, max_lin: float, max_ang: float) -> Pose:
             continue
         c = float(cur[k])
         if k in _LINEAR_KEYS:
-            delta = v - c
-            if abs(delta) > max_lin:
-                delta = math.copysign(max_lin, delta)
-            nxt[k] = c + delta
+            # Already handled as one XYZ vector above.  A key absent from the
+            # current pose cannot participate in the norm and retains the
+            # historical direct-assignment behavior.
+            if k not in linear_keys:
+                nxt[k] = v
         elif k in _ANGULAR_KEYS:
+            if len(angular_keys) == 3:
+                continue
             delta = _ang_diff_deg(v, c)
             if abs(delta) > max_ang:
                 delta = math.copysign(max_ang, delta)
@@ -225,7 +264,16 @@ class ServoController:
                         self._servo_to(step)
                     except Exception as exc:  # noqa: BLE001 - abort servo on command failure
                         logger.warning("[servo] servo_to failed: %s", exc)
-                        return ServoResult(False, "stopped", ticks, tick_start - t0, cur, tgt)
+                        return ServoResult(
+                            False,
+                            "stopped",
+                            ticks,
+                            tick_start - t0,
+                            cur,
+                            tgt,
+                            str(exc),
+                            getattr(exc, "code", None),
+                        )
 
             if self._on_tick is not None:
                 self._on_tick({"tick": ticks, "pose": cur, "target": tgt, "in_tol": in_tol})

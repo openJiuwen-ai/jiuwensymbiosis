@@ -45,6 +45,8 @@ if TYPE_CHECKING:  # pragma: no cover - import-only typing helpers
 __all__ = [
     "ARM_JOINT_ORDER",
     "MOTOR_ORDER",
+    "So101CartesianServoError",
+    "So101HardwareSendMismatch",
     "So101Driver",
     "So101PoseConvergenceError",
 ]
@@ -57,6 +59,14 @@ _logger = get_logger(__name__)
 # solution). A count cap — not a wall-clock timeout — keeps tests deterministic
 # and bounds the worst-case work if a caller requests a huge Cartesian move.
 _MAX_CARTESIAN_WAYPOINTS = 4096
+# Servo-to-pose uses a bounded Cartesian progress search instead of clipping a
+# full IK result joint-by-joint.  These limits are intentionally internal: the
+# public tuning knobs remain the velocity/step caps in ``So101Config``.
+_SERVO_ALPHA_SEARCH_ITERS = 14
+_SERVO_ALPHA_MIN = 1.0 / 256.0
+_SERVO_PROGRESS_EPS_MM = 1e-3
+_SERVO_PROGRESS_EPS_DEG = 1e-3
+_GRIPPER_COMMAND_STEP = 5.0
 
 # --------------------------------------------------------------------- constants
 # Order is the LeRobot SO-101 feature naming (see SOFollower motor mapping).
@@ -92,6 +102,20 @@ class So101PoseConvergenceError(RuntimeError):
             f"SO-101 Cartesian target not reached: {self.reason}; "
             f"residual={self.residual_mm:.3f} mm > tolerance={self.tolerance_mm:.3f} mm."
         )
+
+
+class So101CartesianServoError(ValueError):
+    """Typed fail-closed Cartesian servo rejection."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = str(code)
+        super().__init__(f"{self.code}: {detail}")
+
+
+class So101HardwareSendMismatch(RuntimeError):
+    """LeRobot changed a command already validated by the Jiuwen driver."""
+
+    code = "hardware_send_mismatch"
 
 
 # --------------------------------------------------------------------- helpers
@@ -212,6 +236,8 @@ class So101Driver:
         # ``max_relative_target``). Recorded per plan §A3 so clipping is
         # observable — completion is still judged from real observation.
         self._last_sent_action: dict[str, float] | None = None
+        self._last_gripper_result: dict[str, Any] | None = None
+        self._holding_payload = False
 
         # Real-time servo velocity gate: monotonic timestamp of the last
         # dispatched servo action. ``servo_to_pose`` enforces a minimum
@@ -237,6 +263,12 @@ class So101Driver:
         return float(self._cfg.z_min_safe_mm)
 
     @property
+    def z_max_safe(self) -> float | None:
+        """Tip/control-frame Z ceiling in mm (config-driven), or None if unset."""
+        zmax = getattr(self._cfg, "z_max_safe_mm", None)
+        return float(zmax) if zmax is not None else None
+
+    @property
     def flange_z_min_safe(self) -> float:
         """Flange-frame Z floor in mm. Milestone A mirrors ``z_min_safe``."""
         return float(self._cfg.z_min_safe_mm)
@@ -259,12 +291,16 @@ class So101Driver:
         # hardware until the operator sets safety_validated: true after confirming
         # a safe home and tightened limits on the real robot. Runs before any serial
         # open so no torque is ever applied with an unvalidated config.
-        if not self._cfg.safety_validated:
+        # home_use_init_pose=True implicitly bypasses this gate (connecting is the
+        # only way to read the current joints that become home), but the startup
+        # pose is still checked against joint_limits in Step 8 below.
+        if not self._cfg.safety_validated and not self._cfg.home_use_init_pose:
             raise RuntimeError(
                 "SO-101 connect refused: config not safety-validated. "
                 "home_joints_deg / joint_limits ship as UNVERIFIED placeholders. "
                 "Manually confirm a safe home (teach pendant) and tighten joint_limits "
-                "to measured safe ranges, then set `safety_validated: true` in the YAML."
+                "to measured safe ranges, then set `safety_validated: true` in the YAML, "
+                "or set `home_use_init_pose: true` to use the startup pose as home."
             )
         # `robot` is the live follower once constructed; if a later validation
         # step (action_features, kinematics build, FK/home checks) fails BEFORE
@@ -326,6 +362,16 @@ class So101Driver:
             # Step 8: validate current FK + home FK/limits.
             current = self._read_arm_angles(robot)
             _ = kin.forward_kinematics(np.asarray(current, dtype=float))  # raises if bad frame
+            if self._cfg.home_use_init_pose:
+                # Use the startup joint pose as home (mirrors piper's
+                # home_use_init_pose): overwrite the runtime home_joints_deg so
+                # home_pose / home() / SafetyRail all read the live pose. The
+                # current angles are STILL checked against joint_limits right
+                # below, so an operator who parked the arm outside its soft
+                # limits is refused here rather than trusting an illegal pose.
+                init_home = [float(v) for v in current]
+                self._cfg.home_joints_deg = init_home
+                _logger.info("[SO-101] home_use_init_pose=True; home=%s", init_home)
             home = np.asarray(self._cfg.home_joints_deg, dtype=float)
             _ = kin.forward_kinematics(home)
             self._check_joint_limits(home, label="home_joints_deg")
@@ -334,6 +380,7 @@ class So101Driver:
             self._kin = kin
             self._connected = True
             self._servo_last_send_t = 0.0
+            _logger.info("[SO-101] motion config: %s", self._cfg.motion_summary())
 
             # Vision (milestone B): when a camera is configured, opening it is
             # part of the connection contract. Agent tools are commonly built
@@ -477,6 +524,11 @@ class So101Driver:
         obs = self._robot.get_observation()
         return self._read_motor(obs, "gripper")
 
+    @property
+    def last_gripper_result(self) -> dict[str, Any] | None:
+        """Last completed gripper outcome, copied to prevent external mutation."""
+        return dict(self._last_gripper_result) if self._last_gripper_result is not None else None
+
     def get_pose(self) -> So101Pose:
         """FK(current 5 joints) -> control-frame pose (mm / XYZ-Euler deg)."""
         self._require_connected()
@@ -488,48 +540,164 @@ class So101Driver:
         """Drive the gripper to the configured two-state target, blocking until settled.
 
         Sends ONLY ``{"gripper.pos": target}`` — never any arm joint keys — so an
-        in-flight arm motion is not disturbed. Under the default
-        ``max_relative_target`` a single ``send_action`` cannot move 0->100 or
-        100->0 in one step (LeRobot clips it), so this re-sends the target and
-        polls the real gripper observation until it converges within
+        in-flight arm motion is not disturbed. The driver bounds each gripper
+        command itself and polls the real observation until it converges within
         ``gripper_tolerance`` for ``settle_samples`` consecutive reads, bounded by
-        ``gripper_timeout_s`` (raises ``TimeoutError`` on stall). Completion is
-        judged from real observation, not the ``send_action`` return; the actual
-        (possibly clipped) target is recorded each send. Each poll waits one
-        ``trajectory_hz`` period so the loop never saturates the serial bus. After
-        convergence an optional ``gripper_settle_s`` dwell is waited via the
-        injectable sleep.
+        ``gripper_timeout_s``. During CLOSE only, meaningful travel followed by
+        consecutive stable observations away from the full-close target is
+        accepted as object contact. A gripper that never moves still times out,
+        and OPEN always has to reach its target. Completion is judged from real
+        observation, not the ``send_action`` return; the actual (possibly clipped)
+        target is recorded each send. Each poll waits one ``trajectory_hz`` period
+        so the loop never saturates the serial bus. After convergence/contact an
+        optional ``gripper_settle_s`` dwell is waited via the injectable sleep.
         """
         self._require_connected()
         target = float(self._cfg.gripper_close_pos if on else self._cfg.gripper_open_pos)
-        action = {"gripper.pos": target}
+        self._last_gripper_result = None
         deadline = time.monotonic() + float(self._cfg.gripper_timeout_s)
         settle_needed = max(1, int(self._cfg.settle_samples))
+        start = float(self.get_gripper_position())
+        last_observed = start
+        close_direction = 1.0 if target > start else -1.0
+        contact_window: list[float] = []
+        contact_position: float | None = None
         # One period between polls so the loop never hammers the serial bus at full
         # speed (reuses the arm trajectory_hz for a consistent dispatch rate).
         period = 1.0 / float(self._cfg.trajectory_hz) if self._cfg.trajectory_hz > 0 else 0.0
-        # Re-send the target (each send is itself clipped by max_relative_target)
-        # until the observed gripper position converges. Observation polling alone
-        # won't move the gripper toward the clipped goal.
         while True:
-            self._check_gripper_timeout(deadline)
-            self._send_action(action)
+            if time.monotonic() > deadline:
+                self._last_gripper_result = {
+                    "ok": False,
+                    "state": "timeout",
+                    "start": start,
+                    "position": last_observed,
+                    "target": target,
+                }
+                raise TimeoutError(
+                    "SO-101 gripper did not settle within the gripper timeout "
+                    f"({self._cfg.gripper_timeout_s}s): start={start:.3f}, "
+                    f"observed={last_observed:.3f}, target={target:.3f}."
+                )
+            command_delta = float(np.clip(target - last_observed, -_GRIPPER_COMMAND_STEP, _GRIPPER_COMMAND_STEP))
+            requested = {"gripper.pos": last_observed + command_delta}
+            self._send_action(requested)
             observed = float(self.get_gripper_position())
+            last_observed = observed
             if abs(observed - target) <= self._cfg.gripper_tolerance:
                 settle_needed -= 1
                 if settle_needed <= 0:
                     break
             else:
                 settle_needed = max(1, int(self._cfg.settle_samples))
+
+            # Contact inference is intentionally conservative and CLOSE-only:
+            # 1) movement must be toward the requested close target;
+            # 2) it must exceed a configured minimum, excluding stale/no-motion
+            #    observations and immediate mechanical jams;
+            # 3) it must then remain stable for consecutive samples while still
+            #    outside the normal target tolerance.
+            directed_progress = (observed - start) * close_direction
+            if (
+                on
+                and abs(observed - target) > self._cfg.gripper_tolerance
+                and directed_progress >= self._cfg.gripper_contact_min_travel
+            ):
+                contact_window.append(observed)
+                contact_window = contact_window[-self._cfg.gripper_contact_stall_samples:]  # fmt: skip
+                if (
+                    len(contact_window) >= self._cfg.gripper_contact_stall_samples
+                    and max(contact_window) - min(contact_window) <= self._cfg.gripper_contact_stall_tolerance
+                ):
+                    _logger.info(
+                        "[SO-101] gripper contact inferred: start=%.3f observed=%.3f "
+                        "target=%.3f progress=%.3f stable_samples=%d",
+                        start,
+                        observed,
+                        target,
+                        directed_progress,
+                        len(contact_window),
+                    )
+                    contact_position = observed
+                    break
+            else:
+                contact_window.clear()
             if period > 0:
                 self._sleep(period)
+
+        if contact_position is not None:
+            remaining = abs(target - contact_position)
+            preload = min(float(self._cfg.gripper_contact_hold_offset), remaining)
+            hold_target = contact_position + close_direction * preload
+            requested = {"gripper.pos": hold_target}
+            self._send_action(requested)
+            self._last_gripper_result = {
+                "ok": True,
+                "state": "contact",
+                "start": start,
+                "position": contact_position,
+                "target": target,
+                "hold_target": hold_target,
+                "travel": (contact_position - start) * close_direction,
+            }
+            _logger.info(
+                "[SO-101] gripper contact hold: position=%.3f hold_target=%.3f full_close_target=%.3f preload=%.3f",
+                contact_position,
+                hold_target,
+                target,
+                preload,
+            )
+            self._holding_payload = True
+        else:
+            self._last_gripper_result = {
+                "ok": True,
+                "state": "closed" if on else "open",
+                "start": start,
+                "position": last_observed,
+                "target": target,
+                "hold_target": target,
+                "travel": (last_observed - start) * close_direction,
+            }
+            self._holding_payload = bool(on)
+        if not on:
+            self._holding_payload = False
         if self._cfg.gripper_settle_s > 0:
             self._sleep(float(self._cfg.gripper_settle_s))
 
     def home(self) -> None:
-        """Move to the configured safe joint home (NOT a startup snapshot)."""
+        """Return home through a fully FK-validated joint path."""
+        self.safe_retreat_home(mode="home")
+
+    def retreat_home(self) -> None:
+        """Return home while retaining payload/table clearance checks."""
+        self.safe_retreat_home(mode="payload")
+
+    def recovery_home(self) -> None:
+        """Return home after recovery using the same FK-validated planner."""
+        self.safe_retreat_home(mode="recovery")
+
+    def safe_retreat_home(self, *, mode: str) -> None:
+        """Execute a direct joint-home path after validating every waypoint's FK.
+
+        Joint interpolation is planned in full and every waypoint is checked
+        against joint limits, Cartesian bounds, and (when configured) the table
+        plus gripper/payload clearance before the first command is sent. Runtime
+        encoder observations pass through the same checks while tracking.
+        """
         self._require_connected()
-        self.move_joint_blocking(list(self._cfg.home_joints_deg))
+        start_q = np.asarray(self.get_angles(), dtype=float)
+        target_q = np.asarray(self._cfg.home_joints_deg, dtype=float)
+        waypoints = self._joint_waypoints(start_q, target_q)
+        for index, waypoint in enumerate(waypoints, start=1):
+            self._validate_joint_waypoint(
+                waypoint,
+                label=f"{mode}-home waypoint {index}/{len(waypoints)}",
+            )
+        self._dispatch_prevalidated_waypoints(
+            waypoints,
+            target_q,
+            timeout_s=None,
+        )
 
     def move_joint_blocking(
         self,
@@ -590,6 +758,18 @@ class So101Driver:
                 _logger.debug("so101 send_action: %s clipped requested=%.6f actual=%.6f", key, req, act)
         return actual
 
+    @staticmethod
+    def _require_action_match(requested: dict[str, float], actual: dict[str, float], *, label: str) -> None:
+        mismatches: list[str] = []
+        for key, requested_value in requested.items():
+            actual_value = actual.get(key)
+            if actual_value is None or not _is_finite(actual_value):
+                mismatches.append(f"{key}=missing")
+            elif abs(float(actual_value) - float(requested_value)) > 1e-6:
+                mismatches.append(f"{key} requested={requested_value:.4f} returned={float(actual_value):.4f}")
+        if mismatches:
+            raise So101HardwareSendMismatch(f"{label}: LeRobot modified validated action: {'; '.join(mismatches)}")
+
     def _dispatch_prevalidated_waypoints(
         self,
         waypoints: list[np.ndarray],
@@ -618,15 +798,46 @@ class So101Driver:
         # max_relative_target is disabled.  This is separate from the encoder
         # observation: a stalled servo must not make the next over-command jump
         # by the full position error.
-        last_command = np.asarray(last_wp, dtype=float).copy()
-
-        # Interpolation sweep: stream each pre-validated waypoint in turn.
+        last_command = np.asarray(self.get_angles(), dtype=float)
+        overcomp_integral = np.zeros_like(last_wp)
+        overcomp_integral_limit = max(2.0 * float(self._cfg.max_joint_step_deg), 4.0)
+        tracking_tolerance = max(
+            float(self._cfg.motion_runtime.tracking_error_deg),
+            float(self._cfg.joint_tolerance_deg),
+        )
         for wp in waypoints:
-            self._check_timeout(deadline)
-            self._send_action(_arm_action(wp.tolist()))
-            last_command = np.asarray(wp, dtype=float).copy()
-            if period > 0:
-                self._sleep(period)
+            requested = _arm_action(wp.tolist())
+            sent = False
+            tracking_prev_err: float | None = None
+            tracking_drift_count = 0
+            while True:
+                self._check_timeout(deadline)
+                observed = np.asarray(self.get_angles(), dtype=float)
+                self._validate_joint_waypoint(observed, label="waypoint tracking")
+                tracking_err = float(np.max(np.abs(observed - wp)))
+                if sent and tracking_err <= tracking_tolerance:
+                    break
+                if tracking_prev_err is not None:
+                    if tracking_err > tracking_prev_err + 1e-6:
+                        tracking_drift_count += 1
+                        if drift_cap > 0 and tracking_drift_count >= drift_cap:
+                            raise RuntimeError(
+                                f"SO-101 settle drift: waypoint tracking error grew "
+                                f"{tracking_drift_count} consecutive sends "
+                                f"({tracking_prev_err:.3f} -> {tracking_err:.3f} deg)."
+                            )
+                    else:
+                        tracking_drift_count = 0
+                tracking_prev_err = tracking_err
+                actual_sent = self._send_action(requested)
+                self._require_action_match(requested, actual_sent, label="waypoint dispatch")
+                last_command = np.array(
+                    [actual_sent[f"{name}.pos"] for name in ARM_JOINT_ORDER],
+                    dtype=float,
+                )
+                sent = True
+                if period > 0:
+                    self._sleep(period)
 
         # Settle loop: re-send the final target until observed joints converge.
         prev_err = float(np.max(np.abs(np.asarray(self.get_angles(), dtype=float) - last_wp)))
@@ -634,6 +845,7 @@ class So101Driver:
         while True:
             self._check_timeout(deadline)
             actual = np.asarray(self.get_angles(), dtype=float)
+            self._validate_joint_waypoint(actual, label="settle tracking")
             err = float(np.max(np.abs(actual - last_wp)))
             if err <= self._cfg.joint_tolerance_deg:
                 settle_needed -= 1
@@ -659,16 +871,22 @@ class So101Driver:
                 prev_err = err
             # Re-send to drive convergence: observation polling alone won't move
             # the arm if the last waypoint was clipped by max_relative_target.
-            # With ``settle_overcompensate`` the re-send is ``target + e`` (e =
-            # target - actual, fresh from the encoder each round) instead of the
-            # bare ``target``: the STS3215 firmware I term is inert, so the servo
-            # parks at ``target - e``; over-commanding ``target + e`` makes it
-            # park AT ``target``, closing the PD steady-state error (~2.46 deg
-            # elbow -> ~0). If the over-command would break a soft limit, fall
+            # With ``settle_overcompensate`` the re-send is
+            # ``target + gain * integral(target - actual)`` instead of the bare
+            # ``target``. The bounded integral/gain is a software I-term
+            # substitute for the STS3215 firmware, whose integral term is inert;
+            # it closes steady-state error without an unbounded command toward a
+            # soft limit. If the over-command would break a soft limit, fall
             # back to the bare target (fail-closed: keeps the residual but stays
             # in bounds) and log it.
             if self._cfg.settle_overcompensate:
-                desired_cmd = last_wp + (last_wp - actual)  # = target + e
+                overcomp_integral += last_wp - actual
+                overcomp_integral = np.clip(
+                    overcomp_integral,
+                    -overcomp_integral_limit,
+                    overcomp_integral_limit,
+                )
+                desired_cmd = last_wp + float(self._cfg.motion_runtime.settle_gain) * overcomp_integral
                 try:
                     # Reject the desired over-command itself first.  A clipped
                     # intermediate command must not turn an out-of-limit target
@@ -684,8 +902,13 @@ class So101Driver:
                         np.asarray(cmd, dtype=float),
                         label="settle over-compensate waypoint",
                     )
-                    self._send_action(_arm_action(cmd.tolist()))
-                    last_command = np.asarray(cmd, dtype=float)
+                    requested = _arm_action(cmd.tolist())
+                    actual_sent = self._send_action(requested)
+                    self._require_action_match(requested, actual_sent, label="settle over-compensation")
+                    last_command = np.array(
+                        [actual_sent[f"{name}.pos"] for name in ARM_JOINT_ORDER],
+                        dtype=float,
+                    )
                 except ValueError as exc:
                     _logger.warning(
                         "SO-101 settle: over-command %s rejected (%s); re-sending bare target (residual %.3f deg).",
@@ -693,11 +916,21 @@ class So101Driver:
                         exc,
                         err,
                     )
-                    self._send_action(_arm_action(last_wp.tolist()))
-                    last_command = np.asarray(last_wp, dtype=float).copy()
+                    requested = _arm_action(last_wp.tolist())
+                    actual_sent = self._send_action(requested)
+                    self._require_action_match(requested, actual_sent, label="settle fallback")
+                    last_command = np.array(
+                        [actual_sent[f"{name}.pos"] for name in ARM_JOINT_ORDER],
+                        dtype=float,
+                    )
             else:
-                self._send_action(_arm_action(last_wp.tolist()))
-                last_command = np.asarray(last_wp, dtype=float).copy()
+                requested = _arm_action(last_wp.tolist())
+                actual_sent = self._send_action(requested)
+                self._require_action_match(requested, actual_sent, label="settle resend")
+                last_command = np.array(
+                    [actual_sent[f"{name}.pos"] for name in ARM_JOINT_ORDER],
+                    dtype=float,
+                )
             if resend_period > 0:
                 self._sleep(resend_period)
 
@@ -753,16 +986,23 @@ class So101Driver:
     def servo_to_pose(self, pose: Any) -> None:
         """Issue one non-blocking Cartesian servo command.
 
-        Exactly one IK solve from the live encoder seed and one ``send_action``;
-        the caller's real-time loop calls this again each tick. The IK solution
-        is checked for residual/error and the dispatched waypoint is slew-limited
-        and checked against the SO-101 safety envelope. Velocity (inter-send
-        interval + deg/s cap) is enforced here, not by the caller.
+        Solve a bounded Cartesian progress step from the live encoder seed and
+        issue one ``send_action``.  The old implementation solved the final
+        pose and then clipped each joint independently; on a coupled arm that
+        can turn an upward Cartesian move into a downward FK move.  We instead
+        interpolate the Cartesian target, solve IK for each candidate, and use
+        the largest candidate that satisfies the joint velocity/step cap,
+        residual checks, safety envelope, monotonic-Z guard and progress check.
+        Velocity (inter-send interval + deg/s cap) is enforced here, not by the
+        caller.
         """
         self._require_connected()
         target = self._coerce_servo_pose(pose)
         _require_finite_so101_pose(target, label="servo_to_pose target")
-        self._check_cartesian_bounds(target, label="servo_to_pose target")
+        try:
+            self._check_cartesian_bounds(target, label="servo_to_pose target")
+        except ValueError as exc:
+            raise So101CartesianServoError("cartesian_bounds_rejected", str(exc)) from exc
 
         # Min inter-send interval: a call within this window is a no-op
         # (non-blocking; skipped calls do not accumulate or catch up).
@@ -775,28 +1015,170 @@ class So101Driver:
         q_current = np.asarray(self.get_angles(), dtype=float)
         self._validate_joint_vector(q_current.tolist(), label="servo_to_pose current")
         target_matrix = np.asarray(pose_mm_deg_to_matrix_m(target), dtype=float)
-        try:
-            q_ik = np.asarray(
-                self._kin.inverse_kinematics(
-                    q_current,
-                    target_matrix,
-                    position_weight=1.0,
-                    orientation_weight=float(self._cfg.ik_orientation_weight),
-                ),
-                dtype=float,
-            )
-        except Exception as exc:  # noqa: BLE001 - normalize vendor IK failures
-            raise ValueError(f"servo_to_pose: IK raised {exc!r}.") from exc
+        current_matrix = np.asarray(self._kin.forward_kinematics(q_current), dtype=float)
+        current_pose = matrix_m_to_pose_mm_deg(current_matrix)
+        _logger.debug(
+            "[SO-101] servo request q_current=%s current_pose=%s requested_target=%s",
+            np.round(q_current, 4).tolist(),
+            current_pose,
+            target,
+        )
 
-        self._validate_ik_solution(q_ik, target_matrix, label="servo_to_pose IK")
-        # Re-clip the step against vel_cap = max_joint_vel_dps * dt; first send
-        # uses one min_period (timestamp 0 is not a real instant).
+        # First send uses one min_period (timestamp 0 is not a real instant).
         dt = min_period if first_send else now - self._servo_last_send_t
         vel_cap = float(self._cfg.servo_max_joint_vel_dps) * dt
         max_step = min(float(self._cfg.servo_max_joint_step_deg), vel_cap)
-        q_cmd = q_current + np.clip(q_ik - q_current, -max_step, max_step)
-        self._validate_joint_waypoint(np.asarray(q_cmd, dtype=float), label="servo_to_pose command")
-        self._send_action(_arm_action(q_cmd.tolist()))
+        if not _is_finite(max_step) or max_step <= 0.0:
+            raise ValueError(f"servo_to_pose: computed joint step cap is invalid ({max_step!r}).")
+
+        current_pos_err = position_error_mm(current_pose, target)
+        current_ori_err = orientation_error_deg(current_pose, target)
+        cartesian_step_cap = float(self._cfg.motion_runtime.max_cartesian_vel_mm_s) * dt
+        alpha_limit = min(1.0, cartesian_step_cap / current_pos_err) if current_pos_err > 0.0 else 1.0
+        best_q: np.ndarray | None = None
+        best_alpha = 0.0
+        first_error: str | None = None
+        first_code: str | None = None
+        last_error: str | None = None
+
+        def evaluate(alpha: float) -> np.ndarray | None:
+            """Return a safe, progressing IK candidate or record why it failed."""
+            nonlocal first_code, first_error, last_error
+            matrix = _interp_se3(current_matrix, target_matrix, alpha)
+            label = f"servo_to_pose candidate t={alpha:.5f}"
+            configured_orientation_weight = float(self._cfg.ik_orientation_weight)
+            orientation_weights = (
+                [0.0, configured_orientation_weight]
+                if self._cfg.ik_orientation_tolerance_deg is None and configured_orientation_weight != 0.0
+                else [configured_orientation_weight]
+            )
+            q_candidate: np.ndarray | None = None
+            candidate_errors: list[str] = []
+            for orientation_weight in orientation_weights:
+                try:
+                    solved = np.asarray(
+                        self._kin.inverse_kinematics(
+                            q_current,
+                            matrix,
+                            position_weight=1.0,
+                            orientation_weight=orientation_weight,
+                        ),
+                        dtype=float,
+                    )
+                    self._validate_ik_solution(solved, matrix, label=label)
+                    q_candidate = solved
+                    break
+                except Exception as exc:  # noqa: BLE001 - try position-only or a smaller alpha
+                    candidate_errors.append(f"orientation_weight={orientation_weight:g}: {exc}")
+            if q_candidate is None:
+                last_error = "; ".join(candidate_errors)
+                if first_error is None:
+                    first_error = last_error
+                    first_code = (
+                        "cartesian_bounds_rejected"
+                        if any(token in last_error for token in ("soft limits", "z=", "workspace"))
+                        else "ik_unreachable"
+                    )
+                return None
+
+            q_delta = np.max(np.abs(q_candidate - q_current))
+            if not _is_finite(float(q_delta)) or q_delta > max_step + 1e-6:
+                last_error = f"{label}: joint delta {q_delta:.4f} deg exceeds cap {max_step:.4f} deg"
+                if first_error is None:
+                    first_error = last_error
+                    first_code = "joint_velocity_limited_no_progress"
+                return None
+
+            candidate_pose = matrix_m_to_pose_mm_deg(np.asarray(self._kin.forward_kinematics(q_candidate)))
+            candidate_pos_err = position_error_mm(candidate_pose, target)
+            candidate_ori_err = orientation_error_deg(candidate_pose, target)
+            candidate_step_mm = position_error_mm(current_pose, candidate_pose)
+            if candidate_step_mm > cartesian_step_cap + _SERVO_PROGRESS_EPS_MM:
+                last_error = (
+                    f"{label}: Cartesian step {candidate_step_mm:.3f} mm exceeds "
+                    f"velocity cap {cartesian_step_cap:.3f} mm"
+                )
+                if first_error is None:
+                    first_error = last_error
+                    first_code = "joint_velocity_limited_no_progress"
+                return None
+
+            if current_pos_err > _SERVO_PROGRESS_EPS_MM:
+                progressing = candidate_pos_err < current_pos_err - _SERVO_PROGRESS_EPS_MM
+            elif current_ori_err > _SERVO_PROGRESS_EPS_DEG:
+                progressing = candidate_ori_err < current_ori_err - _SERVO_PROGRESS_EPS_DEG
+            else:
+                progressing = False
+            if not progressing:
+                last_error = (
+                    f"{label}: candidate does not reduce Cartesian error "
+                    f"(position {candidate_pos_err:.3f}/{current_pos_err:.3f} mm, "
+                    f"orientation {candidate_ori_err:.3f}/{current_ori_err:.3f} deg)"
+                )
+                if first_error is None:
+                    first_error = last_error
+                    first_code = "cartesian_progress_reversed"
+                return None
+            _logger.debug(
+                "[SO-101] servo candidate alpha=%.5f q_delta=%.4f pos_err=%.3f->%.3f z=%.3f->%.3f q=%s fk=%s",
+                alpha,
+                float(q_delta),
+                current_pos_err,
+                candidate_pos_err,
+                current_pose.z,
+                candidate_pose.z,
+                np.round(q_candidate, 4).tolist(),
+                {
+                    "x": round(candidate_pose.x, 3),
+                    "y": round(candidate_pose.y, 3),
+                    "z": round(candidate_pose.z, 3),
+                },
+            )
+            return q_candidate
+
+        # Placo keeps internal solver state, so start at the minimum safe
+        # fraction and grow along one continuous local branch. Starting with a
+        # far, failed target can poison subsequent small solves despite passing
+        # the live joint seed again.
+        alpha = min(_SERVO_ALPHA_MIN, alpha_limit)
+        for _ in range(_SERVO_ALPHA_SEARCH_ITERS):
+            q_candidate = evaluate(alpha)
+            if q_candidate is not None:
+                best_q = q_candidate
+                best_alpha = alpha
+            elif best_q is not None:
+                break
+            else:
+                break
+            if alpha >= alpha_limit:
+                break
+            alpha = min(alpha_limit, alpha * 2.0)
+
+        if best_q is None:
+            # Report the full-target failure first.  A tiny fallback candidate
+            # can fail for a secondary reason (for example, being below the
+            # floor while the full target exposes the useful IK residual).
+            detail_error = first_error or last_error
+            detail = f" Last candidate error: {detail_error}" if detail_error else ""
+            raise So101CartesianServoError(
+                first_code or "joint_velocity_limited_no_progress",
+                "servo_to_pose found no safe Cartesian progress step satisfying IK, "
+                f"residual, joint cap and safety checks.{detail}",
+            )
+
+        q_cmd = np.asarray(best_q, dtype=float)
+        self._validate_joint_waypoint(q_cmd, label=f"servo_to_pose command t={best_alpha:.5f}")
+        requested = _arm_action(q_cmd.tolist())
+        actual = self._send_action(requested)
+        self._require_action_match(requested, actual, label="Cartesian servo")
+        _logger.debug(
+            "[SO-101] servo dispatch alpha=%.5f dt=%.4fs q_current=%s requested=%s actual=%s",
+            best_alpha,
+            dt,
+            np.round(q_current, 4).tolist(),
+            np.round(q_cmd, 4).tolist(),
+            actual,
+        )
         self._servo_last_send_t = time.monotonic()
 
     @staticmethod
@@ -888,7 +1270,11 @@ class So101Driver:
         ik_waypoints = self._plan_cartesian_waypoints(current_q, start_matrix, desired_matrix, pose)
 
         # 3. Dispatch the pre-validated joint waypoints (shared settle loop).
-        self._dispatch_prevalidated_waypoints(ik_waypoints, ik_waypoints[-1], timeout_s=timeout_s)
+        self._dispatch_prevalidated_waypoints(
+            ik_waypoints,
+            ik_waypoints[-1],
+            timeout_s=timeout_s,
+        )
         return np.asarray(ik_waypoints[-1], dtype=float)
 
     def _converge_to_pose(
@@ -1126,7 +1512,7 @@ class So101Driver:
         self._check_cartesian_bounds(fk_pose, label=f"{label} FK")
 
     def _check_cartesian_bounds(self, pose: So101Pose, *, label: str) -> None:
-        """Second-layer Z-floor + XY-bound check the driver runs before sending.
+        """Second-layer Z-floor/ceiling + XY-bound check the driver runs before sending.
 
         SafetyRail checks the *target* at the tool layer, but a caller can bypass
         the tool layer (direct driver use) or the 5-DoF IK may land the arm at a
@@ -1138,6 +1524,19 @@ class So101Driver:
         z_floor = self._cfg.z_min_safe_mm
         if pose.z < z_floor:
             raise ValueError(f"{label}: z={pose.z:.3f} mm below driver z_min_safe={z_floor} mm.")
+        z_ceil = getattr(self._cfg, "z_max_safe_mm", None)
+        if z_ceil is not None and pose.z > z_ceil:
+            raise ValueError(f"{label}: z={pose.z:.3f} mm above driver z_max_safe={z_ceil} mm.")
+        table_z = getattr(self._cfg, "table_z_mm", None)
+        if table_z is not None:
+            payload_offset = float(self._cfg.payload_protrusion_mm) if self._holding_payload else 0.0
+            lowest_z = pose.z - float(self._cfg.gripper_lowest_offset_mm) - payload_offset
+            lowest_floor = float(table_z) + float(self._cfg.minimum_floor_margin_mm)
+            if lowest_z < lowest_floor:
+                raise ValueError(
+                    f"{label}: effective lowest z={lowest_z:.3f} mm below table clearance floor "
+                    f"{lowest_floor:.3f} mm (control z={pose.z:.3f}, holding_payload={self._holding_payload})."
+                )
         bounds = self._cfg.workspace_bounds
         if bounds is not None:
             xmin, ymin, xmax, ymax = bounds

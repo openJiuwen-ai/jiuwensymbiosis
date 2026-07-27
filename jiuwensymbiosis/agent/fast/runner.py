@@ -245,10 +245,17 @@ def _track_detect(
             target_is_live=target_is_live,
         ).run()
         logger.info(
-            "[runner] track_detect %r: %s in %d ticks / %.2fs", object_name, res.reason, res.ticks, res.elapsed_s
+            "[runner] track_detect %r: %s in %d ticks / %.2fs%s",
+            object_name,
+            res.reason,
+            res.ticks,
+            res.elapsed_s,
+            f" error={res.error}" if res.error else "",
         )
         if not res.ok:
-            raise RuntimeError(f"track_detect failed: {res.reason}")
+            raise RuntimeError(
+                f"track_detect failed: {res.reason}: {res.error}" if res.error else f"track_detect failed: {res.reason}"
+            )
         latest = tracker.latest_target()
         return dict(latest) if latest is not None else None
     finally:
@@ -322,15 +329,20 @@ def _track_grasp(
             target_is_live=target_is_live,
         ).run()
         logger.info(
-            "[runner] track_grasp %r approach: %s in %d ticks / %.2fs (detections=%d)",
+            "[runner] track_grasp %r approach: %s in %d ticks / %.2fs (detections=%d)%s",
             object_name,
             approach.reason,
             approach.ticks,
             approach.elapsed_s,
             tracker.detections,
+            f" error={approach.error}" if approach.error else "",
         )
         if not approach.ok:
-            raise RuntimeError(f"track_grasp approach failed: {approach.reason}")
+            raise RuntimeError(
+                f"track_grasp approach failed: {approach.reason}: {approach.error}"
+                if approach.error
+                else f"track_grasp approach failed: {approach.reason}"
+            )
         descend = ServoController(
             binding.read_pose,
             binding.servo_to,
@@ -339,15 +351,20 @@ def _track_grasp(
             target_is_live=target_is_live,
         ).run()
         logger.info(
-            "[runner] track_grasp %r descend: %s in %d ticks / %.2fs (detections=%d)",
+            "[runner] track_grasp %r descend: %s in %d ticks / %.2fs (detections=%d)%s",
             object_name,
             descend.reason,
             descend.ticks,
             descend.elapsed_s,
             tracker.detections,
+            f" error={descend.error}" if descend.error else "",
         )
         if not descend.ok:
-            raise RuntimeError(f"track_grasp descend failed: {descend.reason}")
+            raise RuntimeError(
+                f"track_grasp descend failed: {descend.reason}: {descend.error}"
+                if descend.error
+                else f"track_grasp descend failed: {descend.reason}"
+            )
 
         # Require a detection whose IMAGE was grabbed after descend finished:
         # capture time (not inference completion) so a frame grabbed mid-descend
@@ -382,7 +399,11 @@ def _track_grasp(
                 target_is_live=target_is_live,
             ).run()
             if not re_descend.ok:
-                raise RuntimeError(f"track_grasp post-descend re-align failed: {re_descend.reason}")
+                raise RuntimeError(
+                    f"track_grasp post-descend re-align failed: {re_descend.reason}: {re_descend.error}"
+                    if re_descend.error
+                    else f"track_grasp post-descend re-align failed: {re_descend.reason}"
+                )
             descend_finished_t = time.monotonic()
             final = _wait_post_descend_target(
                 tracker,
@@ -580,7 +601,9 @@ def _safe_retreat(session: Any) -> None:
                 logger.warning("[runner] safe retreat: env release fallback failed: %s", exc)
 
     home_ok = False
-    home = getattr(session.api, "home", None)
+    home = getattr(session.api, "recovery_home", None)
+    if not callable(home):
+        home = getattr(session.api, "home", None)
     if callable(home):
         try:
             result = home()

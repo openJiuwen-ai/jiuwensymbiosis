@@ -89,6 +89,14 @@ class So101Env(BaseRobotEnv):
     def low_level(self, _: RobotDriver | None) -> None:
         raise AttributeError("So101Env.low_level is read-only (binds to self._inner via connect/disconnect)")
 
+    @property
+    def last_gripper_result(self) -> dict[str, Any] | None:
+        """Structured result of the last SO-101 gripper command, if available."""
+        if self._inner is None:
+            return None
+        result = getattr(self._inner, "last_gripper_result", None)
+        return dict(result) if isinstance(result, dict) else None
+
     # --- safety envelope (SafetyRail reads these) ----------------------------
     @property
     def z_min_safe(self) -> float | None:

@@ -22,7 +22,9 @@ pytest.importorskip("lerobot")
 from lerobot.model.kinematics import RobotKinematics  # noqa: E402
 
 from jiuwensymbiosis.adapters.so101.geometry import (  # noqa: E402
+    So101Pose,
     matrix_m_to_pose_mm_deg,
+    pose_mm_deg_to_matrix_m,
     position_error_mm,
 )
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER, So101Driver  # noqa: E402
@@ -124,6 +126,77 @@ class TestFkIkRoundTrip:
         pose_seed = matrix_m_to_pose_mm_deg(fk)
         pose_ik = matrix_m_to_pose_mm_deg(fk_ik)
         assert position_error_mm(pose_ik, pose_seed) < 5.0
+
+
+class TestBananaServoRegression:
+    START = np.array([-1.2747, -18.6374, 12.2198, 72.7912, -109.6703])
+    TARGET_XYZ = (291.37, -107.22, 30.0)
+
+    def test_real_trace_uses_bounded_cartesian_candidate(self, kin):
+        from jiuwensymbiosis.adapters.so101.config import So101Config
+
+        limits = dict.fromkeys(ARM_JOINT_ORDER, (-180.0, 180.0))
+        cfg = So101Config(
+            port="/dev/fake",
+            home_joints_deg=[0.0] * 5,
+            joint_limits=limits,
+            z_min_safe_mm=-10.0,
+            ik_position_tolerance_mm=3.0,
+            servo_max_joint_step_deg=2.0,
+            servo_min_send_period_s=0.1,
+            servo_max_joint_vel_dps=20.0,
+        )
+        current_matrix = np.asarray(kin.forward_kinematics(self.START), dtype=float)
+        current_pose = matrix_m_to_pose_mm_deg(current_matrix)
+        target = So101Pose(*self.TARGET_XYZ, current_pose.rx, current_pose.ry, current_pose.rz)
+        target_matrix = pose_mm_deg_to_matrix_m(target)
+
+        old_kin = RobotKinematics(
+            URDF,
+            target_frame_name="gripper_frame_link",
+            joint_names=list(ARM_JOINT_ORDER),
+        )
+        full_ik = np.asarray(
+            old_kin.inverse_kinematics(
+                self.START,
+                target_matrix,
+                position_weight=1.0,
+                orientation_weight=0.01,
+            ),
+            dtype=float,
+        )
+        old_command = self.START + np.clip(full_ik - self.START, -2.0, 2.0)
+        old_pose = matrix_m_to_pose_mm_deg(np.asarray(old_kin.forward_kinematics(old_command), dtype=float))
+
+        class RecordingRobot:
+            def __init__(self) -> None:
+                self.sent: list[dict[str, float]] = []
+
+            def get_observation(self) -> dict[str, float]:
+                return {f"{name}.pos": float(self.START[index]) for index, name in enumerate(ARM_JOINT_ORDER)}
+
+            def send_action(self, action: dict[str, float]) -> dict[str, float]:
+                self.sent.append(dict(action))
+                return dict(action)
+
+        robot = RecordingRobot()
+        robot.START = self.START
+        driver = So101Driver(cfg)
+        driver._kin = RobotKinematics(
+            URDF,
+            target_frame_name="gripper_frame_link",
+            joint_names=list(ARM_JOINT_ORDER),
+        )
+        driver._robot = robot
+        driver._connected = True
+        driver.servo_to_pose(target)
+
+        sent_q = np.array([robot.sent[-1][f"{name}.pos"] for name in ARM_JOINT_ORDER])
+        sent_pose = matrix_m_to_pose_mm_deg(np.asarray(driver._kin.forward_kinematics(sent_q), dtype=float))
+        cartesian_cap = cfg.motion_runtime.max_cartesian_vel_mm_s * cfg.servo_min_send_period_s
+        assert position_error_mm(current_pose, old_pose) > cartesian_cap
+        assert position_error_mm(current_pose, sent_pose) <= cartesian_cap + 1e-3
+        assert position_error_mm(sent_pose, target) < position_error_mm(current_pose, target)
 
 
 class TestRealPlanner:

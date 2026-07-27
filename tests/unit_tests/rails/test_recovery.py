@@ -53,6 +53,15 @@ class TestRecoveryRail:
         await rail.on_tool_exception(ctx)
         assert mock_session.api._call_log == []
 
+    @pytest.mark.asyncio
+    async def test_adapter_recovery_home_is_preferred(self, mock_session):
+        mock_session.api.recovery_home = lambda: mock_session.api._call_log.append("recovery_home")
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 300})
+        await rail.on_tool_exception(ctx)
+        assert "recovery_home" in mock_session.api._call_log
+        assert not any(call == "home" for call in mock_session.api._call_log)
+
 
 class TestRecoveryRailTraceSink:
     @pytest.mark.asyncio
