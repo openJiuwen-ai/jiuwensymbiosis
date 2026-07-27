@@ -604,7 +604,7 @@ class So101Driver:
                 and directed_progress >= self._cfg.gripper_contact_min_travel
             ):
                 contact_window.append(observed)
-                contact_window = contact_window[-self._cfg.gripper_contact_stall_samples :]
+                contact_window = contact_window[-self._cfg.gripper_contact_stall_samples:]  # fmt: skip
                 if (
                     len(contact_window) >= self._cfg.gripper_contact_stall_samples
                     and max(contact_window) - min(contact_window) <= self._cfg.gripper_contact_stall_tolerance

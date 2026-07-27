@@ -508,11 +508,10 @@ class So101Config:
                 "settle_drift_abort_samples": "settle_drift_abort_samples",
                 "cartesian_interp_step_mm": "cartesian_interp_step_mm",
             }
-            unknown_motion = set(motion) - set(motion_aliases)
-            if unknown_motion:
-                raise ValueError(f"So101Config: unknown motion fields: {sorted(unknown_motion)}.")
             for name, value in motion.items():
-                canonical = motion_aliases[name]
+                canonical = motion_aliases.get(name)
+                if canonical is None:
+                    raise ValueError(f"So101Config: unknown motion field {name!r}.")
                 if canonical in kw and kw[canonical] != value:
                     raise ValueError(
                         f"So101Config: conflicting motion.{name} and flat {canonical} values; specify one."
@@ -562,11 +561,10 @@ class So101Config:
                 continue
             if not isinstance(grouped, dict):
                 raise ValueError(f"So101Config: {group_name} must be a mapping, got {type(grouped).__name__}.")
-            unknown = set(grouped) - set(aliases)
-            if unknown:
-                raise ValueError(f"So101Config: unknown {group_name} fields: {sorted(unknown)}.")
             for name, value in grouped.items():
-                canonical = aliases[name]
+                canonical = aliases.get(name)
+                if canonical is None:
+                    raise ValueError(f"So101Config: unknown {group_name} field {name!r}.")
                 if canonical in kw and kw[canonical] != value:
                     raise ValueError(
                         f"So101Config: conflicting {group_name}.{name} and flat {canonical} values; specify one."
