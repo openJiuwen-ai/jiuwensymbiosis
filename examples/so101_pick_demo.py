@@ -90,8 +90,8 @@ def main() -> int:
     parser.add_argument("--mode", choices=["tool", "code", "hybrid"], default="hybrid")
     parser.add_argument("--no-visual-feedback", action="store_true")
     parser.add_argument("--max-iter", type=int, default=30)
-    parser.add_argument("--control-hz", type=float, default=None, help="Override motion-profile servo rate")
-    parser.add_argument("--servo-step-mm", type=float, default=None, help="Override motion-profile Cartesian step")
+    parser.add_argument("--control-hz", type=float, default=None, help="Override configured servo rate")
+    parser.add_argument("--servo-step-mm", type=float, default=None, help="Override configured Cartesian step")
     parser.add_argument("--workspace", default=None)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
@@ -117,14 +117,16 @@ def main() -> int:
         from jiuwensymbiosis.agent.fast.realtime import ServoConfig
 
         so101_cfg = getattr(session.env, "cfg", None)
-        default_control_hz = float(getattr(so101_cfg, "trajectory_hz", 10.0))
-        runtime = getattr(so101_cfg, "motion_runtime", None)
-        cartesian_velocity = float(getattr(runtime, "max_cartesian_vel_mm_s", 30.0))
-        default_servo_step_mm = cartesian_velocity / default_control_hz
+        default_control_hz = float(getattr(so101_cfg, "fast_control_hz", 5.0))
+        default_servo_step_mm = float(getattr(so101_cfg, "servo_max_cartesian_step_mm", 6.0))
+        default_timeout_s = float(getattr(so101_cfg, "fast_move_timeout_s", 20.0))
+        default_absolute_timeout_s = float(getattr(so101_cfg, "fast_absolute_timeout_s", 60.0))
         exec_config = SkillExecConfig(
             servo=ServoConfig(
                 control_hz=args.control_hz if args.control_hz is not None else default_control_hz,
                 max_lin_step_mm=args.servo_step_mm if args.servo_step_mm is not None else default_servo_step_mm,
+                timeout_s=default_timeout_s,
+                absolute_timeout_s=default_absolute_timeout_s,
             ),
         )
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -240,7 +240,7 @@ class BaseRobotEnv(ABC):
         # JointDriver sibling protocol; motion.joint-capability-gated
         self._require_driver().move_joint_blocking(q)  # type: ignore[attr-defined]
 
-    def servo_to_flange(self, pose: Any) -> None:
+    def servo_to_flange(self, pose: Any) -> bool | None:
         """Issue a NON-BLOCKING FLANGE-frame pose command (returns immediately).
 
         This is the streaming-motion primitive the real-time servo loop drives
@@ -257,7 +257,7 @@ class BaseRobotEnv(ABC):
         servo = getattr(driver, "servo_to_pose", None)
         if servo is None:
             raise NotImplementedError(f"{self.name}: driver has no servo_to_pose (declare/implement 'motion.servo').")
-        servo(pose)
+        return cast(bool | None, servo(pose))
 
     def set_end_effector(self, engaged: bool) -> None:
         """Engage (True) / release (False) the end effector.

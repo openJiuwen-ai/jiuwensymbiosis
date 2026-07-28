@@ -16,6 +16,11 @@ loop that runs in-process with **no LLM in the loop**.
 """
 
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
+from jiuwensymbiosis.agent.fast.realtime.mask_tracking import (
+    MaskTargetFilter,
+    MaskTrackingConfig,
+    MaskTrackingState,
+)
 from jiuwensymbiosis.agent.fast.realtime.servo import (
     ServoConfig,
     ServoController,
@@ -31,4 +36,7 @@ __all__ = [
     "ServoConfig",
     "ServoResult",
     "ServoBinding",
+    "MaskTargetFilter",
+    "MaskTrackingConfig",
+    "MaskTrackingState",
 ]

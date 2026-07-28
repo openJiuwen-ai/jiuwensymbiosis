@@ -15,6 +15,7 @@ Add a skill = add a ``SKILL.md`` directory (auto-discovered by the registry) or
 """
 
 from jiuwensymbiosis.agent.fast.planner import compile_sequence, plan_skills
+from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTrackingConfig
 from jiuwensymbiosis.agent.fast.registry import (
     DEFAULT_REGISTRY,
     SkillRegistry,
@@ -35,6 +36,7 @@ from jiuwensymbiosis.agent.fast.sequence import (
 __all__ = [
     # config
     "SkillExecConfig",
+    "MaskTrackingConfig",
     # pipeline
     "compile_sequence",
     "parse_sequence",
