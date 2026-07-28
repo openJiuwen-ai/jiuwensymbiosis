@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "_comment": "EXPERIMENTAL REVIEW candidate only: SO-101 eye-to-hand PARK solution from 15 stations",
+  "T_base_cam": {
+    "_frame": "camera pose in base frame; translation in mm",
+    "matrix_4x4": [
+      [
+        0.059125,
+        -0.560328,
+        0.826158,
+        8.609607
+      ],
+      [
+        -0.99457,
+        0.03794,
+        0.096909,
+        -9.73184
+      ],
+      [
+        -0.085646,
+        -0.827401,
+        -0.555042,
+        504.68657
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "intrinsics": [
+    [
+      394.114655,
+      0.0,
+      317.778076
+    ],
+    [
+      0.0,
+      393.077148,
+      229.358749
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "object": {
+    "xyz_base_mm": [
+      -35.7529,
+      13.1749,
+      73.8551
+    ]
+  }
+}

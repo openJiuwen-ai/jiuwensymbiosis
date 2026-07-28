@@ -41,8 +41,6 @@ cartesian_orientation_policy: preserve
 grasp_orientation: null
 
 # ==================== 运动与到位 [选填] ====================
-# SO101 不再使用命名档位。普通阻塞轨迹和 --fast servo 分别配置，
-# 避免 fast 的低频实时循环把普通 goto_pose 也降成大步长运动。
 trajectory_hz: 20.0
 max_joint_vel_dps: 35.0
 max_cartesian_vel_mm_s: 60.0

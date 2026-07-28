@@ -1,0 +1,107 @@
+# SO-101 左臂香蕉抓取本机实验配置（标定 ID: so101_left）。
+
+env:
+  cfg:
+    low_level:
+      name: "so101"
+      port: "/dev/your_port"
+      robot_id: "so101_left"
+      calibration_dir: null
+      # 断连时保持舵机力矩（false），否则 elbow_flex 等重力负载关节会在
+      # 失力矩后重力下坠
+      disable_torque_on_disconnect: false
+      max_relative_target: null
+      # 最终点完全不收敛时最多等待 10 秒；soft settle 通常约 1 秒即可判定。
+      move_timeout_s: 10.0
+      # 抓住物体向上 lift 时，如果关节已稳定但 Z 仍偏低，只优化 Z；
+      # 允许 XY 漂移，但仍受关节软限位、工作空间和最大关节偏置保护。
+      settle_z_only_lift_enabled: true
+      settle_z_only_lift_step_mm: 2.0
+      settle_z_only_lift_max_joint_offset_deg: 4.0
+      # 已验收当前软限位；启动姿态仍须由操作者确认安全。
+      safety_validated: true
+
+      # 连接时把当前关节角作为 home，并校验其处于 joint_limits 内。
+      home_use_init_pose: true
+      # 本机验收软限位（deg）；更换机械臂或标定后必须重新确认。
+      joint_limits:
+        shoulder_pan: [-110.0, 110.0]
+        shoulder_lift: [-100.0, 100.0]
+        elbow_flex: [-96.83, 96.83]
+        wrist_flex: [-95.0, 95.0]
+        wrist_roll: [-157.0, 157.0]
+      ik_target_frame: "gripper_frame_link"
+      ik_orientation_weight: 0.01
+      ik_position_tolerance_mm: 10.0
+      ik_orientation_tolerance_deg: null
+      # 5-DoF 普通移动保持实时姿态，避免无条件切到 rx=180/ry=0。
+      # grasp_orientation 必须真机示教后再填写并启用 grasp 策略。
+      cartesian_orientation_policy: preserve
+      grasp_orientation: null
+
+      # gripper_frame_link 控制帧下限；不是桌面或指尖高度。
+      z_min_safe_mm: -10.0
+      # 控制帧 Z 上限，拦截高处近奇异姿态。
+      z_max_safe_mm: 400.0
+      # 以下实体最低点参数需要重新贴桌标定后填写；null table_z 会保持模型禁用。
+      table_z_mm: null
+      gripper_lowest_offset_mm: 0.0
+      payload_protrusion_mm: 0.0
+      minimum_floor_margin_mm: 8.0
+      # 本机香蕉夹持位置；更换目标物时重新示教。
+      gripper_open_pos: 50.0
+      gripper_close_pos: 10.0
+      gripper_tolerance: 3.0
+      gripper_timeout_s: 5.0
+      gripper_settle_s: 0.3
+      # 关闭时已明显运动且连续稳定在非全闭位置，视为接触香蕉而不是超时。
+      gripper_contact_min_travel: 5.0
+      gripper_contact_stall_tolerance: 0.5
+      gripper_contact_stall_samples: 5
+      gripper_contact_hold_offset: 1.0
+
+      # 桌面固定 eye-to-hand RealSense D405；外参状态见文件头。
+      camera_serial: "<your-camera-serial>"
+      camera_resolution: [640, 480]
+      camera_fps: 30
+      calib_path: "so101_calib.json"
+
+      # 香蕉侧夹使用物体顶面下 5 mm；正式抓取前结合桌高重新验证。
+      z_correction_mm: 0.0
+      grasp_z_offset_mm: -5.0
+      place_z_offset_mm: 30.0
+
+    prompt: "抓起桌面上的香蕉"
+
+# GroundingDINO+SAM2 sidecar。本机路径可由 GDINO_MODEL_ID/SAM2_MODEL_ID 覆盖。
+api_servers:
+  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+    gdino_model_id: "IDEA-Research/grounding-dino-base"  # 替换成本地路径
+    sam2_model_id: "facebook/sam2.1-hiera-large"         # 替换成本地路径
+    box_threshold: 0.35
+    text_threshold: 0.25
+    use_sam2: true
+
+# 非视觉编排模型；视觉由检测工具完成。api_key 通过 CLI注入。
+# 运行时使用 --no-visual-feedback，避免向非 VLM 模型发送图像。
+model:
+  provider: OpenAI
+  api_base: "your own api"
+  api_key: ""   # 用 --api-key 覆盖
+  model_name: "your own model"
+  temperature: 0.3
+  max_tokens: 2048
+
+# 本机实验启用 trace/diagnosis；skill、visual feedback 和运行模式由 CLI 控制。
+agent:
+  log_level: INFO
+  log_dir: ./logs
+  enable_tracing: true
+  enable_diagnosis: true        # 依赖 enable_tracing
+  diagnosis_max_chars: 1500
+  diagnosis_history_steps: 3
+  diagnosis_history_kinds: ["reject", "recover"]
+  trace_console: true
