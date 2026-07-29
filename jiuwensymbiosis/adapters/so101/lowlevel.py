@@ -1187,12 +1187,8 @@ class So101Driver:
             previous_error=float(np.max(np.abs(last_actual - last_wp))),
         )
         z_only_lift_eligible = False
-        if (
-            bool(self._cfg.settle_z_only_lift_enabled)
-            and self._holding_payload
-            and cartesian_target_matrix is not None
-            and cartesian_start_matrix is not None
-        ):
+        lift_enabled = bool(self._cfg.settle_z_only_lift_enabled) and self._holding_payload
+        if lift_enabled and cartesian_target_matrix is not None and cartesian_start_matrix is not None:
             target_z = matrix_m_to_pose_mm_deg(cartesian_target_matrix).z
             start_z = matrix_m_to_pose_mm_deg(cartesian_start_matrix).z
             z_only_lift_eligible = target_z > start_z + 1e-6
@@ -1284,7 +1280,9 @@ class So101Driver:
                     return
             else:
                 soft_settle_needed = max(1, int(self._cfg.settle_soft_samples))
-            if not z_only_lift_active and z_only_lift_eligible and not z_acceptable and err <= soft_tolerance:
+            lift_eligible = not z_only_lift_active and z_only_lift_eligible
+            lift_needed = not z_acceptable and err <= soft_tolerance
+            if lift_eligible and lift_needed:
                 z_only_lift_active = True
                 _logger.warning(
                     "[SO-101] activating Z-only payload lift compensation: "

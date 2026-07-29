@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -77,13 +77,10 @@ class MaskTrackingConfig:
             "motion_min_area_ratio",
         ):
             value = getattr(self, name)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or not 0.0 <= float(value) <= 1.0
-            ):
+            if not _is_unit_interval(value):
                 raise ValueError(f"MaskTrackingConfig.{name} must be finite and in [0, 1]")
+        if not 0.0 < self.motion_min_area_ratio <= 1.0:
+            raise ValueError("MaskTrackingConfig.motion_min_area_ratio must be in (0, 1]")
         if not self.min_visible_ratio <= self.motion_min_area_ratio <= 1.0:
             raise ValueError("MaskTrackingConfig.motion_min_area_ratio must be in [min_visible_ratio, 1]")
         if not self.min_visible_ratio <= self.occlusion_area_ratio <= 1.0:
@@ -95,13 +92,39 @@ class MaskTrackingConfig:
             "max_motion_step_mm",
         ):
             value = getattr(self, name)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or float(value) <= 0.0
-            ):
+            if not _is_positive_finite(value):
                 raise ValueError(f"MaskTrackingConfig.{name} must be finite and > 0")
+
+
+def _is_unit_interval(value: Any) -> bool:
+    """True if ``value`` is a finite number in ``[0.0, 1.0]`` (bool rejected)."""
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and 0.0 <= float(value) <= 1.0
+
+
+def _is_positive_finite(value: Any) -> bool:
+    """True if ``value`` is finite and ``> 0.0`` (bool rejected)."""
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and float(value) > 0.0
+
+
+@dataclass(frozen=True)
+class TrackingSample:
+    """A reliable tracking sample handed to the ``_update_*`` classifiers."""
+
+    current: dict[str, Any]
+    mask: np.ndarray
+    centroid: tuple[float, float]
+    depth_mm: float
+    depth_span_mm: float
+    mask_metrics: dict[str, Any]
+    area_ratio: float
 
 
 def _binary_dilate(mask: np.ndarray, radius: int) -> np.ndarray:
@@ -113,12 +136,16 @@ def _binary_dilate(mask: np.ndarray, radius: int) -> np.ndarray:
     # Integral image gives every (2r+1)x(2r+1) window sum in O(HW).
     integral = np.pad(padded, ((1, 0), (1, 0))).cumsum(axis=0).cumsum(axis=1)
     size = 2 * radius + 1
+    # fmt: off
+    # Slice colons sit before binary arithmetic operands; ruff format would
+    # re-add the leading space (E203), so this block is exempt from formatting.
     window_sum = (
-        integral[size : size + height, size : size + width]
-        - integral[:height, size : size + width]
-        - integral[size : size + height, :width]
+        integral[size: size + height, size: size + width]
+        - integral[:height, size: size + width]
+        - integral[size: size + height, :width]
         + integral[:height, :width]
     )
+    # fmt: on
     return window_sum > 0
 
 
@@ -178,6 +205,16 @@ class MaskTargetFilter:
             return None
         return self._accepted(self._trusted, MaskTrackingState.BLIND_LAST_TARGET, detail)
 
+    @staticmethod
+    def _parse_mask(sample: dict[str, Any]) -> tuple[np.ndarray | None, str | None, dict[str, Any]]:
+        try:
+            mask = np.asarray(sample["_tracking_mask"], dtype=bool)
+        except (KeyError, TypeError, ValueError) as exc:
+            return None, "malformed_tracking_mask", {"error": str(exc)}
+        if mask.ndim != 2 or not mask.any():
+            return None, "empty_tracking_mask", {"shape": tuple(mask.shape)}
+        return mask.copy(), None, {}
+
     def update(self, sample: dict[str, Any]) -> dict[str, Any] | None:
         """Filter one normalized private tracking sample.
 
@@ -196,13 +233,17 @@ class MaskTargetFilter:
         if parsed is None:
             return self._blind_or_lost(quality_reason or "unreliable_tracking_sample", quality_metrics)
         current, centroid, depth_mm, depth_span_mm = parsed
+        area_ratio = float(mask_metrics.get("area_ratio", 0.0))
         return self._update_reliable_target(
-            current,
-            mask,
-            centroid,
-            depth_mm,
-            depth_span_mm,
-            mask_metrics,
+            TrackingSample(
+                current=current,
+                mask=mask,
+                centroid=centroid,
+                depth_mm=depth_mm,
+                depth_span_mm=depth_span_mm,
+                mask_metrics=mask_metrics,
+                area_ratio=area_ratio,
+            )
         )
 
     def _classify_mask(self, mask: np.ndarray) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -241,34 +282,25 @@ class MaskTargetFilter:
             return self._blind_or_lost("visible_mask_too_small", metrics), metrics
         return None, metrics
 
-    def _update_reliable_target(
-        self,
-        current: dict[str, Any],
-        mask: np.ndarray,
-        centroid: tuple[float, float],
-        depth_mm: float,
-        depth_span_mm: float,
-        mask_metrics: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    def _update_reliable_target(self, sample: TrackingSample) -> dict[str, Any] | None:
         """Classify one sample whose mask, geometry, and depth are reliable."""
         if self._trusted is None:
-            self._accept_anchor(current, mask, centroid, depth_mm)
-            return self._accepted(current, MaskTrackingState.VISIBLE_STABLE, {"initial": True})
+            self._accept_anchor(sample.current, sample.mask, sample.centroid, sample.depth_mm)
+            return self._accepted(sample.current, MaskTrackingState.VISIBLE_STABLE, {"initial": True})
 
         if self._anchor_centroid is None:
-            return self._blind_or_lost("missing_anchor_centroid", mask_metrics)
-        area_ratio = float(mask_metrics["area_ratio"])
-        containment = float(mask_metrics["containment"])
+            return self._blind_or_lost("missing_anchor_centroid", sample.mask_metrics)
+        containment = float(sample.mask_metrics["containment"])
         centroid_shift = math.hypot(
-            centroid[0] - self._anchor_centroid[0],
-            centroid[1] - self._anchor_centroid[1],
+            sample.centroid[0] - self._anchor_centroid[0],
+            sample.centroid[1] - self._anchor_centroid[1],
         )
-        depth_delta_mm = abs(depth_mm - self._anchor_depth_mm)
+        depth_delta_mm = abs(sample.depth_mm - self._anchor_depth_mm)
         metrics = {
-            **mask_metrics,
+            **sample.mask_metrics,
             "centroid_shift_px": round(centroid_shift, 3),
             "depth_delta_mm": round(depth_delta_mm, 3),
-            "depth_span_mm": round(depth_span_mm, 3),
+            "depth_span_mm": round(sample.depth_span_mm, 3),
         }
 
         cfg = self.config
@@ -283,58 +315,39 @@ class MaskTargetFilter:
             # preserve the fixed anchor instead of integrating projection noise.
             return self._accepted(self._trusted, MaskTrackingState.VISIBLE_STABLE, metrics)
 
-        return self._update_motion_candidate(current, mask, centroid, depth_mm, area_ratio, metrics)
+        return self._update_motion_candidate(replace(sample, mask_metrics=metrics))
 
-    def _update_motion_candidate(
-        self,
-        current: dict[str, Any],
-        mask: np.ndarray,
-        centroid: tuple[float, float],
-        depth_mm: float,
-        area_ratio: float,
-        metrics: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    def _update_motion_candidate(self, sample: TrackingSample) -> dict[str, Any] | None:
         """Require consistent observations before advancing a moving target."""
         cfg = self.config
-        if area_ratio < cfg.motion_min_area_ratio or area_ratio > (1.0 / cfg.motion_min_area_ratio):
+        metrics = sample.mask_metrics
+        if sample.area_ratio < cfg.motion_min_area_ratio or sample.area_ratio > (1.0 / cfg.motion_min_area_ratio):
             return self._reject("mask_area_inconsistent_with_motion", metrics)
 
         if self._motion_candidate is None:
-            self._motion_candidate = current
+            self._motion_candidate = sample.current
             self._motion_candidate_count = 1
             self._transition(MaskTrackingState.MOTION_PENDING, metrics)
             return None
 
-        step_mm = float(np.linalg.norm(_target_xyz(current) - _target_xyz(self._motion_candidate)))
+        step_mm = float(np.linalg.norm(_target_xyz(sample.current) - _target_xyz(self._motion_candidate)))
         metrics["candidate_step_mm"] = round(step_mm, 3)
         if step_mm > cfg.max_motion_step_mm:
             # Treat this observation as a new first candidate.  No output means
             # the old trusted frame is not falsely made "fresh".
-            self._motion_candidate = current
+            self._motion_candidate = sample.current
             self._motion_candidate_count = 1
             self._transition(MaskTrackingState.INVALID_OUTLIER, {"reason": "motion_step_too_large", **metrics})
             return None
 
-        self._motion_candidate = current
+        self._motion_candidate = sample.current
         self._motion_candidate_count += 1
         if self._motion_candidate_count < cfg.motion_confirm_frames:
             self._transition(MaskTrackingState.MOTION_PENDING, metrics)
             return None
 
-        self._accept_anchor(current, mask, centroid, depth_mm)
-        return self._accepted(current, MaskTrackingState.VISIBLE_MOVING, metrics)
-
-    def _parse_mask(
-        self,
-        sample: dict[str, Any],
-    ) -> tuple[np.ndarray | None, str | None, dict[str, Any]]:
-        try:
-            mask = np.asarray(sample["_tracking_mask"], dtype=bool)
-        except (KeyError, TypeError, ValueError) as exc:
-            return None, "malformed_tracking_mask", {"error": str(exc)}
-        if mask.ndim != 2 or not mask.any():
-            return None, "empty_tracking_mask", {"shape": tuple(mask.shape)}
-        return mask.copy(), None, {}
+        self._accept_anchor(sample.current, sample.mask, sample.centroid, sample.depth_mm)
+        return self._accepted(sample.current, MaskTrackingState.VISIBLE_MOVING, metrics)
 
     def _parse_reliable_target(
         self,
@@ -359,13 +372,8 @@ class MaskTargetFilter:
             _target_xyz(sample)
         except (KeyError, TypeError, ValueError) as exc:
             return None, "malformed_tracking_sample", {"error": str(exc)}
-        if (
-            not math.isfinite(position_x)
-            or not math.isfinite(position_y)
-            or not math.isfinite(score)
-            or not math.isfinite(depth_mm)
-            or not math.isfinite(depth_span_mm)
-            or not math.isfinite(valid_depth_ratio)
+        if not all(
+            math.isfinite(v) for v in (position_x, position_y, score, depth_mm, depth_span_mm, valid_depth_ratio)
         ):
             return None, "non_finite_tracking_sample", {}
         if score < cfg.min_score:

@@ -349,7 +349,8 @@ def _track_grasp(
         mask_filter = MaskTargetFilter(cfg.mask_tracking, name=object_name)
 
         def detect_fn() -> dict[str, Any] | None:
-            assert mask_filter is not None
+            if mask_filter is None:  # closure over the enabled-gated branch above
+                return None
             return _detect_mask_tracking_once(tracking_provider, object_name, mask_filter)
 
         logger.info("[runner] track_grasp %r: fixed-camera mask filtering enabled", object_name)
