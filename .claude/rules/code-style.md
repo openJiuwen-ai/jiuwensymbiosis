@@ -41,9 +41,38 @@ alwaysApply: false
 - Generated templates (`scripts/new_adapter/render.py`, `templates/`) must be
   especially terse because every comment is copied into user code. Include only
   comments that adapter authors must act on.
+- `# noqa` suppressions are discouraged. `pyproject.toml` already ignores
+  `BLE001` (the rule that forbids `except Exception`), so `# noqa: BLE001`
+  must NOT be sprinkled on `except Exception as exc:` blocks — the project
+  permits that catch form. Reserve `# noqa` for genuinely unfixable cases,
+  always with the rule code AND a reason (`# noqa: SLF001 - standalone hardware calibration`),
+  never bare. Fix the lint issue first when the fix is cheaper than the
+  suppression.
 - Before finishing a change, scan your diff for added `#` comments and
   docstrings. Delete any that fail the "would this prevent a future bug?"
   test.
+
+## Exception Handling
+
+- `except Exception as exc:` is **allowed** (BLE001 is globally ignored in
+  `pyproject.toml`). The project does not forbid catching the broad
+  `Exception` base — hardware/transport/adapter code routinely deals with
+  vendor-raised exceptions of many types, and narrowing every catch site is
+  not required.
+- **Every caught exception must be logged.** Use `get_logger(name)`:
+  `logger.warning` for recoverable paths, `logger.error` for degraded/unsafe
+  states; pass `exc` through (or `logger.exception` for the traceback).
+- What is **forbidden** is *suppressing or silently dropping* an exception:
+  a body that swallows it with a bare `pass` / empty `return` / `break` /
+  `continue` and **no log and no recovery**. Log at minimum; recover or
+  re-raise where safety demands it.
+- Catch `ValueError` specifically in safety/motion code so the LLM can
+  self-correct; broad `Exception` catches are for best-effort teardown or
+  fallback paths (e.g. torque restore, frame save) where the recovery
+  contract is "try, log, proceed", not "ignore".
+- Never swallow `KeyboardInterrupt` / `SystemExit` under a bare
+  `except Exception` — `Exception` does not catch `BaseException` subclasses,
+  but a hand-written `except BaseException` that absorbs them is always a bug.
 
 ## Async Safety
 
