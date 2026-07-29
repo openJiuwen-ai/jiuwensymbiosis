@@ -97,6 +97,22 @@ class So101Env(BaseRobotEnv):
         result = getattr(self._inner, "last_gripper_result", None)
         return dict(result) if isinstance(result, dict) else None
 
+    @property
+    def last_motion_result(self) -> dict[str, Any] | None:
+        """Structured result of the last SO-101 endpoint settle, if available."""
+        if self._inner is None:
+            return None
+        result = getattr(self._inner, "last_motion_result", None)
+        return dict(result) if isinstance(result, dict) else None
+
+    @property
+    def holding_payload(self) -> bool | None:
+        """Return the connected driver's payload belief, or ``None`` if unavailable."""
+        if self._inner is None:
+            return None
+        value = getattr(self._inner, "holding_payload", None)
+        return value if isinstance(value, bool) else None
+
     # --- safety envelope (SafetyRail reads these) ----------------------------
     @property
     def z_min_safe(self) -> float | None:
@@ -241,6 +257,8 @@ class So101Env(BaseRobotEnv):
             extra={
                 "z_min_safe": self.z_min_safe,
                 "gripper_state": gripper,  # grasp.parallel-capability-gated
+                "holding_payload": self.holding_payload,
+                "motion_settle": self.last_motion_result,
             },
         )
 

@@ -24,7 +24,7 @@ from jiuwensymbiosis.adapters.so101.api import So101Api
 from jiuwensymbiosis.adapters.so101.config import So101Config
 from jiuwensymbiosis.adapters.so101.env import So101Env
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
-from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
+from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER, So101PreDispatchError
 
 _ARM_LIMITS = {
     "shoulder_pan": (-90.0, 90.0),
@@ -53,6 +53,12 @@ class _SpyDriver:
     def __init__(self) -> None:
         self.log: list = []
         self.last_gripper_result: dict | None = None
+        self.last_motion_result: dict | None = {
+            "ok": True,
+            "classification": "soft",
+        }
+        self.servo_dispatched = True
+        self.holding_payload = True
         self.z_min_safe = 30.0
         self.tool_offset_mm = 0.0
         self.home_pose = So101Pose(10.0, 20.0, 30.0, 0.0, 0.0, 0.0)
@@ -78,8 +84,9 @@ class _SpyDriver:
     def move_to_pose_blocking(self, pose, *args, **kwargs) -> None:
         self.log.append(("move", pose))
 
-    def servo_to_pose(self, pose) -> None:
+    def servo_to_pose(self, pose) -> bool:
         self.log.append(("servo", pose))
+        return self.servo_dispatched
 
     def move_joint_blocking(self, q, *, timeout_s=30.0) -> None:
         self.log.append(("joint", list(q)))
@@ -163,6 +170,10 @@ class TestSo101EnvJointLimits:
 
 
 class TestSo101EnvObservation:
+    def test_disconnected_payload_state_is_unavailable(self):
+        env = _make_env()
+        assert env.holding_payload is None
+
     def test_extra_contains_gripper_and_z_floor(self):
         env = _make_env()
         env._inner = _SpyDriver()
@@ -170,6 +181,11 @@ class TestSo101EnvObservation:
         assert obs.extra is not None
         assert obs.extra["z_min_safe"] == 30.0
         assert obs.extra["gripper_state"] == 50.0
+        assert obs.extra["holding_payload"] is True
+        assert obs.extra["motion_settle"] == {
+            "ok": True,
+            "classification": "soft",
+        }
 
     def test_observation_pose_is_mm_deg(self):
         env = _make_env()
@@ -244,6 +260,10 @@ class TestSo101ApiStructure:
         meta = So101Api.close_gripper.__robot_tool__
         assert meta.input_params == {"type": "object", "properties": {}}
 
+    def test_private_fast_tracking_hook_is_not_a_robot_tool(self):
+        assert hasattr(So101Api, "get_grasp_tracking_sample")
+        assert not hasattr(So101Api.get_grasp_tracking_sample, "__robot_tool__")
+
     def test_goto_pose_input_params_exposes_nested_pose(self):
         meta = So101Api.goto_pose.__robot_tool__
         top = meta.input_params
@@ -259,6 +279,47 @@ class TestSo101ApiStructure:
 
 
 class TestSo101ApiDelegates:
+    def test_fast_tracking_sample_adds_mask_without_changing_public_result(self, monkeypatch):
+        api, _env, _driver = _build_api()
+        mask = np.zeros((8, 8), dtype=bool)
+        mask[2:6, 2:6] = True
+        api._seg_fn = lambda _image, *, text_prompt: [
+            {
+                "score": 0.9,
+                "label": text_prompt,
+                "mask": mask,
+                "box": [2.0, 2.0, 6.0, 6.0],
+            }
+        ]
+        monkeypatch.setattr(
+            "jiuwensymbiosis.adapters.so101.api.dump_grasp_debug",
+            lambda **_kwargs: None,
+        )
+        tracking_metadata = MagicMock(wraps=api._tracking_metadata)
+        monkeypatch.setattr(api, "_tracking_metadata", tracking_metadata)
+
+        public = api.get_grasp_info_simple("box")
+        tracking_metadata.assert_not_called()
+        private = api.get_grasp_tracking_sample("box")
+
+        tracking_metadata.assert_called_once()
+        assert public.get("ok") is True
+        assert set(public) == {
+            "ok",
+            "object",
+            "position",
+            "grasp_z",
+            "grasp_position",
+            "place_z",
+            "place_position",
+            "score",
+            "pixel_uv",
+            "depth_m",
+        }
+        assert np.array_equal(private["_tracking_mask"], mask)
+        assert private["_tracking_depth_span_mm"] == pytest.approx(0.0)
+        assert private["_tracking_valid_depth_ratio"] == pytest.approx(1.0)
+
     def test_open_gripper_calls_set_end_effector_false(self):
         api, env, _driver = _build_api()
         env.set_end_effector = MagicMock()
@@ -290,6 +351,17 @@ class TestSo101ApiDelegates:
             "target": 10.0,
             "hold_target": 29.0,
         }
+
+    def test_grasp_confirmation_requires_contact_state(self):
+        api, _env, _driver = _build_api()
+
+        assert api.is_grasp_confirmed({"ok": True, "state": "contact"}) is True
+        assert api.is_grasp_confirmed({"ok": True, "state": "closed"}) is False
+        assert api.is_grasp_confirmed({"ok": False, "state": "contact"}) is False
+        assert api.is_grasp_confirmed(None) is False
+
+    def test_grasp_confirmation_hook_is_not_a_robot_tool(self):
+        assert not hasattr(So101Api.is_grasp_confirmed, "__robot_tool__")
 
     def test_open_gripper_ignores_width_mm(self):
         api, env, _driver = _build_api()
@@ -357,14 +429,24 @@ class TestSo101ApiDelegates:
 
     def test_goto_xyzr_grasp_policy_requires_calibration(self):
         api, _env, _driver = _build_api()
-        with pytest.raises(ValueError, match="requires cfg.grasp_orientation"):
+        with pytest.raises(So101PreDispatchError, match="requires cfg.grasp_orientation") as exc_info:
             api.goto_xyzr(10.0, 20.0, 30.0, orientation_policy="grasp")
+        assert exc_info.value.skip_recovery is True
 
     def test_servo_to_tip_preserves_live_orientation_when_missing(self):
         api, _env, driver = _build_api()
-        api.servo_to_tip({"x": 10.0, "y": 20.0, "z": 30.0})
+        assert api.servo_to_tip({"x": 10.0, "y": 20.0, "z": 30.0}) is True
         pose = [c for c in driver.log if c[0] == "servo"][0][1]
         assert pose == {"x": 10.0, "y": 20.0, "z": 30.0, "rx": 135.0, "ry": -8.0, "rz": 7.0}
+
+    def test_fast_completion_is_position_only_but_command_orientation_is_preserved(self):
+        api, _env, _driver = _build_api()
+        assert api.servo_reached_angular_keys == ()
+
+    def test_servo_to_tip_propagates_explicit_rate_gate_skip(self):
+        api, _env, driver = _build_api()
+        driver.servo_dispatched = False
+        assert api.servo_to_tip({"x": 10.0, "y": 20.0, "z": 30.0}) is False
 
     def test_servo_to_tip_honours_explicit_orientation(self):
         api, _env, driver = _build_api()

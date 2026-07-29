@@ -102,18 +102,20 @@ fast 编译器会另外给出本次机器人可用的【特殊动作】。这些
 
 ## 失败处理
 
-- 任一步返回 `success=False`：
-  1. 简要记录错误（给中文一句话，不需要念完整堆栈）。
-  2. **必须**调 `<释放>`（即便未确认是否抓住，也先释放避免拖件）。
-  3. 调 `home` 返回安全位姿。
-  4. 向用户报告"在第 N 步（动作名）失败：<原因>"，**不要**重试相同参数。
+- 任一步返回 `success=False`，先简要记录错误，再按载荷状态处理：
+  - **已持物**（`<抓取>` 已成功或 `holding_payload=true`）：**禁止 `<释放>`**。保持夹持，由 RecoveryRail 安全回 home；若恢复失败，立即上报并等待人工处理。
+  - **未确认持物**（`holding_payload=false` 或状态不可用）：恢复流程仍会先尝试 `<释放>` 再回 home，避免接触检测假阴性时闭爪拖件。
+  - **载荷未知**（例如 `<抓取>` 本身失败）：保守执行一次 `<释放>`，再回 home。
+  - **运动下发前被拒绝**（参数、IK 或安全检查失败，未发生实际运动）：不释放、不回 home；修正参数或换路径。
+- RecoveryRail 已完成的释放或 home **不要重复执行**。
+- 最后报告"在第 N 步（动作名）失败：<原因>"；不要用相同参数重试。
 - `get_grasp_info_simple` / `analyze_scene` 置信度 `score < 0.4` 视为识别失败：把物体描述换得更具体一次（补上颜色/形状/大小/位置等特征），仍失败则放弃并报告。
 
 ## 与 Rails 的协作
 
-- **SafetyRail**：监视 `goto_xyzr` 是否越出工作空间 / 越过 z_min_safe。它会用 ValueError 中断你；该错误**不应**被吞，照"失败处理"流程处理。
+- **SafetyRail**：监视 `goto_xyzr` 是否越出工作空间 / 越过 z_min_safe。它会在运动下发前拒绝非法目标；不要吞掉错误，也不要为此释放或回 home。
 - **VisualFeedbackRail**：在 `motion` tag 工具调用后自动注入观测；**不要**重复 `get_image`，会浪费带宽。
-- **RecoveryRail**：异常时它会兜底执行 home + release，但**你仍要按"失败处理"显式调用** `<释放>` + `home`，保证语义清晰。
+- **RecoveryRail**：按载荷三态恢复——持物运动失败时保持夹持并回 home，明确空载时不重复释放，载荷未知时才保守释放；预派发拒绝不触发恢复。不要重复它已经完成的动作。
 
 ## 参数取值约定
 
@@ -128,4 +130,4 @@ fast 编译器会另外给出本次机器人可用的【特殊动作】。这些
 - ❌ 把放置点的 goto 写进本 skill：放置职责在 visual_place，本 skill 只负责"拿起来"。
 - ❌ 调用不在 `api_capabilities` 内的抓取动作（如吸盘机器人去调 `close_gripper`）：会返回 unknown action。
 - ❌ 用 `run_python`/`robot_control` 之外的工具实现本 workflow：会绕过 SafetyRail 与 VisualFeedbackRail。
-- ❌ 在 `success=False` 后继续后续 action：状态已脱锚，必须先 home。
+- ❌ 失败后不判断载荷就 `<释放>` 或重复 home：可能丢件，也会制造多余动作。

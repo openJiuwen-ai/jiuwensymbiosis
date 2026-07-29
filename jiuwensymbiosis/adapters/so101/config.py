@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -24,83 +24,12 @@ from urllib.parse import urlparse
 import yaml
 
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
+from jiuwensymbiosis.utils import get_logger
+
+_logger = get_logger(__name__)
 
 # Canonical 5-arm-joint order; the gripper is a separate end effector.
 _ARM_JOINT_SET = frozenset(ARM_JOINT_ORDER)
-
-
-# Motion controls are grouped behind a small profile.  YAML can still override
-# any individual value; ``None`` means "use the selected profile default".
-@dataclass(frozen=True)
-class So101MotionProfile:
-    """Resolved user-level motion policy; per-tick limits are derived properties."""
-
-    control_hz: float
-    max_joint_vel_dps: float
-    max_cartesian_vel_mm_s: float
-    tracking_error_deg: float
-    joint_tolerance_deg: float
-    settle_samples: int
-    move_timeout_s: float
-    settle_resend_period_s: float
-    settle_drift_abort_samples: int
-    table_clearance_mm: float
-    settle_gain: float
-
-    @property
-    def joint_step_deg(self) -> float:
-        return self.max_joint_vel_dps / self.control_hz
-
-    @property
-    def cartesian_step_mm(self) -> float:
-        return self.max_cartesian_vel_mm_s / self.control_hz
-
-    @property
-    def send_period_s(self) -> float:
-        return 1.0 / self.control_hz
-
-
-_MOTION_PROFILES: dict[str, So101MotionProfile] = {
-    "safe": So101MotionProfile(
-        control_hz=10.0,
-        max_joint_vel_dps=20.0,
-        max_cartesian_vel_mm_s=30.0,
-        tracking_error_deg=2.0,
-        joint_tolerance_deg=1.0,
-        settle_samples=3,
-        move_timeout_s=45.0,
-        settle_resend_period_s=0.25,
-        settle_drift_abort_samples=3,
-        table_clearance_mm=20.0,
-        settle_gain=0.5,
-    ),
-    "balanced": So101MotionProfile(
-        control_hz=20.0,
-        max_joint_vel_dps=35.0,
-        max_cartesian_vel_mm_s=60.0,
-        tracking_error_deg=3.0,
-        joint_tolerance_deg=1.5,
-        settle_samples=3,
-        move_timeout_s=30.0,
-        settle_resend_period_s=0.2,
-        settle_drift_abort_samples=5,
-        table_clearance_mm=25.0,
-        settle_gain=0.5,
-    ),
-    "fast": So101MotionProfile(
-        control_hz=30.0,
-        max_joint_vel_dps=50.0,
-        max_cartesian_vel_mm_s=100.0,
-        tracking_error_deg=4.0,
-        joint_tolerance_deg=2.0,
-        settle_samples=3,
-        move_timeout_s=30.0,
-        settle_resend_period_s=0.15,
-        settle_drift_abort_samples=5,
-        table_clearance_mm=30.0,
-        settle_gain=0.4,
-    ),
-}
 
 
 @dataclass
@@ -334,17 +263,22 @@ class So101Config:
     pose_convergence_tolerance_mm: float = 1.0
 
     # --- motion & settle ---
-    motion_profile: str = "safe"
-    trajectory_hz: float | None = None
+    # Blocking motion and realtime servo intentionally have independent rates
+    # and velocities.  Blocking goto_pose/move_joint streams a pre-planned path
+    # at 20 Hz for small, smooth waypoints.  The --fast tracking path remains at
+    # 5 Hz so perception, planning and the gravity-loaded arm can stay in sync.
+    trajectory_hz: float = 20.0
+    max_joint_vel_dps: float = 35.0
+    max_cartesian_vel_mm_s: float = 60.0
     max_joint_step_deg: float | None = None
     # Real-time Cartesian servo joint slew cap.  Kept separate from the
     # blocking-path interpolation cap because servo commands are generated one
-    # tick at a time from a live encoder seed.
+    # tick at a time from the previous planned joint seed.
     servo_max_joint_step_deg: float | None = None
     # Real-time servo velocity enforcement (hardware-boundary safety). The
     # caller's tick rate is untrusted (a busy-loop or a misconfigured
     # ``control_hz`` can call ``servo_to_pose`` far faster than the arm can
-    # track), so the driver caps the *actual* joint velocity itself rather than
+    # track), so the driver caps the commanded joint velocity itself rather than
     # trusting per-call step clipping alone.
     #   - servo_min_send_period_s: minimum elapsed time between two dispatched
     #     servo actions; a call within this window is skipped (non-blocking
@@ -353,30 +287,76 @@ class So101Config:
     #     re-clipped against ``vel_cap = servo_max_joint_vel_dps * dt`` where
     #     ``dt`` is the real inter-send interval, so speed is independent of
     #     the caller's tick rate.
+    fast_control_hz: float = 5.0
     servo_min_send_period_s: float | None = None
-    servo_max_joint_vel_dps: float | None = None
-    # Settle "arrived" tolerance (deg, joint space, max norm). The settle loop
-    # returns once max|actual - target| <= this for ``settle_samples`` consecutive
-    # reads. The selected motion profile supplies the default; paired with
-    # ``settle_overcompensate=True`` the servo can close the STS3215 PD steady-state
+    servo_max_joint_vel_dps: float = 35.0
+    servo_max_cartesian_vel_mm_s: float = 60.0
+    # Per-tick fast cap. ``None`` derives a cap twice the blocking Cartesian
+    # step so the 5 Hz realtime loop can cover long approaches within its
+    # shorter timeout while blocking motion keeps its smoother small steps.
+    servo_max_cartesian_step_mm: float | None = None
+    # Fast Servo's continuous no-progress timeout. It is refreshed whenever
+    # the live tip pose measurably approaches the latest target.
+    fast_move_timeout_s: float = 20.0
+    # Longer final safety ceiling for a target that keeps moving indefinitely.
+    fast_absolute_timeout_s: float = 60.0
+    # Cartesian command speed and maximum planned-vs-live joint lag. When the
+    # tracking allowance is exceeded, Cartesian planning pauses at the previous
+    # point while bounded compensation drives the encoders toward it; the plan
+    # is not re-anchored or advanced.
+    tracking_error_deg: float = 4.0
+    # Position-only terminal deadband for the SO-101 streaming planner. Once
+    # planned FK is this close to the latest target, stop asking IK for
+    # sub-millimetre progress and re-send the last planned joints while the
+    # physical arm catches up. Orientation is also required only when
+    # ik_orientation_tolerance_deg is explicitly configured.
+    servo_goal_tolerance_mm: float = 1.0
+    # Settle "arrived" tolerance (deg, joint space, max norm). After all
+    # intermediate waypoints have been streamed, final settle returns
+    # once max|actual - target| <= this for ``settle_samples`` consecutive
+    # reads. The configured default, paired with ``settle_overcompensate=True``,
+    # lets the servo close the STS3215 PD steady-state
     # error without widening the tolerance. Still keep it above encoder read noise.
     # With ``settle_overcompensate=False``
     # keep this >= ~3.5 to cover the ~2.46 deg elbow steady-state error (else the
     # settle loop times out -- re-sending the bare target cannot close PD error).
-    joint_tolerance_deg: float | None = None
-    settle_samples: int | None = None
-    move_timeout_s: float | None = None
+    joint_tolerance_deg: float = 1.5
+    settle_samples: int = 3
+    # A stable endpoint just outside the strict tolerance may still be a valid
+    # Cartesian result on a gravity-loaded SO-101.  The driver accepts this
+    # wider band after ``settle_soft_samples`` consecutive observations. FK
+    # endpoint error remains in the diagnostic result/log, but does not reject
+    # an otherwise stable soft settle: on this 5-DoF arm it can overstate the
+    # practical placement error under load. The default remains 3 degrees,
+    # independent of the fast tracking allowance; set it equal to
+    # ``joint_tolerance_deg`` to disable soft acceptance.
+    settle_soft_tolerance_deg: float | None = None
+    settle_soft_samples: int = 5
+    # Every blocking motion must also avoid settling materially below its
+    # requested Cartesian height. Positive overshoot remains allowed; a value
+    # of 10 means actual_z must be at least target_z - 10 mm.
+    settle_max_z_undershoot_mm: float = 10.0
+    # Payload lift endpoint fallback. Once the arm is joint-stable but remains
+    # below the Z requirement, use a local Z-only Jacobian step. XY is allowed
+    # to drift within the configured workspace; joint limits remain enforced.
+    settle_z_only_lift_enabled: bool = True
+    settle_z_only_lift_step_mm: float = 2.0
+    settle_z_only_lift_max_joint_offset_deg: float = 4.0
+    # Timeout reserved for final-target settle; waypoint streaming time does not
+    # consume this budget.
+    move_timeout_s: float = 30.0
     # Settle-loop tuning (true-robot safety). The arm settle loop re-sends the
     # final joint target after the interpolation sweep so a LeRobot-clipped goal
-    # can still be driven to completion. Re-sending at ``trajectory_hz`` (30 Hz)
-    # overdrives STS3215 servos on gravity-loaded joints (e.g. elbow_flex): the
+    # can still be driven to completion. Re-sending at an excessively high
+    # ``trajectory_hz`` overdrives STS3215 servos on gravity-loaded joints
+    # (e.g. elbow_flex): the
     # servo cannot track, drifts under gravity, and the loop pushes the joint
     # toward a mechanical limit. ``settle_resend_period_s`` caps the re-send
     # rate; ``settle_drift_abort_samples`` aborts if the max joint error grows
     # for that many consecutive re-sends (servo under load moving the wrong way).
     # 0 for either restores legacy behavior (re-send at trajectory_hz / no abort).
-    settle_resend_period_s: float | None = None
-    settle_drift_abort_samples: int | None = None
+    settle_resend_period_s: float = 0.2
+    settle_drift_abort_samples: int = 5
     # Settle real-time over-compensation (software I term for STS3215 PD). The
     # STS3215 firmware position-loop I term is inert (PID experiment: I=2/5/50
     # zero movement), so a gravity-loaded joint (elbow_flex) settles at
@@ -387,6 +367,7 @@ class So101Config:
     # over-command would break a soft limit (fail-closed). False = legacy (re-send
     # bare target; then keep ``joint_tolerance_deg`` >= ~3.5 to avoid timeout).
     settle_overcompensate: bool = True
+    settle_gain: float = 0.5
 
     # --- safety bounds ---
     z_min_safe_mm: float = 30.0
@@ -445,26 +426,29 @@ class So101Config:
     z_correction_mm: float = 0.0
     # Offset from detected TOP to the grasp point (negative = below top).
     grasp_z_offset_mm: float = -25.0
-    chip_thickness_mm: float = 75.0
+    # Offset from the detected placement-surface top to the TCP release height.
+    place_z_offset_mm: float | None = None
+    # Deprecated input-only alias. Keep accepting it during migration, but do
+    # not expose it as persistent config state or emit it from dataclasses.
+    chip_thickness_mm: InitVar[float | None] = None
 
     task_prompt: str | None = None
     name: str = "so101"
-    _motion_overrides: tuple[str, ...] = field(init=False, repr=False, default=())
-
-    @property
-    def motion_runtime(self) -> So101MotionProfile:
-        """Return the selected profile's user-level velocity and safety policy."""
-        return _MOTION_PROFILES[self.motion_profile]
 
     def motion_summary(self) -> str:
         """One-line resolved motion configuration for startup logging."""
-        runtime = self.motion_runtime
-        source = "profile" if not self._motion_overrides else f"profile+override({','.join(self._motion_overrides)})"
         return (
-            f"profile={self.motion_profile} control_hz={float(self.trajectory_hz):g} "
-            f"joint_velocity={float(self.servo_max_joint_vel_dps):g}deg/s "
-            f"cartesian_velocity={runtime.max_cartesian_vel_mm_s:g}mm/s "
-            f"tracking_error={runtime.tracking_error_deg:g}deg source={source}"
+            f"normal={float(self.trajectory_hz):g}Hz/"
+            f"{float(self.max_joint_vel_dps):g}deg/s/"
+            f"{float(self.max_cartesian_vel_mm_s):g}mm/s "
+            f"fast={float(self.fast_control_hz):g}Hz/"
+            f"{float(self.servo_max_joint_step_deg):g}deg/"
+            f"{float(self.servo_max_cartesian_step_mm):g}mm-step "
+            f"fast_velocity_cap={float(self.servo_max_joint_vel_dps):g}deg/s/"
+            f"{float(self.servo_max_cartesian_vel_mm_s):g}mm/s "
+            f"tracking_error={float(self.tracking_error_deg):g}deg "
+            f"settle={float(self.joint_tolerance_deg):g}/{float(self.settle_soft_tolerance_deg):g}deg "
+            "source=direct"
         )
 
     # ----------------------------------------------------------------- loaders
@@ -486,26 +470,38 @@ class So101Config:
             {k: v for k, v in ll.items() if not k.startswith("_")} if isinstance(ll, dict) and ll else dict(data)
         )
 
-        # Optional grouped motion block for new YAMLs.  Keep the legacy flat
-        # keys compatible, but reject conflicting duplicates instead of
-        # silently choosing one spelling.
+        # Optional grouped motion block. Reject conflicting duplicates instead
+        # of silently choosing one spelling.
         motion = kw.pop("motion", None)
         if motion is not None:
             if not isinstance(motion, dict):
                 raise ValueError(f"So101Config: motion must be a mapping, got {type(motion).__name__}.")
             motion_aliases = {
-                "profile": "motion_profile",
-                "motion_profile": "motion_profile",
                 "trajectory_hz": "trajectory_hz",
+                "max_joint_vel_dps": "max_joint_vel_dps",
+                "max_cartesian_vel_mm_s": "max_cartesian_vel_mm_s",
                 "max_joint_step_deg": "max_joint_step_deg",
+                "fast_control_hz": "fast_control_hz",
                 "servo_max_joint_step_deg": "servo_max_joint_step_deg",
                 "servo_min_send_period_s": "servo_min_send_period_s",
                 "servo_max_joint_vel_dps": "servo_max_joint_vel_dps",
+                "servo_max_cartesian_vel_mm_s": "servo_max_cartesian_vel_mm_s",
+                "servo_max_cartesian_step_mm": "servo_max_cartesian_step_mm",
+                "fast_move_timeout_s": "fast_move_timeout_s",
+                "fast_absolute_timeout_s": "fast_absolute_timeout_s",
+                "tracking_error_deg": "tracking_error_deg",
                 "joint_tolerance_deg": "joint_tolerance_deg",
                 "settle_samples": "settle_samples",
+                "settle_soft_tolerance_deg": "settle_soft_tolerance_deg",
+                "settle_soft_samples": "settle_soft_samples",
+                "settle_max_z_undershoot_mm": "settle_max_z_undershoot_mm",
+                "settle_z_only_lift_enabled": "settle_z_only_lift_enabled",
+                "settle_z_only_lift_step_mm": "settle_z_only_lift_step_mm",
+                "settle_z_only_lift_max_joint_offset_deg": "settle_z_only_lift_max_joint_offset_deg",
                 "move_timeout_s": "move_timeout_s",
                 "settle_resend_period_s": "settle_resend_period_s",
                 "settle_drift_abort_samples": "settle_drift_abort_samples",
+                "settle_gain": "settle_gain",
                 "cartesian_interp_step_mm": "cartesian_interp_step_mm",
             }
             for name, value in motion.items():
@@ -517,6 +513,14 @@ class So101Config:
                         f"So101Config: conflicting motion.{name} and flat {canonical} values; specify one."
                     )
                 kw[canonical] = value
+
+        if "motion_profile" in kw:
+            raise ValueError(
+                "So101Config: motion_profile was removed; configure the normal "
+                "trajectory_hz/max_joint_vel_dps/max_cartesian_vel_mm_s and fast "
+                "fast_control_hz/servo_max_joint_vel_dps/servo_max_cartesian_vel_mm_s/"
+                "servo_max_cartesian_step_mm values directly."
+            )
 
         grouped_aliases: dict[str, dict[str, str]] = {
             "safety": {
@@ -550,6 +554,8 @@ class So101Config:
             },
             "grasp": {
                 "z_offset_mm": "grasp_z_offset_mm",
+                "place_z_offset_mm": "place_z_offset_mm",
+                "chip_thickness_mm": "chip_thickness_mm",
                 "minimum_floor_margin_mm": "minimum_floor_margin_mm",
                 "payload_protrusion_mm": "payload_protrusion_mm",
                 "orientation": "grasp_orientation",
@@ -630,7 +636,7 @@ class So101Config:
         if prompt is not None:
             kw["task_prompt"] = prompt
 
-        valid = {f.name for f in dataclasses.fields(cls)}
+        valid = {f.name for f in dataclasses.fields(cls)} | {"chip_thickness_mm"}
         clean = {k: v for k, v in kw.items() if k in valid}
         return cls(**clean)
 
@@ -662,41 +668,57 @@ class So101Config:
             cfg.calib_path = str(calib_p if calib_p.is_absolute() else (yaml_dir / calib_p).resolve())
         return cfg
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, chip_thickness_mm: float | None) -> None:
         """Validate required fields, value finiteness, ordering and ranges."""
-        # Resolve profile-backed controls before the common validation below so
-        # every consumer (driver, env and tests) sees concrete numeric values.
-        if not isinstance(self.motion_profile, str):
-            raise ValueError(f"So101Config: motion_profile must be one of {sorted(_MOTION_PROFILES)}.")
-        self.motion_profile = self.motion_profile.strip().lower()
-        if self.motion_profile not in _MOTION_PROFILES:
+        if self.place_z_offset_mm is not None and chip_thickness_mm is not None:
             raise ValueError(
-                f"So101Config: motion_profile must be one of {sorted(_MOTION_PROFILES)}, got {self.motion_profile!r}."
+                "So101Config: place_z_offset_mm and deprecated chip_thickness_mm "
+                "cannot both be configured; specify only place_z_offset_mm."
             )
-        profile = _MOTION_PROFILES[self.motion_profile]
-        resolved_hz = float(self.trajectory_hz) if self.trajectory_hz is not None else profile.control_hz
-        resolved_joint_velocity = (
-            float(self.servo_max_joint_vel_dps)
-            if self.servo_max_joint_vel_dps is not None
-            else profile.max_joint_vel_dps
-        )
-        profile_defaults: dict[str, float | int] = {
-            "trajectory_hz": resolved_hz,
-            "max_joint_step_deg": resolved_joint_velocity / resolved_hz,
-            "servo_max_joint_step_deg": resolved_joint_velocity / resolved_hz,
-            "servo_min_send_period_s": 1.0 / resolved_hz,
-            "servo_max_joint_vel_dps": resolved_joint_velocity,
-            "joint_tolerance_deg": profile.joint_tolerance_deg,
-            "settle_samples": profile.settle_samples,
-            "move_timeout_s": profile.move_timeout_s,
-            "settle_resend_period_s": profile.settle_resend_period_s,
-            "settle_drift_abort_samples": profile.settle_drift_abort_samples,
-            "cartesian_interp_step_mm": profile.max_cartesian_vel_mm_s / resolved_hz,
+        if chip_thickness_mm is not None:
+            _logger.warning(
+                "So101Config: chip_thickness_mm is deprecated; migrate the configuration to place_z_offset_mm."
+            )
+            self.place_z_offset_mm = chip_thickness_mm
+        elif self.place_z_offset_mm is None:
+            self.place_z_offset_mm = 75.0
+
+        # Validate the independent inputs before deriving per-tick values.
+        for name, value in (
+            ("trajectory_hz", self.trajectory_hz),
+            ("max_joint_vel_dps", self.max_joint_vel_dps),
+            ("max_cartesian_vel_mm_s", self.max_cartesian_vel_mm_s),
+            ("fast_control_hz", self.fast_control_hz),
+            ("servo_max_joint_vel_dps", self.servo_max_joint_vel_dps),
+            ("servo_max_cartesian_vel_mm_s", self.servo_max_cartesian_vel_mm_s),
+            ("fast_move_timeout_s", self.fast_move_timeout_s),
+            ("fast_absolute_timeout_s", self.fast_absolute_timeout_s),
+        ):
+            if not _is_finite(value) or float(value) <= 0.0:
+                raise ValueError(f"So101Config: {name} must be finite and > 0, got {value!r}.")
+
+        # Resolve rate-derived values so every consumer sees concrete numeric
+        # limits even when only the direct velocity/rate parameters are supplied.
+        normal_hz = float(self.trajectory_hz)
+        fast_hz = float(self.fast_control_hz)
+        derived_defaults: dict[str, float] = {
+            "max_joint_step_deg": float(self.max_joint_vel_dps) / normal_hz,
+            "cartesian_interp_step_mm": float(self.max_cartesian_vel_mm_s) / normal_hz,
+            "servo_min_send_period_s": 1.0 / fast_hz,
+            "settle_soft_tolerance_deg": max(
+                3.0,
+                float(self.joint_tolerance_deg),
+            ),
         }
-        self._motion_overrides = tuple(name for name in profile_defaults if getattr(self, name) is not None)
-        for name, default in profile_defaults.items():
+        for name, default in derived_defaults.items():
             if getattr(self, name) is None:
                 setattr(self, name, default)
+        # Fast uses twice the resolved normal per-tick caps by default. Resolve
+        # these after normal defaults so explicit overrides remain independent.
+        if self.servo_max_joint_step_deg is None:
+            self.servo_max_joint_step_deg = 2.0 * float(self.max_joint_step_deg)
+        if self.servo_max_cartesian_step_mm is None:
+            self.servo_max_cartesian_step_mm = 2.0 * float(self.cartesian_interp_step_mm)
 
         # --- required fields ---
         if not self.port or not isinstance(self.port, str):
@@ -827,14 +849,24 @@ class So101Config:
             ("gripper_lowest_offset_mm", self.gripper_lowest_offset_mm),
             ("payload_protrusion_mm", self.payload_protrusion_mm),
             ("minimum_floor_margin_mm", self.minimum_floor_margin_mm),
-            ("trajectory_hz", self.trajectory_hz),
             ("max_joint_step_deg", self.max_joint_step_deg),
             ("servo_max_joint_step_deg", self.servo_max_joint_step_deg),
             ("servo_min_send_period_s", self.servo_min_send_period_s),
-            ("servo_max_joint_vel_dps", self.servo_max_joint_vel_dps),
+            ("servo_max_cartesian_step_mm", self.servo_max_cartesian_step_mm),
+            ("tracking_error_deg", self.tracking_error_deg),
+            ("servo_goal_tolerance_mm", self.servo_goal_tolerance_mm),
             ("joint_tolerance_deg", self.joint_tolerance_deg),
             ("settle_samples", self.settle_samples),
+            ("settle_soft_tolerance_deg", self.settle_soft_tolerance_deg),
+            ("settle_soft_samples", self.settle_soft_samples),
+            ("settle_max_z_undershoot_mm", self.settle_max_z_undershoot_mm),
+            ("settle_z_only_lift_step_mm", self.settle_z_only_lift_step_mm),
+            (
+                "settle_z_only_lift_max_joint_offset_deg",
+                self.settle_z_only_lift_max_joint_offset_deg,
+            ),
             ("move_timeout_s", self.move_timeout_s),
+            ("settle_gain", self.settle_gain),
             ("ik_orientation_weight", self.ik_orientation_weight),
             ("ik_position_tolerance_mm", self.ik_position_tolerance_mm),
             ("cartesian_interp_step_mm", self.cartesian_interp_step_mm),
@@ -858,8 +890,10 @@ class So101Config:
             raise ValueError(f"So101Config: settle_samples must be int, got {self.settle_samples!r}.")
         if self.settle_samples < 1:
             raise ValueError(f"So101Config: settle_samples must be >= 1, got {self.settle_samples}.")
-        if self.trajectory_hz <= 0:
-            raise ValueError(f"So101Config: trajectory_hz must be > 0, got {self.trajectory_hz}.")
+        if isinstance(self.settle_soft_samples, float) or not isinstance(self.settle_soft_samples, int):
+            raise ValueError(f"So101Config: settle_soft_samples must be int, got {self.settle_soft_samples!r}.")
+        if self.settle_soft_samples < 1:
+            raise ValueError(f"So101Config: settle_soft_samples must be >= 1, got {self.settle_soft_samples}.")
         if self.gripper_lowest_offset_mm < 0:
             raise ValueError(
                 f"So101Config: gripper_lowest_offset_mm must be >= 0, got {self.gripper_lowest_offset_mm}."
@@ -874,10 +908,40 @@ class So101Config:
             raise ValueError(f"So101Config: servo_max_joint_step_deg must be > 0, got {self.servo_max_joint_step_deg}.")
         if self.servo_min_send_period_s <= 0:
             raise ValueError(f"So101Config: servo_min_send_period_s must be > 0, got {self.servo_min_send_period_s}.")
-        if self.servo_max_joint_vel_dps <= 0:
-            raise ValueError(f"So101Config: servo_max_joint_vel_dps must be > 0, got {self.servo_max_joint_vel_dps}.")
+        if self.servo_max_cartesian_step_mm <= 0:
+            raise ValueError(
+                f"So101Config: servo_max_cartesian_step_mm must be > 0, got {self.servo_max_cartesian_step_mm}."
+            )
+        if self.tracking_error_deg <= 0:
+            raise ValueError(f"So101Config: tracking_error_deg must be > 0, got {self.tracking_error_deg}.")
+        if self.servo_goal_tolerance_mm <= 0:
+            raise ValueError(f"So101Config: servo_goal_tolerance_mm must be > 0, got {self.servo_goal_tolerance_mm}.")
         if self.joint_tolerance_deg <= 0:
             raise ValueError(f"So101Config: joint_tolerance_deg must be > 0, got {self.joint_tolerance_deg}.")
+        if not 0.0 < self.settle_gain <= 1.0:
+            raise ValueError(f"So101Config: settle_gain must be in (0, 1], got {self.settle_gain}.")
+        if self.settle_soft_tolerance_deg < self.joint_tolerance_deg:
+            raise ValueError(
+                "So101Config: settle_soft_tolerance_deg must be >= joint_tolerance_deg, "
+                f"got {self.settle_soft_tolerance_deg} < {self.joint_tolerance_deg}."
+            )
+        if self.settle_max_z_undershoot_mm < 0:
+            raise ValueError(
+                f"So101Config: settle_max_z_undershoot_mm must be >= 0, got {self.settle_max_z_undershoot_mm}."
+            )
+        if not isinstance(self.settle_z_only_lift_enabled, bool):
+            raise ValueError(
+                f"So101Config: settle_z_only_lift_enabled must be bool, got {self.settle_z_only_lift_enabled!r}."
+            )
+        if self.settle_z_only_lift_step_mm <= 0:
+            raise ValueError(
+                f"So101Config: settle_z_only_lift_step_mm must be > 0, got {self.settle_z_only_lift_step_mm}."
+            )
+        if self.settle_z_only_lift_max_joint_offset_deg <= 0:
+            raise ValueError(
+                "So101Config: settle_z_only_lift_max_joint_offset_deg must be > 0, "
+                f"got {self.settle_z_only_lift_max_joint_offset_deg}."
+            )
         if self.move_timeout_s <= 0:
             raise ValueError(f"So101Config: move_timeout_s must be > 0, got {self.move_timeout_s}.")
         if self.ik_position_tolerance_mm <= 0:
@@ -970,7 +1034,7 @@ class So101Config:
         for name, val in (
             ("z_correction_mm", self.z_correction_mm),
             ("grasp_z_offset_mm", self.grasp_z_offset_mm),
-            ("chip_thickness_mm", self.chip_thickness_mm),
+            ("place_z_offset_mm", self.place_z_offset_mm),
         ):
             if not _is_finite(val):
                 raise ValueError(f"So101Config: {name} must be finite, got {val!r}.")

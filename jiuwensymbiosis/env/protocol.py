@@ -116,8 +116,13 @@ class ServoDriver(Protocol):
     mapping with ``x/y/z`` (mm) and optional ``rx/ry/rz``/``r`` (deg).
     """
 
-    def servo_to_pose(self, pose: Any) -> None:
-        """Issue a non-blocking FLANGE-frame pose command (returns immediately)."""
+    def servo_to_pose(self, pose: Any) -> bool | None:
+        """Issue a non-blocking FLANGE-frame pose command.
+
+        ``False`` explicitly means the low-level controller did not advance its
+        plan (for example, a rate-gate skip or tracking catch-up hold). ``True``
+        or legacy ``None`` means the command was accepted.
+        """
 
 
 @runtime_checkable

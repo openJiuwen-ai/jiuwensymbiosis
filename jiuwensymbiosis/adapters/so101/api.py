@@ -27,11 +27,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
+from jiuwensymbiosis.adapters.so101.lowlevel import So101PreDispatchError
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.decorators import robot_tool
 from jiuwensymbiosis.api.mixins import (
@@ -66,6 +67,19 @@ class So101Api(
 ):
     """SO-101 5-DoF arm + parallel gripper + desktop eye-to-hand vision."""
 
+    # The low-level servo maintains a previous-planned-pose / previous-IK-seed
+    # chain. Tell the generic fast controller to slew from its previous command
+    # as well, so the outer loop does not re-anchor each waypoint to encoder FK.
+    servo_slew_from_last_command = True
+    # SO-101 is underactuated (5 DoF): orientation remains a best-effort IK
+    # command, but fast-path completion is based on live XYZ only. This avoids
+    # requiring an independently unattainable rz while preserving the generic
+    # angular reached check for every other adapter.
+    servo_reached_angular_keys: tuple[str, ...] = ()
+    # At the SO-101's configured 5 Hz rate, per-tick INFO logs are affordable
+    # and essential for distinguishing planned convergence from live TCP lag.
+    servo_log_ticks = True
+
     def __init__(
         self,
         env: So101Env,
@@ -73,14 +87,14 @@ class So101Api(
         detector_service_url: str = "http://127.0.0.1:8114",
         z_correction_mm: float = 0.0,
         grasp_z_offset_mm: float = -25.0,
-        chip_thickness_mm: float = 75.0,
+        place_z_offset_mm: float = 75.0,
     ) -> None:
         super().__init__(env)
         self._detector_service_url = detector_service_url
         self._seg_fn: Callable[..., list[dict[str, Any]]] | None = None
         self._z_correction_mm = float(z_correction_mm)
         self._grasp_z_offset_mm = float(grasp_z_offset_mm)
-        self._chip_thickness_mm = float(chip_thickness_mm)
+        self._place_z_offset_mm = float(place_z_offset_mm)
 
     # --- gripper overrides (two-state percentage, no mm/N params) ------------
     @robot_tool(
@@ -121,6 +135,17 @@ class So101Api(
             response.update(detail)
         return response
 
+    def is_grasp_confirmed(self, result: Mapping[str, Any] | None = None) -> bool:
+        """Whether the last close stopped on object contact.
+
+        This is a private fast-runner hook, deliberately not a ``robot_tool``.
+        Reaching the configured fully-closed position means the gripper closed
+        on empty space; only the driver's conservative contact state confirms a
+        payload.
+        """
+        detail = result if isinstance(result, Mapping) else self.env.last_gripper_result
+        return bool(detail and detail.get("ok") is not False and detail.get("state") == "contact")
+
     def retreat_home(self) -> None:
         """Return home through the payload-aware SO-101 retreat path."""
         self._ll().retreat_home()
@@ -158,7 +183,7 @@ class So101Api(
         rx, ry, rz = self._resolve_orientation(orientation_policy, rz_override=r)
         self.goto_pose(So101Pose(x=float(x), y=float(y), z=float(z), rx=rx, ry=ry, rz=rz))
 
-    def servo_to_tip(self, pose: dict) -> None:
+    def servo_to_tip(self, pose: dict) -> bool:
         """Issue one non-blocking servo command toward a TIP-frame pose.
 
         SO-101 milestone-A geometry has ``tool_offset_mm == 0`` and uses the
@@ -179,7 +204,8 @@ class So101Api(
             rx_override=pose.get("rx"),
             ry_override=pose.get("ry"),
         )
-        self.env.servo_to_flange({"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+        dispatched = self.env.servo_to_flange({"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+        return dispatched is not False
 
     def _resolve_orientation(
         self,
@@ -200,7 +226,7 @@ class So101Api(
         if selected is None:
             selected = getattr(self.env.cfg, "cartesian_orientation_policy", "preserve")
         if not isinstance(selected, str):
-            raise ValueError(f"orientation_policy must be a string, got {type(selected).__name__}.")
+            raise So101PreDispatchError(f"orientation_policy must be a string, got {type(selected).__name__}.")
         selected = selected.strip().lower()
 
         if selected == "preserve":
@@ -210,20 +236,28 @@ class So101Api(
         elif selected == "grasp":
             configured = getattr(self.env.cfg, "grasp_orientation", None)
             if configured is None:
-                raise ValueError(
+                raise So101PreDispatchError(
                     "orientation_policy='grasp' requires cfg.grasp_orientation with calibrated rx/ry/rz values."
                 )
-            base = (float(configured["rx"]), float(configured["ry"]), float(configured["rz"]))
+            try:
+                base = (float(configured["rx"]), float(configured["ry"]), float(configured["rz"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise So101PreDispatchError("cfg.grasp_orientation must contain numeric rx/ry/rz values.") from exc
         else:
-            raise ValueError(f"orientation_policy must be one of ['grasp', 'preserve', 'top_down'], got {selected!r}.")
+            raise So101PreDispatchError(
+                f"orientation_policy must be one of ['grasp', 'preserve', 'top_down'], got {selected!r}."
+            )
 
-        values = (
-            base[0] if rx_override is None else float(rx_override),
-            base[1] if ry_override is None else float(ry_override),
-            base[2] if rz_override is None else float(rz_override),
-        )
+        try:
+            values = (
+                base[0] if rx_override is None else float(rx_override),
+                base[1] if ry_override is None else float(ry_override),
+                base[2] if rz_override is None else float(rz_override),
+            )
+        except (TypeError, ValueError) as exc:
+            raise So101PreDispatchError("orientation overrides must be numeric.") from exc
         if not all(np.isfinite(value) for value in values):
-            raise ValueError(f"resolved orientation must be finite, got {values!r}.")
+            raise So101PreDispatchError(f"resolved orientation must be finite, got {values!r}.")
         return values
 
     @robot_tool(
@@ -349,6 +383,29 @@ class So101Api(
         xy-correct -> grasp/place geometry. ``tf_base_cam`` is a constant, so
         projection does NOT read the flange pose (the camera is desk-fixed).
         """
+        result, _tracking = self._compute_grasp_info(object_name, include_tracking=False)
+        return cast(GraspResult | GraspFailure, result)
+
+    def get_grasp_tracking_sample(self, object_name: str) -> dict[str, Any]:
+        """Private SO101 fast-path sample including mask/depth-quality metadata.
+
+        This method intentionally has no ``@robot_tool`` decorator: it is an
+        adapter-to-runner hook, not an LLM/API action.  The public
+        :meth:`get_grasp_info_simple` response remains JSON-compatible and
+        unchanged.
+        """
+        result, tracking = self._compute_grasp_info(object_name, include_tracking=True)
+        if tracking is not None:
+            result.update(tracking)
+        return result
+
+    def _compute_grasp_info(
+        self,
+        object_name: str,
+        *,
+        include_tracking: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Compute public grasp geometry plus optional private tracking data."""
         from types import SimpleNamespace
 
         from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
@@ -356,7 +413,7 @@ class So101Api(
         ll = self._ll()
         frames = ll.grab_frames()
         if frames is None:
-            return {"ok": False, "reason": "no_camera", "object": object_name}
+            return {"ok": False, "reason": "no_camera", "object": object_name}, None
         rgb, depth_img_m = frames
 
         self._ensure_detector()
@@ -368,7 +425,7 @@ class So101Api(
             tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
         )
         if not det.get("ok"):
-            return det  # type: ignore[return-value]
+            return dict(det), None
 
         u, v, depth_m = det["u"], det["v"], det["depth_m"]
         best = det["best"]
@@ -442,7 +499,7 @@ class So101Api(
         grasp_z = top_z + self._grasp_z_offset_mm
         if z_floor is not None:
             grasp_z = max(grasp_z, float(z_floor) + float(self.env.cfg.minimum_floor_margin_mm))
-        place_z = top_z + self._chip_thickness_mm
+        place_z = top_z + self._place_z_offset_mm
         x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
         logger.info(
             "[So101Api] %s: pos=(%.1f, %.1f, %.1f) grasp_z=%.1f place_z=%.1f score=%.2f",
@@ -454,7 +511,7 @@ class So101Api(
             place_z,
             best["score"],
         )
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "object": object_name,
             "position": [x_f, y_f, top_z],
@@ -465,6 +522,46 @@ class So101Api(
             "score": float(best["score"]),
             "pixel_uv": [u, v],
             "depth_m": depth_m,
+        }
+        tracking = None
+        if include_tracking:
+            tracking = self._tracking_metadata(
+                best=best,
+                depth_img_m=depth_img_m,
+                u=float(u),
+                v=float(v),
+            )
+        return result, tracking
+
+    @staticmethod
+    def _tracking_metadata(
+        *,
+        best: Mapping[str, Any],
+        depth_img_m: np.ndarray,
+        u: float,
+        v: float,
+    ) -> dict[str, Any]:
+        """Build SO101-private mask/depth quality fields."""
+        # Use the same 11x11 image-grid window as the centroid depth lookup.
+        # A hand/gripper crossing that window produces a large percentile span
+        # and is rejected before contaminated XYZ replaces the trusted target.
+        dep_h, dep_w = depth_img_m.shape[:2]
+        cu, cv, radius = int(round(u)), int(round(v)), 5
+        x0, x1 = max(0, cu - radius), min(dep_w, cu + radius + 1)
+        y0, y1 = max(0, cv - radius), min(dep_h, cv + radius + 1)
+        patch = np.asarray(depth_img_m[y0:y1, x0:x1], dtype=np.float64)
+        valid = patch[(patch > 0.0) & np.isfinite(patch)]
+        if valid.size:
+            p10, p90 = np.percentile(valid, [10.0, 90.0])
+            depth_span_mm = float((p90 - p10) * 1000.0)
+            valid_ratio = float(valid.size) / float(patch.size)
+        else:  # detect_and_centroid already guards this; keep fail-closed.
+            depth_span_mm = float("inf")
+            valid_ratio = 0.0
+        return {
+            "_tracking_mask": np.asarray(best["mask"], dtype=bool).copy(),
+            "_tracking_depth_span_mm": depth_span_mm,
+            "_tracking_valid_depth_ratio": valid_ratio,
         }
 
     # ``get_image`` is inherited from VisionMixin (grabs frames via env.low_level).

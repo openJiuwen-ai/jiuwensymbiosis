@@ -28,6 +28,7 @@ from jiuwensymbiosis.adapters.so101.geometry import (  # noqa: E402
     position_error_mm,
 )
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER, So101Driver  # noqa: E402
+from jiuwensymbiosis.agent.fast.realtime.servo import _slew  # noqa: E402
 
 URDF = "jiuwensymbiosis/adapters/so101/description/so101_new_calib.urdf"
 
@@ -193,10 +194,103 @@ class TestBananaServoRegression:
 
         sent_q = np.array([robot.sent[-1][f"{name}.pos"] for name in ARM_JOINT_ORDER])
         sent_pose = matrix_m_to_pose_mm_deg(np.asarray(driver._kin.forward_kinematics(sent_q), dtype=float))
-        cartesian_cap = cfg.motion_runtime.max_cartesian_vel_mm_s * cfg.servo_min_send_period_s
+        cartesian_cap = cfg.servo_max_cartesian_vel_mm_s * cfg.servo_min_send_period_s
         assert position_error_mm(current_pose, old_pose) > cartesian_cap
         assert position_error_mm(current_pose, sent_pose) <= cartesian_cap + 1e-3
         assert position_error_mm(sent_pose, target) < position_error_mm(current_pose, target)
+
+    def test_latest_fast_trace_keeps_outer_and_inner_plans_synchronized(self, kin):
+        """Rate-gate skips must keep the outer and inner plans synchronized."""
+        from jiuwensymbiosis.adapters.so101.config import So101Config
+
+        start_q = np.array(
+            [-2.241758241758242, -55.120879120879124, 39.824175824175825, 74.72527472527473, -92.96703296703296]
+        )
+        now = 100.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        class TrackingRobot:
+            def __init__(self) -> None:
+                self.q = start_q.copy()
+                self.sent: list[dict[str, float]] = []
+
+            def get_observation(self) -> dict[str, float]:
+                return {f"{name}.pos": float(self.q[index]) for index, name in enumerate(ARM_JOINT_ORDER)}
+
+            def send_action(self, action: dict[str, float]) -> dict[str, float]:
+                actual = dict(action)
+                self.sent.append(actual)
+                self.q = np.array([actual[f"{name}.pos"] for name in ARM_JOINT_ORDER], dtype=float)
+                return actual
+
+        cfg = So101Config(
+            port="/dev/fake",
+            home_joints_deg=start_q.tolist(),
+            joint_limits=dict.fromkeys(ARM_JOINT_ORDER, (-180.0, 180.0)),
+            trajectory_hz=20.0,
+            fast_control_hz=20.0,
+            z_min_safe_mm=-10.0,
+            ik_position_tolerance_mm=10.0,
+        )
+        robot = TrackingRobot()
+        driver = So101Driver(cfg, monotonic=fake_monotonic)
+        driver._kin = kin
+        driver._robot = robot
+        driver._connected = True
+
+        start_pose = matrix_m_to_pose_mm_deg(np.asarray(kin.forward_kinematics(start_q), dtype=float))
+        last_command = {
+            "x": start_pose.x,
+            "y": start_pose.y,
+            "z": start_pose.z,
+            "rx": start_pose.rx,
+            "ry": start_pose.ry,
+            "rz": start_pose.rz,
+        }
+        latest_approach = {
+            "x": 366.57356976147474,
+            "y": 28.624912543729707,
+            "z": 72.96866932779551,
+            "rz": start_pose.rz,
+        }
+        skipped = 0
+        reached = False
+        # The 3 mm hard Cartesian cap no longer permits a delayed tick to make
+        # a >3 mm catch-up command. Allow extra ticks for the bounded plan to
+        # converge while retaining deliberate 49 ms rate-gate skips.
+        for _ in range(240):
+            actual_pose = matrix_m_to_pose_mm_deg(np.asarray(kin.forward_kinematics(robot.q), dtype=float))
+            actual_xyz = np.array([actual_pose.x, actual_pose.y, actual_pose.z], dtype=float)
+            target_xyz = np.array(
+                [latest_approach["x"], latest_approach["y"], latest_approach["z"]],
+                dtype=float,
+            )
+            rz_error = abs((actual_pose.rz - latest_approach["rz"] + 180.0) % 360.0 - 180.0)
+            if float(np.linalg.norm(actual_xyz - target_xyz)) <= 4.0 and rz_error <= 3.0:
+                reached = True
+                break
+            step = _slew(last_command, latest_approach, max_lin=3.0, max_ang=5.0)
+            now += 0.049
+            dispatched = driver.servo_to_pose(step)
+            if dispatched is False:
+                skipped += 1
+            else:
+                last_command = step
+
+        final_pose = matrix_m_to_pose_mm_deg(np.asarray(kin.forward_kinematics(robot.q), dtype=float))
+        target_pose = So101Pose(
+            latest_approach["x"],
+            latest_approach["y"],
+            latest_approach["z"],
+            start_pose.rx,
+            start_pose.ry,
+            start_pose.rz,
+        )
+        assert skipped > 0
+        assert reached is True
+        assert position_error_mm(final_pose, target_pose) < 4.0
 
 
 class TestRealPlanner:

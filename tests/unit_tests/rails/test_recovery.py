@@ -54,12 +54,100 @@ class TestRecoveryRail:
         assert mock_session.api._call_log == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_args"),
+        [
+            ("goto_xyzr", {"x": 100, "y": 0, "z": 300}),
+            ("robot_control", {"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}),
+        ],
+        ids=["direct", "robot-control"],
+    )
+    async def test_wrapped_typed_safe_failure_skips_recovery(self, mock_session, tool_name, tool_args):
+        class SafeFailure(RuntimeError):
+            skip_recovery = True
+
+        original = SafeFailure("IK rejected before dispatch")
+        wrapped = RuntimeError("AbilityExecutionError")
+        wrapped.__cause__ = original
+        wrapped.cause = original
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name=tool_name, tool_args=tool_args, exception=wrapped)
+
+        await rail.on_tool_exception(ctx)
+
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
+    async def test_implicit_exception_context_does_not_skip_real_failure_recovery(self, mock_session):
+        class SafeFailure(RuntimeError):
+            skip_recovery = True
+
+        real_failure = None
+        try:
+            try:
+                raise SafeFailure("pre-dispatch request rejected")
+            except SafeFailure:
+                # Deliberately implicit: this regression test proves that a
+                # prior safe error in __context__ cannot suppress recovery.
+                raise RuntimeError("transport failed while handling rejection")  # noqa: B904
+        except RuntimeError as exc:
+            real_failure = exc
+            assert isinstance(exc.__context__, SafeFailure)
+
+        rail = RecoveryRail(mock_session)
+        assert real_failure is not None
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=real_failure)
+        await rail.on_tool_exception(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
     async def test_adapter_recovery_home_is_preferred(self, mock_session):
         mock_session.api.recovery_home = lambda: mock_session.api._call_log.append("recovery_home")
         rail = RecoveryRail(mock_session)
         ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 300})
         await rail.on_tool_exception(ctx)
         assert "recovery_home" in mock_session.api._call_log
+        assert not any(call == "home" for call in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
+    async def test_motion_failure_preserves_confirmed_payload_during_home(self, mock_session):
+        mock_session.env.holding_payload = True
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 300})
+
+        await rail.on_tool_exception(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+        assert not any(call in {"deactivate_suction", "open_gripper"} for call in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
+    async def test_reported_empty_payload_still_releases_before_home(self, mock_session):
+        mock_session.env.holding_payload = False
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 300})
+
+        await rail.on_tool_exception(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+        assert any(call in {"deactivate_suction", "open_gripper"} for call in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_args"),
+        [
+            ("home", {}),
+            ("robot_control", {"action": "home", "params": {}}),
+        ],
+        ids=["direct", "robot-control"],
+    )
+    async def test_failed_home_releases_but_does_not_retry_home(self, mock_session, tool_name, tool_args):
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name=tool_name, tool_args=tool_args)
+
+        await rail.on_tool_exception(ctx)
+
+        assert any(call in {"deactivate_suction", "open_gripper"} for call in mock_session.api._call_log)
         assert not any(call == "home" for call in mock_session.api._call_log)
 
 
@@ -73,4 +161,6 @@ class TestRecoveryRailTraceSink:
         assert sink.events
         detail = sink.events[0][2]
         assert "home_ok" in detail
+        assert detail["holding_payload"] is None
+        assert detail["payload_preserved"] is False
         assert sink.events[0][3] is True  # mock home succeeds

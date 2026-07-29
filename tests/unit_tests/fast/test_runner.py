@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import types
 
+import numpy as np
 import pytest
 
 from jiuwensymbiosis.agent.fast import runner as runner_module
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
+from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter, MaskTrackingConfig, MaskTrackingState
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoResult
 from jiuwensymbiosis.agent.fast.runner import SkillExecConfig, run_sequence
 from jiuwensymbiosis.agent.fast.sequence import parse_sequence
@@ -145,6 +147,195 @@ def test_track_grasp_uses_absolute_grasp_target_for_both_phases():
     assert res["ok"] is True
     assert api.pose["x"] == 200.0 and api.pose["y"] == 150.0 and api.pose["z"] == 50.0
     assert ("close",) in api.calls
+
+
+class _ContactAwareApi(_FakeApi):
+    def __init__(self, close_states):
+        super().__init__({})
+        self._close_states = iter(close_states)
+
+    def close_gripper(self):
+        state = next(self._close_states)
+        self.calls.append(("close", state))
+        return {"ok": True, "state": state}
+
+    def is_grasp_confirmed(self, result):
+        return isinstance(result, dict) and result.get("state") == "contact"
+
+
+def test_unconfirmed_track_grasp_homes_redetects_and_retries_once(monkeypatch):
+    api = _ContactAwareApi(["closed", "contact"])
+    detections = iter(
+        [
+            {"x": 100.0, "y": 50.0, "z": 70.0, "position": [100.0, 50.0, 70.0], "grasp_z": 40.0},
+            {"x": 120.0, "y": 55.0, "z": 70.0, "position": [120.0, 55.0, 70.0], "grasp_z": 40.0},
+        ]
+    )
+    track_calls: list[tuple[str, float]] = []
+
+    def fake_track(_session, object_name, approach_mm, _cfg):
+        track_calls.append((object_name, approach_mm))
+        return next(detections)
+
+    monkeypatch.setattr(runner_module, "_track_grasp", fake_track)
+    raw = [
+        {"op": "track_grasp", "params": {"object_name": "banana", "approach_mm": 40.0}, "bind": "banana"},
+        {"op": "close_gripper"},
+        {"op": "goto_xyzr", "params": {"x": "banana.x", "y": "banana.y", "z": "banana.grasp_z"}},
+    ]
+    steps = parse_sequence(raw, allowed_ops=set(_index(api)), special_ops={"track_grasp"})
+
+    result = run_sequence(
+        _session(api),
+        steps,
+        config=_tracking_config(settle_grip_s=0.0),
+        action_index=_index(api),
+    )
+
+    assert result["ok"] is True
+    assert track_calls == [("banana", 40.0), ("banana", 40.0)]
+    assert api.calls[:4] == [("close", "closed"), ("open",), ("home",), ("close", "contact")]
+    assert ("goto", 120.0, 55.0, 40.0) in api.calls
+    assert result["steps"][1]["result"]["grasp_retry_attempts"] == 1
+
+
+def test_second_unconfirmed_grasp_returns_home_and_fails(monkeypatch):
+    api = _ContactAwareApi(["closed", "closed"])
+    detection = {"x": 100.0, "y": 50.0, "z": 70.0, "position": [100.0, 50.0, 70.0], "grasp_z": 40.0}
+    track_calls: list[str] = []
+
+    def fake_track(_session, object_name, _approach_mm, _cfg):
+        track_calls.append(object_name)
+        return dict(detection)
+
+    monkeypatch.setattr(runner_module, "_track_grasp", fake_track)
+    steps = parse_sequence(
+        _track_grasp_sequence(),
+        allowed_ops=set(_index(api)),
+        special_ops={"track_grasp"},
+    )
+
+    result = run_sequence(
+        _session(api),
+        steps,
+        config=_tracking_config(settle_grip_s=0.0),
+        action_index=_index(api),
+    )
+
+    assert result["ok"] is False
+    assert "grasp_not_confirmed" in result["steps"][-1]["reason"]
+    assert track_calls == ["banana", "banana"]
+    assert api.calls.count(("close", "closed")) == 2
+    # First open/home starts the retry; second open/home is final safe retreat.
+    assert api.calls.count(("open",)) == 2
+    assert api.calls.count(("home",)) == 2
+
+
+def test_track_grasp_uses_private_mask_hook_only_when_adapter_opts_in():
+    class _MaskApi(_EyeToHandApi):
+        def __init__(self):
+            super().__init__({})
+            self.public_calls = 0
+            self.private_calls = 0
+            self.mask = np.zeros((40, 50), dtype=bool)
+            self.mask[10:30, 15:35] = True
+
+        def get_grasp_info_simple(self, object_name):
+            self.public_calls += 1
+            return {"ok": True, "position": [200.0, 150.0, 70.0], "grasp_z": 50.0}
+
+        def get_grasp_tracking_sample(self, object_name):
+            self.private_calls += 1
+            return {
+                "ok": True,
+                "position": [200.0, 150.0, 70.0],
+                "grasp_z": 50.0,
+                "score": 0.9,
+                "depth_m": 0.5,
+                "_tracking_mask": self.mask,
+                "_tracking_depth_span_mm": 5.0,
+                "_tracking_valid_depth_ratio": 1.0,
+            }
+
+    api = _MaskApi()
+    api.env = _EyeToHandEnv(api)
+    steps = parse_sequence(_track_grasp_sequence(), allowed_ops=set(_index(api)), special_ops={"track_grasp"})
+    cfg = _tracking_config(
+        detect_hz=100.0,
+        first_target_timeout_s=1.0,
+        servo=ServoConfig(control_hz=100.0, max_lin_step_mm=1000.0, settle_ticks=1, timeout_s=1.0),
+    )
+
+    result = run_sequence(
+        types.SimpleNamespace(api=api, env=api.env),
+        steps,
+        config=cfg,
+        action_index=_index(api),
+    )
+
+    assert result["ok"] is True
+    assert api.private_calls >= 2
+    assert api.public_calls == 0
+    assert ("close",) in api.calls
+
+
+def test_mask_tracking_detector_miss_yields_last_trusted_blind_target():
+    mask = np.zeros((40, 50), dtype=bool)
+    mask[10:30, 15:35] = True
+    samples = iter(
+        [
+            {
+                "ok": True,
+                "position": [200.0, 150.0, 70.0],
+                "grasp_z": 50.0,
+                "score": 0.9,
+                "depth_m": 0.5,
+                "_tracking_mask": mask,
+                "_tracking_depth_span_mm": 5.0,
+                "_tracking_valid_depth_ratio": 1.0,
+            },
+            {"ok": False, "reason": "not_detected"},
+        ]
+    )
+    target_filter = MaskTargetFilter()
+
+    first = runner_module._detect_mask_tracking_once(lambda _name: next(samples), "banana", target_filter)
+    blind = runner_module._detect_mask_tracking_once(lambda _name: next(samples), "banana", target_filter)
+
+    assert first is not None and blind is not None
+    assert blind["position"] == first["position"]
+    assert blind["_tracking_state"] == MaskTrackingState.BLIND_LAST_TARGET
+
+
+def test_track_grasp_can_disable_private_mask_hook():
+    class _OptionalMaskApi(_EyeToHandApi):
+        def __init__(self):
+            super().__init__({"banana": {"ok": True, "position": [200.0, 150.0, 70.0], "grasp_z": 50.0}})
+            self.private_calls = 0
+
+        def get_grasp_tracking_sample(self, object_name):
+            self.private_calls += 1
+            raise AssertionError("disabled private hook must not be called")
+
+    api = _OptionalMaskApi()
+    api.env = _EyeToHandEnv(api)
+    steps = parse_sequence(_track_grasp_sequence(), allowed_ops=set(_index(api)), special_ops={"track_grasp"})
+    cfg = _tracking_config(
+        detect_hz=100.0,
+        first_target_timeout_s=1.0,
+        mask_tracking=MaskTrackingConfig(enabled=False),
+        servo=ServoConfig(control_hz=100.0, max_lin_step_mm=1000.0, settle_ticks=1, timeout_s=1.0),
+    )
+
+    result = run_sequence(
+        types.SimpleNamespace(api=api, env=api.env),
+        steps,
+        config=cfg,
+        action_index=_index(api),
+    )
+
+    assert result["ok"] is True
+    assert api.private_calls == 0
 
 
 def test_track_grasp_real_controller_follows_moving_detection():
@@ -645,6 +836,53 @@ def test_safe_retreat_prefers_recovery_home():
     assert calls == ["open", "recovery_home"]
 
 
+def test_safe_retreat_preserves_confirmed_payload():
+    calls: list[str] = []
+
+    class _PayloadApi:
+        def open_gripper(self):
+            calls.append("open")
+
+        def recovery_home(self):
+            calls.append("recovery_home")
+
+    env = types.SimpleNamespace(holding_payload=True)
+    runner_module._safe_retreat(types.SimpleNamespace(api=_PayloadApi(), env=env))
+    assert calls == ["recovery_home"]
+
+
+def test_safe_retreat_releases_when_payload_is_reported_empty():
+    calls: list[str] = []
+
+    class _ReportedEmptyApi:
+        def open_gripper(self):
+            calls.append("open")
+
+        def recovery_home(self):
+            calls.append("recovery_home")
+
+    env = types.SimpleNamespace(holding_payload=False)
+    runner_module._safe_retreat(types.SimpleNamespace(api=_ReportedEmptyApi(), env=env))
+    assert calls == ["open", "recovery_home"]
+
+
+def test_runner_does_not_repeat_recovery_managed_by_rails():
+    api = _FakeApi({})
+    steps = parse_sequence(
+        [{"op": "goto_xyzr", "params": {"x": 1.0, "y": 2.0, "z": 3.0}}],
+        allowed_ops={"goto_xyzr"},
+        special_ops=frozenset(),
+    )
+
+    def managed_failure(_op, _params):
+        return {"ok": False, "reason": "rail-managed failure", "recovery_managed": True}
+
+    result = run_sequence(_session(api), steps, executor=managed_failure)
+
+    assert result["ok"] is False
+    assert api.calls == []
+
+
 def test_servo_binding_applies_safety_rail_policy_before_dispatch():
     api = _EyeToHandApi({})
     api.env = _EyeToHandEnv(api)
@@ -663,6 +901,31 @@ def test_servo_binding_dispatches_after_safety_passes():
     binding.servo_to({"x": 10.0, "y": 20.0, "z": 80.0, "rz": 12.0})
 
     assert api.pose == {"x": 10.0, "y": 20.0, "z": 80.0, "rx": 180.0, "ry": 0.0, "rz": 12.0}
+
+
+def test_servo_binding_logs_each_tick_only_for_opted_in_adapter(caplog):
+    api = _EyeToHandApi({})
+    api.servo_log_ticks = True
+    api.env = _EyeToHandEnv(api)
+    binding = ServoBinding(types.SimpleNamespace(api=api, env=api.env))
+    callback = binding.make_tick_logger("track_grasp.approach")
+    assert callback is not None
+
+    caplog.set_level("INFO", logger="jiuwensymbiosis.agent.fast.realtime.binding")
+    callback(
+        {
+            "tick": 7,
+            "pose": {"x": 1.23456, "y": 2.0, "z": 3.0},
+            "target": {"x": 4.0, "y": 5.0, "z": 6.0},
+            "position_error_mm": 5.12345,
+            "angular_error_deg": 0.0,
+            "in_tol": 0,
+        }
+    )
+
+    assert "phase=track_grasp.approach tick=7" in caplog.text
+    assert "live={'x': 1.235, 'y': 2.0, 'z': 3.0}" in caplog.text
+    assert "pos_err_mm=5.123" in caplog.text
 
 
 def test_runner_literal_offset_still_resolves():

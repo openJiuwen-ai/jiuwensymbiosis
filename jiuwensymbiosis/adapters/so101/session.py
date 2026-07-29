@@ -30,7 +30,7 @@ build_so101_session = make_builder(
         "detector.url:detector_service_url",
         "z_correction_mm",
         "grasp_z_offset_mm",
-        "chip_thickness_mm",
+        "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
     decorate=_attach_so101_cfg,

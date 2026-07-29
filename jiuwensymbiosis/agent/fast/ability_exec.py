@@ -58,7 +58,14 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
         results = await ability_manager.execute(ctx, [tc], session)
         output = results[0][0]  # ToolOutput
         if not getattr(output, "success", False):
-            return {"ok": False, "reason": getattr(output, "error", "tool failed")}
+            # The ability manager has already fired the exception hooks, so
+            # RecoveryRail (when applicable) owns recovery for this failure.
+            # The fast runner must not immediately repeat release/home.
+            return {
+                "ok": False,
+                "reason": getattr(output, "error", "tool failed"),
+                "recovery_managed": True,
+            }
         # RobotControlTool wraps the api return under data["result"].
         data = getattr(output, "data", None) or {}
         return {"ok": True, "result": data.get("result", data)}

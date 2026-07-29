@@ -31,7 +31,12 @@ from jiuwensymbiosis.adapters.so101.geometry import (
     pose_mm_deg_to_matrix_m,
     position_error_mm,
 )
-from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER, So101Driver, So101PoseConvergenceError
+from jiuwensymbiosis.adapters.so101.lowlevel import (
+    ARM_JOINT_ORDER,
+    So101Driver,
+    So101PoseConvergenceError,
+    So101PreDispatchError,
+)
 
 from .lowlevel_helpers import FakeFollower, FakeKinematics, fake_lerobot_import, make_calib_file
 
@@ -60,6 +65,7 @@ def _make_cfg(**overrides) -> So101Config:
         "move_timeout_s": 5.0,
         "max_joint_step_deg": 2.0,
         "joint_tolerance_deg": 0.5,
+        "settle_soft_samples": 3,
         # FakeKinematics maps elbow_flex=0 to z=0.  Motion-specific floor
         # tests override this explicitly; the generic control-flow tests use a
         # deliberately disabled floor so they exercise interpolation/settle.
@@ -67,10 +73,20 @@ def _make_cfg(**overrides) -> So101Config:
         "safety_validated": True,  # tests use validated configs; connect() is fail-closed
     }
     base.update(overrides)
+    # Preserve the historical strict-only behavior for existing tests;
+    # dedicated soft-settle tests opt into a wider band explicitly.
+    if "settle_soft_tolerance_deg" not in overrides:
+        base["settle_soft_tolerance_deg"] = base["joint_tolerance_deg"]
     return So101Config(**base)
 
 
-def _make_driver(cfg: So101Config, tmp_path, follower: FakeFollower | None = None):
+def _make_driver(
+    cfg: So101Config,
+    tmp_path,
+    follower: FakeFollower | None = None,
+    *,
+    monotonic=None,
+):
     calib = make_calib_file(tmp_path)
     if follower is None:
         follower = FakeFollower(config=None)
@@ -88,6 +104,7 @@ def _make_driver(cfg: So101Config, tmp_path, follower: FakeFollower | None = Non
             urdf, target_frame_name, joint_names
         ),
         lerobot_import=fake_lerobot_import,
+        monotonic=monotonic,
     )
     return driver, follower, sleep_log
 
@@ -104,6 +121,9 @@ class TestSetGripper:
         action = follower.sent_actions[-1]
         assert set(action.keys()) == {"gripper.pos"}
         assert action["gripper.pos"] == cfg.gripper_close_pos
+        assert driver.last_gripper_result is not None
+        assert driver.last_gripper_result["state"] == "closed"
+        assert driver.holding_payload is False
         # Waited the configured settle time via the injected sleep.
         assert sleep_log[-1] == pytest.approx(0.1, abs=1e-9)
 
@@ -212,6 +232,7 @@ class TestSetGripper:
         assert requested_actions[-1] == {"gripper.pos": pytest.approx(29.0)}
         assert follower.sent_actions[-1] == {"gripper.pos": pytest.approx(30.0)}
         assert len(follower.sent_actions) >= 7  # detection sequence plus low-preload hold
+        assert driver.holding_payload is True
 
     def test_close_without_minimum_travel_still_times_out(self, tmp_path):
         """A near-immediate mechanical jam must not be mistaken for contact."""
@@ -351,10 +372,222 @@ class TestMoveJointBlocking:
         assert sp_values[1] == pytest.approx(4.0, abs=1e-9)
         assert sp_values[2] == pytest.approx(6.0, abs=1e-9)
 
+    def test_intermediate_waypoints_stream_without_waiting_for_static_tracking(self, tmp_path):
+        """A lagging arm must not make each intermediate waypoint a settle point.
+
+        The command sequence remains slew-limited, while only the final target
+        is re-sent until the encoder reaches the configured settle tolerance.
+        """
+        cfg = _make_cfg(
+            max_joint_step_deg=2.0,
+            joint_tolerance_deg=0.1,
+            settle_overcompensate=False,
+        )
+        follower = FakeFollower(config=None)
+        follower.track = False
+
+        def lagging_send(action):
+            actual = dict(action)
+            follower.sent_actions.append(actual)
+            for index, name in enumerate(ARM_JOINT_ORDER):
+                key = f"{name}.pos"
+                if key not in actual:
+                    continue
+                delta = float(actual[key]) - follower._arm[index]
+                follower._arm[index] += float(np.clip(delta, -0.25, 0.25))
+            return actual
+
+        follower.send_action = lagging_send
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+
+        driver.move_joint_blocking([6.0, 0.0, 0.0, 0.0, 0.0])
+
+        shoulder_commands = [action["shoulder_pan.pos"] for action in follower.sent_actions]
+        assert shoulder_commands[:3] == pytest.approx([2.0, 4.0, 6.0])
+        assert shoulder_commands[3:]  # final settle had to catch up
+        assert shoulder_commands[3:] == pytest.approx([6.0] * len(shoulder_commands[3:]))
+
 
 class TestSettleEdgeCases:
     """Plan §A3: record send_action's actual (clipped) target, re-send it when
     the arm hasn't converged, and time out (stall) instead of looping forever."""
+
+    def test_z_undershoot_blocks_strict_acceptance_until_compensated(self, tmp_path):
+        cfg = _make_cfg(
+            joint_tolerance_deg=3.0,
+            settle_samples=1,
+            settle_soft_tolerance_deg=3.0,
+            settle_max_z_undershoot_mm=5.0,
+            settle_overcompensate=True,
+            settle_drift_abort_samples=0,
+            move_timeout_s=1.0,
+        )
+        follower = FakeFollower(config=None)
+        # FakeKinematics maps elbow degrees to Z at 10 mm/deg. The initial
+        # -2-degree steady-state offset is therefore 20 mm below target: inside
+        # the 3-degree joint tolerance, but outside the 5 mm Z requirement.
+        follower.steady_offset = [0.0, 0.0, -2.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+
+        driver.move_joint_blocking([0.0, 0.0, 5.0, 0.0, 0.0])
+
+        result = driver.last_motion_result
+        assert result is not None
+        assert result["ok"] is True
+        assert result["classification"] == "strict"
+        assert result["z_requirement_met"] is True
+        assert result["cartesian_z_error_mm"] >= -cfg.settle_max_z_undershoot_mm - 1e-6
+
+    def test_z_undershoot_blocks_soft_acceptance_without_compensation(self, tmp_path):
+        cfg = _make_cfg(
+            joint_tolerance_deg=1.5,
+            settle_samples=1,
+            settle_soft_tolerance_deg=3.0,
+            settle_soft_samples=2,
+            settle_max_z_undershoot_mm=5.0,
+            settle_overcompensate=False,
+            settle_drift_abort_samples=0,
+            move_timeout_s=0.05,
+        )
+        follower = FakeFollower(config=None)
+        follower.steady_offset = [0.0, 0.0, -2.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+
+        with pytest.raises(TimeoutError, match="move timeout"):
+            driver.move_joint_blocking([0.0, 0.0, 5.0, 0.0, 0.0])
+
+        result = driver.last_motion_result
+        assert result is not None
+        assert result["classification"] == "hard_timeout"
+        assert result["z_requirement_met"] is False
+        assert result["cartesian_z_error_mm"] == pytest.approx(-20.0)
+
+    def test_payload_lift_can_settle_by_z_only_with_xy_sacrifice(self, tmp_path):
+        class ZTradeoffKinematics(FakeKinematics):
+            def forward_kinematics(self, joint_pos_deg):
+                q = np.asarray(joint_pos_deg, dtype=float)
+                # shoulder_pan and elbow_flex both raise Z, while shoulder_pan
+                # also changes X. A Z-only minimum-norm step intentionally uses
+                # both and therefore sacrifices X accuracy.
+                pose = So101Pose(
+                    x=float(q[0] * 10.0),
+                    y=0.0,
+                    z=float((q[0] + q[2]) * 10.0),
+                    rx=0.0,
+                    ry=0.0,
+                    rz=0.0,
+                )
+                return pose_mm_deg_to_matrix_m(pose)
+
+            def inverse_kinematics(
+                self,
+                current_joint_pos,
+                desired_ee_pose,
+                position_weight=1.0,
+                orientation_weight=0.01,
+            ):
+                pose = matrix_m_to_pose_mm_deg(np.asarray(desired_ee_pose, dtype=float))
+                shoulder_pan = pose.x / 10.0
+                return np.array(
+                    [shoulder_pan, 0.0, pose.z / 10.0 - shoulder_pan, 0.0, 0.0],
+                    dtype=float,
+                )
+
+        cfg = _make_cfg(
+            joint_tolerance_deg=1.5,
+            settle_soft_tolerance_deg=3.0,
+            settle_samples=2,
+            settle_max_z_undershoot_mm=5.0,
+            settle_overcompensate=True,
+            settle_gain=0.1,
+            settle_z_only_lift_enabled=True,
+            settle_z_only_lift_step_mm=2.0,
+            settle_z_only_lift_max_joint_offset_deg=4.0,
+            move_timeout_s=1.0,
+        )
+        follower = FakeFollower(config=None)
+        follower.steady_offset = [0.0, 0.0, -2.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+        driver._kin = ZTradeoffKinematics("fake")
+        driver._holding_payload = True
+
+        driver.move_to_pose_blocking(So101Pose(0.0, 0.0, 50.0, 0.0, 0.0, 0.0))
+
+        result = driver.last_motion_result
+        assert result is not None
+        assert result["ok"] is True
+        assert result["classification"] == "z_only_lift"
+        assert result["z_requirement_met"] is True
+        assert abs(driver.get_pose().x) > 0.1
+
+    def test_z_only_lift_failure_is_typed_safe_convergence_error(self, tmp_path):
+        cfg = _make_cfg(
+            joint_tolerance_deg=1.5,
+            settle_soft_tolerance_deg=3.0,
+            settle_samples=1,
+            settle_max_z_undershoot_mm=5.0,
+            settle_z_only_lift_enabled=True,
+            move_timeout_s=1.0,
+        )
+        follower = FakeFollower(config=None)
+        follower.steady_offset = [0.0, 0.0, -2.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+        driver._holding_payload = True
+
+        def unavailable(*_args):
+            raise ValueError("test: no safe +Z candidate")
+
+        driver._next_z_only_lift_command = unavailable
+        target_q = np.array([0.0, 0.0, 5.0, 0.0, 0.0])
+        start_matrix = pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        target_matrix = pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, 50.0, 0.0, 0.0, 0.0))
+
+        with pytest.raises(So101PoseConvergenceError, match="Z-only payload lift") as exc_info:
+            driver._dispatch_prevalidated_waypoints(
+                [target_q],
+                target_q,
+                timeout_s=None,
+                cartesian_target_matrix=target_matrix,
+                cartesian_start_matrix=start_matrix,
+            )
+
+        assert exc_info.value.skip_recovery is True
+        result = driver.last_motion_result
+        assert result is not None
+        assert result["classification"] == "hard_z_only_unavailable"
+
+    def test_stable_soft_joint_error_is_accepted_after_fk_check(self, tmp_path, caplog):
+        cfg = _make_cfg(
+            joint_tolerance_deg=1.5,
+            settle_samples=3,
+            settle_soft_tolerance_deg=3.0,
+            settle_soft_samples=3,
+            ik_position_tolerance_mm=10.0,
+            settle_overcompensate=False,
+        )
+        follower = FakeFollower(config=None)
+        follower.steady_offset = [0.0, 2.49, 0.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower)
+        driver.connect()
+        caplog.set_level("WARNING", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+
+        driver.move_joint_blocking([1.0, 0.0, 0.0, 0.0, 0.0])
+
+        result = driver.last_motion_result
+        assert result is not None
+        assert result["ok"] is True
+        assert result["classification"] == "soft"
+        assert result["max_joint"] == "shoulder_lift"
+        assert result["max_abs_joint_error_deg"] == pytest.approx(2.49)
+        assert result["cartesian_position_error_mm"] == pytest.approx(24.9)
+        assert result["cartesian_position_error_mm"] > cfg.ik_position_tolerance_mm
+        assert "final settle soft" in caplog.text
+        assert "shoulder_lift" in caplog.text
 
     def test_clipped_final_target_is_recorded_and_re_sent(self, tmp_path):
         """LeRobot's send_action may clip via max_relative_target. The driver must
@@ -427,6 +660,47 @@ class TestSettleEdgeCases:
         # The last recorded action is the requested final target (no clip here).
         assert driver._last_sent_action is not None
         assert driver._last_sent_action["shoulder_pan.pos"] == pytest.approx(1.0, abs=1e-9)
+
+    def test_complete_stall_times_out_only_in_final_settle_without_wall_clock_wait(
+        self,
+        tmp_path,
+        caplog,
+    ):
+        """All intermediate waypoints stream before a stalled final target fails."""
+        now = 0.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            max_joint_step_deg=2.0,
+            move_timeout_s=0.005,
+            settle_resend_period_s=0.001,
+            settle_overcompensate=False,
+        )
+        follower = FakeFollower(config=None)
+        follower.track = False
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+
+        def advance_time(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+
+        driver._sleep = advance_time
+        driver.connect()
+        caplog.set_level("WARNING", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+
+        with pytest.raises(TimeoutError, match="final target did not settle"):
+            driver.move_joint_blocking([6.0, 0.0, 0.0, 0.0, 0.0])
+
+        shoulder_commands = [action["shoulder_pan.pos"] for action in follower.sent_actions]
+        assert shoulder_commands[:3] == pytest.approx([2.0, 4.0, 6.0])
+        assert now < 0.02
+        assert "SO-101 final settle timeout" in caplog.text
+        assert "max_joint=shoulder_pan" in caplog.text
+        assert "shoulder_pan(target=6.000, actual=0.000, error=-6.000)" in caplog.text
+        for name in ARM_JOINT_ORDER:
+            assert f"{name}(target=" in caplog.text
 
     def test_settle_aborts_on_drift_instead_of_pushing_to_limit(self, tmp_path):
         """A gravity-loaded servo that drifts AWAY from the target (error grows
@@ -683,7 +957,13 @@ class TestReachability:
                 delta = target_z - 100.0
                 return np.array([10.0 * delta, -8.0 * delta, 0.0, 0.0, 0.0])
 
-        cfg = _make_cfg(z_min_safe_mm=10.0, servo_max_joint_step_deg=1.0)
+        # Keep this target outside the terminal deadband: this test exercises
+        # coupled-joint Cartesian progress, not endpoint hold behavior.
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            servo_max_joint_step_deg=1.0,
+            servo_goal_tolerance_mm=0.5,
+        )
         driver, follower, _ = _make_driver(cfg, tmp_path)
         driver.connect()
         driver._kin = CoupledKinematics()
@@ -706,11 +986,15 @@ class TestReachability:
 
         sent = follower.sent_actions[sent_before:]
         assert len(sent) == 1
-        # First dispatch uses one 20ms send period: 30 deg/s * 0.02s = 0.6 deg,
-        # tighter than the configured 1.0-degree per-call cap.
+        # The test fixture's blocking Cartesian step is 1 mm, so the fast path
+        # derives a 2 mm per-tick cap. The first send still uses the 0.02 s
+        # minimum period, making the 60 mm/s Cartesian velocity cap the active
+        # 1.2 mm limit. In FakeKinematics that is 0.12 deg, below both the
+        # 30 deg/s joint velocity cap (0.6 deg/tick) and the configured
+        # 1.0-degree joint per-call cap.
         # The Cartesian alpha search refines the largest safe candidate with a
         # finite number of IK solves; allow its sub-0.0001-degree quantization.
-        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.06, abs=1e-4)
+        assert sent[0]["elbow_flex.pos"] == pytest.approx(5.12, abs=1e-4)
         assert sleep_log == []
 
     def test_servo_to_pose_rejects_bad_ik_before_send(self, tmp_path):
@@ -796,15 +1080,155 @@ class TestReachability:
         assert len(follower.sent_actions) == sent_before
 
     def test_servo_to_pose_enforces_min_send_period(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
         cfg = _make_cfg(z_min_safe_mm=10.0, servo_min_send_period_s=1.0)
-        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver, follower, _ = _make_driver(cfg, tmp_path, monotonic=fake_monotonic)
         driver.connect()
         follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
-        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        target = So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0)
+        assert driver.servo_to_pose(target) is True
         sent_after_first = len(follower.sent_actions)
+        planned_q = driver._servo_planned_q.copy()
+        planned_matrix = driver._servo_planned_matrix.copy()
         # Second call within the min send period must be skipped (no new action).
-        driver.servo_to_pose(So101Pose(0.0, 0.0, 70.0, 0.0, 0.0, 0.0))
+        assert driver.servo_to_pose(target) is False
         assert len(follower.sent_actions) == sent_after_first
+        assert np.array_equal(driver._servo_planned_q, planned_q)
+        assert np.array_equal(driver._servo_planned_matrix, planned_matrix)
+
+        # Sub-microsecond floating error at a nominal one-second period must not
+        # turn the next command into another false rate-gate skip.
+        now += 1.0 - 0.5e-6
+        assert driver.servo_to_pose(target) is True
+        assert len(follower.sent_actions) == sent_after_first + 1
+
+    def test_servo_holds_planned_endpoint_inside_position_deadband_when_orientation_is_best_effort(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            servo_goal_tolerance_mm=1.0,
+            ik_orientation_tolerance_deg=None,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path, monotonic=fake_monotonic)
+        driver.connect()
+        # Planned/live FK is 0.5 mm from the requested Z but has a 90-degree
+        # orientation residual. With a null orientation tolerance, SO-101 must
+        # hold this endpoint instead of demanding another 0.001 mm improvement
+        # or trying to solve an unattainable orientation-only step.
+        planned_q = np.array([1.0, 2.0, 6.95, 0.0, 0.0])
+        follower._arm = planned_q.tolist()
+        driver._servo_planned_q = planned_q.copy()
+        driver._servo_planned_matrix = driver._kin.forward_kinematics(planned_q)
+        driver._servo_last_send_t = now - 0.021
+        target = So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 90.0)
+        sent_before = len(follower.sent_actions)
+
+        assert driver.servo_to_pose(target) is True
+
+        sent = follower.sent_actions[sent_before:]
+        assert len(sent) == 1
+        assert [sent[0][f"{name}.pos"] for name in ARM_JOINT_ORDER] == pytest.approx(planned_q)
+        assert np.array_equal(driver._servo_planned_q, planned_q)
+
+    def test_servo_endpoint_overcompensation_closes_live_steady_state_error(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            servo_goal_tolerance_mm=1.0,
+            settle_overcompensate=True,
+            settle_gain=0.5,
+        )
+        follower = FakeFollower(config=None)
+        follower.steady_offset = [0.0, 0.0, -0.5, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+        driver.connect()
+        planned_q = np.array([1.0, 2.0, 7.0, 0.0, 0.0])
+        follower._arm = (planned_q + np.asarray(follower.steady_offset)).tolist()
+        driver._servo_planned_q = planned_q.copy()
+        driver._servo_planned_matrix = driver._kin.forward_kinematics(planned_q)
+        driver._servo_last_send_t = now - 0.021
+        target = So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 90.0)
+        initial_error = float(np.max(np.abs(np.asarray(follower._arm) - planned_q)))
+
+        for _ in range(6):
+            assert driver.servo_to_pose(target) is True
+            now += 0.021
+
+        final_error = float(np.max(np.abs(np.asarray(follower._arm) - planned_q)))
+        assert final_error < initial_error / 10.0
+        assert follower.sent_actions[-1]["elbow_flex.pos"] > planned_q[2]
+        # Compensation is execution-only: it must never become the next IK seed.
+        assert np.array_equal(driver._servo_planned_q, planned_q)
+        assert np.array_equal(driver._servo_planned_matrix, driver._kin.forward_kinematics(planned_q))
+
+    def test_servo_endpoint_compensation_state_resets_when_target_leaves_deadband(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=10.0,
+            servo_goal_tolerance_mm=1.0,
+            servo_max_joint_step_deg=10.0,
+            servo_max_joint_vel_dps=500.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path, monotonic=fake_monotonic)
+        driver.connect()
+        planned_q = np.array([1.0, 2.0, 7.0, 0.0, 0.0])
+        follower._arm = planned_q.tolist()
+        driver._servo_planned_q = planned_q.copy()
+        driver._servo_planned_matrix = driver._kin.forward_kinematics(planned_q)
+        driver._servo_last_send_t = now - 0.021
+
+        assert driver.servo_to_pose(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 0.0)) is True
+        assert driver._servo_endpoint_state is not None
+
+        now += 0.021
+        assert driver.servo_to_pose(So101Pose(10.0, 20.0, 80.0, 0.0, 0.0, 0.0)) is True
+        assert driver._servo_endpoint_state is None
+
+    def test_servo_endpoint_overcompensation_falls_back_when_soft_limit_would_be_exceeded(self, tmp_path, caplog):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=-500.0,
+            servo_goal_tolerance_mm=1.0,
+            settle_overcompensate=True,
+            settle_gain=0.5,
+        )
+        follower = FakeFollower(config=None)
+        follower.track = False
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+        driver.connect()
+        planned_q = np.array([89.8, 0.0, 7.0, 0.0, 0.0])
+        follower._arm = [89.0, 0.0, 7.0, 0.0, 0.0]
+        driver._servo_planned_q = planned_q.copy()
+        driver._servo_planned_matrix = driver._kin.forward_kinematics(planned_q)
+        driver._servo_last_send_t = now - 0.021
+        target = So101Pose(898.0, 0.0, 70.0, 0.0, 0.0, 0.0)
+        caplog.set_level("WARNING", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+
+        assert driver.servo_to_pose(target) is True
+
+        assert follower.sent_actions[-1]["shoulder_pan.pos"] == pytest.approx(planned_q[0])
+        assert "over-command" in caplog.text
+        assert "re-sending bare planned target" in caplog.text
 
     def test_servo_to_pose_enforces_max_joint_vel_dps(self, tmp_path):
         # With a tiny servo_max_joint_vel_dps and a large inter-send interval
@@ -815,6 +1239,7 @@ class TestReachability:
             servo_min_send_period_s=1e-6,
             servo_max_joint_step_deg=10.0,
             servo_max_joint_vel_dps=1.0,  # 1 deg/s
+            servo_max_cartesian_step_mm=100.0,
         )
         driver, follower, _ = _make_driver(cfg, tmp_path)
         driver.connect()
@@ -831,6 +1256,137 @@ class TestReachability:
         # few-µs IK/validate overhead in dt (do not tighten to an exact dt).
         assert sent[0]["elbow_flex.pos"] == pytest.approx(5.5, abs=0.01)
         assert sent[0]["elbow_flex.pos"] < 7.0
+
+    def test_servo_pauses_plan_until_live_joints_catch_up(self, tmp_path, caplog):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=-100.0,
+            servo_min_send_period_s=0.1,
+            servo_max_joint_step_deg=10.0,
+            servo_max_joint_vel_dps=500.0,
+            servo_max_cartesian_step_mm=100.0,
+            tracking_error_deg=0.1,
+        )
+        follower = FakeFollower(config=None)
+        follower.track = False
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+        driver.connect()
+        target = So101Pose(20.0, 0.0, 70.0, 0.0, 0.0, 0.0)
+
+        assert driver.servo_to_pose(target) is True
+        first_planned_q = driver._servo_planned_q.copy()
+        first_planned_matrix = driver._servo_planned_matrix.copy()
+        sent_after_first = len(follower.sent_actions)
+        assert np.max(np.abs(first_planned_q - np.asarray(follower._arm))) > cfg.tracking_error_deg
+
+        # The frozen encoders exceed the allowance. This tick must hold both
+        # plans while dispatching a bounded catch-up command rather than
+        # advancing Cartesian planning or waiting passively.
+        now += 0.101
+        caplog.set_level("WARNING", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+        assert driver.servo_to_pose(target) is True
+        assert len(follower.sent_actions) == sent_after_first + 1
+        assert np.array_equal(driver._servo_planned_q, first_planned_q)
+        assert np.array_equal(driver._servo_planned_matrix, first_planned_matrix)
+        assert "servo catch-up hold" in caplog.text
+
+        # Once the physical arm reaches the held point, planning resumes from
+        # that exact state rather than re-anchoring to a newer live seed.
+        follower._arm = first_planned_q.tolist()
+        now += 0.101
+        assert driver.servo_to_pose(target) is True
+        assert len(follower.sent_actions) == sent_after_first + 2
+        assert not np.array_equal(driver._servo_planned_q, first_planned_q)
+
+    def test_servo_catchup_overcompensation_reduces_static_joint_lag_without_advancing_plan(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        cfg = _make_cfg(
+            z_min_safe_mm=-100.0,
+            servo_min_send_period_s=0.1,
+            servo_max_joint_step_deg=10.0,
+            servo_max_joint_vel_dps=500.0,
+            tracking_error_deg=3.0,
+            settle_overcompensate=True,
+            settle_gain=0.5,
+            settle_drift_abort_samples=0,
+        )
+        follower = FakeFollower(config=None)
+        planned_q = np.array([0.0, 0.0, 5.0, 0.0, 0.0])
+        follower.steady_offset = [0.0, 0.0, 3.02, 0.0, 0.0]
+        follower._arm = (planned_q + np.asarray(follower.steady_offset)).tolist()
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+        driver.connect()
+        driver._servo_planned_q = planned_q.copy()
+        driver._servo_planned_matrix = driver._kin.forward_kinematics(planned_q)
+        driver._servo_last_send_t = now - 0.101
+        planned_matrix = driver._servo_planned_matrix.copy()
+        initial_error = float(np.max(np.abs(np.asarray(follower._arm) - planned_q)))
+
+        assert driver.servo_to_pose(So101Pose(0.0, 0.0, 100.0, 0.0, 0.0, 0.0)) is True
+
+        final_error = float(np.max(np.abs(np.asarray(follower._arm) - planned_q)))
+        assert final_error < initial_error
+        assert follower.sent_actions[-1]["elbow_flex.pos"] < planned_q[2]
+        assert np.array_equal(driver._servo_planned_q, planned_q)
+        assert np.array_equal(driver._servo_planned_matrix, planned_matrix)
+
+    def test_servo_chains_planned_pose_and_previous_ik_seed_despite_encoder_lag(self, tmp_path):
+        now = 10.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        class RecordingKinematics(FakeKinematics):
+            def __init__(self):
+                super().__init__("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
+                self.seeds: list[np.ndarray] = []
+
+            def inverse_kinematics(self, current, desired, position_weight=1.0, orientation_weight=0.01):
+                self.seeds.append(np.asarray(current, dtype=float).copy())
+                return super().inverse_kinematics(current, desired, position_weight, orientation_weight)
+
+        cfg = _make_cfg(
+            z_min_safe_mm=-100.0,
+            servo_min_send_period_s=0.02,
+            servo_max_joint_step_deg=10.0,
+            servo_max_joint_vel_dps=500.0,
+        )
+        follower = FakeFollower(config=None)
+        follower.track = False
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        driver, _, _ = _make_driver(cfg, tmp_path, follower, monotonic=fake_monotonic)
+        driver.connect()
+        kin = RecordingKinematics()
+        driver._kin = kin
+        target = So101Pose(20.0, 0.0, 70.0, 0.0, 0.0, 0.0)
+
+        driver.servo_to_pose(target)
+        first_planned_q = driver._servo_planned_q.copy()
+        first_planned_pose = matrix_m_to_pose_mm_deg(driver._servo_planned_matrix.copy())
+        assert not np.allclose(first_planned_q, follower._arm)
+        assert np.allclose(driver._servo_planned_matrix, kin.forward_kinematics(first_planned_q))
+
+        # The real encoder remains at the original pose. The next call must
+        # nevertheless continue from the previous command state.
+        now += 0.021
+        kin.seeds.clear()
+        driver.servo_to_pose(target)
+        second_planned_pose = matrix_m_to_pose_mm_deg(driver._servo_planned_matrix.copy())
+
+        assert kin.seeds
+        assert all(np.allclose(seed, first_planned_q) for seed in kin.seeds)
+        assert second_planned_pose.x > first_planned_pose.x
+        assert second_planned_pose.z > first_planned_pose.z
+        assert follower._arm == [0.0, 0.0, 5.0, 0.0, 0.0]
 
     def test_move_to_pose_rejects_position_residual_when_unreachable(self, tmp_path):
         # FakeKinematics IK is exact for x/y/z but a mismatch on orientation is
@@ -897,9 +1453,75 @@ class TestReachability:
                 return np.zeros(5)
 
         driver._kin = BadKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
-        with pytest.raises(ValueError, match="position residual"):
+        with pytest.raises(So101PreDispatchError, match="position residual") as exc_info:
             driver.move_to_pose_blocking(So101Pose(100.0, 200.0, 300.0, 0, 0, 0))
+        assert exc_info.value.skip_recovery is True
         assert len(follower.sent_actions) == sent_before
+
+    def test_position_residual_retries_position_only_from_same_seed(self, tmp_path, caplog):
+        cfg = _make_cfg(
+            ik_position_tolerance_mm=0.1,
+            ik_orientation_weight=0.01,
+            ik_orientation_tolerance_deg=None,
+            z_min_safe_mm=-500.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+
+        class OrientationBiasedKin(FakeKinematics):
+            def __init__(self):
+                super().__init__("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
+                self.calls: list[tuple[np.ndarray, float]] = []
+
+            def inverse_kinematics(self, current, desired, position_weight=1.0, orientation_weight=0.01):
+                self.calls.append((np.asarray(current, dtype=float).copy(), float(orientation_weight)))
+                if orientation_weight != 0.0:
+                    return np.zeros(5)
+                return super().inverse_kinematics(
+                    current,
+                    desired,
+                    position_weight=position_weight,
+                    orientation_weight=orientation_weight,
+                )
+
+        kin = OrientationBiasedKin()
+        driver._kin = kin
+        caplog.set_level("INFO", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+
+        driver.move_to_pose_blocking(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 0.0))
+
+        assert len(kin.calls) >= 2
+        first_seed, first_weight = kin.calls[0]
+        retry_seed, retry_weight = kin.calls[1]
+        assert first_weight == pytest.approx(0.01)
+        assert retry_weight == pytest.approx(0.0)
+        assert np.array_equal(first_seed, retry_seed)
+        assert "accepted position-only retry from the same seed" in caplog.text
+
+    def test_explicit_orientation_tolerance_disables_position_only_retry(self, tmp_path):
+        cfg = _make_cfg(
+            ik_position_tolerance_mm=0.1,
+            ik_orientation_weight=0.01,
+            ik_orientation_tolerance_deg=180.0,
+            z_min_safe_mm=-500.0,
+        )
+        driver, follower, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        follower._arm = [0.0, 0.0, 5.0, 0.0, 0.0]
+        weights: list[float] = []
+
+        class AlwaysBadWeightedKin(FakeKinematics):
+            def inverse_kinematics(self, current, desired, position_weight=1.0, orientation_weight=0.01):
+                weights.append(float(orientation_weight))
+                return np.zeros(5)
+
+        driver._kin = AlwaysBadWeightedKin("fake", "gripper_frame_link", list(ARM_JOINT_ORDER))
+
+        with pytest.raises(So101PreDispatchError, match="position residual"):
+            driver.move_to_pose_blocking(So101Pose(10.0, 20.0, 70.0, 0.0, 0.0, 0.0))
+
+        assert weights == pytest.approx([0.01])
 
 
 class TestCartesianSafetyChecks:
@@ -1303,7 +1925,7 @@ class TestPoseConvergence:
         # Residual already within tol on iteration 1 -> no compensation move fired.
         assert comp_calls == 0, f"expected no compensation for within-tol residual, got {comp_calls} comp moves"
 
-    def test_convergence_fail_closed_when_over_command_breaks_joint_limit(self, tmp_path):
+    def test_convergence_fail_closed_when_over_command_breaks_joint_limit(self, tmp_path, caplog):
         """An over-command that would break a soft limit must stop fail-closed
         (no raise): the arm stays at its current safe real pose rather than
         breaking the limit or triggering RecoveryRail."""
@@ -1324,6 +1946,7 @@ class TestPoseConvergence:
             pose_convergence_tolerance_mm=1.0,
             max_joint_step_deg=2.0,
             cartesian_interp_step_mm=10.0,
+            move_timeout_s=0.05,
         )
         driver, follower, _ = _make_driver(cfg, tmp_path)
         driver.connect()
@@ -1335,11 +1958,16 @@ class TestPoseConvergence:
         follower.steady_offset = [0.0, 0.0, -2.5, 0.0, 0.0]
 
         target = So101Pose(0.0, 0.0, 840.0, 0, 0, 0)  # q_target elbow = 84
-        # The compensation is rejected before dispatch and is surfaced as a
-        # typed not-reached failure; RecoveryRail can distinguish it from a
-        # transport failure and leave the last safe real pose in place.
-        with pytest.raises(So101PoseConvergenceError, match="not reached"):
+        # The global Z-settle requirement prevents the low endpoint from being
+        # accepted before the outer convergence phase. Because the observed arm
+        # remains inside the validated soft joint band, this is still the typed
+        # safe-not-reached condition rather than a hardware timeout.
+        caplog.set_level("ERROR", logger="jiuwensymbiosis.adapters.so101.lowlevel")
+        with pytest.raises(So101PoseConvergenceError, match="not reached") as exc_info:
             driver.move_to_pose_blocking(target)
+        assert exc_info.value.skip_recovery is True
+        assert driver.last_motion_result is not None
+        assert driver.last_motion_result["classification"] == "safe_convergence_timeout"
 
         actual = driver.get_pose()
         # The arm never broke the elbow soft limit (real elbow <= 86).

@@ -41,10 +41,31 @@ cartesian_orientation_policy: preserve
 grasp_orientation: null
 
 # ==================== 运动与到位 [选填] ====================
-# 运动参数可只用 profile：safe / balanced / fast。下面的具体字段若填写，
-# 会覆盖 profile 对应默认值；不填写则由代码提供经过验证的默认值。
-motion_profile: safe
-settle_overcompensate: true   # [选填] 有界 PD 误差补偿（内部 gain=0.5）
+trajectory_hz: 20.0
+max_joint_vel_dps: 35.0
+max_cartesian_vel_mm_s: 60.0
+fast_control_hz: 5.0
+servo_max_joint_vel_dps: 35.0
+servo_max_cartesian_vel_mm_s: 60.0
+servo_max_joint_step_deg: null       # null=普通模式关节步长的 2 倍（默认 3.5°）
+servo_max_cartesian_step_mm: null    # null=普通模式笛卡尔步长的 2 倍（默认 6 mm）
+fast_move_timeout_s: 20.0            # fast 连续无有效接近目标的超时；持续接近时会刷新
+fast_absolute_timeout_s: 60.0        # fast 单阶段最终安全上限，防止移动目标被无限追踪
+tracking_error_deg: 4.0             # fast 规划态与实时关节的最大跟随误差（高于默认 3.5° 步长）
+servo_goal_tolerance_mm: 1.0     # 规划端进入此位置死区后保持末点，等待真实关节追上
+joint_tolerance_deg: 1.5
+settle_samples: 3
+settle_soft_tolerance_deg: 3.0
+settle_soft_samples: 5
+settle_max_z_undershoot_mm: 10.0  # 所有阻塞运动到位时，实际 Z 最多允许低于目标 10 mm
+settle_z_only_lift_enabled: true   # 持物上移时，关节已稳定但 Z 仍偏低则只优化 Z，允许 XY 小幅漂移
+settle_z_only_lift_step_mm: 2.0    # 每次局部 Z Jacobian 补偿期望提升量
+settle_z_only_lift_max_joint_offset_deg: 4.0  # Z 补偿相对原 IK 关节目标的最大偏置
+move_timeout_s: 30.0
+settle_resend_period_s: 0.2
+settle_drift_abort_samples: 5
+settle_overcompensate: true
+settle_gain: 0.5
 
 # ==================== 安全边界 [选填] ====================
 z_min_safe_mm: 30.0           # [选填] 控制/Z 向安全下限 (SafetyRail 用)

@@ -16,11 +16,170 @@ from __future__ import annotations
 import math
 import time
 
+import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
+from jiuwensymbiosis.agent.fast.realtime.mask_tracking import (
+    MaskTargetFilter,
+    MaskTrackingState,
+)
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, _slew
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
+
+
+def _mask_sample(
+    mask,
+    *,
+    x=100.0,
+    y=50.0,
+    grasp_z=40.0,
+    depth_m=0.5,
+    score=0.9,
+    depth_span_mm=5.0,
+):
+    return {
+        "ok": True,
+        "position": [x, y, grasp_z + 20.0],
+        "grasp_z": grasp_z,
+        "depth_m": depth_m,
+        "score": score,
+        "x": x,
+        "y": y,
+        "z": grasp_z + 20.0,
+        "_tracking_mask": np.asarray(mask, dtype=bool),
+        "_tracking_depth_span_mm": depth_span_mm,
+        "_tracking_valid_depth_ratio": 1.0,
+    }
+
+
+def test_mask_filter_freezes_projection_noise_for_stationary_mask():
+    mask = np.zeros((60, 80), dtype=bool)
+    mask[20:40, 20:50] = True
+    target_filter = MaskTargetFilter()
+
+    initial = target_filter.update(_mask_sample(mask, x=100.0))
+    stationary = target_filter.update(_mask_sample(mask, x=112.0))
+
+    assert initial is not None
+    assert stationary is not None
+    assert stationary["x"] == 100.0
+    assert stationary["_tracking_state"] == MaskTrackingState.VISIBLE_STABLE
+    assert "_tracking_mask" not in stationary
+
+
+def test_mask_filter_static_occlusion_keeps_last_trusted_xyz():
+    mask = np.zeros((60, 80), dtype=bool)
+    mask[20:40, 20:50] = True
+    partial = np.zeros_like(mask)
+    partial[22:38, 25:45] = True
+    target_filter = MaskTargetFilter()
+
+    target_filter.update(_mask_sample(mask, x=100.0))
+    target_filter.update(_mask_sample(mask, x=101.0))  # establish stable history
+    frozen = target_filter.update(_mask_sample(partial, x=180.0, grasp_z=10.0))
+
+    assert frozen is not None
+    assert frozen["x"] == 100.0
+    assert frozen["grasp_z"] == 40.0
+    assert frozen["_tracking_state"] == MaskTrackingState.OCCLUDED_STATIC
+
+
+def test_mask_filter_contained_shrink_keeps_original_reference_and_target():
+    """Any contained shrink is occlusion; bbox edge direction is irrelevant."""
+    full = np.zeros((70, 90), dtype=bool)
+    full[10:50, 20:60] = True
+    clipped_once = np.zeros_like(full)
+    clipped_once[12:48, 21:59] = True
+    clipped_again = np.zeros_like(full)
+    clipped_again[18:42, 25:55] = True
+    target_filter = MaskTargetFilter()
+
+    target_filter.update(_mask_sample(full, x=100.0, depth_m=0.50))
+    first = target_filter.update(_mask_sample(clipped_once, x=140.0, depth_m=0.52))
+    second = target_filter.update(_mask_sample(clipped_again, x=180.0, depth_m=0.54))
+
+    assert first is not None and second is not None
+    assert first["x"] == second["x"] == 100.0
+    assert first["_tracking_state"] == MaskTrackingState.OCCLUDED_STATIC
+    assert second["_tracking_state"] == MaskTrackingState.OCCLUDED_STATIC
+    # The second frame is still compared with the original 40x40 mask, not the
+    # first partial mask: the trusted reference never integrates occlusion.
+    assert first["_tracking_metrics"]["area_ratio"] == pytest.approx(0.855)
+    assert second["_tracking_metrics"]["area_ratio"] == pytest.approx(0.45)
+    assert second["_tracking_metrics"]["containment"] == pytest.approx(1.0)
+
+
+def test_mask_filter_occlusion_uses_mask_only_even_when_projection_is_unreliable():
+    full = np.zeros((60, 80), dtype=bool)
+    full[20:40, 20:60] = True
+    partial = np.zeros_like(full)
+    partial[22:38, 25:55] = True
+    target_filter = MaskTargetFilter()
+    target_filter.update(_mask_sample(full, x=100.0))
+
+    frozen = target_filter.update(_mask_sample(partial, x=999.0, score=0.1, depth_span_mm=80.0))
+
+    assert frozen is not None
+    assert frozen["x"] == 100.0
+    assert frozen["_tracking_state"] == MaskTrackingState.OCCLUDED_STATIC
+
+
+def test_mask_filter_requires_two_consistent_frames_before_following_motion():
+    anchor = np.zeros((50, 70), dtype=bool)
+    anchor[20:30, 10:20] = True
+    moved1 = np.zeros_like(anchor)
+    moved1[20:30, 15:25] = True
+    moved2 = np.zeros_like(anchor)
+    moved2[20:30, 16:26] = True
+    target_filter = MaskTargetFilter()
+
+    target_filter.update(_mask_sample(anchor, x=100.0))
+    assert target_filter.update(_mask_sample(moved1, x=105.0)) is None
+    accepted = target_filter.update(_mask_sample(moved2, x=107.0))
+
+    assert accepted is not None
+    assert accepted["x"] == 107.0
+    assert accepted["_tracking_state"] == MaskTrackingState.VISIBLE_MOVING
+
+
+def test_mask_filter_uses_last_target_when_current_detection_is_unreliable():
+    mask = np.zeros((60, 80), dtype=bool)
+    mask[20:40, 20:60] = True
+    tiny = np.zeros_like(mask)
+    tiny[27:33, 35:45] = True
+    target_filter = MaskTargetFilter()
+    target_filter.update(_mask_sample(mask))
+    target_filter.update(_mask_sample(mask))
+
+    tiny_result = target_filter.update(_mask_sample(tiny, x=500.0))
+    mixed_depth = target_filter.update(_mask_sample(mask, x=600.0, depth_span_mm=80.0))
+
+    assert tiny_result is not None and tiny_result["x"] == 100.0
+    assert tiny_result["_tracking_state"] == MaskTrackingState.OCCLUDED_STATIC
+    assert mixed_depth is not None and mixed_depth["x"] == 100.0
+    assert mixed_depth["_tracking_state"] == MaskTrackingState.BLIND_LAST_TARGET
+
+
+def test_mask_filter_detector_miss_blind_grasps_last_trusted_target():
+    mask = np.zeros((60, 80), dtype=bool)
+    mask[20:40, 20:60] = True
+    target_filter = MaskTargetFilter()
+    target_filter.update(_mask_sample(mask, x=123.0))
+
+    blind = target_filter.miss("not_detected")
+
+    assert blind is not None
+    assert blind["x"] == 123.0
+    assert blind["_tracking_state"] == MaskTrackingState.BLIND_LAST_TARGET
+    assert blind["_tracking_metrics"]["reason"] == "not_detected"
+
+
+def test_mask_filter_detector_miss_without_reference_stays_lost():
+    target_filter = MaskTargetFilter()
+
+    assert target_filter.miss("not_detected") is None
+    assert target_filter.state == MaskTrackingState.LOST
 
 
 @pytest.mark.parametrize(
@@ -32,6 +191,9 @@ from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
         "pos_tol_mm",
         "ang_tol_deg",
         "timeout_s",
+        "absolute_timeout_s",
+        "progress_pos_epsilon_mm",
+        "progress_ang_epsilon_deg",
         "lost_target_grace_s",
         "settle_ticks",
     ],
@@ -330,6 +492,175 @@ def test_servo_controller_reads_moving_target_each_control_tick():
     ).run()
 
     assert result.reason == "timeout"
+    assert result.error_code == "servo_no_progress_timeout"
     assert provider_calls >= 3
     assert len(commands) >= 3
     assert result.target_pose == {"x": 50.0, "y": 0.0, "z": 0.0}
+
+
+def test_servo_progress_refreshes_timeout_until_a_long_approach_reaches():
+    """A moving live pose must not be cut off by the old total wall-clock limit."""
+    current = {"x": 0.0, "y": 0.0, "z": 0.0}
+    target = {"x": 10.0, "y": 0.0, "z": 0.0}
+
+    def read_pose():
+        return dict(current)
+
+    def servo_to(_pose):
+        current["x"] = min(target["x"], current["x"] + 1.0)
+
+    result = ServoController(
+        read_pose,
+        servo_to,
+        lambda: dict(target),
+        config=ServoConfig(
+            control_hz=200.0,
+            max_lin_step_mm=1.0,
+            settle_ticks=1,
+            timeout_s=0.015,
+            absolute_timeout_s=1.0,
+        ),
+    ).run()
+
+    assert result.reason == "reached"
+    assert result.elapsed_s > 0.015
+
+
+def test_servo_absolute_timeout_remains_a_final_safety_ceiling():
+    current = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    def read_pose():
+        return dict(current)
+
+    def servo_to(_pose):
+        current["x"] += 1.0
+
+    result = ServoController(
+        read_pose,
+        servo_to,
+        lambda: {"x": 1000.0, "y": 0.0, "z": 0.0},
+        config=ServoConfig(
+            control_hz=200.0,
+            max_lin_step_mm=1.0,
+            timeout_s=1.0,
+            absolute_timeout_s=0.03,
+        ),
+    ).run()
+
+    assert result.reason == "timeout"
+    assert result.error_code == "servo_absolute_timeout"
+
+
+def test_servo_controller_can_make_completion_position_only_without_dropping_command_orientation():
+    current = {"x": 10.0, "y": 20.0, "z": 30.0, "rz": 0.0}
+    target = {"x": 10.0, "y": 20.0, "z": 30.0, "rz": 90.0}
+    commands: list[dict[str, float]] = []
+
+    result = ServoController(
+        lambda: dict(current),
+        lambda pose: commands.append(dict(pose)),
+        lambda: dict(target),
+        config=ServoConfig(control_hz=200.0, settle_ticks=1),
+        reached_angular_keys=(),
+    ).run()
+
+    assert result.reason == "reached"
+    assert commands == []
+
+    default_result = ServoController(
+        lambda: dict(current),
+        lambda pose: commands.append(dict(pose)),
+        lambda: dict(target),
+        config=ServoConfig(control_hz=200.0, settle_ticks=1),
+        should_continue=lambda: not commands,
+    ).run()
+    assert default_result.reason == "stopped"
+    assert commands[0]["rz"] != current["rz"]
+
+
+def test_servo_controller_reports_live_pose_and_errors_on_reached_tick():
+    ticks: list[dict] = []
+    result = ServoController(
+        lambda: {"x": 1.0, "y": 2.0, "z": 3.0, "rz": 45.0},
+        lambda _pose: None,
+        lambda: {"x": 1.0, "y": 2.0, "z": 3.0, "rz": 45.0},
+        config=ServoConfig(control_hz=200.0, settle_ticks=1),
+        on_tick=ticks.append,
+    ).run()
+
+    assert result.reason == "reached"
+    assert ticks == [
+        {
+            "tick": 1,
+            "pose": {"x": 1.0, "y": 2.0, "z": 3.0, "rz": 45.0},
+            "target": {"x": 1.0, "y": 2.0, "z": 3.0, "rz": 45.0},
+            "position_error_mm": 0.0,
+            "angular_error_deg": 0.0,
+            "in_tol": 1,
+        }
+    ]
+
+
+def test_servo_controller_rejects_unknown_reached_angular_key():
+    with pytest.raises(ValueError, match="unsupported keys"):
+        ServoController(
+            lambda: {"x": 0.0},
+            lambda _pose: None,
+            lambda: {"x": 0.0},
+            reached_angular_keys=("yaw",),
+        )
+
+
+def test_servo_controller_can_chain_slew_from_previous_command():
+    """Encoder lag must not pull an opt-in command trajectory back each tick."""
+    target = {"x": 10.0, "y": 0.0, "z": 0.0}
+    commands: list[dict[str, float]] = []
+
+    result = ServoController(
+        # Simulate an arm whose encoder has not caught up yet.
+        lambda: {"x": 0.0, "y": 0.0, "z": 0.0},
+        lambda pose: commands.append(dict(pose)),
+        lambda: dict(target),
+        config=ServoConfig(control_hz=200.0, max_lin_step_mm=2.0, timeout_s=1.0),
+        should_continue=lambda: len(commands) < 3,
+        slew_from_last_command=True,
+    ).run()
+
+    assert result.reason == "stopped"
+    assert [command["x"] for command in commands] == pytest.approx([2.0, 4.0, 6.0])
+
+
+def test_servo_controller_does_not_advance_chain_when_dispatch_is_skipped():
+    """An explicit False acknowledgement must keep the previous slew origin."""
+    attempts: list[dict[str, float]] = []
+
+    def servo_to(pose):
+        attempts.append(dict(pose))
+        return len(attempts) > 1
+
+    result = ServoController(
+        lambda: {"x": 0.0, "y": 0.0, "z": 0.0},
+        servo_to,
+        lambda: {"x": 10.0, "y": 0.0, "z": 0.0},
+        config=ServoConfig(control_hz=200.0, max_lin_step_mm=2.0, timeout_s=1.0),
+        should_continue=lambda: len(attempts) < 3,
+        slew_from_last_command=True,
+    ).run()
+
+    assert result.reason == "stopped"
+    assert [attempt["x"] for attempt in attempts] == pytest.approx([2.0, 2.0, 4.0])
+
+
+def test_servo_controller_keeps_live_pose_slew_as_default():
+    """Adapters that do not opt in retain the existing live-pose behavior."""
+    commands: list[dict[str, float]] = []
+
+    ServoController(
+        lambda: {"x": 0.0, "y": 0.0, "z": 0.0},
+        lambda pose: commands.append(dict(pose)),
+        lambda: {"x": 10.0, "y": 0.0, "z": 0.0},
+        config=ServoConfig(control_hz=200.0, max_lin_step_mm=2.0, timeout_s=1.0),
+        should_continue=lambda: len(commands) < 3,
+    ).run()
+
+    assert [command["x"] for command in commands] == pytest.approx([2.0, 2.0, 2.0])

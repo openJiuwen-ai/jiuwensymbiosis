@@ -94,53 +94,166 @@ class TestCartesianOrientationPolicy:
             So101Config(**_base_kwargs(grasp_orientation=value))
 
 
-class TestMotionProfiles:
-    def test_default_profile_resolves_internal_motion_defaults(self):
+class TestPlaceZOffsetMigration:
+    def test_new_name_defaults_to_75_mm(self):
         cfg = So101Config(**_base_kwargs())
-        assert cfg.motion_profile == "safe"
-        assert cfg.trajectory_hz == 10.0
-        assert cfg.max_joint_step_deg == 2.0
-        assert cfg.servo_max_joint_vel_dps == 20.0
-        assert cfg.motion_runtime.max_cartesian_vel_mm_s == 30.0
+        assert cfg.place_z_offset_mm == 75.0
 
-    def test_fast_profile_is_available_without_motion_yaml(self):
-        cfg = So101Config(**_base_kwargs(motion_profile=" FAST "))
-        assert cfg.motion_profile == "fast"
-        assert cfg.trajectory_hz == 30.0
-        assert cfg.max_joint_step_deg == pytest.approx(50.0 / 30.0)
-        assert cfg.servo_max_joint_step_deg == pytest.approx(50.0 / 30.0)
+    def test_new_name_is_canonical(self):
+        cfg = So101Config(**_base_kwargs(place_z_offset_mm=20.0))
+        assert cfg.place_z_offset_mm == 20.0
 
-    def test_explicit_motion_value_overrides_profile(self):
-        cfg = So101Config(**_base_kwargs(motion_profile="safe", trajectory_hz=60.0))
-        assert cfg.trajectory_hz == 60.0
-        assert cfg.max_joint_step_deg == pytest.approx(20.0 / 60.0)
+    def test_deprecated_alias_is_accepted_and_logged(self, caplog):
+        caplog.set_level("WARNING", logger="jiuwensymbiosis.adapters.so101.config")
+
+        cfg = So101Config.from_dict(_base_kwargs(chip_thickness_mm=20.0))
+
+        assert cfg.place_z_offset_mm == 20.0
+        assert "chip_thickness_mm is deprecated" in caplog.text
+        assert "place_z_offset_mm" in caplog.text
+
+    def test_new_and_deprecated_names_conflict_even_when_values_match(self):
+        with pytest.raises(ValueError, match="cannot both be configured"):
+            So101Config.from_dict(
+                _base_kwargs(
+                    place_z_offset_mm=20.0,
+                    chip_thickness_mm=20.0,
+                )
+            )
+
+
+class TestMotionConfig:
+    def test_direct_defaults_separate_normal_and_fast_rates(self):
+        cfg = So101Config(**_base_kwargs())
+        assert cfg.trajectory_hz == 20.0
+        assert cfg.max_joint_vel_dps == 35.0
+        assert cfg.max_cartesian_vel_mm_s == 60.0
+        assert cfg.fast_control_hz == 5.0
+        assert cfg.servo_max_joint_vel_dps == 35.0
+        assert cfg.servo_max_cartesian_vel_mm_s == 60.0
+        assert cfg.tracking_error_deg == 4.0
+        assert cfg.max_joint_step_deg == pytest.approx(1.75)
+        assert cfg.servo_max_joint_step_deg == pytest.approx(3.5)
+        assert cfg.tracking_error_deg > cfg.servo_max_joint_step_deg
+        assert cfg.servo_min_send_period_s == pytest.approx(0.2)
+        assert cfg.cartesian_interp_step_mm == pytest.approx(3.0)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(6.0)
+        assert cfg.fast_move_timeout_s == pytest.approx(20.0)
+        assert cfg.fast_absolute_timeout_s == pytest.approx(60.0)
+
+    def test_explicit_normal_rate_recomputes_inherited_fast_steps(self):
+        cfg = So101Config(**_base_kwargs(trajectory_hz=10.0))
+        assert cfg.max_joint_step_deg == pytest.approx(3.5)
+        assert cfg.cartesian_interp_step_mm == pytest.approx(6.0)
+        assert cfg.servo_max_joint_step_deg == pytest.approx(7.0)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(12.0)
+        assert cfg.servo_min_send_period_s == pytest.approx(0.2)
+
+    def test_explicit_fast_rate_only_recomputes_send_period(self):
+        cfg = So101Config(**_base_kwargs(fast_control_hz=10.0))
+        assert cfg.max_joint_step_deg == pytest.approx(1.75)
+        assert cfg.cartesian_interp_step_mm == pytest.approx(3.0)
+        assert cfg.servo_max_joint_step_deg == pytest.approx(3.5)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(6.0)
+        assert cfg.servo_min_send_period_s == pytest.approx(0.1)
+
+    def test_explicit_fast_steps_override_normal_inheritance(self):
+        cfg = So101Config(
+            **_base_kwargs(
+                servo_max_joint_step_deg=0.8,
+                servo_max_cartesian_step_mm=1.5,
+            )
+        )
+        assert cfg.servo_max_joint_step_deg == pytest.approx(0.8)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(1.5)
 
     def test_grouped_motion_block_is_normalised(self):
         cfg = So101Config.from_dict(
             {
                 **_base_kwargs(),
-                "motion": {"profile": "fast", "max_joint_step_deg": 4.0},
+                "motion": {
+                    "trajectory_hz": 10.0,
+                    "max_joint_vel_dps": 20.0,
+                    "max_cartesian_vel_mm_s": 40.0,
+                    "fast_control_hz": 4.0,
+                    "servo_max_joint_vel_dps": 20.0,
+                    "servo_max_cartesian_vel_mm_s": 30.0,
+                    "tracking_error_deg": 2.5,
+                },
             }
         )
-        assert cfg.motion_profile == "fast"
-        assert cfg.max_joint_step_deg == 4.0
-        assert cfg.trajectory_hz == 30.0
+        assert cfg.trajectory_hz == 10.0
+        assert cfg.max_joint_step_deg == pytest.approx(2.0)
+        assert cfg.cartesian_interp_step_mm == pytest.approx(4.0)
+        assert cfg.fast_control_hz == pytest.approx(4.0)
+        assert cfg.servo_max_joint_step_deg == pytest.approx(4.0)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(8.0)
+        assert cfg.servo_min_send_period_s == pytest.approx(0.25)
+        assert cfg.servo_max_cartesian_vel_mm_s == pytest.approx(30.0)
+        assert cfg.tracking_error_deg == pytest.approx(2.5)
 
     def test_grouped_motion_conflict_is_rejected(self):
         with pytest.raises(ValueError, match=r"conflicting motion\.trajectory_hz"):
             So101Config.from_dict({**_base_kwargs(trajectory_hz=20.0), "motion": {"trajectory_hz": 30.0}})
 
-    @pytest.mark.parametrize("value", ["", "turbo", 1, None])
-    def test_invalid_profile_rejected(self, value):
-        with pytest.raises(ValueError, match="motion_profile"):
-            So101Config(**_base_kwargs(motion_profile=value))
+    def test_removed_flat_profile_is_rejected(self):
+        with pytest.raises(ValueError, match="motion_profile was removed"):
+            So101Config.from_dict(_base_kwargs(motion_profile="balanced"))
+
+    def test_removed_grouped_profile_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown motion field 'profile'"):
+            So101Config.from_dict({**_base_kwargs(), "motion": {"profile": "balanced"}})
 
     def test_runtime_steps_are_derived_from_velocity_and_rate(self):
-        cfg = So101Config(**_base_kwargs(motion_profile="balanced"))
-        runtime = cfg.motion_runtime
-        assert cfg.max_joint_step_deg == pytest.approx(runtime.max_joint_vel_dps / runtime.control_hz)
-        assert cfg.cartesian_interp_step_mm == pytest.approx(runtime.max_cartesian_vel_mm_s / runtime.control_hz)
-        assert "profile=balanced" in cfg.motion_summary()
+        cfg = So101Config(**_base_kwargs())
+        assert cfg.max_joint_step_deg == pytest.approx(cfg.max_joint_vel_dps / cfg.trajectory_hz)
+        assert cfg.cartesian_interp_step_mm == pytest.approx(cfg.max_cartesian_vel_mm_s / cfg.trajectory_hz)
+        assert cfg.servo_max_joint_step_deg == pytest.approx(2.0 * cfg.max_joint_step_deg)
+        assert cfg.servo_max_cartesian_step_mm == pytest.approx(2.0 * cfg.cartesian_interp_step_mm)
+        assert cfg.servo_min_send_period_s == pytest.approx(1.0 / cfg.fast_control_hz)
+        assert cfg.joint_tolerance_deg == pytest.approx(1.5)
+        assert cfg.settle_soft_tolerance_deg == pytest.approx(3.0)
+        assert cfg.settle_soft_samples == 5
+        assert cfg.settle_max_z_undershoot_mm == pytest.approx(10.0)
+        assert cfg.settle_z_only_lift_enabled is True
+        assert cfg.settle_z_only_lift_step_mm == pytest.approx(2.0)
+        assert cfg.settle_z_only_lift_max_joint_offset_deg == pytest.approx(4.0)
+        assert "normal=20Hz/35deg/s/60mm/s" in cfg.motion_summary()
+        assert "fast=5Hz/3.5deg/6mm-step" in cfg.motion_summary()
+        assert "source=direct" in cfg.motion_summary()
+        assert "settle=1.5/3deg" in cfg.motion_summary()
+
+    def test_soft_settle_must_not_be_tighter_than_strict_settle(self):
+        with pytest.raises(ValueError, match="settle_soft_tolerance_deg"):
+            So101Config(
+                **_base_kwargs(
+                    joint_tolerance_deg=2.0,
+                    settle_soft_tolerance_deg=1.5,
+                )
+            )
+
+    def test_z_undershoot_tolerance_must_be_non_negative(self):
+        with pytest.raises(ValueError, match="settle_max_z_undershoot_mm"):
+            So101Config(
+                **_base_kwargs(
+                    settle_max_z_undershoot_mm=-0.1,
+                )
+            )
+
+    def test_grouped_soft_settle_values_are_loaded(self):
+        cfg = So101Config.from_dict(
+            {
+                **_base_kwargs(),
+                "motion": {
+                    "settle_soft_tolerance_deg": 2.5,
+                    "settle_soft_samples": 4,
+                    "settle_max_z_undershoot_mm": 2.0,
+                },
+            }
+        )
+        assert cfg.settle_soft_tolerance_deg == pytest.approx(2.5)
+        assert cfg.settle_soft_samples == 4
+        assert cfg.settle_max_z_undershoot_mm == pytest.approx(2.0)
 
     def test_grouped_safety_and_grasp_values_are_normalised(self):
         cfg = So101Config.from_dict(
@@ -488,6 +601,17 @@ class TestOrientationTolerance:
     def test_negative_rejected(self):
         with pytest.raises(ValueError, match="ik_orientation_tolerance_deg"):
             So101Config(**_base_kwargs(ik_orientation_tolerance_deg=-1.0))
+
+
+class TestServoGoalTolerance:
+    def test_default_is_one_mm(self):
+        cfg = So101Config(**_base_kwargs())
+        assert cfg.servo_goal_tolerance_mm == 1.0
+
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("nan")])
+    def test_non_positive_or_non_finite_rejected(self, value):
+        with pytest.raises(ValueError, match="servo_goal_tolerance_mm"):
+            So101Config(**_base_kwargs(servo_goal_tolerance_mm=value))
 
 
 class TestFromDictNested:
