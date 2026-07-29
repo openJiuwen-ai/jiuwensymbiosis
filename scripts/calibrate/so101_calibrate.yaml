@@ -1,0 +1,73 @@
+# SO-101 eye-to-hand 手眼标定配置 —— 供 scripts/calibrate/so101_eye_calib.py 使用。
+#
+# 标定只需要：能连串口读关节角（FK 求法兰位姿）+ 能从桌面固定相机取帧。
+# 不需要 detector/VLM，因此本文件不含 api_servers 与 model 段（与 calibrate.yaml
+# 同样的极简风格）。
+#
+# 安全语义（与 so101_eye_calib.py --config 省略时的 _standalone_calibration_config
+# 对齐）：
+#   * home_use_init_pose: true —— 豁免 safety_validated 门禁（connect 读取当前关节角
+#     作为 home，免去每次手填 home_joints_deg）。标定每次起始位不同，正合此意。
+#   * joint_limits ±180° —— 标定用宽软限位，避免标定位姿被 SafetyRail 误拦；
+#     真机运行配置请用收紧后的限位（见 configs/so101/so101.yaml）。
+#   * workspace_bounds / z_max_safe_mm = null —— 标定不限制笛卡尔工作空间。
+#   * disable_torque_on_disconnect: false —— 标定中可能断连后保持力矩；
+#     --release-torque 模式另由脚本内的 _release_torque_config 覆盖此字段。
+#
+# 用法：
+#   1) 填好下面的 camera_serial（或导出环境变量）。
+#   2) 先示教边界，再自动采集，最后离线重解或松力矩：
+#
+#   python scripts/calibrate/so101_eye_calib.py \
+#       --config scripts/calibrate/so101_calibrate.yaml \
+#       --board charuco --squares-x 5 --squares-y 7 \
+#       --square-size-mm 15.28 --marker-size-mm 11 \
+#       --collect-bounds --bounds-file tmp/so101_bounds.npz
+#
+#   python scripts/calibrate/so101_eye_calib.py \
+#       --config scripts/calibrate/so101_calibrate.yaml \
+#       --board charuco --squares-x 5 --squares-y 7 \
+#       --square-size-mm 15.28 --marker-size-mm 11 \
+#       --auto --bounds-file tmp/so101_bounds.npz --n-stations 24 \
+#       --dump tmp/so101_eye_stations.npz --cross-check
+#
+#   python scripts/calibrate/so101_eye_calib.py \
+#       --config scripts/calibrate/so101_calibrate.yaml --release-torque
+
+env:
+  cfg:
+    low_level:
+      name: "so101"
+      port: "/dev/your_port"            # [必填] 串口设备路径；用 `lerobot-find-port` 确认
+      robot_id: "so101_left"          # [必填] 必须与 `lerobot-calibrate --robot.id=` 一致
+      calibration_dir: null           # [选填] null 用 LeRobot 默认标定目录
+
+      # 断连时保持舵机力矩（false），避免 elbow_flex 等重力负载关节失力矩后下坠。
+      disable_torque_on_disconnect: false
+      max_relative_target: null      # 保持 null，避免 LeRobot 二次逐轴裁剪
+
+      # connect 时把当前关节角作为 home，并校验其处于 joint_limits 内；
+      # 同时豁免下方 safety_validated 门禁（标定每次起始位不同，正合此意）。
+      home_use_init_pose: true
+      # 标定用宽软限位（deg）；真机运行配置请用收紧后的限位。
+      joint_limits:
+        shoulder_pan: [-180.0, 180.0]
+        shoulder_lift: [-180.0, 180.0]
+        elbow_flex: [-180.0, 180.0]
+        wrist_flex: [-180.0, 180.0]
+        wrist_roll: [-180.0, 180.0]
+
+      # 标定放宽安全边界，避免标定位姿被 SafetyRail 误拦。
+      z_min_safe_mm: -1000000.0       # 标定不设 Z 下限
+      z_max_safe_mm: null             # 不设 Z 上限
+      workspace_bounds: null          # 不限 XY 工作空间
+
+      # 标定用短超时与紧到位容差（与 _standalone_calibration_config 默认一致）。
+      move_timeout_s: 5.0
+      joint_tolerance_deg: 3.5
+      settle_overcompensate: false
+
+      # --- 桌面固定 eye-to-hand 相机（标定必须有相机） ---
+      camera_serial: "<your-camera-serial>"   # 填入你的 RealSense 序列号
+      camera_resolution: [640, 480]
+      camera_fps: 30
