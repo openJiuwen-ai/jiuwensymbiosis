@@ -16,7 +16,6 @@ class _AutoLowLevel:
         self.grab_count = 0
         self.sent_actions: list[dict] = []
         self.enable_calls: list[tuple] = []
-        self._robot = self  # _preset_* uses ll._robot.send_action
 
     def move_joint_blocking(self, _q: list[float]) -> None:
         if self.move_exc is not None:
@@ -34,14 +33,21 @@ class _AutoLowLevel:
     def send_action(self, action: dict) -> None:
         self.sent_actions.append(action)
 
-    def bus(self):  # _arm_bus reads ll._robot.bus
-        return self
+    def disable_arm_torque(self) -> None:
+        self.enable_calls.append(("disable", so101_eye_calib.ARM_JOINT_ORDER))
 
-    def disable_torque(self, names=None):
-        self.enable_calls.append(("disable", tuple(names) if names else ()))
+    def enable_arm_torque(self) -> None:
+        self.enable_calls.append(("enable", so101_eye_calib.ARM_JOINT_ORDER))
 
-    def enable_torque(self, names=None):
-        self.enable_calls.append(("enable", tuple(names) if names else ()))
+    def preset_current_joint_goal(self) -> None:
+        q = np.asarray(self.get_angles(), dtype=np.float64)
+        if q.shape != (len(so101_eye_calib.ARM_JOINT_ORDER),) or not np.all(np.isfinite(q)):
+            raise ValueError(f"invalid joint vector: {q}")
+        action = {f"{name}.pos": float(value) for name, value in zip(so101_eye_calib.ARM_JOINT_ORDER, q, strict=True)}
+        self.send_action(action)
+
+    def restore_all_torque(self) -> None:
+        self.enable_calls.append(("enable", ()))
 
 
 def _cfg() -> SimpleNamespace:
@@ -77,6 +83,15 @@ def _capture_args() -> SimpleNamespace:
         min_corners=18,
         max_reproj_px=0.8,
         max_board_tilt_deg=45.0,
+    )
+
+
+def _capture_context(args=None) -> so101_eye_calib._CaptureContext:
+    return so101_eye_calib._CaptureContext(
+        board=None,
+        camera_matrix=np.eye(3, dtype=np.float64),
+        distortion_coeffs=None,
+        args=args or _capture_args(),
     )
 
 
@@ -167,14 +182,11 @@ def test_auto_capture_accepts_stable_actual_pose_after_move_target_timeout(monke
     caplog.set_level(logging.INFO)
 
     result = so101_eye_calib._collect_auto_station(
-        SimpleNamespace(low_level=ll),
-        None,
-        np.eye(3, dtype=np.float64),
-        None,
+        ll,
+        _capture_context(),
         np.zeros(5, dtype=np.float64),
         1,
         1,
-        _capture_args(),
     )
 
     assert result is not None
@@ -216,14 +228,11 @@ def test_relaxed_gates_accept_valid_low_corner_high_error_detection(monkeypatch)
     monkeypatch.setattr(so101_eye_calib, "_fk_from_joint_midpoint", lambda *_args: np.eye(4, dtype=np.float64))
 
     result = so101_eye_calib._collect_auto_station(
-        SimpleNamespace(low_level=ll),
-        None,
-        np.eye(3, dtype=np.float64),
-        None,
+        ll,
+        _capture_context(args),
         np.zeros(5, dtype=np.float64),
         1,
         1,
-        args,
     )
 
     assert result is not None
@@ -237,14 +246,11 @@ def test_auto_capture_rejects_move_timeout_when_encoder_never_settles(monkeypatc
     caplog.set_level(logging.INFO)
 
     result = so101_eye_calib._collect_auto_station(
-        SimpleNamespace(low_level=ll),
-        None,
-        np.eye(3, dtype=np.float64),
-        None,
+        ll,
+        _capture_context(),
         np.zeros(5, dtype=np.float64),
         1,
         1,
-        _capture_args(),
     )
 
     assert result is None
@@ -262,14 +268,11 @@ def test_auto_capture_rejects_safety_error_without_stability_or_capture(monkeypa
     caplog.set_level(logging.INFO)
 
     result = so101_eye_calib._collect_auto_station(
-        SimpleNamespace(low_level=ll),
-        None,
-        np.eye(3, dtype=np.float64),
-        None,
+        ll,
+        _capture_context(),
         np.zeros(5, dtype=np.float64),
         1,
         1,
-        _capture_args(),
     )
 
     assert result is None
@@ -282,14 +285,11 @@ def test_auto_capture_rejects_settle_drift_without_capture(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
 
     result = so101_eye_calib._collect_auto_station(
-        SimpleNamespace(low_level=ll),
-        None,
-        np.eye(3, dtype=np.float64),
-        None,
+        ll,
+        _capture_context(),
         np.zeros(5, dtype=np.float64),
         1,
         1,
-        _capture_args(),
     )
 
     assert result is None
@@ -376,6 +376,64 @@ def test_collect_bounds_does_not_require_n_stations_floor(tmp_path):
     np.savez(bounds, points=np.zeros((2, 5)), lo=np.zeros(5), hi=np.zeros(5))
     args = _validate(["--collect-bounds", "--square-size-mm", "15.28", "--bounds-file", str(bounds)])
     assert args.collect_bounds is True
+
+
+# --------------------------------------------------------------------------- live lifecycle
+def test_run_live_collection_connect_failure_preserves_original_error(monkeypatch):
+    calls = []
+
+    class _Env:
+        def __init__(self, _cfg):
+            pass
+
+        def connect(self):
+            calls.append("connect")
+            raise OSError("serial port not found")
+
+        @property
+        def low_level(self):
+            pytest.fail("low_level accessed after connect failure")
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    monkeypatch.setattr(so101_eye_calib, "So101Env", _Env)
+    monkeypatch.setattr(
+        so101_eye_calib,
+        "_enable_all_torque",
+        lambda _ll: pytest.fail("torque restore attempted without a driver"),
+    )
+
+    with pytest.raises(OSError, match="serial port not found"):
+        so101_eye_calib._run_live_collection(_cfg(), None, SimpleNamespace())
+
+    assert calls == ["connect", "disconnect"]
+
+
+def test_run_live_collection_rejects_missing_driver_after_connect(monkeypatch):
+    calls = []
+
+    class _Env:
+        def __init__(self, _cfg):
+            self.low_level = None
+
+        def connect(self):
+            calls.append("connect")
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    monkeypatch.setattr(so101_eye_calib, "So101Env", _Env)
+    monkeypatch.setattr(
+        so101_eye_calib,
+        "_enable_all_torque",
+        lambda _ll: pytest.fail("torque restore attempted without a driver"),
+    )
+
+    with pytest.raises(RuntimeError, match="connected without a low-level driver"):
+        so101_eye_calib._run_live_collection(_cfg(), None, SimpleNamespace())
+
+    assert calls == ["connect", "disconnect"]
 
 
 # --------------------------------------------------------------------------- release-torque helpers

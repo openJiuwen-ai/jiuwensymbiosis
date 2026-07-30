@@ -65,24 +65,35 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-# handeye_board / handeye_core live next to this file (same directory). When run
-# as a plain script, sys.path[0] already covers that directory; when imported as
-# scripts.calibrate.so101_eye_calib, sys.path[0] is not this directory, so add it
-# explicitly. Mirrors calibrate_hand_eye.py's same-directory sibling-import style.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from handeye_board import BoardSpec, detect_board  # noqa: E402
-from handeye_core import (  # noqa: E402
-    MIN_STATIONS,
-    Station,
-    ViewDetection,
-    _cv2_methods,
-    _rotation_angle_deg,
-    orthonormalize,
-    rotation_spread_deg,
-    save_calibration,
-)
+if __package__:
+    from .handeye_board import BoardSpec, detect_board
+    from .handeye_core import (
+        MIN_STATIONS,
+        Station,
+        ViewDetection,
+        _cv2_methods,
+        _rotation_angle_deg,
+        orthonormalize,
+        rotation_spread_deg,
+        save_calibration,
+    )
+else:  # Support direct execution: python scripts/calibrate/so101_eye_calib.py
+    from handeye_board import BoardSpec, detect_board
+    from handeye_core import (
+        MIN_STATIONS,
+        Station,
+        ViewDetection,
+        _cv2_methods,
+        _rotation_angle_deg,
+        orthonormalize,
+        rotation_spread_deg,
+        save_calibration,
+    )
 
-from jiuwensymbiosis.utils.geometry import invert_transform, make_transform  # noqa: E402
+from jiuwensymbiosis.adapters.so101.config import So101Config
+from jiuwensymbiosis.adapters.so101.env import So101Env
+from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
+from jiuwensymbiosis.utils.geometry import invert_transform, make_transform
 
 logger = logging.getLogger("so101_eye_calib")
 
@@ -118,7 +129,7 @@ def _solve_eye_to_hand(cv2, stations: list[Station], method_const: int) -> np.nd
     return make_transform(orthonormalize(np.asarray(r_x)), np.asarray(t_x).reshape(3))
 
 
-def _axxb_eye_to_hand(stations: list[Station], T_base_cam: np.ndarray) -> tuple[list[float], list[float]]:
+def _axxb_eye_to_hand(stations: list[Station], tf_base_cam: np.ndarray) -> tuple[list[float], list[float]]:
     """AX=XB consistency for eye-to-hand: board is rigidly on the arm, camera fixed.
 
     For each station the board-in-base is T_base_cam @ T_cam_target (camera is
@@ -134,8 +145,8 @@ def _axxb_eye_to_hand(stations: list[Station], T_base_cam: np.ndarray) -> tuple[
             gi, gj = stations[i].tf_base_flange, stations[j].tf_base_flange
             ci, cj = stations[i].detection.tf_cam_target, stations[j].detection.tf_cam_target
             # board-in-flange (constant): T_flange_board = inv(gripper2base) @ T_base_cam @ T_cam_target
-            bi = invert_transform(gi) @ T_base_cam @ ci
-            bj = invert_transform(gj) @ T_base_cam @ cj
+            bi = invert_transform(gi) @ tf_base_cam @ ci
+            bj = invert_transform(gj) @ tf_base_cam @ cj
             m = invert_transform(bi) @ bj  # should be identity (board rigid in flange)
             c = np.clip((np.trace(m[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
             rot_errs.append(float(np.degrees(np.arccos(c))))
@@ -143,22 +154,22 @@ def _axxb_eye_to_hand(stations: list[Station], T_base_cam: np.ndarray) -> tuple[
     return rot_errs, trans_errs
 
 
-def _board_in_flange_spread(stations: list[Station], T_base_cam: np.ndarray) -> np.ndarray:
+def _board_in_flange_spread(stations: list[Station], tf_base_cam: np.ndarray) -> np.ndarray:
     """Board origin in the flange frame per station (mm). Board clamped rigid =>
     constant. Spread measures rigidity / calibration quality."""
     pts = []
     for s in stations:
-        b_in_f = invert_transform(s.tf_base_flange) @ T_base_cam @ s.detection.tf_cam_target
+        b_in_f = invert_transform(s.tf_base_flange) @ tf_base_cam @ s.detection.tf_cam_target
         pts.append(b_in_f[:3, 3])
     return np.asarray(pts)
 
 
 def _station_rigidity_errors(
     stations: list[Station],
-    T_base_cam: np.ndarray,
+    tf_base_cam: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-station deviation from the mean constant board-in-control transform."""
-    transforms = [invert_transform(s.tf_base_flange) @ T_base_cam @ s.detection.tf_cam_target for s in stations]
+    transforms = [invert_transform(s.tf_base_flange) @ tf_base_cam @ s.detection.tf_cam_target for s in stations]
     translations = np.stack([tf[:3, 3] for tf in transforms])
     mean_translation = translations.mean(axis=0)
     mean_rotation = Rotation.from_matrix(np.stack([tf[:3, :3] for tf in transforms])).mean().as_matrix()
@@ -200,7 +211,7 @@ def _conservative_outlier_filter(
         local_idx = int(np.argmax(severity))
         if severity[local_idx] <= 1.0:
             break
-        candidate_kept = kept[:local_idx] + kept[local_idx + 1 :]
+        candidate_kept = kept[:local_idx] + kept[local_idx + 1:]  # fmt: skip
         candidate = [stations[i] for i in candidate_kept]
         if rotation_spread_deg(candidate) < 20.0:
             logger.info("  outlier filtering stopped: removal would leave <20deg rotation spread")
@@ -215,11 +226,16 @@ def _conservative_outlier_filter(
     return [stations[i] for i in kept], dropped
 
 
-def _dump_stations(path: Path, stations: list[Station], K: np.ndarray, capture_meta: list[dict]) -> None:
+def _dump_stations(
+    path: Path,
+    stations: list[Station],
+    camera_matrix: np.ndarray,
+    capture_meta: list[dict],
+) -> None:
     """Persist transforms plus capture diagnostics and selected RGB frames."""
     arr = {
         "n": len(stations),
-        "intrinsics": np.asarray(K, dtype=np.float64),
+        "intrinsics": np.asarray(camera_matrix, dtype=np.float64),
         "flange": np.stack([np.asarray(s.tf_base_flange, dtype=np.float64) for s in stations]),
         "board_cam": np.stack([np.asarray(s.detection.tf_cam_target, dtype=np.float64) for s in stations]),
         "reproj": np.array([float(s.detection.reproj_rms_px or 0.0) for s in stations]),
@@ -249,7 +265,7 @@ def _dump_stations(path: Path, stations: list[Station], K: np.ndarray, capture_m
 def _load_stations(path: Path) -> tuple[list[Station], np.ndarray]:
     """Reload stations dumped by _dump_stations for offline re-solve."""
     d = np.load(str(path))
-    K = d["intrinsics"]
+    camera_matrix = d["intrinsics"]
     stations = []
     for i in range(int(d["n"])):
         stations.append(
@@ -263,12 +279,7 @@ def _load_stations(path: Path) -> tuple[list[Station], np.ndarray]:
             )
         )
     logger.info(f"loaded {len(stations)} stations from {path}")
-    return stations, K
-
-
-from jiuwensymbiosis.adapters.so101.config import So101Config  # noqa: E402
-from jiuwensymbiosis.adapters.so101.env import So101Env  # noqa: E402
-from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER  # noqa: E402
+    return stations, camera_matrix
 
 
 def _standalone_calibration_config(args) -> So101Config:
@@ -351,19 +362,10 @@ def _prompt(prompt: str) -> str | None:
         return None
 
 
-def _arm_bus(ll):
-    """Return the private SOFollower bus used by this standalone calibration tool."""
-    bus = getattr(getattr(ll, "_robot", None), "bus", None)
-    if bus is None:
-        raise RuntimeError("SOFollower bus is unavailable.")
-    return bus
-
-
 def _disable_arm_torque(ll) -> bool:
     """Disable only the five arm joints; keep gripper holding torque enabled."""
     try:
-        bus = _arm_bus(ll)
-        bus.disable_torque(list(ARM_JOINT_ORDER))
+        ll.disable_arm_torque()
     except Exception as exc:
         logger.error("selective arm torque disable failed: %s", exc)
         return False
@@ -374,7 +376,7 @@ def _disable_arm_torque(ll) -> bool:
 def _enable_arm_torque(ll) -> bool:
     """Re-enable only the five arm joints; best-effort."""
     try:
-        _arm_bus(ll).enable_torque(list(ARM_JOINT_ORDER))
+        ll.enable_arm_torque()
     except Exception as exc:
         logger.warning("selective arm torque enable failed: %s", exc)
         return False
@@ -385,7 +387,7 @@ def _enable_arm_torque(ll) -> bool:
 def _enable_all_torque(ll) -> bool:
     """Safety cleanup: re-enable every motor, including the gripper."""
     try:
-        _arm_bus(ll).enable_torque()
+        ll.restore_all_torque()
     except Exception as exc:
         logger.warning("enable-all torque failed: %s", exc)
         return False
@@ -399,19 +401,9 @@ def _joint_delta_deg(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _preset_and_lock_current_pose(ll) -> bool:
     """Preset current joint positions while torque is off, then enable arm torque."""
-    try:
-        q = np.asarray(ll.get_angles(), dtype=np.float64)
-        action = {f"{name}.pos": float(v) for name, v in zip(ARM_JOINT_ORDER, q, strict=True)}
-        # Writing the current position while torque is OFF prevents stale goals from
-        # pulling the arm when torque is restored.
-        ll._robot.send_action(action)  # noqa: SLF001 - standalone hardware calibration
-        if not _enable_arm_torque(ll):
-            return False
-        return True
-    except Exception as exc:
-        logger.info(f"  failed to lock current pose: {exc}")
-        _enable_arm_torque(ll)
+    if not _preset_current_pose_goal(ll):
         return False
+    return _enable_arm_torque(ll)
 
 
 def _preset_current_pose_goal(ll) -> bool:
@@ -422,14 +414,7 @@ def _preset_current_pose_goal(ll) -> bool:
     only when the current joint vector is finite, correctly shaped, and written.
     """
     try:
-        q = np.asarray(ll.get_angles(), dtype=np.float64)
-        if q.shape != (len(ARM_JOINT_ORDER),) or not np.all(np.isfinite(q)):
-            logger.error(
-                f"  invalid joint vector (shape={q.shape}, finite={bool(np.all(np.isfinite(q)))}); no goal written"
-            )
-            return False
-        action = {f"{name}.pos": float(v) for name, v in zip(ARM_JOINT_ORDER, q, strict=True)}
-        ll._robot.send_action(action)  # noqa: SLF001 - standalone hardware calibration
+        ll.preset_current_joint_goal()
         return True
     except Exception as exc:
         logger.error("  failed to preset current joint goal: %s", exc)
@@ -461,16 +446,21 @@ def _fk_from_joint_midpoint(ll, q0: np.ndarray, q1: np.ndarray) -> np.ndarray:
         np.asarray(q0, dtype=np.float64)
         + ((np.asarray(q1, dtype=np.float64) - np.asarray(q0, dtype=np.float64) + 180.0) % 360.0 - 180.0) * 0.5
     )
-    tf = np.asarray(
-        ll._kin.forward_kinematics(q_mid),  # noqa: SLF001 - exact timestamped FK
-        dtype=np.float64,
-    ).copy()
-    tf[:3, 3] *= 1000.0  # RobotKinematics returns metres; stations use millimetres.
-    return tf
+    return np.asarray(ll.forward_kinematics_mm(q_mid), dtype=np.float64)
+
+
+@dataclasses.dataclass(frozen=True)
+class _CaptureContext:
+    """Inputs shared by live board capture operations."""
+
+    board: BoardSpec
+    camera_matrix: np.ndarray
+    distortion_coeffs: object | None
+    args: argparse.Namespace
 
 
 # --------------------------------------------------------------------------- auto
-def _collect_bounds(env, ll, board: BoardSpec, K: np.ndarray, dist, args) -> None:
+def _collect_bounds(ll, context: _CaptureContext) -> None:
     """Interactively collect ordered joint waypoints for later auto capture.
 
     Per point: Enter to disable arm torque -> hand-pose the arm (board visible,
@@ -478,6 +468,10 @@ def _collect_bounds(env, ll, board: BoardSpec, K: np.ndarray, dist, args) -> Non
     record the actual joint pose. Auto mode later follows the recorded points
     in order and inserts intermediate joint-space stations between them.
     """
+    board = context.board
+    camera_matrix = context.camera_matrix
+    distortion_coeffs = context.distortion_coeffs
+    args = context.args
     home = np.asarray(ll.get_angles(), dtype=np.float64) if ll is not None else None
     points: list[np.ndarray] = []
     flanges: list[np.ndarray] = []
@@ -534,7 +528,13 @@ def _collect_bounds(env, ll, board: BoardSpec, K: np.ndarray, dist, args) -> Non
                 )
                 continue
             rgb, _depth = frames
-            det = detect_board(rgb, board, intrinsics=K, dist=dist, min_corners=6)
+            det = detect_board(
+                rgb,
+                board,
+                intrinsics=camera_matrix,
+                dist=distortion_coeffs,
+                min_corners=6,
+            )
             if not det.ok or det.tf_cam_target is None:
                 logger.info(f"  point rejected: {det.reason}")
                 continue
@@ -572,15 +572,15 @@ def _collect_bounds(env, ll, board: BoardSpec, K: np.ndarray, dist, args) -> Non
         logger.info("need >= 2 points to form a box; nothing saved.")
         return
 
-    P = np.stack(points)
-    F = np.stack(flanges) if flanges else np.zeros((0, 4, 4))
-    lo = P.min(axis=0)
-    hi = P.max(axis=0)
+    joint_points = np.stack(points)
+    flange_transforms = np.stack(flanges) if flanges else np.zeros((0, 4, 4))
+    lo = joint_points.min(axis=0)
+    hi = joint_points.max(axis=0)
     out = {
         "n": len(points),
         "home": home if home is not None else np.zeros(5),
-        "points": P,
-        "flange": F,
+        "points": joint_points,
+        "flange": flange_transforms,
         "corner_count": np.asarray(corner_counts, dtype=np.int32),
         "reproj": np.asarray(reprojection_errors, dtype=np.float64),
         "lo": lo,
@@ -738,14 +738,15 @@ def _board_tilt_deg(tf_cam_target: np.ndarray) -> float:
 
 def _capture_station_frames(
     ll,
-    board: BoardSpec,
-    K: np.ndarray,
-    dist,
-    args,
+    context: _CaptureContext,
     *,
     label: str,
 ) -> tuple[Station, dict] | None:
     """Capture and select motion-, reprojection-, and tilt-gated frames."""
+    board = context.board
+    camera_matrix = context.camera_matrix
+    distortion_coeffs = context.distortion_coeffs
+    args = context.args
     candidates: list[tuple[Station, dict]] = []
     rejected = {
         "settle": 0,
@@ -781,8 +782,8 @@ def _capture_station_frames(
         det = detect_board(
             rgb,
             board,
-            intrinsics=K,
-            dist=dist,
+            intrinsics=camera_matrix,
+            dist=distortion_coeffs,
             min_corners=int(args.min_corners),
         )
         if not det.ok or det.tf_cam_target is None:
@@ -840,17 +841,14 @@ def _capture_station_frames(
 
 
 def _collect_auto_station(
-    env,
-    board: BoardSpec,
-    K: np.ndarray,
-    dist,
+    ll,
+    context: _CaptureContext,
     q_target: np.ndarray,
     station_idx: int,
     total: int,
-    args,
 ) -> tuple[Station, dict] | None:
     """Drive to one joint pose under torque, settle, then motion-gate N frames."""
-    ll = env.low_level
+    args = context.args
     move_timed_out = False
     try:
         ll.move_joint_blocking(q_target.tolist())
@@ -896,10 +894,7 @@ def _collect_auto_station(
 
     return _capture_station_frames(
         ll,
-        board,
-        K,
-        dist,
-        args,
+        context,
         label=f"[{station_idx}/{total}]",
     )
 
@@ -1135,8 +1130,9 @@ def main() -> None:
 
     # --replay: offline re-solve from a dumped .npz (no arm / no camera / no board spec).
     if args.replay:
-        stations, K = _load_stations(Path(args.replay))
-        return _solve_and_report(stations, K, args)
+        stations, camera_matrix = _load_stations(Path(args.replay))
+        _solve_and_report(stations, camera_matrix, args)
+        return
 
     # --release-torque: pure torque command; no board, no camera, no capture.
     if args.release_torque:
@@ -1158,19 +1154,30 @@ def _run_live_collection(cfg: So101Config, board: BoardSpec, args: argparse.Name
         logger.error("config has no camera_serial")
         return
     env = So101Env(cfg)
-    env.connect()
-    ll = env.low_level
+    ll = None
     stations: list[Station] = []
     capture_meta: list[dict] = []
     try:
-        K = ll.intrinsics
-        if K is None:
+        env.connect()
+        ll = env.low_level
+        if ll is None:
+            raise RuntimeError("SO-101 env connected without a low-level driver.")
+        camera_matrix = ll.intrinsics
+        if camera_matrix is None:
             logger.error("no camera intrinsics")
             return
-        logger.info(f"K: fx={K[0, 0]:.1f} fy={K[1, 1]:.1f} ppx={K[0, 2]:.1f} ppy={K[1, 2]:.1f}")
-        dist = None  # D405 factory intrinsics; detect_board handles dist=None
+        logger.info(
+            f"K: fx={camera_matrix[0, 0]:.1f} fy={camera_matrix[1, 1]:.1f} "
+            f"ppx={camera_matrix[0, 2]:.1f} ppy={camera_matrix[1, 2]:.1f}"
+        )
+        context = _CaptureContext(
+            board=board,
+            camera_matrix=np.asarray(camera_matrix, dtype=np.float64),
+            distortion_coeffs=None,  # D405 factory intrinsics; detect_board handles dist=None.
+            args=args,
+        )
         if args.collect_bounds:
-            _collect_bounds(env, ll, board, K, dist, args)
+            _collect_bounds(ll, context)
             return
 
         limit = args.n_stations
@@ -1187,7 +1194,7 @@ def _run_live_collection(cfg: So101Config, board: BoardSpec, args: argparse.Name
         for qi, q_target in enumerate(poses, start=1):
             if len(stations) >= limit:
                 break
-            result = _collect_auto_station(env, board, K, dist, q_target, qi, len(poses), args)
+            result = _collect_auto_station(ll, context, q_target, qi, len(poses))
             if result is not None:
                 st, meta = result
                 q_actual = _joint_midpoint_deg(meta["q_before"], meta["q_after"])
@@ -1220,16 +1227,18 @@ def _run_live_collection(cfg: So101Config, board: BoardSpec, args: argparse.Name
             logger.info("no accepted stations; nothing to dump or solve.")
             return
         if args.dump:
-            _dump_stations(Path(args.dump), stations, K, capture_meta)
-        return _solve_and_report(stations, K, args)
+            _dump_stations(Path(args.dump), stations, camera_matrix, capture_meta)
+        _solve_and_report(stations, camera_matrix, args)
+        return
     finally:
         # Safety: never leave torque disabled. Re-enable even if collection aborted.
-        _enable_all_torque(ll)
+        if ll is not None:
+            _enable_all_torque(ll)
         env.disconnect()
         logger.info("disconnected.")
 
 
-def _solve_and_report(stations: list[Station], K: np.ndarray, args) -> None:
+def _solve_and_report(stations: list[Station], camera_matrix: np.ndarray, args) -> None:
     """Solve T_base_cam with the corrected eye-to-hand convention + log metrics."""
     if len(stations) < MIN_STATIONS:
         logger.info(f"need >= {MIN_STATIONS} stations to solve, have {len(stations)} — not solved.")
@@ -1256,7 +1265,7 @@ def _solve_and_report(stations: list[Station], K: np.ndarray, args) -> None:
             logger.info(f"  retained {len(good)}/{len(stations)} stations after dropping {dropped}")
         else:
             logger.info("  no station met the conservative outlier criteria")
-    T_base_cam = _solve_eye_to_hand(cv2, good, methods[args.method])
+    tf_base_cam = _solve_eye_to_hand(cv2, good, methods[args.method])
 
     # Cross-check: all 5 OpenCV methods should agree if the convention is right.
     cc_deg = cc_mm = 0.0
@@ -1267,14 +1276,14 @@ def _solve_and_report(stations: list[Station], K: np.ndarray, args) -> None:
             cc_mm = max(cc_mm, float(np.linalg.norm(xi[:3, 3] - xj[:3, 3])))
 
     # Metrics with the CORRECT eye-to-hand convention (board-in-flange constant).
-    rot_errs, trans_errs = _axxb_eye_to_hand(good, T_base_cam)
-    bf_pts = _board_in_flange_spread(good, T_base_cam)
+    rot_errs, trans_errs = _axxb_eye_to_hand(good, tf_base_cam)
+    bf_pts = _board_in_flange_spread(good, tf_base_cam)
     bf_dists = np.linalg.norm(bf_pts - bf_pts.mean(axis=0), axis=1)
     reproj = [s.detection.reproj_rms_px for s in good if s.detection.reproj_rms_px is not None]
     spread = rotation_spread_deg(good)
 
-    rpy = Rotation.from_matrix(T_base_cam[:3, :3]).as_euler("xyz", degrees=True)
-    t = T_base_cam[:3, 3]
+    rpy = Rotation.from_matrix(tf_base_cam[:3, :3]).as_euler("xyz", degrees=True)
+    t = tf_base_cam[:3, 3]
     logger.info(f"  T_base_cam t_mm = ({t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f})")
     logger.info(f"  rpy_deg        = ({rpy[0]:.2f}, {rpy[1]:.2f}, {rpy[2]:.2f})")
     logger.info(f"  n_stations={len(good)}  rotation_spread={spread:.0f}deg")
@@ -1320,8 +1329,8 @@ def _solve_and_report(stations: list[Station], K: np.ndarray, args) -> None:
     if ok or args.save_review:
         save_calibration(
             out,
-            T_base_cam,
-            K,
+            tf_base_cam,
+            camera_matrix,
             [float(v) for v in bf_pts.mean(axis=0)],
             frame_field="T_base_cam",
             frame_comment="camera pose in base frame; translation in mm",
@@ -1339,8 +1348,8 @@ def _leave_one_out_spreads(stations, cv2, methods, *, base_max: float) -> list[t
         sub = [s for j, s in enumerate(stations) if j != k]
         if len(sub) < MIN_STATIONS:
             continue
-        T = _solve_eye_to_hand(cv2, sub, methods["PARK"])
-        pts = _board_in_flange_spread(sub, T)
+        solution_tf = _solve_eye_to_hand(cv2, sub, methods["PARK"])
+        pts = _board_in_flange_spread(sub, solution_tf)
         m = float(np.max(np.linalg.norm(pts - pts.mean(axis=0), axis=1)))
         out.append((k, m))
     return out

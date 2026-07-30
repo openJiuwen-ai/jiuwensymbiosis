@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from handeye_core import ViewDetection, _require_cv2
+
+if __package__:
+    from .handeye_core import ViewDetection, _require_cv2
+else:  # Support direct imports from scripts/calibrate on sys.path.
+    from handeye_core import ViewDetection, _require_cv2
 
 from jiuwensymbiosis.utils.geometry import make_transform
 
