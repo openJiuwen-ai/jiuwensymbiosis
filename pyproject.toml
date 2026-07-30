@@ -122,8 +122,9 @@ select = [
     "SLF",   # flake8-self (flag cross-object private-member access, e.g. agent._react_agent)
 ]
 ignore = [
-    "E501",  # line too long (handled by ruff format)
-    "UP009", # keep `# coding: utf-8` declarations (aligns with code template)
+    "E501",   # line too long (handled by ruff format)
+    "UP009",  # keep `# coding: utf-8` declarations (aligns with code template)
+    "BLE001", # allow `except Exception as exc` — see rules/code-style.md; suppression is forbidden, not the catch
 ]
 
 [tool.ruff.lint.per-file-ignores]

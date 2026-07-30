@@ -109,6 +109,70 @@ def _make_driver(
     return driver, follower, sleep_log
 
 
+class _FakeTorqueBus:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def disable_torque(self, names=None) -> None:
+        self.calls.append(("disable", tuple(names or ())))
+
+    def enable_torque(self, names=None) -> None:
+        self.calls.append(("enable", tuple(names or ())))
+
+
+class TestCalibrationSupport:
+    def test_public_torque_methods_keep_driver_in_control_of_private_bus(self, tmp_path):
+        driver, follower, _ = _make_driver(_make_cfg(), tmp_path)
+        torque_bus = _FakeTorqueBus()
+        follower.bus = torque_bus
+        driver.connect()
+
+        driver.disable_arm_torque()
+        driver.enable_arm_torque()
+        driver.restore_all_torque()
+
+        assert torque_bus.calls == [
+            ("disable", ARM_JOINT_ORDER),
+            ("enable", ARM_JOINT_ORDER),
+            ("enable", ()),
+        ]
+
+    def test_preset_current_joint_goal_writes_observed_arm_only(self, tmp_path):
+        driver, follower, _ = _make_driver(_make_cfg(), tmp_path)
+        follower._arm = [10.0, 20.0, 30.0, 40.0, 50.0]
+        driver.connect()
+
+        driver.preset_current_joint_goal()
+
+        assert follower.sent_actions == [
+            {
+                "shoulder_pan.pos": 10.0,
+                "shoulder_lift.pos": 20.0,
+                "elbow_flex.pos": 30.0,
+                "wrist_flex.pos": 40.0,
+                "wrist_roll.pos": 50.0,
+            }
+        ]
+
+    def test_preset_current_joint_goal_rejects_invalid_observation_without_sending(self, tmp_path):
+        driver, follower, _ = _make_driver(_make_cfg(), tmp_path)
+        driver.connect()
+        follower._arm = [10.0, 20.0, math.nan, 40.0, 50.0]
+
+        with pytest.raises(ValueError, match="must be finite"):
+            driver.preset_current_joint_goal()
+
+        assert follower.sent_actions == []
+
+    def test_forward_kinematics_mm_owns_unit_conversion(self, tmp_path):
+        driver, _, _ = _make_driver(_make_cfg(), tmp_path)
+        driver.connect()
+
+        transform = driver.forward_kinematics_mm([1.0, 2.0, 3.0, 0.0, 0.0])
+
+        np.testing.assert_allclose(transform[:3, 3], [10.0, 20.0, 30.0])
+
+
 class TestSetGripper:
     def test_close_sends_only_gripper_key(self, tmp_path):
         cfg = _make_cfg(gripper_settle_s=0.1)

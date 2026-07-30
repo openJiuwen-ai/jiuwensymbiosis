@@ -7,7 +7,7 @@
 name: "so101"
 port: "/dev/ttyUSB0"          # [必填] 串口设备路径；用 `lerobot-find-port` 确认
 robot_id: "so101"             # [必填] 必须与 `lerobot-calibrate --robot.id=` 一致
-calibration_dir: null        # [选填] 标定目录；null 用 LeRobot 默认 (~/.cache/lerobot/calibration/)
+calibration_dir: null        # [选填] 标定目录；null 用 LeRobot 默认 (~/.cache/huggingface/lerobot/calibration/robots/so_follower/{robot_id}.json)
 disable_torque_on_disconnect: true  # [选填] 断开时是否释放扭矩
 max_relative_target: null     # 驱动统一限速；非 null 仅用于旧配置兼容，返回值不一致会立即停止
 # [必填-真机门禁] 仅在示教确认安全 home、收紧软限位并完成低速验收后改为 true。

@@ -68,9 +68,15 @@ subclassed with additional fields. See `skills/python-patterns`.
 - **Mutable default arguments** — use `None` and initialize inside function:
   `def f(x: list[str] | None = None)` instead of `def f(x=[])`.
 - **`type()` checking** — use `isinstance()` instead: `isinstance(x, str)`.
-- **Bare `except`** — always catch specific exceptions, never bare `except:`.
-  In rail / motion code, catch `ValueError` for safety rejections so the LLM
-  can self-correct; re-raise everything else.
+- **Bare `except:` (no class)** — never use the truly bare form `except:`; it
+  catches `BaseException` (incl. `KeyboardInterrupt` / `SystemExit`). Name a
+  class: `except Exception as exc:` is fine (BLE001 is globally ignored — see
+  `rules/code-style.md` "Exception Handling"). The real anti-pattern is
+  *suppressing* the caught exception: every body must log/recover/re-raise,
+  never silently `pass`/`return`/`break`/`continue`. In rail / motion code,
+  catch `ValueError` specifically for safety rejections so the LLM can
+  self-correct; use broad `Exception` only for best-effort teardown/fallback
+  that logs and proceeds.
 - **`print()` in library code** — use `get_logger(name)`.
 - **`# type: ignore`** — discouraged; last resort, not a quick mute
   (`pyproject.toml` sets `warn_unused_ignores = true`). First fix at the

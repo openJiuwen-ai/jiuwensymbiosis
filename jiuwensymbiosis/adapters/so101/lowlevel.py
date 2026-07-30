@@ -600,6 +600,44 @@ class So101Driver:
         self._require_connected()
         return self._read_arm_angles(self._robot)
 
+    def forward_kinematics_mm(self, joints_deg: list[float] | np.ndarray) -> np.ndarray:
+        """Return flange FK as a finite 4x4 transform with translation in mm."""
+        self._require_connected()
+        joint_array = np.asarray(joints_deg, dtype=float)
+        self._validate_joint_vector(joint_array.tolist(), label="forward_kinematics_mm joints")
+        transform = np.asarray(self._kin.forward_kinematics(joint_array), dtype=float).copy()
+        if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+            raise RuntimeError(
+                "forward_kinematics_mm produced an invalid transform: "
+                f"shape={transform.shape}, finite={bool(np.all(np.isfinite(transform)))}."
+            )
+        transform[:3, 3] *= 1000.0
+        return transform
+
+    def disable_arm_torque(self) -> None:
+        """Disable the five arm joints while leaving gripper torque unchanged."""
+        self._require_connected()
+        self._robot.bus.disable_torque(list(ARM_JOINT_ORDER))
+
+    def enable_arm_torque(self) -> None:
+        """Enable the five arm joints while leaving gripper torque unchanged."""
+        self._require_connected()
+        self._robot.bus.enable_torque(list(ARM_JOINT_ORDER))
+
+    def preset_current_joint_goal(self) -> None:
+        """Write the observed arm joints as goals without enabling torque."""
+        self._require_connected()
+        joint_array = np.asarray(self.get_angles(), dtype=float)
+        self._validate_joint_vector(joint_array.tolist(), label="current arm joints")
+        requested = _arm_action(joint_array)
+        actual = self._send_action(requested)
+        self._require_action_match(requested, actual, label="preset current joint goal")
+
+    def restore_all_torque(self) -> None:
+        """Enable torque for every motor, including the gripper."""
+        self._require_connected()
+        self._robot.bus.enable_torque()
+
     def get_gripper_position(self) -> float:
         """Return the gripper target in 0..100 % (native SO-101 units)."""
         self._require_connected()
