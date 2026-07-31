@@ -207,8 +207,8 @@ class KinematicArmDriver:
         self._limits = spec.to_motion_limits()
         self._connected = False
         self._effector_engaged = False
-        # Monotonic timestamp of the last dispatched servo action (0.0 = none yet).
-        self._servo_last_send_t: float = 0.0
+        # Monotonic timestamp of the last dispatched servo action (None = none yet).
+        self._servo_last_send_t: float | None = None
         # Home joints; when home_from_startup, connect() captures the live pose.
         self._home_joints: list[float] = [float(v) for v in spec.home_joints]
         # Structured result of the last effector command (contact inference, etc.).
@@ -357,11 +357,11 @@ class KinematicArmDriver:
 
         now = self._clock()
         min_period = self._spec.servo_min_send_period_s
-        first_send = self._servo_last_send_t == 0.0
-        if not first_send and (now - self._servo_last_send_t) < min_period:
+        last_send_t = self._servo_last_send_t
+        if last_send_t is not None and (now - last_send_t) < min_period:
             return
 
-        dt = min_period if first_send else now - self._servo_last_send_t
+        dt = min_period if last_send_t is None else now - last_send_t
         max_step = min(self._spec.servo_max_joint_step_deg, self._spec.servo_max_joint_vel_dps * dt)
         if not math.isfinite(max_step) or max_step <= 0.0:
             raise ValueError(f"{self._name}: servo joint step cap is invalid ({max_step!r}).")
@@ -509,6 +509,7 @@ class KinematicArmDriver:
         start = float(self._transport.read_effector())
         direction = 1.0 if target >= start else -1.0
         window: list[float] = []
+        stall_samples = self._spec.gripper_contact_stall_samples
         settle = 0
         observed = start
         while True:
@@ -516,9 +517,9 @@ class KinematicArmDriver:
             observed = float(self._transport.read_effector())
             if infer_contact and (observed - start) * direction >= self._spec.gripper_contact_min_travel:
                 window.append(observed)
-                window = window[-self._spec.gripper_contact_stall_samples :]
+                window = window[-stall_samples:]
                 if (
-                    len(window) >= self._spec.gripper_contact_stall_samples
+                    len(window) >= stall_samples
                     and max(window) - min(window) <= self._spec.gripper_contact_stall_tolerance
                 ):
                     self._apply_contact_hold(observed, target, direction)
@@ -669,7 +670,7 @@ class KinematicArmDriver:
         prev_err: float | None = None
         while True:
             observed = self._read_arm_joints()
-            err = max((abs(o - f) for o, f in zip(observed, final, strict=True)), default=0.0)
+            err = max((abs(obs - tgt) for obs, tgt in zip(observed, final, strict=True)), default=0.0)
             if err <= tol:
                 settle += 1
                 if settle >= self._spec.settle_samples:
@@ -710,8 +711,8 @@ class KinematicArmDriver:
         if gain > 0.0:
             max_step = self._spec.max_joint_step_deg
             command = [
-                lc + max(-max_step, min(max_step, (t + gain * (t - o)) - lc))
-                for lc, t, o in zip(last_command, final, observed, strict=True)
+                last + max(-max_step, min(max_step, (tgt + gain * (tgt - obs)) - last))
+                for last, tgt, obs in zip(last_command, final, observed, strict=True)
             ]
             if self._within_soft_limits(command):
                 self._transport.send_arm_joints(list(command))

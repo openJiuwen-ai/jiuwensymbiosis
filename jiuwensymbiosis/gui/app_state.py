@@ -35,8 +35,11 @@ class AppState:
         self._configs: dict[tuple[str, str], ConfigModel] = {}
 
     def config_for(self, body_key: str, task_key: str) -> ConfigModel:
-        """取(本体, 任务)的配置模型:优先缓存,否则从**本体**配置 YAML 载入,套上任务的
-        agent 默认与默认指令(本体配置缺失则用默认指令起步)。"""
+        """取(本体, 任务)的配置模型。
+
+        优先缓存,否则从**本体**配置 YAML 载入,套上任务的 agent 默认与默认指令
+        (本体配置缺失则用默认指令起步)。
+        """
         cache_key = (body_key, task_key)
         if cache_key in self._configs:
             return self._configs[cache_key]

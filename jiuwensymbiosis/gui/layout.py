@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from nicegui import app, ui
 
 from jiuwensymbiosis.gui import ABOUT_TEXT, APP_NAME, registry
@@ -73,23 +75,23 @@ class Layout:
 
     def _build_quit_dialog(self) -> ui.dialog:
         """确认后关停整个应用(NiceGUI 服务器随之退出;重开请再点桌面图标/启动脚本)。"""
-        with ui.dialog() as dialog, ui.card().classes("gap-3"):
-            ui.label("退出 Jiuwen Symbiosis？").classes("text-base font-bold")
-            ui.label("将关闭本应用（后台服务一并停止）。重新打开请再次点击桌面图标。").classes("text-sm")
-            with ui.row().classes("self-end gap-2"):
-                ui.button("取消", on_click=dialog.close).props("flat")
-                ui.button("退出", on_click=self._do_quit).props("color=negative")
-        return dialog
+        return self._confirm_dialog(
+            title="退出 Jiuwen Symbiosis？",
+            body="将关闭本应用（后台服务一并停止）。重新打开请再次点击桌面图标。",
+            confirm_label="退出",
+            confirm_props="color=negative",
+            on_confirm=self._do_quit,
+        )
 
     def _build_restart_dialog(self) -> ui.dialog:
         """确认后重启整个应用:关停当前服务器并拉起一个新的(硬件/检测服务一并重连)。"""
-        with ui.dialog() as dialog, ui.card().classes("gap-3"):
-            ui.label("重启 Jiuwen Symbiosis？").classes("text-base font-bold")
-            ui.label("将关停当前应用并重新启动(硬件/检测服务一并重连)。浏览器会自动打开新页面。").classes("text-sm")
-            with ui.row().classes("self-end gap-2"):
-                ui.button("取消", on_click=dialog.close).props("flat")
-                ui.button("重启", on_click=self._do_restart).props("color=primary")
-        return dialog
+        return self._confirm_dialog(
+            title="重启 Jiuwen Symbiosis？",
+            body="将关停当前应用并重新启动(硬件/检测服务一并重连)。浏览器会自动打开新页面。",
+            confirm_label="重启",
+            confirm_props="color=primary",
+            on_confirm=self._do_restart,
+        )
 
     def _confirm_quit(self) -> None:
         """点「退出」:运行中先拦一下(避免中途杀掉真机任务),否则弹确认框。"""
@@ -234,18 +236,38 @@ class Layout:
 
     @staticmethod
     def _build_bye_dialog() -> ui.dialog:
-        """退出后的「已关闭」提示:shutdown 会立即断连,先亮这句,避免页面看起来像卡死。"""
-        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
-            ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
-            ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
-        return dialog
+        """退出后的「已关闭」提示。"""
+        return Layout._notice_dialog("Jiuwen Symbiosis 已关闭", "可以关闭此标签页了。")
 
     @staticmethod
     def _build_restarting_dialog() -> ui.dialog:
-        """重启中提示:shutdown 会立即断连,先亮这句,新页面稍候由接替进程自动打开。"""
+        """重启中提示,新页面稍候由接替进程自动打开。"""
+        return Layout._notice_dialog("正在重启 Jiuwen Symbiosis…", "新页面稍候自动打开,可关闭此标签页。")
+
+    @staticmethod
+    def _confirm_dialog(
+        *,
+        title: str,
+        body: str,
+        confirm_label: str,
+        confirm_props: str,
+        on_confirm: Callable[[], None],
+    ) -> ui.dialog:
+        """确认框:标题 + 说明 + 「取消 / <确认>」两个按钮。"""
+        with ui.dialog() as dialog, ui.card().classes("gap-3"):
+            ui.label(title).classes("text-base font-bold")
+            ui.label(body).classes("text-sm")
+            with ui.row().classes("self-end gap-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button(confirm_label, on_click=on_confirm).props(confirm_props)
+        return dialog
+
+    @staticmethod
+    def _notice_dialog(title: str, body: str) -> ui.dialog:
+        """persistent 提示框:shutdown 会立即断连,先亮标题+一句说明,避免页面看起来像卡死。"""
         with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
-            ui.label("正在重启 Jiuwen Symbiosis…").classes("text-lg font-bold")
-            ui.label("新页面稍候自动打开,可关闭此标签页。").classes("text-sm text-gray-600")
+            ui.label(title).classes("text-lg font-bold")
+            ui.label(body).classes("text-sm text-gray-600")
         return dialog
 
 

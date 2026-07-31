@@ -14,7 +14,7 @@ per-body convention supplied by the adapter (default intrinsic ``"xyz"``).
 from __future__ import annotations
 
 from dataclasses import astuple, dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -43,7 +43,18 @@ class CartesianPose:
         return astuple(self)
 
 
-def read_pose_xyzrpy(obj: Any) -> tuple[float, float, float, float, float, float]:
+class PoseXYZRPY(NamedTuple):
+    """Positional pose read: mm translation + Euler-degree rotation."""
+
+    x: float
+    y: float
+    z: float
+    rx: float
+    ry: float
+    rz: float
+
+
+def read_pose_xyzrpy(obj: Any) -> PoseXYZRPY:
     """Read ``(x, y, z, rx, ry, rz)`` from any pose-like object.
 
     Tolerates the ``SimpleNamespace`` the motion mixins build and objects that
@@ -55,7 +66,7 @@ def read_pose_xyzrpy(obj: Any) -> tuple[float, float, float, float, float, float
     rx = float(getattr(obj, "rx", 0.0))
     ry = float(getattr(obj, "ry", 0.0))
     rz = float(getattr(obj, "rz", getattr(obj, "r", 0.0)))
-    return x, y, z, rx, ry, rz
+    return PoseXYZRPY(x, y, z, rx, ry, rz)
 
 
 def pose_to_matrix(pose: Any, *, euler_axes: str = "xyz") -> np.ndarray:
