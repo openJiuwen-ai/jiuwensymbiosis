@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from jiuwensymbiosis.gui.bridge import UIBridgeRail
-from jiuwensymbiosis.gui.mock_sessions import build_mock_robot_session
+from tests.mocks.mock_session import make_mock_session
 
 
 class _Resp:
@@ -61,7 +61,7 @@ class _Emitter:
 
 @pytest.fixture
 def session():
-    return build_mock_robot_session()
+    return make_mock_session()
 
 
 async def test_motion_tool_emits_start_finish_and_frame(session):

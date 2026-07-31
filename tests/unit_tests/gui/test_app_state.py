@@ -13,7 +13,7 @@ from jiuwensymbiosis.gui.config_model import ConfigModel
 
 def test_config_for_task_applies_agent_defaults_and_tracing():
     state = AppState()
-    model = state.config_for_task("pick_box")
+    model = state.config_for("piper", "pick_box")
     assert model.get("agent.enable_tracing") is True  # 默认开启轨迹记录
     assert model.get("agent.exec_mode") == "fast"  # 默认快速模式
 
@@ -22,7 +22,7 @@ def test_config_for_task_prefills_prompt_from_default_query():
     from jiuwensymbiosis.gui import registry
 
     state = AppState()
-    model = state.config_for_task("pick_box")
+    model = state.config_for("piper", "pick_box")
     # piper.yaml 任务无关化后不含 prompt → 用任务默认指令预填「配置 → 任务指令」框
     default_query = registry.get_task("pick_box").default_query
     assert default_query and model.get("env.cfg.prompt") == default_query
@@ -30,16 +30,18 @@ def test_config_for_task_prefills_prompt_from_default_query():
 
 def test_config_for_task_is_cached():
     state = AppState()
-    first = state.config_for_task("pick_box")
-    assert state.config_for_task("pick_box") is first  # 同一实例(带缓存)
+    first = state.config_for("piper", "pick_box")
+    assert state.config_for("piper", "pick_box") is first  # 同一实例(带缓存)
 
 
 def test_apply_fix_patches_detector_server():
     state = AppState()
+    state.current_body = "piper"
     state.current_task = "pick_box"
-    state.set_config("pick_box", ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino.Detector"}]}))
+    detector_cfg = ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino.Detector"}]})
+    state.set_config("piper", "pick_box", detector_cfg)
     state.apply_fix({"hf_endpoint": "https://hf-mirror.com"})
-    servers = state.config_for_task("pick_box").data["api_servers"]
+    servers = state.config_for("piper", "pick_box").data["api_servers"]
     assert servers[0]["hf_endpoint"] == "https://hf-mirror.com"
 
 
@@ -51,10 +53,6 @@ def test_apply_fix_noop_without_current_task():
 
 def test_not_busy_before_any_run():
     assert AppState().is_busy() is False
-
-
-def test_default_is_real_hardware_not_mock():
-    assert AppState().mock is False  # 默认真机模式(点运行即尝试连接机械臂)
 
 
 def _detector_config(use_sam2=True):
@@ -80,8 +78,8 @@ def test_prime_sets_env_for_found_model_and_reports_missing(tmp_path, monkeypatc
     _make_gdino(snap)  # gdino present locally, sam2 absent
 
     state = AppState()
-    state.set_config("pick_box", _detector_config(use_sam2=True))
-    missing = state.prime_detector_models("pick_box")
+    state.set_config("piper", "pick_box", _detector_config(use_sam2=True))
+    missing = state.prime_detector_models("piper", "pick_box")
 
     # prime 直接写 os.environ,monkeypatch 不追踪也就不会还原;立刻 pop 回收,避免泄漏污染后续测试。
     gdino_env = os.environ.pop("GDINO_MODEL_ID", None)
@@ -93,12 +91,20 @@ def test_prime_respects_user_env(monkeypatch):
     monkeypatch.setenv("GDINO_MODEL_ID", "/my/own/gdino")
     monkeypatch.setenv("SAM2_MODEL_ID", "/my/own/sam2")
     state = AppState()
-    state.set_config("pick_box", _detector_config())
-    assert state.prime_detector_models("pick_box") == []  # 已设则不干预
+    state.set_config("piper", "pick_box", _detector_config())
+    assert state.prime_detector_models("piper", "pick_box") == []  # 已设则不干预
     assert os.environ["GDINO_MODEL_ID"] == "/my/own/gdino"
 
 
 def test_prime_noop_without_detector():
     state = AppState()
-    state.set_config("pick_box", ConfigModel.from_dict({"env": {"cfg": {"prompt": "hi"}}}))
-    assert state.prime_detector_models("pick_box") == []
+    state.set_config("piper", "pick_box", ConfigModel.from_dict({"env": {"cfg": {"prompt": "hi"}}}))
+    assert state.prime_detector_models("piper", "pick_box") == []
+
+
+def test_prime_noop_when_vision_disabled():
+    state = AppState()
+    cfg = _detector_config()
+    cfg.set("gui.disable_vision", True)  # 「禁用视觉服务」开关打开
+    state.set_config("piper", "pick_box", cfg)
+    assert state.prime_detector_models("piper", "pick_box") == []  # 不去喂检测器模型

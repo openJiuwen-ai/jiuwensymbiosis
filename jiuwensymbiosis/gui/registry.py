@@ -3,22 +3,27 @@
 
 """本体(机器人)与任务的注册表 —— GUI 多本体/多任务的扩展点。
 
-一个**本体**(``RobotBody``)= 一种机器人形态,知道如何构建它的真机会话与模拟
-会话;一个**任务**(``TaskDef``)= 绑定某本体的一份预设(配置文件 + 默认指令 +
-模拟脚本)。首页据此渲染本体下拉与任务卡片。
+一个**本体**(``RobotBody``)= 一种机器人形态,知道如何构建它的真机会话,并持有它那份
+**与具体任务无关**的默认真机配置(``default_config_relpath``)。一个**任务**
+(``TaskDef``)= 一份**本体无关**的意图预设(自然语言指令 + agent 行为默认);
+``bodies`` 为空即适用所有本体(如"视觉拾取"可在任意机械臂上执行)。首页据此渲染本体
+下拉与任务卡片:选中本体 × 选中任务 = 用该本体的配置执行该意图。
 
-**数据化**:任务/本体清单是数据,不硬编码——启动时从随包只读数据文件
-``gui/data/{bodies,tasks}.yaml`` 加载,并与用户目录 ``~/.jiuwensymbiosis/gui/tasks.yaml``
+**数据化**:本体/任务清单是数据,不硬编码——启动时从随包只读数据文件
+``gui/data/{bodies,tasks}.yaml`` 加载,任务再与用户目录 ``~/.jiuwensymbiosis/gui/tasks.yaml``
 合并(用户可覆盖同 key、可「另存为新任务」)。数据文件与面向 terminal 的 ``configs/``
 分开,属 GUI 内部资产。
 
-唯一留在代码里的是 ``_ADAPTERS``:``adapter 名 → (模拟会话构建, 真机会话构建)``——
-这两个是必须 import 适配器类的**可执行回调**,天然属于代码;数据里的本体用 ``adapter``
-名引用它。故"接入一种新硬件"仍需写适配器代码,但其展示元数据已数据化。
+**约定式会话构建**:本体只需在数据里声明 ``adapter`` 名,真机会话由约定推导——
+惰性 import ``jiuwensymbiosis.adapters.<adapter>.build_<adapter>_session`` 并
+``from_dict`` 构建。故"接入一种新硬件"=
+6 个适配器文件 + 一条 ``bodies.yaml`` 数据,注册表零改动。
 """
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,7 +34,6 @@ import yaml
 
 import jiuwensymbiosis
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.gui.mock_sessions import build_mock_robot_session
 
 logger = logging.getLogger(__name__)
 
@@ -72,69 +76,70 @@ class RobotBody:
     Attributes:
         key: 稳定标识(下拉/任务引用用)。
         display_name: 界面显示名。
-        description: 一句话说明。
-        capability_badges: 首页展示的能力徽章(纯文案)。
-        build_mock_session: 返回一个未连接的模拟会话。
+        default_config_relpath: 本体的、**与具体任务无关**的**默认**真机配置(相对 ``configs/``
+            或绝对路径);运行时套上所选任务的指令与 agent 默认。用户后续可指向别的配置。
         build_real_session: 传入界面编辑过的配置 dict,返回真机会话(惰性导入硬件依赖)。
     """
 
     key: str
     display_name: str
-    description: str
-    capability_badges: tuple[str, ...]
-    build_mock_session: Callable[[], RobotSession]
+    default_config_relpath: str
     build_real_session: Callable[[dict], RobotSession]
+
+    def config_path(self) -> Path:
+        """返回本体默认配置文件的绝对路径(绝对路径时直接用)。"""
+        path = Path(self.default_config_relpath)
+        return path if path.is_absolute() else configs_dir() / self.default_config_relpath
 
 
 @dataclass(frozen=True)
 class TaskDef:
-    """一个任务预设。
+    """一个**本体无关**的任务意图预设。
+
+    任务只描述"做什么"(指令 + agent 行为),不含任何本体专属配置——配置由
+    所选本体(``RobotBody.default_config_relpath``)提供。这样"夹香蕉/视觉拾取"这类意图可在任意
+    机械臂上执行,无需为每种本体重复一份。
 
     Attributes:
         key: 稳定标识(唯一)。
-        body_key: 所属本体。
         display_name / description: 界面文案。
-        config_relpath: 配置文件路径(相对 ``configs/`` 或绝对路径)。
+        bodies: 适用的本体 key;**空=适用所有本体**,非空则限定(能力天然不匹配时的逃生阀)。
         default_query: 缺省任务指令(配置无 prompt 时用)。
-        mock_script: 模拟运行时脚本化模型逐轮返回的工具序列(仅内置演示任务需要)。
-        mock_final_text: 脚本走完后的收尾文本。
         agent_defaults: 本任务在配置里缺省启用的 ``agent.*`` 项;配置未显式设置时由 GUI
             填入,使界面显示 = 实际运行。
     """
 
     key: str
-    body_key: str
     display_name: str
     description: str
-    config_relpath: str
+    bodies: tuple[str, ...] = ()
     default_query: str = ""
-    mock_script: tuple[dict, ...] = ()
-    mock_final_text: str = "任务完成。"
     agent_defaults: dict = field(default_factory=dict)
 
-    def config_path(self) -> Path:
-        """返回配置文件的绝对路径(``config_relpath`` 为绝对路径时直接用)。"""
-        path = Path(self.config_relpath)
-        return path if path.is_absolute() else configs_dir() / self.config_relpath
 
+# ------------------------------------------------------------------ 约定式会话构建
+def _real_session_builder(adapter: str) -> Callable[[dict], RobotSession]:
+    """按约定返回某 adapter 的真机会话构建器(惰性导入,无 SDK 时仅在真跑时才失败)。
 
-# ------------------------------------------------------------------ 适配器注册表(代码)
-def _build_piper_real_session(config_data: dict) -> RobotSession:
-    """真机 Piper 会话:惰性导入适配器,避免无 piper_sdk 时导入本模块即失败。
-
-    直接采用**界面编辑过的配置 dict**(经 ``from_dict``,而非重新读盘),使配置页里
-    改的相机序列号 / 运动速度 / 工具偏置等对真机运行同样生效(否则真机会话读的是磁盘
-    原文件,界面改动全被丢弃)。
+    约定:``jiuwensymbiosis.adapters.<adapter>`` 导出 ``build_<adapter>_session``,后者
+    带 ``.from_dict``(见 ``adapters/_common/builder.make_builder``)。直接采用**界面编辑过
+    的配置 dict**(而非重新读盘),使配置页改动对真机运行同样生效。
     """
-    from jiuwensymbiosis.adapters.piper import build_piper_session
 
-    return cast(RobotSession, build_piper_session.from_dict(config_data))
+    def build(config_data: dict) -> RobotSession:
+        module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+        factory = getattr(module, f"build_{adapter}_session")
+        return cast(RobotSession, factory.from_dict(config_data))
+
+    return build
 
 
-# adapter 名 → (模拟会话构建, 真机会话构建)。数据文件里的本体用 adapter 名引用这里。
-_ADAPTERS: dict[str, tuple[Callable[[], RobotSession], Callable[[dict], RobotSession]]] = {
-    "piper": (lambda: build_mock_robot_session("piper_mock"), _build_piper_real_session),
-}
+def _adapter_available(adapter: str) -> bool:
+    """该 adapter 包是否存在(不执行其重依赖;仅 find_spec 定位)。"""
+    try:
+        return importlib.util.find_spec(f"jiuwensymbiosis.adapters.{adapter}") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 # ------------------------------------------------------------------ 数据加载
@@ -158,34 +163,27 @@ def _read_yaml_mapping(path: Path) -> dict[str, Any]:
 
 
 def _body_from_dict(entry: dict) -> RobotBody | None:
-    """把一条本体数据构造成 ``RobotBody``;引用未知 adapter 则跳过(记 warning)。"""
-    adapter = entry.get("adapter")
-    builders = _ADAPTERS.get(str(adapter))
-    if builders is None:
+    """把一条本体数据构造成 ``RobotBody``;adapter 包不存在则跳过(记 warning)。"""
+    adapter = str(entry.get("adapter", ""))
+    if not adapter or not _adapter_available(adapter):
         logger.warning("本体 %r 引用了未知 adapter %r,跳过", entry.get("key"), adapter)
         return None
-    build_mock, build_real = builders
     return RobotBody(
         key=str(entry["key"]),
         display_name=str(entry.get("display_name", entry["key"])),
-        description=str(entry.get("description", "")),
-        capability_badges=tuple(str(b) for b in entry.get("capability_badges", ())),
-        build_mock_session=build_mock,
-        build_real_session=build_real,
+        default_config_relpath=str(entry.get("default_config_relpath", "")),
+        build_real_session=_real_session_builder(adapter),
     )
 
 
 def _task_from_dict(entry: dict) -> TaskDef:
-    """把一条任务数据构造成 ``TaskDef``。"""
+    """把一条任务数据构造成 ``TaskDef``(``bodies`` 缺省=适用所有本体)。"""
     return TaskDef(
         key=str(entry["key"]),
-        body_key=str(entry["body"]),
         display_name=str(entry.get("display_name", entry["key"])),
         description=str(entry.get("description", "")),
-        config_relpath=str(entry.get("config_relpath", "")),
+        bodies=tuple(str(b) for b in entry.get("bodies") or ()),
         default_query=str(entry.get("default_query", "")),
-        mock_script=tuple(entry.get("mock_script") or ()),
-        mock_final_text=str(entry.get("mock_final_text", "任务完成。")),
         agent_defaults=dict(entry.get("agent_defaults") or {}),
     )
 
@@ -206,7 +204,7 @@ def _load_tasks() -> dict[str, TaskDef]:
     tasks: dict[str, TaskDef] = {}
     for source in (_data_dir() / "tasks.yaml", user_data_dir() / "tasks.yaml"):
         for entry in _read_yaml_mapping(source).get("tasks") or []:
-            if isinstance(entry, dict) and "key" in entry and "body" in entry:
+            if isinstance(entry, dict) and "key" in entry:
                 task = _task_from_dict(entry)
                 tasks[task.key] = task
     return tasks or _fallback_tasks()
@@ -214,28 +212,23 @@ def _load_tasks() -> dict[str, TaskDef]:
 
 def _fallback_bodies() -> dict[str, RobotBody]:
     """最后兜底:数据文件读不出时,至少给一个 piper 本体,保证界面可用。"""
-    build_mock, build_real = _ADAPTERS["piper"]
     return {
         "piper": RobotBody(
             key="piper",
-            display_name="Piper 六轴机械臂(示例)",
-            description="AgileX Piper 六轴机械臂 + 平行夹爪 + 腕部相机(示例本体)。",
-            capability_badges=("运动", "夹爪", "视觉"),
-            build_mock_session=build_mock,
-            build_real_session=build_real,
+            display_name="Piper 六轴机械臂",
+            default_config_relpath="piper/piper.yaml",
+            build_real_session=_real_session_builder("piper"),
         )
     }
 
 
 def _fallback_tasks() -> dict[str, TaskDef]:
-    """最后兜底:数据文件读不出时,至少给一个 pick_box 任务(无模拟脚本)。"""
+    """最后兜底:数据文件读不出时,至少给一个本体无关的拾放任务。"""
     return {
         "pick_box": TaskDef(
             key="pick_box",
-            body_key="piper",
             display_name="拾取盒子",
             description="把黑色盒子抓起来放到白色盒子上。",
-            config_relpath="piper/piper.yaml",
             default_query="把黑色盒子抓起来放到白色盒子上。",
             agent_defaults={"enable_skill": True},
         )
@@ -268,32 +261,33 @@ def get_task(key: str) -> TaskDef:
 
 
 def tasks_for_body(body_key: str) -> list[TaskDef]:
-    """返回属于某本体的任务。"""
-    return [t for t in _TASKS.values() if t.body_key == body_key]
+    """返回适用于某本体的任务(``bodies`` 为空的本体无关任务对所有本体可见)。"""
+    return [t for t in _TASKS.values() if not t.bodies or body_key in t.bodies]
 
 
-def add_user_task(*, display_name: str, description: str, body_key: str, config_yaml: str) -> TaskDef:
-    """把一个用户新任务落盘并注册(供「另存为新任务」)。
+def add_user_task(
+    *, display_name: str, description: str, default_query: str = "", bodies: tuple[str, ...] = ()
+) -> TaskDef:
+    """把一个用户新任务(意图)落盘并注册(供「另存为新任务」)。
 
-    做三件事:①把配置写成用户目录下的一份 yaml;②追加一条任务到用户 ``tasks.yaml``;
-    ③注册进内存 ``_TASKS``。``key`` 自动生成唯一 id;``config_relpath`` 存该配置 yaml 的
-    绝对路径。返回新建的 ``TaskDef``。
+    任务本体无关——只存"做什么"(指令 + 适用本体范围);配置属本体,不在此捆绑。做两件事:
+    ①追加一条任务到用户 ``tasks.yaml``;②注册进内存 ``_TASKS``。``key`` 自动生成唯一 id。
+    返回新建的 ``TaskDef``。
     """
     import uuid
 
     udir = user_data_dir()
-    (udir / "configs").mkdir(parents=True, exist_ok=True)
+    udir.mkdir(parents=True, exist_ok=True)
     key = f"user_{uuid.uuid4().hex[:8]}"
-    config_file = udir / "configs" / f"{key}.yaml"
-    config_file.write_text(config_yaml, encoding="utf-8")
 
-    entry = {
+    entry: dict[str, Any] = {
         "key": key,
-        "body": body_key,
         "display_name": display_name,
         "description": description,
-        "config_relpath": str(config_file),  # 绝对路径,config_path() 会直接采用
+        "default_query": default_query,
     }
+    if bodies:
+        entry["bodies"] = list(bodies)
     tasks_path = udir / "tasks.yaml"
     existing = _read_yaml_mapping(tasks_path).get("tasks")
     tasks_list = list(existing) if isinstance(existing, list) else []

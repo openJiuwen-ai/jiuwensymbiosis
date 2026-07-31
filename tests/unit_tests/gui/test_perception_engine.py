@@ -16,9 +16,9 @@ import pytest
 
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.gui.mock_sessions import build_mock_robot_session
 from jiuwensymbiosis.gui.perception_engine import PerceptionEngine
 from tests.mocks.mock_scene import MockObject, MockScene
+from tests.mocks.mock_session import make_mock_session
 from tests.mocks.scene_api import SceneMockApi
 
 
@@ -95,7 +95,7 @@ def test_out_of_range_click_reports_reason_without_crashing():
 @pytest.mark.unit
 def test_reports_error_when_no_depth():
     # 无 scene 的模拟会话:get_observation 有 rgb 但 depth 为 None。
-    session = build_mock_robot_session()
+    session = make_mock_session()
     engine = PerceptionEngine(lambda: session)
     engine.start()
     try:

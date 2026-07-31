@@ -221,8 +221,7 @@ class RunView:
 
     # ------------------------------------------------------------------ 事件处理
     def _on_run_started(self, meta: dict) -> None:
-        mode = "模拟" if meta.get("mock") else "真机"
-        self._header.set_text(f"任务:{meta.get('task', '')}   本体:{meta.get('body', '')}   [{mode}]")
+        self._header.set_text(f"任务:{meta.get('task', '')}   本体:{meta.get('body', '')}")
         self._set_badge("运行中")
         self._running = True
         self._stop_btn.enable()

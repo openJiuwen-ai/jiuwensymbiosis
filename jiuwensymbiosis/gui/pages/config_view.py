@@ -4,8 +4,7 @@
 """配置页(NiceGUI 版):按类别分组的常用表单 + 原始 YAML 兜底(双向同步)。
 
 dict 为单一真源(``ConfigModel``)。表单控件按 ``FieldSpec.path`` 绑定到点分路径;
-「原始 YAML」标签可整体编辑其余字段,点「应用 YAML」回填并重建表单。模型相关字段在
-模拟模式下置灰(模拟用离线模型,无需真实端点)。
+「原始 YAML」标签可整体编辑其余字段,点「应用 YAML」回填并重建表单。
 """
 
 from __future__ import annotations
@@ -15,11 +14,10 @@ from typing import Any
 
 from nicegui import ui
 
-from jiuwensymbiosis.gui.config_model import FIELD_GROUPS, GROUP_ORDER, ConfigModel, FieldSpec
+from jiuwensymbiosis.gui.config_model import GROUP_ORDER, ConfigModel, FieldSpec, field_groups_for_body
 
 __all__ = ["ConfigView"]
 
-_MODEL_GROUP = "模型"
 _YAML_TAB = "原始 YAML"
 
 
@@ -28,7 +26,7 @@ class ConfigView:
 
     def __init__(self, *, on_run: Callable[[], None], on_back: Callable[[], None]) -> None:
         self._model = ConfigModel()
-        self._mock = True
+        self._fields: tuple[FieldSpec, ...] = ()
         self._yaml: Any = None
         with ui.column().classes("w-full gap-2"):
             self._title = ui.label("").classes("text-lg font-bold")
@@ -40,10 +38,10 @@ class ConfigView:
                 ui.button("▶ 用当前配置运行", on_click=lambda: on_run()).props("color=primary")
 
     # ------------------------------------------------------------------ API
-    def load(self, title: str, model: ConfigModel, *, mock: bool) -> None:
-        """载入某任务的配置模型并重建表单。"""
+    def load(self, title: str, model: ConfigModel, *, body_key: str) -> None:
+        """载入某(本体, 任务)的配置模型并重建表单;字段按本体切换「机器人参数」组。"""
         self._model = model
-        self._mock = mock
+        self._fields = field_groups_for_body(body_key)
         self._title.set_text(f"配置:{title}")
         self._build_form()
         self._refresh_warnings()
@@ -51,7 +49,7 @@ class ConfigView:
     # ------------------------------------------------------------------ 表单
     def _build_form(self) -> None:
         self._form_host.clear()
-        groups = [g for g in GROUP_ORDER if any(s.group == g for s in FIELD_GROUPS)]
+        groups = [g for g in GROUP_ORDER if any(s.group == g for s in self._fields)]
         with self._form_host:
             with ui.tabs().classes("w-full") as tabs:
                 for group in groups:
@@ -69,15 +67,10 @@ class ConfigView:
                     ui.button("✔ 应用 YAML 到表单", on_click=self._apply_yaml)
 
     def _build_group(self, group: str) -> None:
-        disabled_group = self._mock and group == _MODEL_GROUP
-        for spec in [s for s in FIELD_GROUPS if s.group == group]:
+        for spec in [s for s in self._fields if s.group == group]:
             control = self._make_control(spec)
-            if disabled_group or (self._mock and spec.disable_in_mock):
-                control.disable()
             if spec.help:
                 control.tooltip(spec.help)
-        if disabled_group:
-            ui.label("模拟模式使用离线模型,无需配置真实端点。").classes("text-gray-500 text-sm")
 
     def _make_control(self, spec: FieldSpec) -> Any:
         value = self._model.field_value(spec)

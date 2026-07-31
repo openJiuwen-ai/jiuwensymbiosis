@@ -1,29 +1,28 @@
 # 内置任务清单 —— GUI 内部资产,随包发布、只读。用户「另存为新任务」写到
 # ~/.jiuwensymbiosis/gui/tasks.yaml,启动时与本文件合并(用户可覆盖同 key)。
 #
-# 字段:key(唯一)/ body(引用本体 key)/ display_name / description /
-#       config_relpath(相对 configs/ 或绝对路径)/ default_query(配置无 prompt 时的兜底)/
-#       mock_final_text / agent_defaults / mock_script(仅内置演示任务需要,用户任务不填)。
+# 任务是**本体无关**的意图:只描述"做什么",配置由所选本体提供。同一张卡片可在任意
+# 机械臂上执行(如"视觉拾取"既能跑 piper 也能跑 so101),不为每种本体重复一份。
+#
+# 字段:key(唯一)/ display_name / description / default_query(配置无 prompt 时的兜底)/
+#       bodies(可选;省略=适用所有本体,列出则限定)/ agent_defaults(缺省 agent.* 项)。
 tasks:
   - key: pick_box
-    body: piper
     display_name: "拾取盒子"
-    description: "把黑色盒子抓起来放到白色盒子上。"
-    config_relpath: "piper/piper.yaml"
-    default_query: "把黑色盒子抓起来放到白色盒子上。"
-    mock_final_text: "已把黑色盒子放到白色盒子上,任务完成。"
+    description: "把黑色盒子抓起来放到白色盒子上"
+    default_query: "把黑色盒子抓起来放到白色盒子上"
     agent_defaults:
       enable_skill: true
-    # 模拟运行的脚本序列:一条完整"识别→抓取→放置→回位",让模拟也能演示全流程
-    # (仅用模拟会话实际可用的工具)。
-    mock_script:
-      - { tool: home, args: {}, say: "回到初始位置" }
-      - { tool: get_grasp_info_simple, args: { object_name: "black box" }, say: "识别并定位黑色盒子" }
-      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 90 }, say: "移动到抓取点上方" }
-      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 55 }, say: "下降到抓取高度" }
-      - { tool: close_gripper, args: {}, say: "闭合夹爪抓取" }
-      - { tool: goto_xyzr, args: { x: 230, y: 0, z: 250 }, say: "抬起物体" }
-      - { tool: get_grasp_info_simple, args: { object_name: "white box" }, say: "识别并定位白色盒子" }
-      - { tool: goto_xyzr, args: { x: 265, y: 0, z: 160 }, say: "移动到放置点上方" }
-      - { tool: open_gripper, args: {}, say: "张开夹爪放下" }
-      - { tool: home, args: {}, say: "回到初始位置" }
+
+  # 拾取香蕉:对标 examples/so101_pick_demo.py(fast + visual_pick 技能)。本体无关——
+  # 任意有"运动+夹爪+视觉"能力的本体都能执行;在 so101 上 fast 运行时,run_engine 会按其
+  # 运动档推导 ServoConfig,与直接跑 so101_pick_demo.py 行为一致。
+  - key: pick_banana
+    display_name: "拾取香蕉"
+    description: "把香蕉放到黑色盒子上"
+    default_query: "把香蕉放到黑色盒子上"
+    agent_defaults:
+      mode: hybrid
+      enable_skill: true
+      exec_mode: fast
+      max_iterations: 30
