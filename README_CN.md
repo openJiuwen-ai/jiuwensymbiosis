@@ -267,3 +267,5 @@ top_agent = create_deep_agent(..., subagents=[left_arm_cfg, right_arm_cfg])
 ## 开源许可证
 
 本项目依据 Apache-2.0 许可证授权。
+
+本产品仅作为流程编排工具，不包含 AI 模型能力；用户在连接 AI 模型用于特定业务场景时，需自行承担欧盟 AI 法案等相关合规义务。
