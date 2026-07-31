@@ -42,6 +42,7 @@ from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES
 # (checker) and scripts/new_adapter (generator) share one definition.
 from jiuwensymbiosis.adapters._common.capability_spec import (
     CAPABILITY_DRIVER_MEMBERS,
+    CAPABILITY_TRANSPORT_MEMBERS,
     MIXIN_ABSTRACT_METHODS,
 )
 
@@ -469,20 +470,9 @@ def run_checks(module_str: str) -> list[CheckResult]:
     if env_cls is not None:
         env_caps = set(getattr(env_cls, "capabilities", frozenset()))
         driver_cls = _find_driver_class(module_str)
-        if driver_cls is None:
-            results.append(
-                (
-                    "D-14",
-                    _SEVERITY_INFO,
-                    "未找到 lowlevel 驱动类 (含 get_pose/move_to_pose_blocking)，" "跳过驱动接口校验",
-                )
-            )
-        else:
-            missing: list[str] = []
-            for cap in sorted(env_caps):
-                for member in CAPABILITY_DRIVER_MEMBERS.get(cap, []):
-                    if not hasattr(driver_cls, member) and member not in missing:
-                        missing.append(member)
+        transport_cls = _find_transport_class(module_str) if driver_cls is None else None
+        if driver_cls is not None:
+            missing = _missing_members(driver_cls, env_caps, CAPABILITY_DRIVER_MEMBERS)
             if missing:
                 results.append(
                     (
@@ -496,6 +486,35 @@ def run_checks(module_str: str) -> list[CheckResult]:
                 results.append(
                     ("D-14", _SEVERITY_INFO, f"[OK] 驱动类 {driver_cls.__name__} 满足已声明 capability 的驱动接口")
                 )
+        elif transport_cls is not None:
+            # joint_ik: the RobotDriver is the shared KinematicArmDriver; validate
+            # the body-specific JointTransport seam instead.
+            missing = _missing_members(transport_cls, env_caps, CAPABILITY_TRANSPORT_MEMBERS)
+            if missing:
+                results.append(
+                    (
+                        "D-14",
+                        _SEVERITY_ERROR,
+                        f"JointTransport {transport_cls.__name__} 缺少 capability 所需方法: {missing}。"
+                        f"KinematicArmDriver 委托调用时会 AttributeError (见 _common/joint_transport.py)",
+                    )
+                )
+            else:
+                results.append(
+                    (
+                        "D-14",
+                        _SEVERITY_INFO,
+                        f"[OK] JointTransport {transport_cls.__name__} 满足已声明 capability 的传输接口",
+                    )
+                )
+        else:
+            results.append(
+                (
+                    "D-14",
+                    _SEVERITY_INFO,
+                    "未找到 lowlevel 驱动类 (含 get_pose/move_to_pose_blocking) 或 JointTransport，跳过驱动接口校验",
+                )
+            )
 
     # ====================================================================
     # [E-15] 声明 motion.cartesian 但未暴露 z_min_safe ...... INFO
@@ -535,6 +554,34 @@ def _find_driver_class(module_str: str) -> Optional[type]:
         if hasattr(obj, "get_pose") and hasattr(obj, "move_to_pose_blocking"):
             return obj
     return None
+
+
+def _find_transport_class(module_str: str) -> type | None:
+    """Best-effort locate a ``JointTransport`` seam in ``<module>.lowlevel``.
+
+    Anchors on ``read_arm_joints`` + ``send_arm_joints`` (the JointTransport
+    core). joint_ik adapters have no per-adapter RobotDriver — they bind the
+    shared ``KinematicArmDriver`` — so D-14 validates this seam instead.
+    """
+    ll_mod = _import_or_none(module_str + ".lowlevel")
+    if ll_mod is None:
+        return None
+    for _, obj in inspect.getmembers(ll_mod, inspect.isclass):
+        if getattr(obj, "__module__", None) != ll_mod.__name__:
+            continue
+        if hasattr(obj, "read_arm_joints") and hasattr(obj, "send_arm_joints"):
+            return obj
+    return None
+
+
+def _missing_members(cls: type, caps: set[str], contract: dict[str, list[str]]) -> list[str]:
+    """Members required by ``caps`` (via ``contract``) that ``cls`` does not expose."""
+    missing: list[str] = []
+    for cap in sorted(caps):
+        for member in contract.get(cap, []):
+            if not hasattr(cls, member) and member not in missing:
+                missing.append(member)
+    return missing
 
 
 # ---------------------------------------------------------------------------

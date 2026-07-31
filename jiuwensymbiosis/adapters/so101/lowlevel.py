@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from jiuwensymbiosis.adapters._common.lerobot_backend import LerobotKinematicsBackend
 from jiuwensymbiosis.adapters.so101.geometry import (
     So101Pose,
     matrix_m_to_pose_mm_deg,
@@ -433,12 +434,15 @@ class So101Driver:
                 self._teardown(robot)
                 raise RuntimeError(f"SOFollower action_features missing: {sorted(missing)}.")
 
-            # Step 7: build RobotKinematics with target_frame_name from config.
-            kin_factory = self._kinematics_factory or RobotKinematics
-            kin = kin_factory(
+            # Step 7: build the FK/IK backend over RobotKinematics (target_frame
+            # from config). The reusable _common backend forwards FK/IK to the
+            # solver; kinematics_factory injects the solver class (a fake in tests,
+            # or a pre-imported RobotKinematics).
+            kin = LerobotKinematicsBackend(
                 self._urdf_path,
                 target_frame_name=self._cfg.ik_target_frame,
                 joint_names=list(ARM_JOINT_ORDER),
+                robot_kinematics_cls=self._kinematics_factory or RobotKinematics,
             )
 
             # Step 8: validate current FK + home FK/limits.

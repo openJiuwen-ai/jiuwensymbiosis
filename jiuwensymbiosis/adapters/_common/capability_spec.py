@@ -34,6 +34,20 @@ CAPABILITY_DRIVER_MEMBERS: dict[str, list[str]] = {
     "vision.detection": ["grab_frames"],
 }
 
+# Capability → JointTransport members a joint-level (motion_backend=joint_ik)
+# adapter's transport seam must expose. For these adapters the RobotDriver is the
+# shared KinematicArmDriver (adapters/_common/kinematic_driver) — not a per-adapter
+# class — so validate [D-14] checks the transport contract instead of the driver
+# one when it finds a JointTransport in the adapter's lowlevel module.
+CAPABILITY_TRANSPORT_MEMBERS: dict[str, list[str]] = {
+    "motion.cartesian": ["read_arm_joints", "send_arm_joints"],
+    "motion.joint": ["read_arm_joints", "send_arm_joints"],
+    "grasp.parallel": ["read_effector", "send_effector"],
+    "grasp.suction": ["read_effector", "send_effector"],
+    "vision.camera": ["grab_frames"],
+    "vision.detection": ["grab_frames"],
+}
+
 # Capability → the mixin class (in api/mixins.py) that owns its @robot_tool
 # methods. Capabilities absent here are "marker" capabilities (vision.camera /
 # vision.depth / sorting.command / speech.tts) — declared on the Env to advertise

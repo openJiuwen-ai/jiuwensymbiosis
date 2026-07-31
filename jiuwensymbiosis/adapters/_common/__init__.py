@@ -3,7 +3,12 @@
 """Cross-vendor adapter building blocks — used *by* adapters, nothing else.
 
 What's left here is only consumed inside ``adapters/``: the generic session
-builder (``builder``) and cartesian workspace bounds (``safety``).
+builder (``builder``), cartesian workspace bounds (``safety``), and the reusable
+motion core for joint-level arms — ``geometry`` (pose/unit/SE(3) conversions),
+``joint_transport`` (the vendor SDK seam), ``kinematics`` (FK/IK backend seam +
+waypoint planning/rejection), and ``kinematic_driver`` (``KinematicArmDriver``,
+a ``RobotDriver`` built from a transport + an FK/IK backend). Adapters import
+these submodules directly, so importing this package stays side-effect free.
 
 Things consumed outside ``adapters/`` moved to where their consumer lives:
 * the ``RobotDriver`` Protocol → ``jiuwensymbiosis.env.protocol`` (Env delegates

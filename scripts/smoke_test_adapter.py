@@ -81,6 +81,26 @@ def _build_args(func: Any) -> tuple[dict[str, Any], Optional[str]]:
     return kwargs, None
 
 
+def _env_joint_dim(env: Any) -> int | None:
+    """Arm-joint count the env exposes, for sizing a generic ``move_joint`` ``q``.
+
+    The fixed ``q = [0]*6`` default is wrong for arms whose joint count differs
+    (e.g. a 5-joint arm with a real length check in its driver). Prefer
+    ``joint_limits`` (SafetyRail keys its length off it); fall back to a connected
+    observation's ``joints``. ``None`` when neither is available (leave the default).
+    """
+    if env is None:
+        return None
+    jl = getattr(env, "joint_limits", None)
+    if jl:
+        return len(jl)
+    try:
+        joints = getattr(env.get_observation(), "joints", None)
+    except Exception:
+        return None
+    return len(joints) if joints else None
+
+
 def smoke_test_api(api: Any, *, env: Any = None) -> list[dict[str, Any]]:
     """Call every emitted tool on ``api`` with heuristic defaults.
 
@@ -95,6 +115,7 @@ def smoke_test_api(api: Any, *, env: Any = None) -> list[dict[str, Any]]:
     """
     from jiuwensymbiosis.tools.builder import list_tool_meta
 
+    joint_dim = _env_joint_dim(env)
     results: list[dict[str, Any]] = []
     for meta in list_tool_meta(api, env=env):
         name = meta["name"]
@@ -106,6 +127,8 @@ def smoke_test_api(api: Any, *, env: Any = None) -> list[dict[str, Any]]:
         if skip_reason is not None:
             results.append({"name": name, "status": "skip", "reason": skip_reason})
             continue
+        if joint_dim is not None and "q" in kwargs:
+            kwargs["q"] = [0.0] * joint_dim
         try:
             ret = func(**kwargs)
         except Exception as exc:

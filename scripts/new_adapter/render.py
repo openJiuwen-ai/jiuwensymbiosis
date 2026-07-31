@@ -279,6 +279,57 @@ def _connect_note(spec: Spec) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Camera / detection config blocks + from_dict/from_yaml fixes are shared with
+# the joint_ik backend (vision composes with either motion backend), so they live
+# in one place. The strings are unchanged, so Family-1 output stays identical.
+def _camera_config_fields() -> str:
+    return _indent(
+        """
+        # ==================== 相机 [选填-仅 vision.*] ====================
+        camera_serial: Optional[str] = None # 相机序列号 (None=禁用)
+        camera_resolution: tuple[int, int] = (640, 480)
+        camera_fps: int = 30
+        """,
+        4,
+    )
+
+
+def _detection_config_fields() -> str:
+    return _indent(
+        """
+        # ============== 检测校正 [选填-仅 vision.detection] ==============
+        z_correction_mm: float = 0.0        # Z 向常值校正
+        grasp_z_offset_mm: float = -25.0    # 抓取点相对物体顶面偏移
+        chip_thickness_mm: float = 75.0     # 堆叠放置偏移
+        detector_url: str = "http://127.0.0.1:8114"  # 检测服务地址
+        calib_path: Optional[str] = None    # 手眼标定文件 (JSON)
+        """,
+        4,
+    )
+
+
+def _camera_resolution_fix() -> str:
+    return _indent(
+        """
+        if "camera_resolution" in clean and isinstance(clean["camera_resolution"], list):
+            clean["camera_resolution"] = tuple(clean["camera_resolution"])
+        """,
+        8,
+    )
+
+
+def _calib_path_fix() -> str:
+    return _indent(
+        """
+        if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
+            candidate = (path.parent / cfg.calib_path).resolve()
+            if candidate.exists():
+                cfg.calib_path = str(candidate)
+        """,
+        8,
+    )
+
+
 def _config_optional_fields(spec: Spec) -> str:
     blocks: list[str] = []
     if spec.joint:
@@ -304,45 +355,15 @@ def _config_optional_fields(spec: Spec) -> str:
             )
         )
     if spec.has_camera:
-        blocks.append(
-            _indent(
-                """
-                # ==================== 相机 [选填-仅 vision.*] ====================
-                camera_serial: Optional[str] = None # 相机序列号 (None=禁用)
-                camera_resolution: tuple[int, int] = (640, 480)
-                camera_fps: int = 30
-                """,
-                4,
-            )
-        )
+        blocks.append(_camera_config_fields())
     if spec.detection:
-        blocks.append(
-            _indent(
-                """
-                # ============== 检测校正 [选填-仅 vision.detection] ==============
-                z_correction_mm: float = 0.0        # Z 向常值校正
-                grasp_z_offset_mm: float = -25.0    # 抓取点相对物体顶面偏移
-                chip_thickness_mm: float = 75.0     # 堆叠放置偏移
-                detector_url: str = "http://127.0.0.1:8114"  # 检测服务地址
-                calib_path: Optional[str] = None    # 手眼标定文件 (JSON)
-                """,
-                4,
-            )
-        )
+        blocks.append(_detection_config_fields())
     return "\n\n".join(blocks)
 
 
 def render_config(spec: Spec) -> str:
     home_default = ", ".join(str(value) for _, value in _default_pose_pairs(spec))
-    camera_resolution_fix = ""
-    if spec.has_camera:
-        camera_resolution_fix = _indent(
-            """
-            if "camera_resolution" in clean and isinstance(clean["camera_resolution"], list):
-                clean["camera_resolution"] = tuple(clean["camera_resolution"])
-            """,
-            8,
-        )
+    camera_resolution_fix = _camera_resolution_fix() if spec.has_camera else ""
     joint_limits_fix = ""
     if spec.joint:
         joint_limits_fix = _indent(
@@ -364,17 +385,7 @@ def render_config(spec: Spec) -> str:
             """,
             8,
         )
-    calib_path_fix = ""
-    if spec.detection:
-        calib_path_fix = _indent(
-            """
-            if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
-                candidate = (path.parent / cfg.calib_path).resolve()
-                if candidate.exists():
-                    cfg.calib_path = str(candidate)
-            """,
-            8,
-        )
+    calib_path_fix = _calib_path_fix() if spec.detection else ""
 
     return _render(
         f'''
@@ -1273,6 +1284,696 @@ def render_yaml(spec: Spec) -> str:
 
 
 # ---------------------------------------------------------------------------
+# joint_ik backend — arms whose SDK takes only joint targets. The reusable
+# KinematicArmDriver (adapters/_common) supplies the whole Cartesian/IK layer;
+# the generated skeleton only holds the two body-specific seams (a JointTransport
+# and an FkIkBackend) plus config. The backend composes with every orthogonal
+# axis (gripper/suction/servo/vision) by reusing the shared render blocks and the
+# driver's Gripper/Suction/Servo/Vision surface — the same capability machinery
+# Family-1 uses. Motion.servo is declared only when asked (needs real-hw timing).
+# ---------------------------------------------------------------------------
+
+
+def _joint_names_literal(spec: Spec) -> str:
+    return "[" + ", ".join(f'"{name}"' for name in spec.arm_joint_names) + "]"
+
+
+def _home_zeros_literal(spec: Spec) -> str:
+    return "[" + ", ".join("0.0" for _ in range(spec.joint_count)) + "]"
+
+
+def _orientation_weight(spec: Spec) -> str:
+    return "0.01" if spec.orientation_mode == "soft" else "1.0"
+
+
+def _orientation_tolerance(spec: Spec) -> str:
+    return "None" if spec.orientation_mode == "soft" else "5.0"
+
+
+def _yaml_connection_lines(spec: Spec) -> list[str]:
+    table = {
+        "can": ['can_port: "can0"', "can_bitrate: 1000000"],
+        "serial": ['serial_port: "/dev/ttyUSB0"', "baudrate: 115200", 'connection_note: "serial template placeholder"'],
+        "tcp": ['host: "192.168.1.10"', "port: 3000", 'connection_note: "tcp template placeholder"'],
+        "usb": ["device_serial: null", 'connection_note: "usb template placeholder"'],
+        "ros": ['ros_namespace: ""', 'command_topic: "/robot/command"', 'connection_note: "ros template placeholder"'],
+        "custom": ['connection_note: "custom connection: fill hardware SDK fields here"'],
+    }
+    return _by_connection(table, spec.connection)
+
+
+def _joint_ik_effector_config_fields(spec: Spec) -> str:
+    if not spec.has_grasp:
+        return ""
+    return _indent(
+        """
+        # ==================== 末端执行器 (两态) [选填-仅 grasp.*] ====================
+        # engaged=夹紧/吸附, released=松开/关；原生单位 (parallel: 开/闭位置; suction: 开/关值)。
+        effector_engaged_pos: float = 0.0
+        effector_released_pos: float = 100.0
+        effector_settle_s: float = 0.4
+        """,
+        4,
+    )
+
+
+def _joint_ik_optional_config_fields(spec: Spec) -> str:
+    blocks = [_joint_ik_effector_config_fields(spec)]
+    if spec.has_camera:
+        blocks.append(_camera_config_fields())
+    if spec.detection:
+        blocks.append(_detection_config_fields())
+    return "\n\n".join(b for b in blocks if b)
+
+
+def render_config_joint_ik(spec: Spec) -> str:
+    camera_resolution_fix = _camera_resolution_fix() if spec.has_camera else ""
+    calib_path_fix = _calib_path_fix() if spec.detection else ""
+    return _render(
+        f'''
+        """{spec.config_cls} — joint-level (URDF FK/IK) hardware configuration.
+
+        Consumed by the reusable KinematicArmDriver; only the joint names, home,
+        limits, URDF and tolerances are body-specific.
+        """
+
+        from __future__ import annotations
+
+        import dataclasses
+        from dataclasses import dataclass, field
+        from pathlib import Path
+        from typing import Any, Optional
+
+        import yaml
+
+
+        @dataclass
+        class {spec.config_cls}:
+            """Configuration for the {spec.name} joint-level arm."""
+
+            # ==================== 基本信息 / 连接 [必填] ====================
+            name: str = "{spec.name}"
+            connection: str = "{spec.connection}"
+        __CONNECTION_FIELDS__
+
+            # ==================== 运动学关节 [必填] ====================
+            # 不含夹爪；顺序即 move_joint(q) / FK / IK 的顺序。
+            arm_joint_names: list[str] = field(default_factory=lambda: {_joint_names_literal(spec)})
+            home_joints_deg: list[float] = field(default_factory=lambda: {_home_zeros_literal(spec)})
+            joint_limits: Optional[dict[str, tuple[float, float]]] = None
+
+            # ==================== URDF / IK ====================
+            urdf_path: Optional[str] = None            # 相对 YAML 解析；指向本体 URDF
+            ik_target_frame: str = "tool_frame"        # 控制帧 link 名 (须在 URDF 中)
+            ik_orientation_weight: float = {_orientation_weight(spec)}
+            ik_position_tolerance_mm: float = 3.0
+            ik_orientation_tolerance_deg: Optional[float] = {_orientation_tolerance(spec)}
+
+            # ==================== 轨迹 / 到位 [选填] ====================
+            max_joint_step_deg: float = 2.0
+            max_cartesian_step_mm: float = 5.0
+            max_ik_jump_deg: float = 30.0
+            trajectory_hz: float = 30.0
+            joint_tolerance_deg: float = 1.5
+            settle_samples: int = 3
+            move_timeout_s: float = 30.0
+
+            # ==================== 安全边界 [选填] ====================
+            z_min_safe_mm: float = 50.0
+            x_min_mm: Optional[float] = None
+            x_max_mm: Optional[float] = None
+            y_min_mm: Optional[float] = None
+            y_max_mm: Optional[float] = None
+        __OPTIONAL_FIELDS__
+
+            # ==================== Loaders — 勿改 (框架契约) ====================
+            @classmethod
+            def from_dict(cls, data: dict[str, Any]) -> "{spec.config_cls}":
+                """Construct from a flat dict; unknown keys ignored."""
+                valid = {{f.name for f in dataclasses.fields(cls)}}
+                clean: dict[str, Any] = {{k: v for k, v in data.items() if k in valid}}
+                if "joint_limits" in clean:
+                    _raw = clean["joint_limits"]
+                    if not isinstance(_raw, dict):
+                        clean["joint_limits"] = None
+                    else:
+                        _norm: dict[str, tuple[float, float]] = {{}}
+                        for _k, _v in _raw.items():
+                            if not isinstance(_v, (list, tuple)) or len(_v) != 2:
+                                continue
+                            try:
+                                _norm[str(_k)] = (float(_v[0]), float(_v[1]))
+                            except (TypeError, ValueError):
+                                continue
+                        clean["joint_limits"] = _norm if _norm else None
+        __CAMERA_RESOLUTION_FIX__
+                return cls(**clean)
+
+            @classmethod
+            def from_yaml(cls, path: str | Path) -> "{spec.config_cls}":
+                """Load config from a YAML file; resolve a relative urdf_path."""
+                path = Path(path).resolve()
+                with path.open("r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {{}}
+                cfg = cls.from_dict(data)
+                if cfg.urdf_path and not Path(cfg.urdf_path).is_absolute():
+                    cfg.urdf_path = str((path.parent / cfg.urdf_path).resolve())
+        __CALIB_PATH_FIX__
+                return cfg
+        ''',
+        CONNECTION_FIELDS=_connection_config_fields(spec),
+        OPTIONAL_FIELDS=_joint_ik_optional_config_fields(spec),
+        CAMERA_RESOLUTION_FIX=camera_resolution_fix,
+        CALIB_PATH_FIX=calib_path_fix,
+    )
+
+
+def render_lowlevel_joint_ik(spec: Spec) -> str:
+    prefix = spec.prefix
+    typing_import = "from typing import Any, Optional" if spec.has_camera else "from typing import Any"
+    effector_init = "float(getattr(cfg, 'effector_released_pos', 0.0))" if spec.has_grasp else "0.0"
+    effector_spec_kwargs = ""
+    if spec.has_grasp:
+        effector_spec_kwargs = _block(
+            [
+                "effector_engaged_pos=cfg.effector_engaged_pos,",
+                "effector_released_pos=cfg.effector_released_pos,",
+                "effector_settle_s=cfg.effector_settle_s,",
+            ],
+            8,
+        )
+    calibration_attrs = ""
+    if spec.detection:
+        calibration_attrs = _block(
+            [
+                "# Loaded in open() from cfg.calib_path; the properties below just expose them.",
+                "self._tf_flange_cam: Optional[Any] = None  # 4x4 camera->flange (hand-eye extrinsic)",
+                "self._calibration: Optional[dict] = None    # raw calibration payload",
+                "self._intrinsics: Optional[Any] = None      # 3x3 camera intrinsics matrix",
+            ],
+            8,
+        )
+    open_vision_hint = ""
+    if spec.detection:
+        open_vision_hint = _block(
+            [
+                "# Vision: start the camera and load cfg.calib_path here, then set",
+                "# self._intrinsics / self._tf_flange_cam / self._calibration.",
+            ],
+            8,
+        )
+    # Camera / hand-eye methods live on the Transport (reused verbatim from the
+    # shared blocks); KinematicArmDriver forwards its VisionDriver surface here.
+    transport_vision = _join_optional_blocks(_lowlevel_camera_block(spec), _lowlevel_detection_block(spec))
+    return _render(
+        f'''
+        """{prefix} joint-level seams — fill the two GENERATED-MOCK classes.
+
+        Only the vendor SDK glue ({prefix}Transport) and the URDF FK/IK wrapper
+        ({prefix}Kinematics) are body-specific. KinematicArmDriver
+        (adapters/_common) adds the Cartesian/IK/waypoint/arrival logic plus the
+        gripper/suction/servo/vision surface, so env.py binds it as low_level.
+        """
+
+        from __future__ import annotations
+
+        {typing_import}
+
+        import numpy as np
+
+        from jiuwensymbiosis.adapters._common.kinematic_driver import (
+            KinematicArmDriver,
+            KinematicSpec,
+        )
+
+
+        class {prefix}Transport:
+            """Vendor SDK seam (JointTransport). Mock keeps joints in memory."""
+
+            def __init__(self, cfg: Any) -> None:
+                self._cfg = cfg
+                self._joints = [float(v) for v in cfg.home_joints_deg]
+                self._effector = {effector_init}
+                self._open = False
+        __CALIBRATION_ATTRS__
+
+            def open(self) -> None:
+                """Open the SDK connection (serial / CAN / socket)."""
+                {SENTINEL}
+        __OPEN_VISION_HINT__
+                self._open = True
+
+            def close(self) -> None:
+                """Release the SDK connection. Must be idempotent."""
+                {SENTINEL}
+                self._open = False
+
+            def precheck(self) -> None:
+                """Validate SDK preconditions (calibration file / feature names)."""
+                {SENTINEL}
+                return None
+
+            def read_arm_joints(self) -> list[float]:
+                """Current arm joints (native unit, ARM order, no effector)."""
+                {SENTINEL}
+                return list(self._joints)
+
+            def send_arm_joints(self, q: list[float]) -> list[float]:
+                """Command arm-joint targets; return the accepted targets."""
+                {SENTINEL}
+                self._joints = [float(v) for v in q]
+                return list(self._joints)
+
+            def read_effector(self) -> float:
+                """Current end-effector value (native unit; gripper or suction)."""
+                {SENTINEL}
+                return float(self._effector)
+
+            def send_effector(self, pos: float) -> float:
+                """Command an end-effector value; return the accepted value."""
+                {SENTINEL}
+                self._effector = float(pos)
+                return self._effector
+
+        __TRANSPORT_VISION__
+
+        class {prefix}Kinematics:
+            """FK/IK backend (FkIkBackend). Mock = 3-axis gantry; wrap a real
+            URDF solver (ikpy / pinocchio / vendor kinematics) here, built with
+            cfg.urdf_path + cfg.arm_joint_names + cfg.ik_target_frame.
+            """
+
+            def __init__(self, cfg: Any) -> None:
+                self._cfg = cfg
+
+            def forward_kinematics(self, q: list[float]) -> np.ndarray:
+                """Joint vector -> 4x4 SE(3) control-frame pose (translation in metres)."""
+                {SENTINEL}
+                matrix = np.eye(4)
+                for i in range(min(3, len(q))):
+                    matrix[i, 3] = float(q[i]) / 1000.0
+                return matrix
+
+            def inverse_kinematics(
+                self, current: list[float], target: np.ndarray, *, orientation_weight: float
+            ) -> list[float]:
+                """Desired 4x4 SE(3) pose -> joint vector, seeded by current."""
+                {SENTINEL}
+                out = [float(v) for v in current]
+                translation_mm = np.asarray(target)[:3, 3] * 1000.0
+                for i in range(min(3, len(out))):
+                    out[i] = float(translation_mm[i])
+                return out
+
+
+        def build_driver(cfg: Any) -> KinematicArmDriver:
+            """Assemble the reusable driver from cfg + the two seams above."""
+            spec = KinematicSpec(
+                arm_joint_names=tuple(cfg.arm_joint_names),
+                home_joints=tuple(cfg.home_joints_deg),
+                joint_limits=dict(cfg.joint_limits or {{}}),
+                ik_orientation_weight=cfg.ik_orientation_weight,
+                ik_position_tolerance_mm=cfg.ik_position_tolerance_mm,
+                ik_orientation_tolerance_deg=cfg.ik_orientation_tolerance_deg,
+                max_joint_step_deg=cfg.max_joint_step_deg,
+                max_cartesian_step_mm=cfg.max_cartesian_step_mm,
+                max_ik_jump_deg=cfg.max_ik_jump_deg,
+                trajectory_hz=cfg.trajectory_hz,
+                joint_tolerance_deg=cfg.joint_tolerance_deg,
+                settle_samples=cfg.settle_samples,
+                move_timeout_s=cfg.move_timeout_s,
+                z_min_safe_mm=cfg.z_min_safe_mm,
+        __EFFECTOR_SPEC_KWARGS__
+            )
+            return KinematicArmDriver({prefix}Transport(cfg), {prefix}Kinematics(cfg), spec, name=cfg.name)
+        ''',
+        CALIBRATION_ATTRS=calibration_attrs,
+        OPEN_VISION_HINT=open_vision_hint,
+        TRANSPORT_VISION=transport_vision,
+        EFFECTOR_SPEC_KWARGS=effector_spec_kwargs,
+    )
+
+
+def _joint_ik_effector_observation(spec: Spec) -> str:
+    if not spec.has_grasp:
+        return ""
+    return _indent(
+        """
+        try:
+            extra["effector"] = ll.get_effector_position()
+            extra["effector_engaged"] = ll.gripper_state
+        except Exception:
+            pass
+        """,
+        8,
+    )
+
+
+def _joint_ik_camera_observation(spec: Spec) -> str:
+    if not spec.has_camera:
+        return ""
+    return _indent(
+        """
+        if "vision.camera" in self.capabilities:
+            try:
+                frames = ll.grab_frames()
+                if frames is not None:
+                    rgb, depth = frames
+            except Exception:
+                pass
+        """,
+        8,
+    )
+
+
+def render_env_joint_ik(spec: Spec) -> str:
+    caps = _block([f'"{cap}",' for cap in spec.capabilities], 12)
+    return _render(
+        f'''
+        """{spec.env_cls} — joint-level hardware abstraction for {spec.name}.
+
+        connect() builds the reusable KinematicArmDriver (adapters/_common) via
+        lowlevel.build_driver and binds it as low_level; Env verbs delegate there.
+        """
+
+        from __future__ import annotations
+
+        from typing import Any, Optional
+
+        from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+        from jiuwensymbiosis.adapters.{spec.name}.lowlevel import build_driver
+
+
+        class {spec.env_cls}(BaseRobotEnv):
+            """Joint-level environment for the {spec.name} robot."""
+
+            capabilities = frozenset(
+                {{
+        __CAPABILITIES__
+                }}
+            )
+            name: str = "{spec.name}"
+
+            def __init__(self, cfg: Any) -> None:
+                self._cfg = cfg
+                self._inner = None
+                self._connected = False
+
+            @property
+            def low_level(self):
+                """The bound KinematicArmDriver, or None before connect()."""
+                return self._inner
+
+            @low_level.setter
+            def low_level(self, _: Any) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.low_level is read-only (bound in connect)")
+
+            # ----------------------------------------------------- lifecycle
+            def connect(self) -> None:
+                """Build + connect the driver atomically; bind only on success."""
+                if self._connected:
+                    return
+                driver = build_driver(self._cfg)
+                driver.connect()
+                self._inner = driver
+                self._connected = True
+
+            def disconnect(self) -> None:
+                """Release the driver. Idempotent and safe at any state."""
+                if not self._connected:
+                    return
+                try:
+                    self._inner.disconnect()
+                finally:
+                    self._inner = None
+                    self._connected = False
+
+            # ---------------------------------------------------- observation
+            def get_observation(self) -> RobotObservation:
+                """Best-effort snapshot: pose (mm/deg), arm joints, effector/camera extra."""
+                ll = self._inner
+                if ll is None:
+                    return RobotObservation()
+                pose = None
+                try:
+                    p = ll.get_pose()
+                    pose = {{"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}}
+                except Exception:
+                    pose = None
+                joints = None
+                try:
+                    joints = list(ll.get_angles())
+                except Exception:
+                    joints = None
+                rgb = None
+                depth = None
+        __CAMERA_OBS__
+                extra: dict = {{}}
+        __EFFECTOR_EXTRA__
+                return RobotObservation(pose=pose, joints=joints, rgb=rgb, depth=depth, extra=extra)
+
+            # ----------------------------------------------- safety boundaries
+            @property
+            def z_min_safe(self) -> float:
+                """Z floor (mm) — SafetyRail reads this automatically."""
+                return float(self._cfg.z_min_safe_mm)
+
+            @z_min_safe.setter
+            def z_min_safe(self, _: float) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.z_min_safe is read-only (from config)")
+
+            @property
+            def workspace_bounds(self) -> Optional[tuple]:
+                """XY workspace bounds (xmin, ymin, xmax, ymax) in mm, or None."""
+                cfg = self._cfg
+                if cfg.x_min_mm is not None and cfg.x_max_mm is not None:
+                    return (cfg.x_min_mm, cfg.y_min_mm, cfg.x_max_mm, cfg.y_max_mm)
+                return None
+
+            @workspace_bounds.setter
+            def workspace_bounds(self, _: Any) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.workspace_bounds is read-only (from config)")
+
+            @property
+            def joint_limits(self) -> Optional[dict]:
+                """Arm-joint soft limits, ordered by arm_joint_names, or None."""
+                jl = getattr(self._cfg, "joint_limits", None)
+                if not jl:
+                    return None
+                return {{name: jl[name] for name in self._cfg.arm_joint_names if name in jl}}
+
+            @joint_limits.setter
+            def joint_limits(self, _: Any) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.joint_limits is read-only (from config)")
+
+            # -------------------------------------------- robot body constants
+            @property
+            def home_pose(self):
+                """Control-frame home pose (FK of home joints) from the driver, or None."""
+                if self._inner is not None:
+                    return self._inner.home_pose
+                return None
+
+            @home_pose.setter
+            def home_pose(self, _: Any) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.home_pose is read-only (from driver)")
+
+            @property
+            def tool_offset_mm(self) -> float:
+                """Flange->tip offset (mm); the control-frame convention keeps it 0."""
+                if self._inner is not None:
+                    return float(self._inner.tool_offset_mm)
+                return 0.0
+
+            @tool_offset_mm.setter
+            def tool_offset_mm(self, _: float) -> None:
+                raise AttributeError(f"{{type(self).__name__}}.tool_offset_mm is read-only (from driver)")
+        ''',
+        CAPABILITIES=caps,
+        CAMERA_OBS=_joint_ik_camera_observation(spec),
+        EFFECTOR_EXTRA=_joint_ik_effector_observation(spec),
+    )
+
+
+def _api_imports_joint_ik(mixins: list[str]) -> str:
+    mixin_import = "\n".join(f"    {mixin}," for mixin in mixins)
+    return (
+        "from __future__ import annotations\n\n"
+        "from types import SimpleNamespace\n"
+        "from typing import Optional\n\n"
+        "from jiuwensymbiosis.api.base import BaseRobotApi\n"
+        "from jiuwensymbiosis.api.decorators import robot_tool\n"
+        "from jiuwensymbiosis.api.mixins import (\n"
+        f"{mixin_import}\n"
+        ")"
+    )
+
+
+def _api_goto_joint_ik(spec: Spec) -> str:
+    if spec.orientation_mode == "soft":
+        desc = (
+            "Move the TIP to absolute (x, y, z[, r]) in mm/deg, base frame. "
+            "Underactuated arm: position is enforced, orientation is best-effort."
+        )
+    else:
+        desc = "Move the TIP to absolute (x, y, z[, r]) in mm/deg, base frame."
+    return _indent(
+        f'''
+        @robot_tool(desc="{desc}", tags=["motion"])
+        def goto_xyzr(self, x: float, y: float, z: float, r: Optional[float] = None) -> None:
+            """Position-first Cartesian move; the local IK handles posture."""
+            if r is None:
+                r = getattr(self.env.get_flange_pose(), "rz", 0.0)
+            pose = SimpleNamespace(x=float(x), y=float(y), z=float(z), rx=180.0, ry=0.0, rz=float(r))
+            self.env.move_to_flange(pose)
+        ''',
+        4,
+    )
+
+
+def _api_gripper_joint_ik(spec: Spec) -> str:
+    if spec.end_effector != "parallel":
+        return ""
+    return _indent(
+        """
+        # Two-state gripper: the ToolCard exposes NO width/force (honest for a
+        # position-only effector); the mixin-parity args are accepted but ignored.
+        @robot_tool(
+            desc="Open the gripper to its configured open position.",
+            capability="grasp.parallel",
+            input_params={"type": "object", "properties": {}},
+            tags=["grasp"],
+        )
+        def open_gripper(self, width_mm: float = 80.0) -> dict:
+            \"\"\"Open to the configured open position (width_mm ignored).\"\"\"
+            self.env.set_end_effector(False)
+            return {"ok": True, "state": "open"}
+
+        @robot_tool(
+            desc="Close the gripper to its configured close position.",
+            capability="grasp.parallel",
+            input_params={"type": "object", "properties": {}},
+            tags=["grasp"],
+        )
+        def close_gripper(self, force_n: Optional[float] = None) -> dict:
+            \"\"\"Close to the configured close position (force_n ignored).\"\"\"
+            self.env.set_end_effector(True)
+            return {"ok": True, "state": "closed"}
+        """,
+        4,
+    )
+
+
+def render_api_joint_ik(spec: Spec) -> str:
+    mixins = _mixin_names(spec)
+    return _render(
+        f'''
+        """{spec.api_cls} — capability-mixin API for the joint-level {spec.name} arm.
+
+        Motion / joint / gripper / suction / vision inherit the mixin defaults that
+        delegate to the Env verbs (the KinematicArmDriver does the IK and forwards
+        the camera). Only the honest soft-posture goto and, for a parallel gripper,
+        the two-state card are specialized; the vision stubs are the same the rest
+        of the framework generates (fill them with your detector, or wire
+        perception.vision.default_get_grasp_info_simple with the driver's FK pose).
+        """
+
+        __IMPORTS__
+
+
+        class {spec.api_cls}(
+        __MIXIN_BASES__
+            BaseRobotApi,
+        ):
+            """Robot API for the {spec.name} joint-level arm."""
+
+        __INIT_BLOCK__
+        __GOTO_OVERRIDE__
+        __GRIPPER_OVERRIDE__
+        __VISION_BLOCK__
+        ''',
+        IMPORTS=_api_imports_joint_ik(mixins),
+        MIXIN_BASES=_block([f"{mixin}," for mixin in mixins], 4),
+        INIT_BLOCK=_api_detection_init() if spec.detection else "",
+        GOTO_OVERRIDE=_api_goto_joint_ik(spec),
+        GRIPPER_OVERRIDE=_api_gripper_joint_ik(spec),
+        VISION_BLOCK=_api_vision_block() if spec.detection else "",
+    )
+
+
+def render_yaml_joint_ik(spec: Spec) -> str:
+    lines = [
+        f"# {spec.name} 机械臂配置 (motion_backend=joint_ik, 由 new_adapter 生成)",
+        "# 关节级 SDK + 本地 URDF FK/IK；填 urdf_path/关节名/home/限位即可。",
+        "",
+        f'name: "{spec.name}"',
+        "",
+        "# ---- 硬件连接 [必填] ----",
+        f'connection: "{spec.connection}"',
+        *_yaml_connection_lines(spec),
+        "",
+        "# ---- 运动学关节 (不含夹爪; 顺序=move_joint/FK/IK 顺序) [必填] ----",
+        f"arm_joint_names: [{', '.join(repr(n) for n in spec.arm_joint_names)}]",
+        f"home_joints_deg: [{', '.join('0.0' for _ in range(spec.joint_count))}]",
+        "# joint_limits: (单位=度; 键须与 arm_joint_names 一致; 不填则跳过越限检查)",
+        *[f"#   {name}: [-180.0, 180.0]" for name in spec.arm_joint_names],
+        "",
+        "# ---- URDF / IK ----",
+        "# urdf_path: description/robot.urdf   # 相对本 YAML 解析",
+        'ik_target_frame: "tool_frame"',
+        f"ik_orientation_weight: {_orientation_weight(spec)}",
+        "ik_position_tolerance_mm: 3.0",
+        f"ik_orientation_tolerance_deg: {'null' if spec.orientation_mode == 'soft' else '5.0'}",
+        "",
+        "# ---- 轨迹 / 到位 ----",
+        "max_joint_step_deg: 2.0",
+        "max_cartesian_step_mm: 5.0",
+        "max_ik_jump_deg: 30.0",
+        "trajectory_hz: 30.0",
+        "joint_tolerance_deg: 1.5",
+        "settle_samples: 3",
+        "move_timeout_s: 30.0",
+        "",
+        "# ---- 安全边界 ----",
+        "z_min_safe_mm: 50.0",
+        "# x_min_mm: -400.0",
+        "# x_max_mm: 400.0",
+        "# y_min_mm: -400.0",
+        "# y_max_mm: 400.0",
+    ]
+    if spec.servo:
+        lines += ["", "# motion.servo 已声明；真机验证持续 read+IK+send 的稳定频率/抖动后再启用伺服循环。"]
+    if spec.has_grasp:
+        kind = "parallel: 开/闭位置" if spec.end_effector == "parallel" else "suction: 开/关值"
+        lines += [
+            "",
+            f"# ---- 末端执行器 (两态; {kind}) ----",
+            "effector_engaged_pos: 0.0",
+            "effector_released_pos: 100.0",
+            "effector_settle_s: 0.4",
+        ]
+    if spec.has_camera:
+        lines += [
+            "",
+            "# ---- 相机 ----",
+            "camera_serial: null",
+            "camera_resolution: [640, 480]",
+            "camera_fps: 30",
+        ]
+    if spec.detection:
+        lines += [
+            "",
+            "# ---- 检测 (手眼标定+检测服务; 未标定前视觉工具是诚实占位) ----",
+            "z_correction_mm: 0.0",
+            "grasp_z_offset_mm: -25.0",
+            "chip_thickness_mm: 75.0",
+            'detector_url: "http://127.0.0.1:8114"',
+            "# calib_path: calib.json",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # orchestration
 # ---------------------------------------------------------------------------
 
@@ -1280,6 +1981,16 @@ def render_yaml(spec: Spec) -> str:
 def render_all(spec: Spec) -> dict[str, str]:
     """Return {repo-relative path: file text} for the whole adapter + config."""
     pkg = f"jiuwensymbiosis/adapters/{spec.name}"
+    if spec.is_joint_ik:
+        return {
+            f"{pkg}/__init__.py": render_init(spec),
+            f"{pkg}/config.py": render_config_joint_ik(spec),
+            f"{pkg}/lowlevel.py": render_lowlevel_joint_ik(spec),
+            f"{pkg}/env.py": render_env_joint_ik(spec),
+            f"{pkg}/api.py": render_api_joint_ik(spec),
+            f"{pkg}/session.py": render_session(spec),
+            f"configs/{spec.name}/default.yaml": render_yaml_joint_ik(spec),
+        }
     return {
         f"{pkg}/__init__.py": render_init(spec),
         f"{pkg}/config.py": render_config(spec),

@@ -26,6 +26,19 @@ END_EFFECTORS = ("none", "parallel", "suction")
 TOOL_GEOMETRIES = ("straight_down", "tilted")
 CONNECTIONS = ("can", "serial", "tcp", "usb", "ros", "custom")
 
+# The motion backend is the primary axis that decides how Cartesian motion is
+# produced (see docs/hardware-porting-guide.md):
+#   sdk_cartesian — the vendor SDK already exposes move_linear(pose); the driver
+#                   is a thin wrapper (the historical default, e.g. an arm whose
+#                   firmware does the IK).
+#   joint_ik      — the SDK only takes joint targets; the reusable
+#                   KinematicArmDriver (adapters/_common) builds the Cartesian
+#                   layer from a URDF FK/IK backend. Covers arms that ship only a
+#                   joint-command SDK plus a URDF.
+MOTION_BACKENDS = ("sdk_cartesian", "joint_ik")
+ORIENTATION_MODES = ("full", "soft")
+GRIPPER_UNITS = ("mm", "percent", "none")
+
 # Inputs that trigger a per-question explanation instead of an answer.
 _HELP_KEYS = ("?", "？", "help", "帮助", "h")
 
@@ -71,6 +84,20 @@ _HELP_CONNECTION = """\
   custom ：其他硬件 SDK/特殊连接方式；生成最空模板，由你完全填充。
 不确定且机器人走 CAN，就选 can；否则选 custom。"""
 
+_HELP_MOTION_BACKEND = """\
+运动后端 = 决定「笛卡尔运动由谁算」——这是最影响适配工作量的一个选择。
+  sdk_cartesian：厂商 SDK 本身就有类似 move_linear(x,y,z,...) 的笛卡尔接口，
+                 驱动只是薄封装（逆解在固件/SDK 里做）。传统默认。
+  joint_ik     ：SDK 只收「各关节目标」，笛卡尔层要在本地用 URDF 做 FK/IK。
+                 这类本体选它——框架的通用运动内核会替你生成整条笛卡尔/关节
+                 运动逻辑，你只需填「关节读写 SDK 胶水」和「把 URDF 逆解包一下」。
+怎么判断：SDK 手册里若只有「发送各电机角度」而没有「发送末端位姿」，就选 joint_ik。"""
+
+_HELP_JOINT_COUNT = """\
+运动学关节数 = 参与 FK/IK 的手臂关节个数（不含夹爪）。
+数一下 SDK/URDF 里能独立控制的手臂关节；夹爪电机不算，它单独走末端执行器通道。
+与「对外位姿维度」解耦：无论几个关节，对外仍是 x,y,z + rx,ry,rz 六维位姿。"""
+
 
 def validate_name(name: str) -> Optional[str]:
     """Return an error string if ``name`` is not a usable package name, else None."""
@@ -95,6 +122,13 @@ class Spec:
     detection: bool = False  # NL object detection → 3D grasp
     tool_geometry: str = "straight_down"  # straight_down | tilted
     connection: str = "can"  # can | serial | tcp | usb | ros | custom
+
+    # ---- orthogonal motion axes (decoupled from --dof) ---------------------
+    motion_backend: str = "sdk_cartesian"  # sdk_cartesian | joint_ik
+    joint_count: int = 0  # 0 → derive from dof; for joint_ik this is the FK/IK joint count
+    orientation_mode: str = "auto"  # auto → full for sdk_cartesian, soft for joint_ik
+    gripper_unit: str = "auto"  # auto → mm (sdk_cartesian) / percent (joint_ik) / none
+    servo: bool = False  # joint_ik: also declare motion.servo (streaming, non-blocking)
 
     # ---- derived identifiers ------------------------------------------------
 
@@ -131,6 +165,8 @@ class Spec:
         caps = ["motion.cartesian"]
         if self.joint:
             caps.append("motion.joint")
+        if self.servo:
+            caps.append("motion.servo")
         if self.end_effector == "suction":
             caps.append("grasp.suction")
         elif self.end_effector == "parallel":
@@ -150,18 +186,44 @@ class Spec:
         return self.camera or self.detection
 
     @property
+    def is_joint_ik(self) -> bool:
+        return self.motion_backend == "joint_ik"
+
+    @property
     def rot_fields(self) -> list[str]:
-        """Rotation field names by DOF: SCARA → [r]; 6-DoF → [rx, ry, rz]."""
+        """Rotation field names: joint_ik/6-DoF → [rx, ry, rz]; SCARA → [r]."""
+        if self.is_joint_ik:
+            return ["rx", "ry", "rz"]
         return ["r"] if self.dof == 4 else ["rx", "ry", "rz"]
 
     @property
     def pose_fields(self) -> list[str]:
         return ["x", "y", "z"] + self.rot_fields
 
+    @property
+    def arm_joint_names(self) -> list[str]:
+        """Placeholder joint names for a joint_ik skeleton (user edits to real ones)."""
+        return [f"joint_{i}" for i in range(1, max(1, self.joint_count) + 1)]
+
     def normalized(self) -> "Spec":
-        """Resolve implied flags (detection ⇒ camera) and return self."""
+        """Resolve implied flags and derive the orthogonal-axis defaults."""
         if self.detection:
             self.camera = True
+        if self.joint_count <= 0:
+            self.joint_count = self.dof
+        if self.is_joint_ik:
+            # A joint-level arm always exposes joint motion and needs the
+            # underactuated-friendly soft posture unless the user forced full.
+            self.joint = True
+            if self.orientation_mode == "auto":
+                self.orientation_mode = "soft"
+            if self.gripper_unit == "auto":
+                self.gripper_unit = "percent" if self.end_effector == "parallel" else "none"
+        else:
+            if self.orientation_mode == "auto":
+                self.orientation_mode = "full"
+            if self.gripper_unit == "auto":
+                self.gripper_unit = "mm" if self.end_effector == "parallel" else "none"
         return self
 
 
@@ -228,6 +290,46 @@ def _ask_choice(
         logger.info(f"  ✗ 请从 {', '.join(choices)} 中选择{suffix}")
 
 
+def _validate_joint_count(raw: str) -> str | None:
+    try:
+        n = int(raw)
+    except ValueError:
+        return "请输入整数"
+    if n < 1:
+        return "至少 1 个关节"
+    if n > 12:
+        return "关节数过大，请确认（>12）"
+    return None
+
+
+def _ask_joint_ik(name: str) -> Spec:
+    """Question flow for a joint-level (URDF FK/IK) arm — composes every axis."""
+    joint_count = int(
+        _ask_str("运动学关节数 (不含夹爪)", "6", validate=_validate_joint_count, help_text=_HELP_JOINT_COUNT)
+    )
+    end_effector = _ask_choice(
+        "末端执行器 (none=无  parallel=平行夹爪·两态开合  suction=吸盘·两态开关)",
+        END_EFFECTORS,
+        "none",
+        help_text=_HELP_EE,
+    )
+    detection = _ask_bool("需要自然语言目标检测吗？(需检测服务+手眼标定)", False, help_text=_HELP_DETECTION)
+    camera = True if detection else _ask_bool("有相机可取 RGB 图像吗？", False, help_text=_HELP_CAMERA)
+    servo = _ask_bool("需要 motion.servo 流式伺服吗？(需真机验证实时频率, 默认否)", False)
+    connection = _ask_choice("硬件连接方式", CONNECTIONS, "custom", help_text=_HELP_CONNECTION)
+    spec = Spec(
+        name=name,
+        motion_backend="joint_ik",
+        joint_count=joint_count,
+        end_effector=end_effector,
+        camera=camera,
+        detection=detection,
+        servo=servo,
+        connection=connection,
+    )
+    return spec.normalized()
+
+
 def ask_interactive() -> Spec:
     """Walk the engineer through the choices and return a normalized Spec."""
     logger.info("=" * 60)
@@ -236,6 +338,14 @@ def ask_interactive() -> Spec:
     logger.info("=" * 60)
     logger.info(" 提示：方括号 [] 里是默认值，直接回车即采用；任何一题不清楚就输入 ? 看说明。")
     name = _ask_str("适配器/机器人名字 (小写, 如 my_robot)", "my_robot", validate=validate_name)
+    motion_backend = _ask_choice(
+        "运动后端 (sdk_cartesian=SDK自带笛卡尔接口 / joint_ik=只有关节接口·本地IK)",
+        MOTION_BACKENDS,
+        "sdk_cartesian",
+        help_text=_HELP_MOTION_BACKEND,
+    )
+    if motion_backend == "joint_ik":
+        return _ask_joint_ik(name)
     dof = int(_ask_choice("自由度 (4=SCARA / 6=六轴)", ("4", "6"), "6", help_text=_HELP_DOF))
     joint = _ask_bool("支持关节空间运动吗？", False, help_text=_HELP_JOINT)
     end_effector = _ask_choice(

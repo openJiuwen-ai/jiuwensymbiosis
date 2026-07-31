@@ -23,6 +23,7 @@ from jiuwensymbiosis.agent.fast.registry import (
     register_skill,
     register_skill_dir,
 )
+from jiuwensymbiosis.agent.fast.realtime import ServoConfig, servo_config_from_session
 from jiuwensymbiosis.agent.fast.runner import SkillExecConfig, run_sequence
 from jiuwensymbiosis.agent.fast.sequence import (
     KNOWN_SPECIAL_OPS,
@@ -36,6 +37,8 @@ from jiuwensymbiosis.agent.fast.sequence import (
 __all__ = [
     # config
     "SkillExecConfig",
+    "ServoConfig",
+    "servo_config_from_session",
     "MaskTrackingConfig",
     # pipeline
     "compile_sequence",

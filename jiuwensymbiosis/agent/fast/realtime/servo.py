@@ -32,6 +32,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from scipy.spatial.transform import Rotation
 
@@ -105,6 +106,35 @@ class ServoConfig:
             raise ValueError(f"ServoConfig.settle_ticks must be >= 1, got {self.settle_ticks}.")
         if not (1.0 <= float(self.control_hz) <= 200.0):
             raise ValueError(f"ServoConfig.control_hz must be in [1, 200] (hardware-validated), got {self.control_hz}.")
+
+
+def servo_config_from_session(session: Any) -> ServoConfig | None:
+    """Derive a real-time ``ServoConfig`` from a session's motion-profile config, or None.
+
+    Duck-typed and adapter-agnostic: reads ``session.env.cfg.trajectory_hz`` (control-loop
+    rate) and ``session.env.cfg.motion_runtime.max_cartesian_vel_mm_s`` (Cartesian velocity).
+    When both are present and positive, returns ``ServoConfig(control_hz=hz,
+    max_lin_step_mm=vel/hz)`` so the fast Cartesian loop matches the arm's motion profile
+    (e.g. SO-101 ``safe`` → 10 Hz / 3 mm-per-tick, slower and safer than the flat default).
+    Sessions whose config lacks these attributes (e.g. piper) return None → callers fall back
+    to the framework default ``ServoConfig()``. Never raises: an out-of-band derivation yields
+    None rather than propagating.
+    """
+    cfg = getattr(getattr(session, "env", None), "cfg", None)
+    hz = getattr(cfg, "trajectory_hz", None)
+    runtime = getattr(cfg, "motion_runtime", None)
+    vel = getattr(runtime, "max_cartesian_vel_mm_s", None)
+    if not _is_positive_number(hz) or not _is_positive_number(vel):
+        return None
+    try:
+        return ServoConfig(control_hz=float(hz), max_lin_step_mm=float(vel) / float(hz))
+    except ValueError:
+        return None
+
+
+def _is_positive_number(value: Any) -> bool:
+    """True only for a real, finite, strictly-positive number (excludes bool)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and value > 0
 
 
 @dataclass
