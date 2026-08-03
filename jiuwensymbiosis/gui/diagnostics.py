@@ -89,7 +89,7 @@ _GPU_OOM = Diagnosis(
 _ARM_CAN = Diagnosis(
     title="机械臂连接失败",
     cause="错误可能是源于连不上机械臂(CAN 接口没激活,或线没接好)。",
-    steps=("确认 CAN 已激活、线缆已接;或先用「模拟模式」不接硬件跑一遍验证流程。",),
+    steps=("确认 CAN 已激活、线缆已接后重试。",),
 )
 _NO_CAMERA = Diagnosis(
     title="没读到相机画面",

@@ -3,7 +3,7 @@
 
 """界面跨页共享状态(框架无关,无 Qt / 无 nicegui)。
 
-持有工作区、各任务的 ``ConfigModel`` 缓存、当前任务、模拟开关与正在运行的 ``RunEngine``。
+持有工作区、各任务的 ``ConfigModel`` 缓存、当前任务与正在运行的 ``RunEngine``。
 配置装载/默认值填充逻辑与框架无关,可独立单测。同一时刻只允许一个运行。
 """
 
@@ -28,57 +28,75 @@ class AppState:
     def __init__(self, workspace: str | None = None) -> None:
         self.workspace = workspace or default_workspace()
         self.current_task: str | None = None
-        self.mock = False
+        self.current_body: str | None = None
         self.engine: RunEngine | None = None
-        self._configs: dict[str, ConfigModel] = {}
+        # 配置属**本体**(与任务无关),按 (本体, 任务) 缓存:同一本体+任务共享一份可编辑配置,
+        # 换本体则各自独立(本体无关任务在不同本体下用各自本体的配置)。
+        self._configs: dict[tuple[str, str], ConfigModel] = {}
 
-    def config_for_task(self, task_key: str) -> ConfigModel:
-        """取任务配置模型:优先缓存,否则从 YAML 载入(缺失则用默认指令起步)。"""
-        if task_key in self._configs:
-            return self._configs[task_key]
+    def config_for(self, body_key: str, task_key: str) -> ConfigModel:
+        """取(本体, 任务)的配置模型。
+
+        优先缓存,否则从**本体**配置 YAML 载入,套上任务的 agent 默认与默认指令
+        (本体配置缺失则用默认指令起步)。
+        """
+        cache_key = (body_key, task_key)
+        if cache_key in self._configs:
+            return self._configs[cache_key]
+        body = registry.get_body(body_key)
         task = registry.get_task(task_key)
         try:
-            model = ConfigModel.from_yaml_text(task.config_path().read_text(encoding="utf-8"))
+            model = ConfigModel.from_yaml_text(body.config_path().read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            logger.debug("load config for %s failed, using default prompt: %s", task_key, exc)
+            logger.debug("load config for body %s failed, using default prompt: %s", body_key, exc)
             model = ConfigModel.from_dict({"env": {"cfg": {"prompt": task.default_query}}})
-        # 任务级默认(如 pick_box 意图开启技能工作流):配置未显式设置时填入。
+        # 任务级默认(如 pick_banana 的 fast/技能/步数):配置未显式设置时填入。
         for name, val in task.agent_defaults.items():
             if model.get(f"agent.{name}") is None:
                 model.set(f"agent.{name}", val)
         # 默认开启轨迹记录,让「历史」页开箱即用。
         if model.get("agent.enable_tracing") is None:
             model.set("agent.enable_tracing", True)
-        # 默认用快速模式(fast):真机运行更快、可重复;模拟模式下 run_engine 会强制回逐步。
+        # 默认用快速模式(fast):真机运行更快、可重复。
         if model.get("agent.exec_mode") is None:
             model.set("agent.exec_mode", "fast")
-        # 任务指令:配置未提供 prompt 时(piper.yaml 任务无关化后不含 prompt),用任务的默认
-        # 指令预填,让「配置 → 基础」的「任务指令」框开箱即有内容(用户可改;不改就用它)。
+        # 任务指令:本体配置不含 prompt(与任务无关),用任务默认指令预填「配置 → 任务指令」框
+        # (用户可改;不改就用它)。
         if not model.get("env.cfg.prompt"):
             model.set("env.cfg.prompt", task.default_query)
-        self._configs[task_key] = model
+        self._configs[cache_key] = model
         return model
 
-    def set_config(self, task_key: str, model: ConfigModel) -> None:
-        self._configs[task_key] = model
+    def set_config(self, body_key: str, task_key: str, model: ConfigModel) -> None:
+        self._configs[(body_key, task_key)] = model
+
+    def current_config(self) -> ConfigModel | None:
+        """当前(选中本体, 选中任务)的配置模型;任一未选则 None。"""
+        if self.current_body is None or self.current_task is None:
+            return None
+        return self.config_for(self.current_body, self.current_task)
 
     def apply_fix(self, patch: dict[str, Any]) -> None:
-        """把运行页的一键修复(本地模型 / 镜像)沉淀进当前任务配置,便于导出/另存。"""
-        if self.current_task is None or not isinstance(patch, dict):
+        """把运行页的一键修复(本地模型 / 镜像)沉淀进当前配置,便于导出/另存。"""
+        model = self.current_config()
+        if model is None or not isinstance(patch, dict):
             return
-        self.config_for_task(self.current_task).patch_detector(**patch)
+        model.patch_detector(**patch)
 
     def is_busy(self) -> bool:
         return self.engine is not None and self.engine.is_running()
 
-    def prime_detector_models(self, task_key: str) -> list[str]:
+    def prime_detector_models(self, body_key: str, task_key: str) -> list[str]:
         """真机运行前把已下好的本地视觉模型目录喂给检测器,返回仍缺失的模型名。
 
         检测器的 ``gdino_model_id`` / ``sam2_model_id`` 优先读同名环境变量;指向本地快照目录
         可直接离线加载,绕过「联网下载 / 已缓存却仍在线校验」的卡顿。任务不含视觉检测器、或
-        用户已自行设过环境变量(如经诊断页)则不干预。
+        用户已自行设过环境变量(如经诊断页)则不干预。「禁用视觉服务」开关打开时直接跳过。
         """
-        servers = self.config_for_task(task_key).data.get("api_servers")
+        config = self.config_for(body_key, task_key)
+        if config.get("gui.disable_vision"):
+            return []
+        servers = config.data.get("api_servers")
         if not isinstance(servers, list):
             return []
         detector = next(

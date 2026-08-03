@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""主页(NiceGUI 版):本体选择 + 模拟模式开关 + 任务列表(一行一个)+ 操作按钮。
+"""主页(NiceGUI 版):本体选择 + 任务列表(一行一个)+ 操作按钮。
 
 点任务卡片即「选中」它(高亮 + 顶部显示「当前任务」);「运行」「配置」按钮作用于当前
 选中的任务。开局自动选中第一个任务,消除「没有当前任务」的死角。
@@ -40,8 +40,6 @@ class HomeView:
                 value=bodies[0].key if bodies else None,
                 on_change=lambda _e: self._refresh_cards(),
             ).props("outlined dense")
-            ui.space()
-            self._mock = ui.switch("🧪 模拟模式(不连接硬件)", value=False, on_change=lambda e: self._set_mock(e.value))
         self._current = ui.label("").classes("text-blue-600 font-bold")
         ui.label("点任务选择它;再用下方的「运行」「配置」操作当前选中的任务。").classes("text-gray-500 text-sm")
         with ui.scroll_area().classes("w-full grow border rounded"):
@@ -49,11 +47,7 @@ class HomeView:
         with ui.row().classes("gap-2"):
             self._run_btn = ui.button("▶ 运行", on_click=self._run_current).props("color=primary")
             self._cfg_btn = ui.button("⚙ 配置", on_click=self._config_current)
-        self._set_mock(False)
         self._refresh_cards()
-
-    def is_mock(self) -> bool:
-        return bool(self._mock.value)
 
     def selected_task(self) -> str | None:
         return self._selected
@@ -61,9 +55,6 @@ class HomeView:
     def reload(self) -> None:
         """按注册表重建任务列表(如「另存为新任务」后刷新主页)。"""
         self._refresh_cards()
-
-    def _set_mock(self, value: bool) -> None:
-        self._state.mock = bool(value)
 
     def _run_current(self) -> None:
         if self._selected is not None:
@@ -88,6 +79,8 @@ class HomeView:
 
     def _refresh_cards(self) -> None:
         body_key = self._body.value
+        # 选中的本体是运行/配置的依据(配置属本体):在此单点同步到共享状态。
+        self._state.current_body = body_key
         self._list.clear()
         self._cards = {}
         tasks = registry.tasks_for_body(body_key)

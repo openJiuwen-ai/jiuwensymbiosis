@@ -33,6 +33,26 @@ PRESETS = [
 
 
 def _flags(spec: Spec) -> list[str]:
+    if spec.is_joint_ik:
+        flags = [
+            "--name",
+            spec.name,
+            "--motion-backend",
+            "joint_ik",
+            "--joint-count",
+            str(spec.joint_count),
+            "--end-effector",
+            spec.end_effector,
+            "--connection",
+            spec.connection,
+        ]
+        if spec.detection:
+            flags.append("--detection")
+        elif spec.camera:
+            flags.append("--camera")
+        if spec.servo:
+            flags.append("--servo")
+        return flags
     flags = [
         "--name",
         spec.name,
@@ -256,6 +276,106 @@ def test_generated_from_dict_handles_malformed_joint_limits(cleanup):
     # Mixed: keep good, drop bad.
     cfg = cfg_cls.from_dict({"joint_limits": {"J1": [-360.0, 360.0], "J2": "bad"}})
     assert cfg.joint_limits == {"J1": (-360.0, 360.0)}
+
+
+JOINT_IK_PRESETS = [
+    Spec(name="gjik_par", motion_backend="joint_ik", joint_count=5, end_effector="parallel").normalized(),
+    Spec(name="gjik_suc", motion_backend="joint_ik", joint_count=6, end_effector="suction").normalized(),
+    Spec(
+        name="gjik_vis",
+        motion_backend="joint_ik",
+        joint_count=6,
+        end_effector="parallel",
+        detection=True,
+        servo=True,
+    ).normalized(),
+]
+
+
+@pytest.mark.parametrize("spec", JOINT_IK_PRESETS, ids=lambda s: s.name)
+def test_joint_ik_adapter_passes_checks(spec, cleanup):
+    """Every joint_ik combo (gripper / suction / vision+servo) validates and smokes."""
+    cleanup.append(spec.name)
+
+    proc = _run_generator(spec)
+    assert proc.returncode == 0, f"generator failed:\n{proc.stdout}\n{proc.stderr}"
+
+    adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
+    for fname in ("__init__.py", "config.py", "lowlevel.py", "env.py", "api.py", "session.py"):
+        assert (adapter_dir / fname).is_file(), f"missing {fname}"
+
+    module = f"jiuwensymbiosis.adapters.{spec.name}"
+    assert checks.run_validate(module).ok, "validate failed"
+    assert checks.run_smoke(module).ok, "smoke failed"
+
+
+def test_joint_ik_seams_are_the_only_pending(cleanup):
+    """The joint_ik skeleton flags exactly the transport + FK/IK seams as mocks."""
+    spec = JOINT_IK_PRESETS[0]
+    cleanup.append(spec.name)
+    assert _run_generator(spec).returncode == 0
+
+    adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
+    pending = checks.scan_pending(adapter_dir)
+    assert set(pending) == {"lowlevel.py"}, f"only lowlevel seams should be pending, got {sorted(pending)}"
+    for method in (
+        "open",
+        "close",
+        "precheck",
+        "read_arm_joints",
+        "send_arm_joints",
+        "read_effector",
+        "send_effector",
+        "forward_kinematics",
+        "inverse_kinematics",
+    ):
+        assert method in pending["lowlevel.py"], f"{method} not flagged pending"
+
+
+def test_joint_ik_output_is_generic(cleanup):
+    """Generated joint_ik code must name no concrete SDK/body and reuse the core."""
+    spec = JOINT_IK_PRESETS[2]  # the richest combo (vision + servo + gripper)
+    cleanup.append(spec.name)
+    assert _run_generator(spec).returncode == 0
+
+    adapter_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / spec.name
+    blob = "\n".join(
+        (adapter_dir / f).read_text(encoding="utf-8")
+        for f in ("config.py", "lowlevel.py", "env.py", "api.py", "session.py")
+    ).lower()
+    for trace in ("lerobot", "sofollower", "robotkinematics", "so101", "so-101"):
+        assert trace not in blob, f"generated code leaks a concrete SDK/body name: {trace}"
+
+    lowlevel = (adapter_dir / "lowlevel.py").read_text(encoding="utf-8")
+    assert "from jiuwensymbiosis.adapters._common.kinematic_driver import" in lowlevel
+    assert "KinematicArmDriver" in lowlevel  # reuses the shared motion core
+
+
+def test_joint_ik_composes_orthogonal_capabilities(cleanup):
+    """Suction / vision / servo compose by reusing the existing capability machinery."""
+    suction = JOINT_IK_PRESETS[1]
+    vision = JOINT_IK_PRESETS[2]
+    cleanup.extend([suction.name, vision.name])
+    assert _run_generator(suction).returncode == 0
+    assert _run_generator(vision).returncode == 0
+
+    suc_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / suction.name
+    suc_api = (suc_dir / "api.py").read_text(encoding="utf-8")
+    suc_env = (suc_dir / "env.py").read_text(encoding="utf-8")
+    # Suction reuses SuctionMixin (no bespoke gripper override) + the effector seam.
+    assert "SuctionMixin" in suc_api
+    assert "open_gripper" not in suc_api
+    assert '"grasp.suction"' in suc_env
+    assert "send_effector" in (suc_dir / "lowlevel.py").read_text(encoding="utf-8")
+
+    vis_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / vision.name
+    vis_api = (vis_dir / "api.py").read_text(encoding="utf-8")
+    vis_env = (vis_dir / "env.py").read_text(encoding="utf-8")
+    # Vision reuses VisionMixin + honest stubs; servo just declares the capability.
+    assert "VisionMixin" in vis_api
+    assert "not_implemented" in vis_api
+    for cap in ('"vision.camera"', '"vision.detection"', '"motion.servo"'):
+        assert cap in vis_env
 
 
 def test_non_can_connection_is_placeholder_but_valid(cleanup):

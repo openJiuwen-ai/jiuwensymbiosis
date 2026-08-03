@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from nicegui import app, ui
 
 from jiuwensymbiosis.gui import ABOUT_TEXT, APP_NAME, registry
@@ -73,23 +75,23 @@ class Layout:
 
     def _build_quit_dialog(self) -> ui.dialog:
         """确认后关停整个应用(NiceGUI 服务器随之退出;重开请再点桌面图标/启动脚本)。"""
-        with ui.dialog() as dialog, ui.card().classes("gap-3"):
-            ui.label("退出 Jiuwen Symbiosis？").classes("text-base font-bold")
-            ui.label("将关闭本应用（后台服务一并停止）。重新打开请再次点击桌面图标。").classes("text-sm")
-            with ui.row().classes("self-end gap-2"):
-                ui.button("取消", on_click=dialog.close).props("flat")
-                ui.button("退出", on_click=self._do_quit).props("color=negative")
-        return dialog
+        return self._confirm_dialog(
+            title="退出 Jiuwen Symbiosis？",
+            body="将关闭本应用（后台服务一并停止）。重新打开请再次点击桌面图标。",
+            confirm_label="退出",
+            confirm_props="color=negative",
+            on_confirm=self._do_quit,
+        )
 
     def _build_restart_dialog(self) -> ui.dialog:
         """确认后重启整个应用:关停当前服务器并拉起一个新的(硬件/检测服务一并重连)。"""
-        with ui.dialog() as dialog, ui.card().classes("gap-3"):
-            ui.label("重启 Jiuwen Symbiosis？").classes("text-base font-bold")
-            ui.label("将关停当前应用并重新启动(硬件/检测服务一并重连)。浏览器会自动打开新页面。").classes("text-sm")
-            with ui.row().classes("self-end gap-2"):
-                ui.button("取消", on_click=dialog.close).props("flat")
-                ui.button("重启", on_click=self._do_restart).props("color=primary")
-        return dialog
+        return self._confirm_dialog(
+            title="重启 Jiuwen Symbiosis？",
+            body="将关停当前应用并重新启动(硬件/检测服务一并重连)。浏览器会自动打开新页面。",
+            confirm_label="重启",
+            confirm_props="color=primary",
+            on_confirm=self._do_restart,
+        )
 
     def _confirm_quit(self) -> None:
         """点「退出」:运行中先拦一下(避免中途杀掉真机任务),否则弹确认框。"""
@@ -145,11 +147,11 @@ class Layout:
         if val == _HISTORY:
             self._history.set_workspace(self._state.workspace)
         elif val == _CONFIG:
-            # 切标签进配置页也按当前选中任务 + 当前模拟开关重建(与点卡片进入行为一致):
-            # 主页改了选中任务或模拟↔真机后,配置页据此更新,因仿真置灰的控件恢复可点。
+            # 切标签进配置页也按当前选中任务重建(与点卡片进入行为一致):主页改了选中任务后,
+            # 配置页据此更新。
             self._sync_config_view()
         elif val == _TOOLS:
-            # 进工具页按当前模拟开关/选中任务/配置重算前置校验(主页改动后据此更新引导)。
+            # 进工具页按当前选中任务/配置重算前置校验(主页改动后据此更新引导)。
             self._tools.refresh()
 
     # ------------------------------------------------------------------ 配置 / 运行
@@ -159,12 +161,17 @@ class Layout:
         self._goto(self._config_tab)
 
     def _sync_config_view(self) -> None:
-        """按当前选中任务 + 当前模拟开关重建配置表单。无选中任务则不动。"""
+        """按当前选中本体+任务重建配置表单。无选中本体/任务则不动。"""
         task_key = self._state.current_task
-        if task_key is None:
+        body_key = self._state.current_body
+        if task_key is None or body_key is None:
             return
         task = registry.get_task(task_key)
-        self._config.load(task.display_name, self._state.config_for_task(task_key), mock=self._state.mock)
+        self._config.load(
+            task.display_name,
+            self._state.config_for(body_key, task_key),
+            body_key=body_key,
+        )
 
     def _run_current_config(self) -> None:
         if self._state.current_task is None:
@@ -177,20 +184,24 @@ class Layout:
         if self._state.is_busy():
             ui.notify("已有任务在运行,请等待其结束或先停止。", type="warning")
             return
+        body_key = self._state.current_body
+        if body_key is None:
+            ui.notify("请先在主页选择一个本体。", type="warning")
+            self._goto(self._home_tab)
+            return
         # 开始正常运行前,确保工具页的相机预览已停止并释放硬件(阻塞等待,否则相机被占用)。
         self._tools.stop_preview()
         self._state.current_task = task_key
         # 真机运行前先把已下好的本地视觉模型喂给检测器(避免它去 huggingface.co 联网下载
         # 933MB 卡住);找不到就直接展示「错误诊断」引导用户定位/换镜像,而非空跑到超时。
-        if not self._state.mock:
-            missing = self._state.prime_detector_models(task_key)
-            if missing:
-                self._goto(self._run_tab)
-                self._run.show_model_help(missing)
-                return
+        missing = self._state.prime_detector_models(body_key, task_key)
+        if missing:
+            self._goto(self._run_tab)
+            self._run.show_model_help(missing)
+            return
         task = registry.get_task(task_key)
-        model = self._state.config_for_task(task_key)
-        engine = RunEngine(task, model.data, mock=self._state.mock, workspace=self._state.workspace)
+        model = self._state.config_for(body_key, task_key)
+        engine = RunEngine(task, model.data, workspace=self._state.workspace, body_key=body_key)
         self._state.engine = engine
         self._goto(self._run_tab)
         self._run.attach(engine)
@@ -200,7 +211,7 @@ class Layout:
             self._state.engine.request_stop()
 
     def _rerun(self) -> None:
-        """用刚跑完那次的同一配置重跑(克隆引擎,不受运行后改动的配置/模拟开关影响)。"""
+        """用刚跑完那次的同一配置重跑(克隆引擎,不受运行后改动的配置影响)。"""
         engine = self._state.engine
         if engine is None or self._state.is_busy():
             return
@@ -225,18 +236,38 @@ class Layout:
 
     @staticmethod
     def _build_bye_dialog() -> ui.dialog:
-        """退出后的「已关闭」提示:shutdown 会立即断连,先亮这句,避免页面看起来像卡死。"""
-        with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
-            ui.label("Jiuwen Symbiosis 已关闭").classes("text-lg font-bold")
-            ui.label("可以关闭此标签页了。").classes("text-sm text-gray-600")
-        return dialog
+        """退出后的「已关闭」提示。"""
+        return Layout._notice_dialog("Jiuwen Symbiosis 已关闭", "可以关闭此标签页了。")
 
     @staticmethod
     def _build_restarting_dialog() -> ui.dialog:
-        """重启中提示:shutdown 会立即断连,先亮这句,新页面稍候由接替进程自动打开。"""
+        """重启中提示,新页面稍候由接替进程自动打开。"""
+        return Layout._notice_dialog("正在重启 Jiuwen Symbiosis…", "新页面稍候自动打开,可关闭此标签页。")
+
+    @staticmethod
+    def _confirm_dialog(
+        *,
+        title: str,
+        body: str,
+        confirm_label: str,
+        confirm_props: str,
+        on_confirm: Callable[[], None],
+    ) -> ui.dialog:
+        """确认框:标题 + 说明 + 「取消 / <确认>」两个按钮。"""
+        with ui.dialog() as dialog, ui.card().classes("gap-3"):
+            ui.label(title).classes("text-base font-bold")
+            ui.label(body).classes("text-sm")
+            with ui.row().classes("self-end gap-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button(confirm_label, on_click=on_confirm).props(confirm_props)
+        return dialog
+
+    @staticmethod
+    def _notice_dialog(title: str, body: str) -> ui.dialog:
+        """persistent 提示框:shutdown 会立即断连,先亮标题+一句说明,避免页面看起来像卡死。"""
         with ui.dialog().props("persistent") as dialog, ui.card().classes("items-center gap-2"):
-            ui.label("正在重启 Jiuwen Symbiosis…").classes("text-lg font-bold")
-            ui.label("新页面稍候自动打开,可关闭此标签页。").classes("text-sm text-gray-600")
+            ui.label(title).classes("text-lg font-bold")
+            ui.label(body).classes("text-sm text-gray-600")
         return dialog
 
 

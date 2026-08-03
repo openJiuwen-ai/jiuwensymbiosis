@@ -162,7 +162,7 @@ class ToolsView:
 
     # ------------------------------------------------------------------ lifecycle
     def refresh(self) -> None:
-        """Recompute preconditions (mock switch / selected task / config); call on page entry or state change."""
+        """Recompute preconditions (selected task / config); call on page entry or state change."""
         self._update_context()
         if self.is_previewing():
             return
@@ -181,12 +181,14 @@ class ToolsView:
     def _precondition_block(self) -> str | None:
         """Return the first (most relevant) blocking reason as Chinese guidance; None when all pass."""
         st = self._state
-        if st.mock:
-            return "感知测试需要真机与深度相机,请在主页关闭「🧪 模拟模式」。"
         task_key = st.current_task
-        if task_key is None:
-            return "请先在主页选择一个任务(决定用哪个本体与配置)。"
-        low_level = _dig(st.config_for_task(task_key).data, "env", "cfg", "low_level") or {}
+        body_key = st.current_body
+        if task_key is None or body_key is None:
+            return "请先在主页选择一个本体与任务(决定用哪个本体与配置)。"
+        config = st.config_for(body_key, task_key)
+        if config.get("gui.disable_vision"):
+            return "已在「配置」页勾选「禁用视觉服务」;感知测试需要相机,请先取消该开关。"
+        low_level = _dig(config.data, "env", "cfg", "low_level") or {}
         # camera_serial / calib_path are common adapter config keys (piper puts them under env.cfg.low_level).
         if not low_level.get("camera_serial") and not os.environ.get("CAMERA_SERIAL"):
             return "请先在「配置」页填写相机序列号(camera_serial),否则没有实时画面。"
@@ -196,12 +198,12 @@ class ToolsView:
 
     def _update_context(self) -> None:
         task_key = self._state.current_task
-        if task_key is None:
+        body_key = self._state.current_body
+        if task_key is None or body_key is None:
             self._context.set_text("")
             return
         task = registry.get_task(task_key)
-        mode = "模拟" if self._state.mock else "真机"
-        self._context.set_text(f"本体:{task.body_key}   配置:{task.display_name}   模式:{mode}")
+        self._context.set_text(f"本体:{body_key}   任务:{task.display_name}")
 
     # ------------------------------------------------------------------ interaction
     def _start(self) -> None:
@@ -210,11 +212,13 @@ class ToolsView:
             ui.notify(reason, type="warning")
             return
         task_key = self._state.current_task
-        if task_key is None:
+        body_key = self._state.current_body
+        if task_key is None or body_key is None:
             return
-        task = registry.get_task(task_key)
-        body = registry.get_body(task.body_key)
-        cfg_data = resolve_real_session_config(self._state.config_for_task(task_key).data, task.config_path().parent)
+        body = registry.get_body(body_key)
+        cfg_data = resolve_real_session_config(
+            self._state.config_for(body_key, task_key).data, body.config_path().parent
+        )
         z_correction = float(_dig(cfg_data, "env", "cfg", "low_level", "z_correction_mm") or 0.0)
         self._engine = PerceptionEngine(lambda: body.build_real_session(cfg_data), z_correction_mm=z_correction)
         self._errored = False

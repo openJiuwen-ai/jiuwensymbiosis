@@ -20,7 +20,17 @@ from pathlib import Path
 
 from . import checks
 from .render import render_all
-from .spec import CONNECTIONS, END_EFFECTORS, TOOL_GEOMETRIES, Spec, ask_interactive, validate_name
+from .spec import (
+    CONNECTIONS,
+    END_EFFECTORS,
+    GRIPPER_UNITS,
+    MOTION_BACKENDS,
+    ORIENTATION_MODES,
+    TOOL_GEOMETRIES,
+    Spec,
+    ask_interactive,
+    validate_name,
+)
 
 REPO_ROOT = checks.REPO_ROOT
 
@@ -74,6 +84,35 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         description="生成并带填一个 jiuwensymbiosis 适配器",
     )
     parser.add_argument("--name", help="适配器/机器人名字 (小写, 如 my_robot)")
+    parser.add_argument(
+        "--motion-backend",
+        choices=MOTION_BACKENDS,
+        default="sdk_cartesian",
+        help="运动后端: sdk_cartesian=SDK自带笛卡尔 / joint_ik=只有关节接口+本地IK (默认 sdk_cartesian)",
+    )
+    parser.add_argument(
+        "--joint-count",
+        type=int,
+        default=0,
+        help="joint_ik 的运动学关节数 (不含夹爪; 默认取 --dof)",
+    )
+    parser.add_argument(
+        "--orientation-mode",
+        choices=ORIENTATION_MODES,
+        default=None,
+        help="姿态约束: full / soft (默认按后端自动: joint_ik→soft)",
+    )
+    parser.add_argument(
+        "--gripper-unit",
+        choices=GRIPPER_UNITS,
+        default=None,
+        help="夹爪单位: mm / percent / none (默认按后端自动)",
+    )
+    parser.add_argument(
+        "--servo",
+        action="store_true",
+        help="joint_ik: 同时声明 motion.servo 流式伺服 (需真机验证实时频率)",
+    )
     parser.add_argument("--dof", type=int, choices=(4, 6), default=6, help="自由度 (默认 6)")
     parser.add_argument("--joint", action="store_true", help="支持关节空间运动")
     parser.add_argument(
@@ -111,6 +150,11 @@ def _spec_from_args(args: argparse.Namespace) -> Spec:
         detection=args.detection,
         tool_geometry=args.tool,
         connection=args.connection,
+        motion_backend=args.motion_backend,
+        joint_count=args.joint_count,
+        orientation_mode=args.orientation_mode or "auto",
+        gripper_unit=args.gripper_unit or "auto",
+        servo=args.servo,
     )
     return spec.normalized()
 

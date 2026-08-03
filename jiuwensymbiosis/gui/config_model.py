@@ -21,6 +21,8 @@ import yaml
 __all__ = [
     "FieldSpec",
     "FIELD_GROUPS",
+    "ROBOT_PARAM_FIELDS",
+    "field_groups_for_body",
     "GROUP_ORDER",
     "ConfigModel",
 ]
@@ -49,7 +51,6 @@ class FieldSpec:
         step: 数字类字段每次步进的增量(缺省走控件默认 1;如温度用 0.1)。
         on_value / off_value: ``kind="bool"`` 时若给出,复选框存的不是 True/False
             而是这两个值(如 exec_mode 的 ``"fast"`` / ``"agent"``)。
-        disable_in_mock: 模拟模式下置灰该字段(如 fast 需真实模型+硬件)。
     """
 
     path: str
@@ -64,7 +65,6 @@ class FieldSpec:
     step: float | None = None
     on_value: Any = None
     off_value: Any = None
-    disable_in_mock: bool = False
 
 
 # 常用设置的分组表单。刻意只挑"用户常改、能看懂"的字段;其余走原始 YAML。
@@ -104,13 +104,11 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "执行方式",
         help=(
             "开(默认):开头用一次 LLM 规划出整条动作序列,之后不再逐步调用 LLM——更快、"
-            "可重复,但适应性弱,且需真实模型与(真机)伺服。关:逐步智能体,每步问一次"
-            "LLM。模拟模式不可用(无真实模型),届时自动回退逐步。"
+            "可重复,但适应性弱,且需真实模型与(真机)伺服。关:逐步智能体,每步问一次 LLM。"
         ),
         default="fast",
         on_value="fast",
         off_value="agent",
-        disable_in_mock=True,
     ),
     # -- 安全与反馈 --
     FieldSpec(
@@ -145,29 +143,99 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         help="记录每步用于「历史」页回放。",
         default=False,
     ),
-    # -- 机器人参数 --
-    FieldSpec("env.cfg.low_level.move_speed", "运动速度", "int", "机器人参数", help="真机上建议从小值起步。"),
-    FieldSpec("env.cfg.low_level.gripper_open_mm", "夹爪开度(mm)", "float", "机器人参数"),
-    FieldSpec("env.cfg.low_level.gripper_effort", "夹爪力度", "int", "机器人参数"),
+    # -- 机器人参数(共享:所有本体通用的部署开关) --
     FieldSpec(
-        "env.cfg.low_level.tool_offset_mm", "工具偏置(mm)", "float", "机器人参数", help="末端工具相对法兰的长度。"
-    ),
-    FieldSpec(
-        "env.cfg.low_level.camera_serial",
-        "相机序列号",
-        "str",
+        "gui.disable_vision",
+        "禁用视觉服务",
+        "bool",
         "机器人参数",
         help=(
-            "腕部 RealSense 相机的序列号。真机视觉任务(识别/定位物体)必填——留空则不会启用"
-            "相机,视觉工具会返回 no_camera。模拟模式无需设置。"
+            "打开后本次真机运行不启动视觉检测器(GroundingDINO+SAM2 子进程)、不打开相机——纯运动。"
+            "默认关闭 = 启用视觉服务。没有 GPU / 只做运动 bring-up 时打开它,避免白起检测器。"
         ),
+        default=False,
     ),
-    # -- 模型(模拟模式下由界面置灰) --
+    # -- 模型 --
     FieldSpec("model.model_name", "模型名称", "str", "模型"),
     FieldSpec("model.api_base", "服务端点", "str", "模型", help="不要包含 /chat/completions。"),
     FieldSpec("model.api_key", "API Key", "str", "模型", help="留空表示端点无需鉴权。"),
     FieldSpec("model.temperature", "采样温度", "float", "模型", min_value=0.0, max_value=2.0, step=0.1),
 )
+
+
+# 「机器人参数」组按本体切换 —— 不同本体的可编辑旋钮不同(piper 有 move_speed/工具偏置;
+# so101 有串口/安全门禁/相机标定)。共享组(基础/执行方式/安全与反馈/模型)对所有本体一致,
+# 只挑"用户常改、能看懂"的字段;进阶字段(如速度/到位策略)一律走「原始 YAML」兜底。default
+# 与各适配器 Config 真实默认一致,使界面显示 = 实际运行。
+
+ROBOT_PARAM_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
+    "piper": (
+        FieldSpec("env.cfg.low_level.move_speed", "运动速度", "int", "机器人参数", help="真机上建议从小值起步。"),
+        FieldSpec("env.cfg.low_level.gripper_open_mm", "夹爪开度(mm)", "float", "机器人参数"),
+        FieldSpec("env.cfg.low_level.gripper_effort", "夹爪力度", "int", "机器人参数"),
+        FieldSpec(
+            "env.cfg.low_level.tool_offset_mm", "工具偏置(mm)", "float", "机器人参数", help="末端工具相对法兰的长度。"
+        ),
+        FieldSpec(
+            "env.cfg.low_level.camera_serial",
+            "相机序列号",
+            "str",
+            "机器人参数",
+            help=(
+                "腕部 RealSense 相机的序列号。视觉任务(识别/定位物体)必填——留空则不会启用"
+                "相机,视觉工具会返回 no_camera。"
+            ),
+        ),
+    ),
+    "so101": (
+        FieldSpec(
+            "env.cfg.low_level.port", "串口设备", "str", "机器人参数", help="LeRobot SOFollower 串口,如 /dev/ttyUSB0。"
+        ),
+        FieldSpec(
+            "env.cfg.low_level.safety_validated",
+            "已通过真机安全验收",
+            "bool",
+            "机器人参数",
+            help="仅在示教安全 home、收紧软限位并低速验收后才勾选;否则真机连接会 fail-closed 拒绝。",
+            default=False,
+        ),
+        FieldSpec(
+            "env.cfg.low_level.home_use_init_pose",
+            "启动位姿作 home",
+            "bool",
+            "机器人参数",
+            help="勾选后 connect 时把当前关节角记作 home(免手填 home_joints_deg,并豁免安全门禁)。",
+            default=True,
+        ),
+        FieldSpec(
+            "env.cfg.low_level.z_min_safe_mm",
+            "Z 安全下限(mm)",
+            "float",
+            "机器人参数",
+            help="控制帧 Z 向硬下限,SafetyRail 据此拦截过低的运动。",
+            default=30.0,
+        ),
+        FieldSpec(
+            "env.cfg.low_level.camera_serial",
+            "相机序列号",
+            "str",
+            "机器人参数",
+            help="桌面 eye-to-hand RealSense 序列号。视觉任务必填——留空则不启用相机。",
+        ),
+        FieldSpec(
+            "env.cfg.low_level.calib_path",
+            "手眼标定文件",
+            "str",
+            "机器人参数",
+            help="eye-to-hand 手眼标定 JSON(含 T_base_cam)路径,相对本配置文件目录或绝对路径。视觉任务必填。",
+        ),
+    ),
+}
+
+
+def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
+    """返回某本体配置页的完整字段:共享组 + 该本体的「机器人参数」组(未知本体则只有共享组)。"""
+    return FIELD_GROUPS + ROBOT_PARAM_FIELDS.get(body_key, ())
 
 
 _MISSING = object()

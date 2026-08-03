@@ -31,7 +31,6 @@ from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig, run_robot_task
 from jiuwensymbiosis.gui import imaging
 from jiuwensymbiosis.gui.bridge import UIBridgeRail
 from jiuwensymbiosis.gui.config_model import ConfigModel
-from jiuwensymbiosis.gui.mock_sessions import build_scripted_mock_model
 from jiuwensymbiosis.gui.registry import TaskDef, get_body
 from jiuwensymbiosis.utils.logging import get_logger
 
@@ -45,11 +44,33 @@ def default_workspace() -> str:
     return str(Path.home() / ".jiuwensymbiosis" / "gui_workspace")
 
 
+# 本体配置里可能出现的相对路径键(不同适配器共用这套命名):标定文件 / URDF / 标定目录。
+_REAL_CONFIG_PATH_KEYS = ("calib_path", "urdf_path", "calibration_dir")
+
+
+def strip_vision_services(config_data: dict[str, Any]) -> dict[str, Any]:
+    """返回去掉全部视觉服务的配置副本(供「禁用视觉服务」开关用)。
+
+    剥掉顶层 ``api_servers``(检测器 sidecar 不再 spawn)与 ``env.cfg.low_level.camera_serial``
+    (env 不再声明 ``vision.*`` 能力、相机不打开)。本体无关:piper / so101 都是这套键。
+    深拷贝,不改界面在用的那份配置。
+    """
+    data = copy.deepcopy(config_data)
+    data.pop("api_servers", None)
+    env = data.get("env")
+    cfg = env.get("cfg") if isinstance(env, dict) else None
+    low_level = cfg.get("low_level") if isinstance(cfg, dict) else None
+    if isinstance(low_level, dict):
+        low_level.pop("camera_serial", None)
+    data.pop("camera_serial", None)  # 兼容极少数把 camera_serial 放平铺顶层的配置
+    return data
+
+
 def resolve_real_session_config(config_data: dict[str, Any], config_dir: Path) -> dict[str, Any]:
-    """深拷贝配置,并把相对 ``env.cfg.low_level.calib_path`` 解析成相对 ``config_dir`` 的绝对路径。
+    """深拷贝配置,并把 ``env.cfg.low_level`` 下已知的相对路径键解析成相对 ``config_dir`` 的绝对路径。
 
     真机会话经 ``from_dict`` 构建,没有文件上下文(不像 ``from_yaml`` 会相对 yaml 目录解析),
-    相对标定路径需在此绝对化,否则按运行目录找不到标定文件会导致连接失败。深拷贝避免改到
+    相对标定/URDF 路径需在此绝对化,否则按运行目录找不到文件会导致连接失败。深拷贝避免改到
     界面在用的那份配置。
     """
     data = copy.deepcopy(config_data)
@@ -57,11 +78,12 @@ def resolve_real_session_config(config_data: dict[str, Any], config_dir: Path) -
     cfg = env.get("cfg") if isinstance(env, dict) else None
     low_level = cfg.get("low_level") if isinstance(cfg, dict) else None
     if isinstance(low_level, dict):
-        calib = low_level.get("calib_path")
-        if isinstance(calib, str) and calib and not Path(calib).is_absolute():
-            resolved = (config_dir / calib).resolve()
-            if resolved.exists():
-                low_level["calib_path"] = str(resolved)
+        for key in _REAL_CONFIG_PATH_KEYS:
+            value = low_level.get(key)
+            if isinstance(value, str) and value and not Path(value).is_absolute():
+                resolved = (config_dir / value).resolve()
+                if resolved.exists():
+                    low_level[key] = str(resolved)
     return data
 
 
@@ -99,25 +121,30 @@ class RunEngine:
         task: TaskDef,
         config_data: dict[str, Any],
         *,
-        mock: bool,
         workspace: str | None = None,
+        body_key: str,
     ) -> None:
-        """记录本次运行的任务、配置数据、模拟开关与工作区。"""
+        """记录本次运行的本体、任务、配置数据与工作区。"""
         self._task = task
+        self._body_key = body_key
         self._config = ConfigModel.from_dict(config_data)
-        self._mock = mock
         self._workspace = workspace or default_workspace()
         self._events: queue.Queue = queue.Queue()
         self._thread: Thread | None = None
         self._stop = False
 
     def clone(self) -> RunEngine:
-        """以同样的任务/配置/模拟开关/工作区新建一个引擎(供运行页「重新执行」)。
+        """以同样的本体/任务/配置/工作区新建一个引擎(供运行页「重新执行」)。
 
         用引擎自身持有的参数而非当前界面状态,保证「同配置重跑」——与运行后用户是否又改了
-        配置、切了模拟开关无关。配置深拷贝,互不影响。
+        配置无关。配置深拷贝,互不影响。
         """
-        return RunEngine(self._task, copy.deepcopy(self._config.data), mock=self._mock, workspace=self._workspace)
+        return RunEngine(
+            self._task,
+            copy.deepcopy(self._config.data),
+            workspace=self._workspace,
+            body_key=self._body_key,
+        )
 
     # -------------------------------------------------- UIBridgeRail emitter 接口
     def step_started(self, info: dict) -> None:
@@ -180,7 +207,7 @@ class RunEngine:
             self._events.put(
                 (
                     "run_started",
-                    {"task": self._task.display_name, "body": self._task.body_key, "mock": self._mock, "query": query},
+                    {"task": self._task.display_name, "body": self._body_key, "query": query},
                 )
             )
             conv_id = f"gui-{uuid.uuid4().hex[:8]}"
@@ -188,9 +215,8 @@ class RunEngine:
                 self._emit_initial_frame(session)
                 # 连接已完成,接下来 run_robot_task 先做 fast 的唯一云端大模型调用(编译动作序列),
                 # 通常要等十几~几十秒。给个明确提示:这段是在等云侧模型响应,不是本地卡死。
-                # 第一条执行指令的叙述到达后会自动覆盖。mock 无云端,不提示。
-                if not self._mock:
-                    self.narration("等待云侧服务响应中…")
+                # 第一条执行指令的叙述到达后会自动覆盖。
+                self.narration("等待云侧服务响应中…")
                 result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
             self._events.put(
                 (
@@ -212,24 +238,15 @@ class RunEngine:
     # ------------------------------------------------------------------ 内部
     def _build(self) -> tuple[Any, RobotAgentConfig, str]:
         """把界面选择组装成 (session, agent_cfg, query)。"""
-        body = get_body(self._task.body_key)
+        body = get_body(self._body_key)
         data = self._config.data
 
         agent_cfg = RobotAgentConfig.from_dict(data.get("agent"))
         agent_cfg.model_spec = ModelSpec(**(data.get("model") or {}))
         agent_cfg.workspace = self._workspace
 
-        if self._mock:
-            session = body.build_mock_session()
-            # 模拟:只把 LLM 换成脚本化离线模型,其余(mode / 技能 / 安全 / 拍照 /
-            # 追踪)全按配置页显示的值运行,使模拟忠实于配置。
-            agent_cfg.model = build_scripted_mock_model(
-                list(self._task.mock_script), final_text=self._task.mock_final_text
-            )
-            # fast 需真实 LLM 编译动作序列,模拟(脚本化模型)用不了 → 强制逐步。
-            agent_cfg.exec_mode = "agent"
-        else:
-            session = body.build_real_session(self._real_session_config())
+        session = body.build_real_session(self._real_session_config())
+        self._apply_fast_exec_config(session, agent_cfg)
 
         bridge = UIBridgeRail(self, session, should_stop=lambda: self._stop)
         agent_cfg.extra_rails = list(agent_cfg.extra_rails or []) + [bridge]
@@ -238,8 +255,14 @@ class RunEngine:
         return session, agent_cfg, str(query)
 
     def _real_session_config(self) -> dict[str, Any]:
-        """真机会话所用配置 = 界面编辑过的完整配置(深拷贝 + 相对 calib_path 绝对化)。"""
-        return resolve_real_session_config(self._config.data, self._task.config_path().parent)
+        """真机会话所用配置 = 界面编辑过的完整配置(深拷贝 + 相对路径绝对化,相对本体配置目录)。
+
+        「禁用视觉服务」开关打开时先剥掉视觉相关配置(检测器 + 相机),使本次运行纯运动。
+        """
+        data = self._config.data
+        if self._config.get("gui.disable_vision"):
+            data = strip_vision_services(data)
+        return resolve_real_session_config(data, get_body(self._body_key).config_path().parent)
 
     def _emit_initial_frame(self, session: Any) -> None:
         """连接后先推一帧初始相机画面,让主视觉区不为空。"""
@@ -250,3 +273,19 @@ class RunEngine:
             return
         if rgb is not None:
             self.frame(rgb)
+
+    @staticmethod
+    def _apply_fast_exec_config(session: Any, agent_cfg: RobotAgentConfig) -> None:
+        """fast 模式下,按本体运动档推导实时伺服节奏(与 examples/*_pick_demo.py 一致)。
+
+        通用、无本体特判:``servo_config_from_session`` 读会话 cfg 的运动档属性,有则返回
+        匹配的 ``ServoConfig``(如 so101 safe 档 10Hz/3mm),否则 None → 沿用框架默认。仅在
+        用户未显式设 ``exec_config`` 时填入。
+        """
+        if agent_cfg.exec_mode != "fast" or agent_cfg.exec_config is not None:
+            return
+        from jiuwensymbiosis.agent.fast import SkillExecConfig, servo_config_from_session
+
+        servo = servo_config_from_session(session)
+        if servo is not None:
+            agent_cfg.exec_config = SkillExecConfig(servo=servo)

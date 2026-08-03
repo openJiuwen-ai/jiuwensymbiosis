@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from jiuwensymbiosis.adapters._common.lerobot_backend import LerobotKinematicsBackend
 from jiuwensymbiosis.adapters.so101.geometry import (
     So101Pose,
     matrix_m_to_pose_mm_deg,
@@ -315,7 +316,7 @@ class So101Driver:
         # dispatched servo action. ``servo_to_pose`` enforces a minimum
         # inter-send interval and a deg/s cap derived from the real ``dt``,
         # so actual joint velocity is independent of the caller's tick rate.
-        self._servo_last_send_t: float = 0.0
+        self._servo_last_send_t: float | None = None
         # Streaming Cartesian plan state. The first servo command initializes
         # these from live FK/joints; each successful command advances them to
         # the accepted Cartesian waypoint and IK solution. Later ticks plan
@@ -433,12 +434,15 @@ class So101Driver:
                 self._teardown(robot)
                 raise RuntimeError(f"SOFollower action_features missing: {sorted(missing)}.")
 
-            # Step 7: build RobotKinematics with target_frame_name from config.
-            kin_factory = self._kinematics_factory or RobotKinematics
-            kin = kin_factory(
+            # Step 7: build the FK/IK backend over RobotKinematics (target_frame
+            # from config). The reusable _common backend forwards FK/IK to the
+            # solver; kinematics_factory injects the solver class (a fake in tests,
+            # or a pre-imported RobotKinematics).
+            kin = LerobotKinematicsBackend(
                 self._urdf_path,
                 target_frame_name=self._cfg.ik_target_frame,
                 joint_names=list(ARM_JOINT_ORDER),
+                robot_kinematics_cls=self._kinematics_factory or RobotKinematics,
             )
 
             # Step 8: validate current FK + home FK/limits.
@@ -1469,8 +1473,8 @@ class So101Driver:
         # (non-blocking; skipped calls do not accumulate or catch up).
         now = self._monotonic()
         min_period = float(self._cfg.servo_min_send_period_s)
-        first_send = self._servo_last_send_t == 0.0
-        if not first_send and (now - self._servo_last_send_t) + _SERVO_TIME_EPS_S < min_period:
+        last_send_t = self._servo_last_send_t
+        if last_send_t is not None and (now - last_send_t) + _SERVO_TIME_EPS_S < min_period:
             return False
 
         q_actual = np.asarray(self.get_angles(), dtype=float)
@@ -1479,8 +1483,8 @@ class So101Driver:
         actual_matrix = np.asarray(self._kin.forward_kinematics(q_actual), dtype=float)
         actual_pose = matrix_m_to_pose_mm_deg(actual_matrix)
 
-        # First send uses one min_period (timestamp 0 is not a real instant).
-        dt = min_period if first_send else now - self._servo_last_send_t
+        # First send uses one min_period (no prior send timestamp yet).
+        dt = min_period if last_send_t is None else now - last_send_t
         vel_cap = float(self._cfg.servo_max_joint_vel_dps) * dt
         max_step = min(float(self._cfg.servo_max_joint_step_deg), vel_cap)
         if not _is_finite(max_step) or max_step <= 0.0:
@@ -1826,7 +1830,7 @@ class So101Driver:
 
     def _reset_servo_plan(self) -> None:
         """Discard streaming command state before a new/non-servo motion."""
-        self._servo_last_send_t = 0.0
+        self._servo_last_send_t = None
         self._servo_planned_matrix = None
         self._servo_planned_q = None
         self._reset_servo_hold_state()

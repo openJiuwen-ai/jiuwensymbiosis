@@ -25,6 +25,7 @@ from jiuwensymbiosis.agent.fast.realtime.servo import (
     ServoConfig,
     ServoController,
     ServoResult,
+    servo_config_from_session,
 )
 from jiuwensymbiosis.agent.fast.realtime.streaming import StreamingFrameSource
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
@@ -35,6 +36,7 @@ __all__ = [
     "ServoController",
     "ServoConfig",
     "ServoResult",
+    "servo_config_from_session",
     "ServoBinding",
     "MaskTargetFilter",
     "MaskTrackingConfig",

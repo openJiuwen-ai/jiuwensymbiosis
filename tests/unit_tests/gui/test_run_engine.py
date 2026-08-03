@@ -13,11 +13,35 @@ from types import SimpleNamespace
 import jiuwensymbiosis.gui.run_engine as run_engine_module
 from jiuwensymbiosis.gui import registry
 from jiuwensymbiosis.gui.bridge import UIBridgeRail
-from jiuwensymbiosis.gui.run_engine import QueueLogHandler, RunEngine, default_workspace
+from jiuwensymbiosis.gui.run_engine import (
+    QueueLogHandler,
+    RunEngine,
+    default_workspace,
+    strip_vision_services,
+)
+from tests.mocks.mock_session import make_mock_session
+
+# One full identify→grasp→lift chain using only tools the hardware-free session exposes.
+_SCRIPT = [
+    {"tool": "home", "args": {}},
+    {"tool": "get_grasp_info_simple", "args": {"object_name": "black box"}},
+    {"tool": "goto_xyzr", "args": {"x": 230, "y": 0, "z": 90}},
+    {"tool": "close_gripper", "args": {}},
+    {"tool": "goto_xyzr", "args": {"x": 230, "y": 0, "z": 250}},
+]
 
 
 def _tags(events):
     return [tag for tag, _ in events]
+
+
+def _use_hardware_free_session(monkeypatch, tmp_path):
+    """Make ``RunEngine._build`` construct a MockArmEnv-backed session instead of a real robot."""
+    stub_body = SimpleNamespace(
+        build_real_session=lambda _cfg: make_mock_session(),
+        config_path=lambda: tmp_path / "body.yaml",
+    )
+    monkeypatch.setattr(run_engine_module, "get_body", lambda _key: stub_body)
 
 
 def _patch_script_runner(monkeypatch, script):
@@ -44,14 +68,21 @@ def _patch_script_runner(monkeypatch, script):
     monkeypatch.setattr(run_engine_module, "run_robot_task", fake_run_robot_task)
 
 
-def test_mock_run_emits_ordered_event_stream(tmp_path, monkeypatch):
+def test_run_emits_ordered_event_stream(tmp_path, monkeypatch):
+    _use_hardware_free_session(monkeypatch, tmp_path)
+    _patch_script_runner(monkeypatch, _SCRIPT)
     task = registry.get_task("pick_box")
-    _patch_script_runner(monkeypatch, task.mock_script)
     config = {
         "env": {"cfg": {"prompt": "把黑盒放到白盒上"}},
-        "agent": {"mode": "tool", "max_iterations": 20, "enable_visual_feedback": False, "enable_tracing": False},
+        "agent": {
+            "mode": "tool",
+            "exec_mode": "agent",
+            "max_iterations": 20,
+            "enable_visual_feedback": False,
+            "enable_tracing": False,
+        },
     }
-    engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
+    engine = RunEngine(task, config, workspace=str(tmp_path), body_key="piper")
     engine.start()
     engine.join(timeout=5)
     assert not engine.is_running()
@@ -63,22 +94,30 @@ def test_mock_run_emits_ordered_event_stream(tmp_path, monkeypatch):
 
     meta = events[0][1]
     assert meta["body"] == "piper"
-    assert meta["mock"] is True
 
     finished = [payload for tag, payload in events if tag == "step_finished"]
     tools = [f["tool"] for f in finished]
-    assert tools == [step["tool"] for step in task.mock_script]  # 忠实回放该任务的脚本序列
+    assert tools == [step["tool"] for step in _SCRIPT]  # 忠实回放脚本序列
     assert all(f["ok"] for f in finished)
 
     result = events[-1][1]
     assert result["ok"] is True
 
 
-def test_mock_run_frames_are_encoded_data_uris(tmp_path, monkeypatch):
+def test_run_frames_are_encoded_data_uris(tmp_path, monkeypatch):
+    _use_hardware_free_session(monkeypatch, tmp_path)
+    _patch_script_runner(monkeypatch, _SCRIPT)
     task = registry.get_task("pick_box")
-    _patch_script_runner(monkeypatch, task.mock_script)
-    config = {"agent": {"mode": "tool", "max_iterations": 20, "enable_visual_feedback": False, "enable_tracing": False}}
-    engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
+    config = {
+        "agent": {
+            "mode": "tool",
+            "exec_mode": "agent",
+            "max_iterations": 20,
+            "enable_visual_feedback": False,
+            "enable_tracing": False,
+        }
+    }
+    engine = RunEngine(task, config, workspace=str(tmp_path), body_key="piper")
     engine.start()
     engine.join(timeout=5)
     assert not engine.is_running()
@@ -91,21 +130,47 @@ def test_mock_run_frames_are_encoded_data_uris(tmp_path, monkeypatch):
 def test_clone_reuses_same_params_with_independent_config(tmp_path):
     task = registry.get_task("pick_box")
     config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}}
-    engine = RunEngine(task, config, mock=True, workspace=str(tmp_path))
+    engine = RunEngine(task, config, workspace=str(tmp_path), body_key="piper")
 
     twin = engine.clone()
 
     assert twin is not engine
-    assert twin._task is task and twin._mock is True and twin._workspace == str(tmp_path)
+    assert twin._task is task and twin._workspace == str(tmp_path)
+    assert twin._body_key == "piper"
     assert twin._config.data == engine._config.data
     twin._config.set("env.cfg.prompt", "改了")  # 深拷贝:动克隆不影响原引擎
     assert engine._config.get("env.cfg.prompt") == "把黑盒放到白盒上"
 
 
 def test_drain_is_empty_before_start(tmp_path):
-    engine = RunEngine(registry.get_task("pick_box"), {}, mock=True, workspace=str(tmp_path))
+    engine = RunEngine(registry.get_task("pick_box"), {}, workspace=str(tmp_path), body_key="piper")
     assert engine.drain() == []
     assert engine.is_running() is False
+
+
+def test_strip_vision_services_removes_detector_and_camera():
+    cfg = {
+        "api_servers": [{"_target_": "x.grounding_dino_sam2_server.main"}],
+        "env": {"cfg": {"low_level": {"camera_serial": "123", "port": "/dev/ttyUSB0"}}},
+    }
+    out = strip_vision_services(cfg)
+    assert "api_servers" not in out  # 检测器 sidecar 不再 spawn
+    assert "camera_serial" not in out["env"]["cfg"]["low_level"]  # 相机不打开
+    assert out["env"]["cfg"]["low_level"]["port"] == "/dev/ttyUSB0"  # 非视觉字段保留
+    assert "api_servers" in cfg  # 深拷贝:原配置不动
+
+
+def test_disable_vision_strips_real_session_config(tmp_path):
+    task = registry.get_task("pick_banana")
+    config = {
+        "gui": {"disable_vision": True},
+        "api_servers": [{"_target_": "x.grounding_dino_sam2_server.main"}],
+        "env": {"cfg": {"low_level": {"camera_serial": "123"}, "prompt": "抓香蕉"}},
+    }
+    engine = RunEngine(task, config, workspace=str(tmp_path), body_key="so101")
+    real = engine._real_session_config()
+    assert "api_servers" not in real
+    assert "camera_serial" not in real.get("env", {}).get("cfg", {}).get("low_level", {})
 
 
 def test_default_workspace_under_home():

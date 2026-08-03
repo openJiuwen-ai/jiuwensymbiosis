@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwensymbiosis.gui.config_model import FIELD_GROUPS, GROUP_ORDER, ConfigModel
+from jiuwensymbiosis.gui.config_model import (
+    FIELD_GROUPS,
+    GROUP_ORDER,
+    ROBOT_PARAM_FIELDS,
+    ConfigModel,
+    field_groups_for_body,
+)
 
 
 def test_get_set_nested_paths():
@@ -60,6 +66,51 @@ def test_validate_flags_out_of_range():
 def test_every_field_group_is_declared_in_group_order():
     for spec in FIELD_GROUPS:
         assert spec.group in GROUP_ORDER
+
+
+def test_shared_field_groups_have_no_body_specific_robot_params():
+    # 「机器人参数」组按本体切换,不进共享 FIELD_GROUPS(否则会给 so101 显示 piper 字段)。
+    shared_paths = {spec.path for spec in FIELD_GROUPS}
+    assert "env.cfg.low_level.move_speed" not in shared_paths
+
+
+def test_field_groups_for_body_so101_exposes_so101_params():
+    paths = {spec.path for spec in field_groups_for_body("so101")}
+    assert "env.cfg.low_level.port" in paths
+    assert "env.cfg.low_level.safety_validated" in paths
+    # motion_profile 已被 upstream So101Config 移除(from_dict 会拒绝),表单不得再暴露它;
+    # 速度/到位等进阶旋钮走「原始 YAML」兜底。
+    assert "env.cfg.low_level.motion_profile" not in paths
+    # 共享组仍在。
+    assert "env.cfg.prompt" in paths and "model.model_name" in paths
+
+
+def test_field_groups_for_body_piper_keeps_move_speed():
+    paths = {spec.path for spec in field_groups_for_body("piper")}
+    assert "env.cfg.low_level.move_speed" in paths
+
+
+def test_field_groups_for_unknown_body_is_shared_only():
+    assert field_groups_for_body("nope") == FIELD_GROUPS
+
+
+def test_all_robot_param_specs_declared_in_group_order():
+    for specs in ROBOT_PARAM_FIELDS.values():
+        for spec in specs:
+            assert spec.group in GROUP_ORDER
+
+
+def test_disable_vision_toggle_present_for_all_bodies():
+    # 「禁用视觉服务」是本体无关的共享开关,任何本体的配置页都应有。
+    for body in ("piper", "so101"):
+        paths = {s.path for s in field_groups_for_body(body)}
+        assert "gui.disable_vision" in paths
+
+
+def test_so101_form_exposes_camera_and_calib_for_full_vision_setup():
+    paths = {s.path for s in field_groups_for_body("so101")}
+    assert "env.cfg.low_level.camera_serial" in paths
+    assert "env.cfg.low_level.calib_path" in paths  # 视觉三要素全在表单,不用碰 YAML
 
 
 def test_patch_detector_writes_into_gdino_server_entry():

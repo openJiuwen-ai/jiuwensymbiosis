@@ -45,7 +45,7 @@ python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock --qu
 # CLI entry point (after pip install)
 piper-pick-demo --config configs/piper/piper.yaml --mock --query "<任务>"
 
-# Run the GUI (browser mode; defaults to mock mode in-app; no hardware needed)
+# Run the GUI (browser mode; selects a body + real config and runs on hardware)
 python -m jiuwensymbiosis.gui        # or the console script: jiuwensymbiosis-gui
 #   Opens the default browser at http://127.0.0.1:<port> (NiceGUI, never native=True,
 #   so no pywebview/WebKitGTK). No extra system libs needed. The GUI does a startup
