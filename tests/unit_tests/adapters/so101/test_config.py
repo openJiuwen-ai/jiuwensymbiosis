@@ -128,14 +128,14 @@ class TestMotionConfig:
         assert cfg.trajectory_hz == 20.0
         assert cfg.max_joint_vel_dps == 35.0
         assert cfg.max_cartesian_vel_mm_s == 60.0
-        assert cfg.fast_control_hz == 5.0
+        assert cfg.fast_control_hz == 20.0
         assert cfg.servo_max_joint_vel_dps == 35.0
         assert cfg.servo_max_cartesian_vel_mm_s == 60.0
         assert cfg.tracking_error_deg == 4.0
         assert cfg.max_joint_step_deg == pytest.approx(1.75)
         assert cfg.servo_max_joint_step_deg == pytest.approx(3.5)
         assert cfg.tracking_error_deg > cfg.servo_max_joint_step_deg
-        assert cfg.servo_min_send_period_s == pytest.approx(0.2)
+        assert cfg.servo_min_send_period_s == pytest.approx(0.05)
         assert cfg.cartesian_interp_step_mm == pytest.approx(3.0)
         assert cfg.servo_max_cartesian_step_mm == pytest.approx(6.0)
         assert cfg.fast_move_timeout_s == pytest.approx(20.0)
@@ -147,7 +147,7 @@ class TestMotionConfig:
         assert cfg.cartesian_interp_step_mm == pytest.approx(6.0)
         assert cfg.servo_max_joint_step_deg == pytest.approx(7.0)
         assert cfg.servo_max_cartesian_step_mm == pytest.approx(12.0)
-        assert cfg.servo_min_send_period_s == pytest.approx(0.2)
+        assert cfg.servo_min_send_period_s == pytest.approx(0.05)
 
     def test_explicit_fast_rate_only_recomputes_send_period(self):
         cfg = So101Config(**_base_kwargs(fast_control_hz=10.0))
@@ -219,7 +219,7 @@ class TestMotionConfig:
         assert cfg.settle_z_only_lift_step_mm == pytest.approx(2.0)
         assert cfg.settle_z_only_lift_max_joint_offset_deg == pytest.approx(4.0)
         assert "normal=20Hz/35deg/s/60mm/s" in cfg.motion_summary()
-        assert "fast=5Hz/3.5deg/6mm-step" in cfg.motion_summary()
+        assert "fast=20Hz/3.5deg/6mm-step" in cfg.motion_summary()
         assert "source=direct" in cfg.motion_summary()
         assert "settle=1.5/3deg" in cfg.motion_summary()
 
