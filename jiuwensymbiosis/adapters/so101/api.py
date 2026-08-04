@@ -76,7 +76,7 @@ class So101Api(
     # requiring an independently unattainable rz while preserving the generic
     # angular reached check for every other adapter.
     servo_reached_angular_keys: tuple[str, ...] = ()
-    # At the SO-101's configured 5 Hz rate, per-tick INFO logs are affordable
+    # At the SO-101's configured 20 Hz rate, per-tick INFO logs are affordable
     # and essential for distinguishing planned convergence from live TCP lag.
     servo_log_ticks = True
 

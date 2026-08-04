@@ -263,10 +263,6 @@ class So101Config:
     pose_convergence_tolerance_mm: float = 1.0
 
     # --- motion & settle ---
-    # Blocking motion and realtime servo intentionally have independent rates
-    # and velocities.  Blocking goto_pose/move_joint streams a pre-planned path
-    # at 20 Hz for small, smooth waypoints.  The --fast tracking path remains at
-    # 5 Hz so perception, planning and the gravity-loaded arm can stay in sync.
     trajectory_hz: float = 20.0
     max_joint_vel_dps: float = 35.0
     max_cartesian_vel_mm_s: float = 60.0
@@ -292,7 +288,7 @@ class So101Config:
     servo_max_joint_vel_dps: float = 35.0
     servo_max_cartesian_vel_mm_s: float = 60.0
     # Per-tick fast cap. ``None`` derives a cap twice the blocking Cartesian
-    # step so the 5 Hz realtime loop can cover long approaches within its
+    # step so the 20 Hz realtime loop can cover long approaches within its
     # shorter timeout while blocking motion keeps its smoother small steps.
     servo_max_cartesian_step_mm: float | None = None
     # Fast Servo's continuous no-progress timeout. It is refreshed whenever
