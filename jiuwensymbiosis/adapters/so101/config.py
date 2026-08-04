@@ -287,7 +287,7 @@ class So101Config:
     #     re-clipped against ``vel_cap = servo_max_joint_vel_dps * dt`` where
     #     ``dt`` is the real inter-send interval, so speed is independent of
     #     the caller's tick rate.
-    fast_control_hz: float = 5.0
+    fast_control_hz: float = 20.0
     servo_min_send_period_s: float | None = None
     servo_max_joint_vel_dps: float = 35.0
     servo_max_cartesian_vel_mm_s: float = 60.0
