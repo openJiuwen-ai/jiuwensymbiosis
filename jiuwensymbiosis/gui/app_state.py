@@ -87,11 +87,12 @@ class AppState:
         return self.engine is not None and self.engine.is_running()
 
     def prime_detector_models(self, body_key: str, task_key: str) -> list[str]:
-        """真机运行前把已下好的本地视觉模型目录喂给检测器,返回仍缺失的模型名。
+        """真机运行前把已下好的本地视觉模型目录写进检测器配置项,返回仍缺失的模型名。
 
-        检测器的 ``gdino_model_id`` / ``sam2_model_id`` 优先读同名环境变量;指向本地快照目录
-        可直接离线加载,绕过「联网下载 / 已缓存却仍在线校验」的卡顿。任务不含视觉检测器、或
-        用户已自行设过环境变量(如经诊断页)则不干预。「禁用视觉服务」开关打开时直接跳过。
+        找到本地快照目录后写入 ``api_servers`` 检测器项的 ``gdino_model_id`` / ``sam2_model_id``
+        (指向本地目录即可离线加载,绕过「联网下载 / 已缓存却仍在线校验」的卡顿),而非设进程级
+        环境变量——避免污染后续运行、让「配置」成为唯一真源。检测器项已通过环境变量、或在配置里
+        显式指定了非默认模型时不干预;任务不含视觉检测器、或「禁用视觉服务」开关打开时直接跳过。
         """
         config = self.config_for(body_key, task_key)
         if config.get("gui.disable_vision"):
@@ -105,16 +106,35 @@ class AppState:
         )
         if detector is None:
             return []  # 该任务不使用视觉检测器
-        needed = [("GroundingDINO", "GDINO_MODEL_ID", local_models.GDINO_REPO, local_models.looks_like_gdino_dir)]
+        needed = [
+            (
+                "gdino_model_id",
+                "GroundingDINO",
+                "GDINO_MODEL_ID",
+                local_models.GDINO_REPO,
+                local_models.looks_like_gdino_dir,
+            ),
+        ]
         if detector.get("use_sam2", True):
-            needed.append(("SAM2", "SAM2_MODEL_ID", local_models.SAM2_REPO, local_models.looks_like_sam2_dir))
+            needed.append(
+                (
+                    "sam2_model_id",
+                    "SAM2",
+                    "SAM2_MODEL_ID",
+                    local_models.SAM2_REPO,
+                    local_models.looks_like_sam2_dir,
+                )
+            )
         missing: list[str] = []
-        for name, env_var, repo_id, validator in needed:
+        for field, name, env_var, repo_id, validator in needed:
             if os.environ.get(env_var):
-                continue  # 用户已指定,尊重
+                continue  # 用户已通过环境变量显式指定,尊重
+            current = detector.get(field)
+            if current and current != repo_id:
+                continue  # 配置里已显式指定非默认模型(本地路径/换了模型),尊重
             found = local_models.detect_local_model(repo_id, validator)
             if found is not None:
-                os.environ[env_var] = str(found)
+                detector[field] = str(found)  # 写进配置项,而非进程级环境变量
             else:
                 missing.append(name)
         return missing

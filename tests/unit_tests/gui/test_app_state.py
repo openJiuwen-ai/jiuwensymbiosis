@@ -67,7 +67,7 @@ def _make_gdino(path):
     (path / "model.safetensors").write_bytes(b"x")
 
 
-def test_prime_sets_env_for_found_model_and_reports_missing(tmp_path, monkeypatch):
+def test_prime_writes_config_for_found_model_and_reports_missing(tmp_path, monkeypatch):
     from jiuwensymbiosis.gui import local_models
 
     monkeypatch.setattr(local_models, "HF_HUB", tmp_path / "hf")
@@ -78,22 +78,78 @@ def test_prime_sets_env_for_found_model_and_reports_missing(tmp_path, monkeypatc
     _make_gdino(snap)  # gdino present locally, sam2 absent
 
     state = AppState()
-    state.set_config("piper", "pick_box", _detector_config(use_sam2=True))
+    cfg = _detector_config(use_sam2=True)
+    state.set_config("piper", "pick_box", cfg)
     missing = state.prime_detector_models("piper", "pick_box")
 
-    # prime 直接写 os.environ,monkeypatch 不追踪也就不会还原;立刻 pop 回收,避免泄漏污染后续测试。
-    gdino_env = os.environ.pop("GDINO_MODEL_ID", None)
-    assert gdino_env == str(snap)  # 本地目录喂给检测器,离线加载
+    # 本地目录写进检测器配置项(离线加载),不再污染进程环境变量。
+    assert cfg.data["api_servers"][0]["gdino_model_id"] == str(snap)
+    assert "GDINO_MODEL_ID" not in os.environ
     assert missing == ["SAM2"]
 
 
 def test_prime_respects_user_env(monkeypatch):
+    # 环境变量显式指定(CLI export 场景)时 prime 不干预,与 config.py 的 env>yaml 一致。
     monkeypatch.setenv("GDINO_MODEL_ID", "/my/own/gdino")
     monkeypatch.setenv("SAM2_MODEL_ID", "/my/own/sam2")
     state = AppState()
     state.set_config("piper", "pick_box", _detector_config())
     assert state.prime_detector_models("piper", "pick_box") == []  # 已设则不干预
     assert os.environ["GDINO_MODEL_ID"] == "/my/own/gdino"
+
+
+def test_prime_respects_explicit_config_model_id(tmp_path, monkeypatch):
+    from jiuwensymbiosis.gui import local_models
+
+    # 配置里显式指定了非默认(本地)路径 → 即使本地缓存不存在也尊重:不覆盖、不报 missing。
+    monkeypatch.setattr(local_models, "HF_HUB", tmp_path / "hf")
+    monkeypatch.setattr(local_models, "MODELSCOPE", tmp_path / "ms")
+    monkeypatch.delenv("GDINO_MODEL_ID", raising=False)
+    monkeypatch.delenv("SAM2_MODEL_ID", raising=False)
+    cfg = ConfigModel.from_dict(
+        {
+            "api_servers": [
+                {
+                    "_target_": "x.grounding_dino_sam2_server.main",
+                    "gdino_model_id": "/my/local/gdino",
+                    "sam2_model_id": "/my/local/sam2",
+                }
+            ]
+        }
+    )
+    state = AppState()
+    state.set_config("piper", "pick_box", cfg)
+    assert state.prime_detector_models("piper", "pick_box") == []
+    detector = cfg.data["api_servers"][0]
+    assert detector["gdino_model_id"] == "/my/local/gdino"  # 未被自动探测覆盖
+    assert detector["sam2_model_id"] == "/my/local/sam2"
+
+
+def test_prime_treats_default_placeholder_as_not_explicit(tmp_path, monkeypatch):
+    from jiuwensymbiosis.gui import local_models
+
+    # 出厂占位符 == 默认 repo id,不算显式定制:仍应被探测到的本地快照替换。
+    monkeypatch.setattr(local_models, "HF_HUB", tmp_path / "hf")
+    monkeypatch.setattr(local_models, "MODELSCOPE", tmp_path / "ms")
+    monkeypatch.delenv("GDINO_MODEL_ID", raising=False)
+    monkeypatch.delenv("SAM2_MODEL_ID", raising=False)
+    snap = tmp_path / "hf" / "models--IDEA-Research--grounding-dino-base" / "snapshots" / "abc"
+    _make_gdino(snap)
+    cfg = ConfigModel.from_dict(
+        {
+            "api_servers": [
+                {
+                    "_target_": "x.grounding_dino_sam2_server.main",
+                    "gdino_model_id": local_models.GDINO_REPO,
+                    "use_sam2": False,
+                }
+            ]
+        }
+    )
+    state = AppState()
+    state.set_config("piper", "pick_box", cfg)
+    assert state.prime_detector_models("piper", "pick_box") == []
+    assert cfg.data["api_servers"][0]["gdino_model_id"] == str(snap)
 
 
 def test_prime_noop_without_detector():

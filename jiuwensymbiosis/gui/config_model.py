@@ -22,7 +22,9 @@ __all__ = [
     "FieldSpec",
     "FIELD_GROUPS",
     "ROBOT_PARAM_FIELDS",
+    "DETECTOR_FIELDS",
     "field_groups_for_body",
+    "field_groups_for_config",
     "GROUP_ORDER",
     "ConfigModel",
 ]
@@ -30,7 +32,7 @@ __all__ = [
 FieldKind = Literal["text", "str", "int", "float", "bool", "choice"]
 
 # 分组顺序(表单左侧小导航按此顺序展示)。
-GROUP_ORDER: tuple[str, ...] = ("基础", "执行方式", "安全与反馈", "机器人参数", "模型")
+GROUP_ORDER: tuple[str, ...] = ("基础", "执行方式", "安全与反馈", "机器人参数", "视觉服务", "模型")
 
 
 @dataclass(frozen=True)
@@ -80,9 +82,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "执行方式",
         choices=(("hybrid", "自动选择"), ("tool", "逐步工具调用"), ("code", "构建程序批量执行")),
         help=(
-            "自动选择:AI 自行决定用哪种;"
-            "逐步工具调用:每步只下一个明确指令(最稳);"
-            "构建程序批量执行:用一段程序一次安排多步(含循环/判断)。"
+            "基于逐步 tool 调用或者基于一次性的 run_python 执行任务或由 agent 自己决定"
         ),
         default="hybrid",
     ),
@@ -94,7 +94,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "启用技能工作流",
         "bool",
         "执行方式",
-        help="开启后由 visual_pick / visual_place 技能文档驱动抓放流程。",
+        help="开启后由 skill 文档驱动任务流程。",
         default=False,
     ),
     FieldSpec(
@@ -103,8 +103,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "bool",
         "执行方式",
         help=(
-            "开(默认):开头用一次 LLM 规划出整条动作序列,之后不再逐步调用 LLM——更快、"
-            "可重复,但适应性弱,且需真实模型与(真机)伺服。关:逐步智能体,每步问一次 LLM。"
+            "开启快速模式后，会在开始时用一次 LLM 规划出整条动作序列并直接执行。"
         ),
         default="fast",
         on_value="fast",
@@ -150,8 +149,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         "bool",
         "机器人参数",
         help=(
-            "打开后本次真机运行不启动视觉检测器(GroundingDINO+SAM2 子进程)、不打开相机——纯运动。"
-            "默认关闭 = 启用视觉服务。没有 GPU / 只做运动 bring-up 时打开它,避免白起检测器。"
+            "打开后本次真机运行不启动视觉检测器、不打开相机。"
         ),
         default=False,
     ),
@@ -182,8 +180,7 @@ ROBOT_PARAM_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
             "str",
             "机器人参数",
             help=(
-                "腕部 RealSense 相机的序列号。视觉任务(识别/定位物体)必填——留空则不会启用"
-                "相机,视觉工具会返回 no_camera。"
+                "腕部 RealSense 相机的序列号，留空则不会启用相机"
             ),
         ),
     ),
@@ -220,17 +217,45 @@ ROBOT_PARAM_FIELDS: dict[str, tuple[FieldSpec, ...]] = {
             "相机序列号",
             "str",
             "机器人参数",
-            help="桌面 eye-to-hand RealSense 序列号。视觉任务必填——留空则不启用相机。",
+            help="桌面 eye-to-hand RealSense 序列号，留空则不启用相机。",
         ),
         FieldSpec(
             "env.cfg.low_level.calib_path",
             "手眼标定文件",
             "str",
             "机器人参数",
-            help="eye-to-hand 手眼标定 JSON(含 T_base_cam)路径,相对本配置文件目录或绝对路径。视觉任务必填。",
+            help="eye-to-hand 手眼标定 JSON(含 T_base_cam)路径,相对本配置文件目录或绝对路径。",
         ),
     ),
 }
+
+
+# 检测器(GroundingDINO+SAM2)模型项。本体无关(piper/so101 共用同一检测器),仅当配置的
+# api_servers 里确有检测器项时才追加(见 field_groups_for_config)。路径用虚拟前缀 detector.*,
+# 由 ConfigModel.get/set 路由到 api_servers 检测器项(列表内嵌,普通点分路径进不去)。default
+# 与 DetectorServerConfig 默认一致。
+DETECTOR_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec(
+        "detector.gdino_model_id",
+        "GroundingDINO 模型",
+        "str",
+        "视觉服务",
+        help=(
+            "填写 HuggingFace repo id 或本地目录，填写 repo id 时自动加载本地快照"
+        ),
+        default="IDEA-Research/grounding-dino-base",
+    ),
+    FieldSpec(
+        "detector.sam2_model_id",
+        "SAM2 模型",
+        "str",
+        "视觉服务",
+        help=(
+            "填写 HuggingFace repo id 或本地目录，填写 repo id 时自动加载本地快照"
+        ),
+        default="facebook/sam2.1-hiera-large",
+    ),
+)
 
 
 def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
@@ -238,7 +263,16 @@ def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
     return FIELD_GROUPS + ROBOT_PARAM_FIELDS.get(body_key, ())
 
 
+def field_groups_for_config(body_key: str, model: ConfigModel) -> tuple[FieldSpec, ...]:
+    """本体字段组;仅当配置含检测器项时追加「视觉服务」组(纯运动任务不显示模型项)。"""
+    fields = field_groups_for_body(body_key)
+    if model.has_detector():
+        fields = fields + DETECTOR_FIELDS
+    return fields
+
+
 _MISSING = object()
+_DETECTOR_PREFIX = "detector."
 
 
 class ConfigModel:
@@ -273,7 +307,16 @@ class ConfigModel:
 
     # ------------------------------------------------------------- 点分路径读写
     def get(self, path: str, default: Any = None) -> Any:
-        """按点分路径读取;任一层缺失则返回 ``default``。"""
+        """按点分路径读取;任一层缺失则返回 ``default``。
+
+        ``detector.<字段>`` 是虚拟路径,路由到 ``api_servers`` 里的检测器项(按 ``_target_``
+        识别),让表单能读列表内嵌的检测器字段而不暴露列表下标。
+        """
+        if path.startswith(_DETECTOR_PREFIX):
+            entry = self._detector_entry()
+            if entry is None:
+                return default
+            return entry.get(path[len(_DETECTOR_PREFIX) :], default)
         node: Any = self.data
         for key in path.split("."):
             if not isinstance(node, dict) or key not in node:
@@ -282,7 +325,14 @@ class ConfigModel:
         return node
 
     def set(self, path: str, value: Any) -> None:
-        """按点分路径写入,自动创建中间字典。"""
+        """按点分路径写入,自动创建中间字典。
+
+        ``detector.<字段>`` 虚拟路径写进 ``api_servers`` 检测器项(复用 ``patch_detector``);
+        检测器项不存在时为无操作(表单仅在存在时才渲染这些字段)。
+        """
+        if path.startswith(_DETECTOR_PREFIX):
+            self.patch_detector(**{path[len(_DETECTOR_PREFIX) :]: value})
+            return
         keys = path.split(".")
         node = self.data
         for key in keys[:-1]:
@@ -309,6 +359,23 @@ class ConfigModel:
                 server.update(fields)
                 return True
         return False
+
+    def _detector_entry(self) -> dict[str, Any] | None:
+        """定位 ``api_servers`` 里的检测器项(按 ``_target_`` 含 grounding_dino/gdino 识别)。"""
+        servers = self.data.get("api_servers")
+        if not isinstance(servers, list):
+            return None
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            target = str(server.get("_target_", "")).lower()
+            if "grounding_dino" in target or "gdino" in target:
+                return server
+        return None
+
+    def has_detector(self) -> bool:
+        """配置是否含检测器项(决定配置页是否显示「视觉服务」组)。"""
+        return self._detector_entry() is not None
 
     # ------------------------------------------------------------- YAML 视图
     def to_yaml(self) -> str:

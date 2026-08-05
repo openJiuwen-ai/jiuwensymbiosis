@@ -8,11 +8,13 @@ from __future__ import annotations
 import pytest
 
 from jiuwensymbiosis.gui.config_model import (
+    DETECTOR_FIELDS,
     FIELD_GROUPS,
     GROUP_ORDER,
     ROBOT_PARAM_FIELDS,
     ConfigModel,
     field_groups_for_body,
+    field_groups_for_config,
 )
 
 
@@ -133,3 +135,50 @@ def test_patch_detector_writes_into_gdino_server_entry():
 def test_patch_detector_no_detector_entry_returns_false():
     cm = ConfigModel.from_dict({"model": {}})
     assert cm.patch_detector(gdino_model_id="/x") is False
+
+
+def test_detector_virtual_path_reads_and_writes_api_servers_entry():
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": [
+                {"_target_": "something.else"},
+                {"_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server.main", "gdino_model_id": "orig"},
+            ]
+        }
+    )
+    assert cm.get("detector.gdino_model_id") == "orig"
+    cm.set("detector.gdino_model_id", "/local/gdino")
+    assert cm.data["api_servers"][1]["gdino_model_id"] == "/local/gdino"  # 写进检测器项
+    assert cm.get("detector.gdino_model_id") == "/local/gdino"
+    assert "detector" not in cm.data  # 虚拟路径不生成顶层 detector 键
+
+
+def test_detector_virtual_path_without_entry_returns_default():
+    cm = ConfigModel.from_dict({"model": {}})
+    assert cm.get("detector.gdino_model_id", "d") == "d"
+    assert cm.has_detector() is False
+
+
+def test_detector_field_value_falls_back_to_spec_default():
+    # 检测器项存在但未写该字段 → field_value 回落到 FieldSpec.default(= 框架默认)。
+    model = ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino_sam2_server.main"}]})
+    spec = next(s for s in DETECTOR_FIELDS if s.path == "detector.gdino_model_id")
+    assert model.field_value(spec) == "IDEA-Research/grounding-dino-base"
+
+
+def test_field_groups_for_config_appends_detector_fields_when_present():
+    model = ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino_sam2_server.main"}]})
+    paths = {s.path for s in field_groups_for_config("so101", model)}
+    assert "detector.gdino_model_id" in paths
+    assert "detector.sam2_model_id" in paths
+
+
+def test_field_groups_for_config_omits_detector_fields_when_absent():
+    model = ConfigModel.from_dict({"env": {"cfg": {"prompt": "hi"}}})
+    paths = {s.path for s in field_groups_for_config("so101", model)}
+    assert "detector.gdino_model_id" not in paths
+
+
+def test_detector_fields_declared_in_group_order():
+    for spec in DETECTOR_FIELDS:
+        assert spec.group in GROUP_ORDER
