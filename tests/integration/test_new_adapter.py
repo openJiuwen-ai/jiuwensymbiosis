@@ -23,7 +23,14 @@ import pytest
 from scripts.new_adapter import checks
 from scripts.new_adapter.spec import Spec
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# Heavyweight: each case generates a real adapter into the repo tree, validates
+# and smoke-tests it as a subprocess (4-15s each, ~100s total). Marked as
+# integration so the fast unit suite can select it out with -m "not integration".
+pytestmark = pytest.mark.integration
+
+# tests/integration/ is two levels below the repo root (``tests`` + this file's
+# parent), so parents[2] reaches the repository root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PRESETS = [
     Spec(name="gentest_scara", dof=4, end_effector="suction").normalized(),
