@@ -100,15 +100,14 @@ class AppState:
         servers = config.data.get("api_servers")
         if not isinstance(servers, list):
             return []
-        detector = next(
-            (
-                s
-                for s in servers
-                if isinstance(s, dict)
-                and any(kw in str(s.get("_target_", "")).lower() for kw in ("grounding_dino", "gdino"))
-            ),
-            None,
-        )
+        detector = None
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            target = str(server.get("_target_", "")).lower()
+            if "grounding_dino" in target or "gdino" in target:
+                detector = server
+                break
         if detector is None:
             return []  # 该任务不使用视觉检测器
         needed = [
