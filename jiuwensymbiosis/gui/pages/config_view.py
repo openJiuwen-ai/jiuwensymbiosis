@@ -14,7 +14,7 @@ from typing import Any
 
 from nicegui import ui
 
-from jiuwensymbiosis.gui.config_model import GROUP_ORDER, ConfigModel, FieldSpec, field_groups_for_body
+from jiuwensymbiosis.gui.config_model import GROUP_ORDER, ConfigModel, FieldSpec, field_groups_for_config
 
 __all__ = ["ConfigView"]
 
@@ -41,7 +41,7 @@ class ConfigView:
     def load(self, title: str, model: ConfigModel, *, body_key: str) -> None:
         """载入某(本体, 任务)的配置模型并重建表单;字段按本体切换「机器人参数」组。"""
         self._model = model
-        self._fields = field_groups_for_body(body_key)
+        self._fields = field_groups_for_config(body_key, model)
         self._title.set_text(f"配置:{title}")
         self._build_form()
         self._refresh_warnings()
