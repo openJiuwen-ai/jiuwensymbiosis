@@ -316,7 +316,7 @@ class ConfigModel:
             entry = self._detector_entry()
             if entry is None:
                 return default
-            return entry.get(path[len(_DETECTOR_PREFIX) :], default)
+            return entry.get(path.removeprefix(_DETECTOR_PREFIX), default)
         node: Any = self.data
         for key in path.split("."):
             if not isinstance(node, dict) or key not in node:
@@ -331,7 +331,7 @@ class ConfigModel:
         检测器项不存在时为无操作(表单仅在存在时才渲染这些字段)。
         """
         if path.startswith(_DETECTOR_PREFIX):
-            self.patch_detector(**{path[len(_DETECTOR_PREFIX) :]: value})
+            self.patch_detector(**{path.removeprefix(_DETECTOR_PREFIX): value})
             return
         keys = path.split(".")
         node = self.data
