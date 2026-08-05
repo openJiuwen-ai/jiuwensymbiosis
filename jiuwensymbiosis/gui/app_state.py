@@ -101,7 +101,12 @@ class AppState:
         if not isinstance(servers, list):
             return []
         detector = next(
-            (s for s in servers if isinstance(s, dict) and ("grounding_dino" in str(s.get("_target_", "")).lower() or "gdino" in str(s.get("_target_", "")).lower())),
+            (
+                s
+                for s in servers
+                if isinstance(s, dict)
+                and any(kw in str(s.get("_target_", "")).lower() for kw in ("grounding_dino", "gdino"))
+            ),
             None,
         )
         if detector is None:
