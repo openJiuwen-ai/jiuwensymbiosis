@@ -93,6 +93,7 @@ def _chat(
     proxy: str | None,
     attempts: int,
     max_tokens: int,
+    thinking_mode: str | None = None,
 ) -> str:
     """One OpenAI-compatible chat call with retries; returns the reply text.
 
@@ -109,6 +110,8 @@ def _chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if thinking_mode is not None:
+        payload["thinking"] = {"type": thinking_mode}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -222,6 +225,7 @@ def compile_sequence(
     temperature: float = 0.0,
     proxy: str | None = None,
     attempts: int = 4,
+    thinking_mode: str | None = "disabled",
 ) -> list[dict[str, Any]]:
     """One LLM inference → a validated action sequence (the C1 fast path).
 
@@ -234,6 +238,12 @@ def compile_sequence(
         action_vocab: op names the robot exposes (the @robot_tool index keys).
         allowed_ops: collection used to validate the result via ``parse_sequence``.
         api_base/api_key/model_name/...: LLM endpoint config (as ``plan_skills``).
+        thinking_mode: Thinking-mode request value. Defaults to ``"disabled"``
+            because thinking models can spend the whole output budget on
+            ``reasoning_content`` and leave ``message.content`` empty;
+            compilation is a constrained JSON transformation, so the budget
+            should go to the final sequence. Pass ``None`` for an endpoint
+            that rejects the ``thinking`` extension.
 
     Returns:
         The validated raw step list ``[{"op", "params", "bind"?}, ...]`` (the
@@ -273,6 +283,7 @@ def compile_sequence(
                 proxy=proxy,
                 attempts=1,
                 max_tokens=1500,
+                thinking_mode=thinking_mode,
             )
         except RuntimeError as exc:
             # Transient LLM/HTTP failure (e.g. read timeout on a slow generation).

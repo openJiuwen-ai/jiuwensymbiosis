@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from jiuwensymbiosis.agent.fast import planner
@@ -42,6 +43,7 @@ def _patch_chat(monkeypatch, reply):
     def fake_chat(system, user, **kwargs):
         captured["system"] = system
         captured["user"] = user
+        captured["kwargs"] = kwargs
         return reply if isinstance(reply, str) else reply.pop(0)
 
     monkeypatch.setattr(planner, "_chat", fake_chat)
@@ -74,6 +76,63 @@ def test_compile_prompt_includes_skill_md_and_vocab(monkeypatch):
     # full SKILL.md text + vocab + track_detect are all in the prompt
     assert "visual_pick" in cap["user"] and "抓取 workflow" in cap["user"]
     assert "goto_xyzr" in cap["user"] and "track_detect" in cap["user"]
+
+
+def test_compile_disables_thinking_by_default(monkeypatch):
+    cap = _patch_chat(monkeypatch, json.dumps(_GOOD_SEQUENCE))
+    _compile(model_name="some-openai-compatible-model")
+    assert cap["kwargs"]["thinking_mode"] == "disabled"
+
+
+def test_compile_can_leave_thinking_unspecified_for_incompatible_endpoint(monkeypatch):
+    cap = _patch_chat(monkeypatch, json.dumps(_GOOD_SEQUENCE))
+    _compile(thinking_mode=None)
+    assert cap["kwargs"]["thinking_mode"] is None
+
+
+def test_chat_serializes_disabled_thinking_mode(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "[]"}}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, *, json, headers):
+            captured["url"] = url
+            captured["payload"] = json
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    reply = planner._chat(
+        "system",
+        "user",
+        api_base="https://api.deepseek.com",
+        api_key="",
+        model_name="deepseek-v4-flash",
+        timeout_s=1.0,
+        temperature=0.0,
+        proxy=None,
+        attempts=1,
+        max_tokens=1500,
+        thinking_mode="disabled",
+    )
+
+    assert reply == "[]"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
 
 
 def test_compile_uses_runtime_special_ops(monkeypatch):
