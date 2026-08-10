@@ -67,7 +67,7 @@ class XxxConfig:
     # ==================== 检测校正 [选填-仅 vision.detection] ====================
     z_correction_mm: float = 0.0  # Z 方向常值校正 (添加到手眼反投影结果)
     grasp_z_offset_mm: float = -25.0  # 抓取点相对于检测物体顶面的偏移 (负数=下方)
-    chip_thickness_mm: float = 75.0  # 堆叠放置偏移 (被放置物体的 tip→bottom 距离)
+    place_z_offset_mm: float = 75.0  # 堆叠放置偏移 (被放置物体的 tip→bottom 距离)
 
     # ==================== 检测服务 [选填-仅 vision.detection] ====================
     detector_spawn: bool = True  # 是否自动启动检测子进程

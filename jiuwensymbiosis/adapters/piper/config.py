@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,13 +97,14 @@ class PiperConfig:
     grasp_z_offset_mm: float = -25.0
 
     # --- stacking place offset. When releasing a held object ON TOP of a target,
-    #     the gripper tip goes to ``target_top + chip_thickness_mm`` so the held
+    #     the gripper tip goes to ``target_top + place_z_offset_mm`` so the held
     #     object's bottom rests on the target's top. So this = the held object's
     #     tip-to-bottom distance (= object_height - grasp depth).
     #     ``get_grasp_info_simple`` returns a ready ``place_z = detected_top +
-    #     chip_thickness_mm`` so the agent descends to it directly and never
+    #     place_z_offset_mm`` so the agent descends to it directly and never
     #     computes the stack height. (This is the knob for placement height.)
-    chip_thickness_mm: float = 75.0
+    #     Legacy alias ``chip_thickness_mm`` is still accepted by ``from_dict``.
+    place_z_offset_mm: float = 75.0
 
     # --- task knobs
     detector: DetectorServerConfig = field(default_factory=DetectorServerConfig)
@@ -139,6 +143,17 @@ class PiperConfig:
                     except (TypeError, ValueError):
                         continue
                 kw["joint_limits"] = normalised if normalised else None
+
+        if "chip_thickness_mm" in kw:
+            if "place_z_offset_mm" in kw:
+                raise ValueError(
+                    "PiperConfig: place_z_offset_mm and deprecated chip_thickness_mm cannot both be "
+                    "configured; specify only place_z_offset_mm."
+                )
+            logger.warning(
+                "PiperConfig: chip_thickness_mm is deprecated; migrate the configuration to place_z_offset_mm."
+            )
+            kw["place_z_offset_mm"] = kw.pop("chip_thickness_mm")
 
         valid = {f.name for f in dataclasses.fields(cls)}
         clean = {k: v for k, v in kw.items() if k in valid}

@@ -40,14 +40,6 @@ from jiuwensymbiosis.api.mixins import (
     ParallelGripperMixin,
     VisionMixin,
 )
-from jiuwensymbiosis.perception.detector_client import init_detector
-from jiuwensymbiosis.perception.vision import (
-    GraspFailure,
-    GraspResult,
-    apply_xy_correction,
-    detect_and_centroid,
-    dump_grasp_debug,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +66,7 @@ class PiperApi(
         default_object_name: str = "object",
         z_correction_mm: float = 0.0,
         grasp_z_offset_mm: float = -25.0,
-        chip_thickness_mm: float = 75.0,
+        place_z_offset_mm: float = 75.0,
     ) -> None:
         """Initialize PiperApi with env, detector service URL, and grasp geometry constants."""
         super().__init__(env)
@@ -86,7 +78,7 @@ class PiperApi(
         # Offset from the detected TOP to the deterministic grasp point (see PiperConfig).
         self._grasp_z_offset_mm = float(grasp_z_offset_mm)
         # Stack place offset above a target's top (see PiperConfig).
-        self._chip_thickness_mm = float(chip_thickness_mm)
+        self._place_z_offset_mm = float(place_z_offset_mm)
 
     # ============================================================  Motion
     # ``home`` is inherited from MotionMixin (delegates to env.home()).
@@ -224,13 +216,16 @@ class PiperApi(
     # accepts width_mm/force_n only for API parity.
 
     # ============================================================  Vision
-    @robot_tool(
-        desc="Pixel (u,v) at depth_m (meters) → base-frame XYZ in mm. Requires a loaded calibration.",
-    )
-    def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
+    def _project_pixel_to_base_raw(self, u: float, v: float, depth_m: float) -> np.ndarray:
+        """Eye-in-hand RAW projection: ``tf_base_flange(live) @ tf_flange_cam``.
+
+        The vendor-specific seam VisionMixin delegates to; applies NO xy/z
+        correction (the shared geometry owns that). Reads the live flange pose,
+        so the arm must be settled when this runs.
+        """
         ll = self._ll()
         if ll.tf_flange_cam is None:
-            raise RuntimeError("pixel_to_base_xyz needs a loaded calibration (set calib_path in YAML).")
+            raise RuntimeError("get_grasp_info_simple needs a loaded calibration (set calib_path in YAML).")
         calib = ll.calibration
         intrinsics = calib.get("intrinsics") if calib is not None else None
         if intrinsics is None:
@@ -239,170 +234,18 @@ class PiperApi(
             raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
         p = self.env.get_flange_pose()
         flange_pose = FlangePose(p.x, p.y, p.z, p.rx, p.ry, p.rz)
-        xyz = pixel_and_depth_to_base_xyz((u, v), depth_m, flange_pose, ll.tf_flange_cam, intrinsics)
-        if calib is not None:
-            xyz, _desc = apply_xy_correction(
-                np.asarray(xyz, dtype=np.float64),
-                xy_transform=calib.get("xy_transform"),
-                xy_correction_mm=calib.get("xy_correction_mm"),
-            )
-        return {"x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2])}
+        return pixel_and_depth_to_base_xyz((u, v), depth_m, flange_pose, ll.tf_flange_cam, intrinsics)
 
-    @robot_tool(
-        desc="Live open-vocab detection of object_name + depth + calibration → base XYZ. Returns "
-        '{"ok": bool, "object": str, "position": [x,y,z]_mm, "grasp_z": float, '
-        '"grasp_position": [x,y,z]_mm, "place_z": float, "place_position": [x,y,z]_mm, '
-        '"score": float, "pixel_uv": [u,v], "depth_m": float}.'
-    )
-    def get_grasp_info_simple(self, object_name: str) -> GraspResult | GraspFailure:
-        ll = self._ll()
-        frames = ll.grab_frames()
-        if frames is None:
-            return {"ok": False, "reason": "no_camera", "object": object_name}
-        rgb, depth_img_m = frames
-
-        tcp_at_grab = self.env.get_flange_pose()
-        self._ensure_detector()
-        det = detect_and_centroid(
-            rgb=rgb,
-            depth_img_m=depth_img_m,
-            seg_fn=self._seg_fn,
-            object_name=object_name,
-            tcp_at_grab=_PoseShim(tcp_at_grab),
-        )
-        if not det.get("ok"):
-            # detect_and_centroid returns plain dict; structurally a GraspFailure
-            return det  # type: ignore[return-value]
-
-        u, v, depth_m = det["u"], det["v"], det["depth_m"]
-        best = det["best"]
-        img_w, img_h = det["img_shape"]
-        mask_h, mask_w = det["mask_shape"]
-
-        if ll.tf_flange_cam is None:
-            raise RuntimeError("get_grasp_info_simple needs a loaded calibration (set calib_path in YAML).")
-        calib = ll.calibration
-        intrinsics = calib.get("intrinsics") if calib is not None else None
-        intrinsics_src = "calib"
-        if intrinsics is None:
-            intrinsics = ll.intrinsics
-            intrinsics_src = "live"
-        if intrinsics is None:
-            raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
-
-        tcp_at_proj = self.env.get_flange_pose()
-        if tcp_at_proj.as_tuple() != tcp_at_grab.as_tuple():
-            logger.warning(
-                "[grasp-debug] flange pose moved between frame grab and projection! grab=%s proj=%s",
-                tcp_at_grab.as_tuple(),
-                tcp_at_proj.as_tuple(),
-            )
-        flange_pose = FlangePose(
-            tcp_at_proj.x,
-            tcp_at_proj.y,
-            tcp_at_proj.z,
-            tcp_at_proj.rx,
-            tcp_at_proj.ry,
-            tcp_at_proj.rz,
-        )
-        xyz_raw = pixel_and_depth_to_base_xyz(
-            (u, v),
-            depth_m,
-            flange_pose,
-            ll.tf_flange_cam,
-            intrinsics,
-        )
-
-        xy_transform = calib.get("xy_transform") if calib is not None else None
-        xy_corr = calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
-        xyz_final, corr_desc = apply_xy_correction(
-            xyz_raw,
-            xy_transform=xy_transform,
-            xy_correction_mm=xy_corr,
-        )
-        if self._z_correction_mm:
-            xyz_final = np.asarray(xyz_final, dtype=np.float64).copy()
-            xyz_final[2] += self._z_correction_mm
-            corr_desc = f"{corr_desc}+z{self._z_correction_mm:+.0f}"
-
-        intrinsics_flat = np.asarray(intrinsics, dtype=float).reshape(-1)
-        logger.info(
-            "[grasp-debug] K_src=%s flange_pose=(%.2f, %.2f, %.2f, %.2f, %.2f, %.2f) "
-            "raw_xyz_mm=(%.2f, %.2f, %.2f) corr=%s final_xyz_mm=(%.2f, %.2f, %.2f)",
-            intrinsics_src,
-            *flange_pose.as_tuple(),
-            float(xyz_raw[0]),
-            float(xyz_raw[1]),
-            float(xyz_raw[2]),
-            corr_desc,
-            float(xyz_final[0]),
-            float(xyz_final[1]),
-            float(xyz_final[2]),
-        )
-
-        try:
-            dump_grasp_debug(
-                rgb=rgb,
-                object_name=object_name,
-                best=best,
-                u=u,
-                v=v,
-                depth_m=depth_m,
-                tcp_grab=_PoseShim(tcp_at_grab),
-                tcp_proj=_PoseShim(tcp_at_proj),
-                xyz_raw=xyz_raw,
-                xyz_final=xyz_final,
-                xy_corr=xy_corr,
-                xy_transform=xy_transform,
-                intrinsics_src=intrinsics_src,
-                intrinsics=intrinsics_flat.tolist(),
-                img_shape=(img_w, img_h),
-                mask_shape=(mask_w, mask_h),
-                extra_info={
-                    "flange_pose_6dof": list(flange_pose.as_tuple()),
-                    "frame_model": "piper_eye_in_hand_tf_base_flange@tf_flange_cam",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - debug dump must never break a grasp
-            logger.debug("[grasp-debug] dump failed: %s", exc)
-
-        # Deterministic grasp + stack-place geometry, computed HERE (perception side)
-        # so the agent never does z math:
-        #   grasp_z = top + grasp_z_offset_mm  (descend HERE to grasp the body),
-        #             clamped to the safety floor;
-        #   place_z = top + chip_thickness_mm  (descend HERE to release a held object
-        #             ON TOP of this object, so the held object's bottom rests on this top).
-        top_z = float(xyz_final[2])
-        z_floor = self.env.z_min_safe
-        grasp_z = top_z + self._grasp_z_offset_mm
-        if z_floor is not None:
-            grasp_z = max(grasp_z, float(z_floor))
-        place_z = top_z + self._chip_thickness_mm
-        x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
-        logger.info(
-            "[PiperApi] %s: pos=(%.1f, %.1f, %.1f) grasp_z=%.1f place_z=%.1f score=%.2f",
-            object_name,
-            x_f,
-            y_f,
-            top_z,
-            grasp_z,
-            place_z,
-            best["score"],
-        )
+    def _grasp_debug_extra(self) -> dict:
+        """Piper eye-in-hand debug context (frame model + live flange pose)."""
+        p = self.env.get_flange_pose()
         return {
-            "ok": True,
-            "object": object_name,
-            "position": [x_f, y_f, top_z],
-            "grasp_z": grasp_z,
-            "grasp_position": [x_f, y_f, grasp_z],
-            "place_z": place_z,
-            "place_position": [x_f, y_f, place_z],
-            "score": float(best["score"]),
-            "pixel_uv": [u, v],
-            "depth_m": depth_m,
+            "flange_pose_6dof": [p.x, p.y, p.z, p.rx, p.ry, p.rz],
+            "frame_model": "piper_eye_in_hand_tf_base_flange@tf_flange_cam",
         }
 
-    # ``get_image`` is inherited from VisionMixin (grabs frames via env.low_level).
+    # ``get_grasp_info_simple`` / ``pixel_to_base_xyz`` / ``get_image`` are inherited
+    # from VisionMixin, which drives the ``_project_pixel_to_base_raw`` seam above.
 
     @robot_tool(
         desc="Run a higher-level scene analysis grounded on object_name. "
@@ -441,33 +284,3 @@ class PiperApi(
         if ll is None:
             raise RuntimeError("PiperApi: env not connected. Call session.connect() / use `with session:`.")
         return cast("PiperFullDriver", ll)
-
-    def _ensure_detector(self) -> None:
-        """Lazy-init the detector segmentation function if not already bound."""
-        if self._seg_fn is not None:
-            return
-        try:
-            self._seg_fn = init_detector(self._detector_service_url)
-            logger.info("[PiperApi] detector client bound to %s", self._detector_service_url)
-        except Exception as exc:  # noqa: BLE001 - detector init best-effort; tools degrade
-            logger.warning(
-                "[PiperApi] detector init failed (%s); detection tools will return ok=False.",
-                exc,
-            )
-
-
-class _PoseShim:
-    """Exposes a piper pose with an ``r`` alias for debug helpers
-    (``detect_and_centroid`` / ``dump_grasp_debug``) that log ``pose.x/y/z/r``."""
-
-    __slots__ = ("x", "y", "z", "rx", "ry", "rz", "r")
-
-    def __init__(self, pose) -> None:
-        """Copy pose fields + alias rz as r, debug helpers."""
-        self.x = pose.x
-        self.y = pose.y
-        self.z = pose.z
-        self.rx = pose.rx
-        self.ry = pose.ry
-        self.rz = pose.rz
-        self.r = pose.rz

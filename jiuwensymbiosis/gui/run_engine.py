@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import logging
 import queue
+import traceback
 import uuid
 from collections import deque
 from pathlib import Path
@@ -103,6 +104,10 @@ class QueueLogHandler(logging.Handler):
         """把一条日志转成 dict 入队并留档到缓冲(日志绝不因界面而抛异常)。"""
         try:
             msg = record.getMessage()
+            if record.exc_info:
+                # 带上 traceback,否则 GUI 的 log_tail / 诊断只看得到消息、看不到堆栈,
+                # 异常就会退化成 KeyError('object') 这种"意义不明"的裸信息。
+                msg = f"{msg}\n{''.join(traceback.format_exception(*record.exc_info)).rstrip()}"
             self._buffer.append(f"{record.levelname} {record.name}: {msg}")
             self._events.put(("log", {"level": record.levelname, "name": record.name, "msg": msg}))
         except Exception:  # 日志 handler 内不能再走日志系统(会递归),交给 logging 内建的错误处理
@@ -229,7 +234,13 @@ class RunEngine:
             self._events.put(
                 (
                     "run_finished",
-                    {"ok": False, "error": str(exc), "error_type": type(exc).__name__, "log_tail": handler.log_tail()},
+                    {
+                        # 带类型前缀:str(KeyError('object')) 只有 "'object'",套上类型才看得懂是 KeyError。
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "ok": False,
+                        "error_type": type(exc).__name__,
+                        "log_tail": handler.log_tail(),
+                    },
                 )
             )
         finally:

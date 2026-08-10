@@ -129,54 +129,36 @@ class XxxApi(
     #     return {"ok": True, "state": "open"}
 
     # ============================================================= Vision [选填]
-    # Uncomment for vision-enabled robot. Requires:
+    # Uncomment for a vision-enabled robot. Requires:
     #   1. GroundingDINO+SAM2 detection server running (see _common/detector_sidecar)
     #   2. Camera calibration (hand-eye + intrinsics)
     #   3. Driver implementing grab_frames()
     #
-    # from jiuwensymbiosis.adapters._common.detector_client import init_detector
-    # from jiuwensymbiosis.adapters._common.vision import detect_and_centroid, apply_xy_correction
+    # VisionMixin already implements get_grasp_info_simple / pixel_to_base_xyz /
+    # get_image / _ensure_detector on top of the shared grasp geometry. A new
+    # adapter supplies ONLY (a) the geometry constants via __init__ (or accepts
+    # the mixin class defaults) and (b) the projection seam below.
+    #
+    # from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
     #
     # def __init__(self, env, *, detector_service_url="http://127.0.0.1:8114",
-    #              z_correction_mm=0.0, grasp_z_offset_mm=-25.0, chip_thickness_mm=75.0):
+    #              z_correction_mm=0.0, grasp_z_offset_mm=-25.0, place_z_offset_mm=75.0):
     #     super().__init__(env)
     #     self._detector_service_url = detector_service_url
     #     self._z_correction_mm = float(z_correction_mm)
     #     self._grasp_z_offset_mm = float(grasp_z_offset_mm)
-    #     self._chip_thickness_mm = float(chip_thickness_mm)
+    #     self._place_z_offset_mm = float(place_z_offset_mm)
     #     self._seg_fn = None
     #
-    # def _ensure_detector(self):
-    #     if self._seg_fn is not None:
-    #         return
-    #     self._seg_fn = init_detector(self._detector_service_url)
-    #
-    # @robot_tool(desc="Detect object + back-project to base XYZ. Returns "
-    #             '{"ok": bool, "position": [x,y,z], "grasp_z": float, "score": float, ...}')
-    # def get_grasp_info_simple(self, object_name: str) -> dict:
+    # def _project_pixel_to_base_raw(self, u, v, depth_m):
+    #     # The one vendor-specific step: pixel + depth -> RAW base-frame XYZ (mm).
+    #     # Apply NO xy/z correction here — the shared geometry owns that.
+    #     #   eye-in-hand:  tf_base_cam = pose_to_tf(self.env.get_flange_pose()) @ tf_flange_cam
+    #     #   eye-to-hand:  tf_base_cam = <constant T_base_cam from calibration>
     #     ll = self.env.low_level
-    #     frames = ll.grab_frames()
-    #     if frames is None:
-    #         return {"ok": False, "reason": "no_camera"}
-    #     rgb, depth_img_m = frames
-    #     self._ensure_detector()
-    #     det = detect_and_centroid(rgb=rgb, depth_img_m=depth_img_m,
-    #                               seg_fn=self._seg_fn, object_name=object_name,
-    #                               tcp_at_grab=self.env.get_flange_pose())
-    #     if not det.get("ok"):
-    #         return det
-    #     # TODO: pixel→base back-projection (per-robot geometry)
-    #     # xyz_raw = pixel_and_depth_to_base_xyz(...)
-    #     # xyz_final, _ = apply_xy_correction(xyz_raw, ...)
-    #     return {"ok": False, "reason": "back_projection_not_implemented"}
-    #
-    # @robot_tool(desc="Convert pixel (u,v) at depth_m to base XYZ mm.")
-    # def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
-    #     raise NotImplementedError("pixel_to_base_xyz requires calibration")
-    #
-    # @robot_tool(desc="Grab latest RGB frame.")
-    # def get_image(self) -> Any:
-    #     return self.env.grab_rgb()
+    #     intrinsics = (ll.calibration or {}).get("intrinsics") or ll.intrinsics
+    #     p_cam = pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics)
+    #     return apply_transform(tf_base_cam, p_cam)  # per-robot tf_base_cam
     #
     # @robot_tool(desc="Run scene analysis grounded on object_name.")
     # def analyze_scene(self, object_name: Optional[str] = None) -> dict:

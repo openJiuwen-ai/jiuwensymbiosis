@@ -115,9 +115,9 @@ capability   RobotDriver  实现观测      返回 ok/error   必填/选填     
 > 主要工作量在**步骤 2（驱动）**：硬件通信、运动、传感全在这里实现。
 > Env（步骤 3）通常只写 `connect/disconnect/get_observation` + 暴露 `low_level` 和安全属性——
 > 运动/末端动词由 `BaseRobotEnv` 默认委托给驱动。Api（步骤 4）的运动/抓取/取图方法由 Mixin
-> 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）并实现高层视觉——eye-in-hand
-> 视觉可委托 `perception/vision.default_get_grasp_info_simple` /
-> `default_pixel_to_base_xyz`，只补一个 `pose_to_tf` 回调与检测器 `seg_fn`。
+> 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）；视觉方面
+> `get_grasp_info_simple` / `pixel_to_base_xyz` 已由 `VisionMixin` 完整实现，只需补一个
+> 投影缝 `_project_pixel_to_base_raw`（eye-in-hand / eye-to-hand 的差异都在这里）。
 
 每步详细说明见后续章节。
 
@@ -711,9 +711,9 @@ def get_grasp_info_simple(self, object_name: str) -> dict:
         "grasp_z": top_z + self._grasp_z_offset_mm,
         "grasp_position": [float(xyz_final[0]), float(xyz_final[1]),
                            top_z + self._grasp_z_offset_mm],
-        "place_z": top_z + self._chip_thickness_mm,
+        "place_z": top_z + self._place_z_offset_mm,
         "place_position": [float(xyz_final[0]), float(xyz_final[1]),
-                           top_z + self._chip_thickness_mm],
+                           top_z + self._place_z_offset_mm],
         "score": float(det["best"]["score"]),
         "pixel_uv": [det["u"], det["v"]],
         "depth_m": det["depth_m"],
@@ -801,7 +801,7 @@ class MyConfig:
     # ==================== 检测校正 [选填-仅 vision.detection] ====================
     z_correction_mm: float = 0.0        # Z 方向常值校正
     grasp_z_offset_mm: float = -25.0    # 抓取点相对于物体顶面的偏移
-    chip_thickness_mm: float = 75.0     # 堆叠放置偏移
+    place_z_offset_mm: float = 75.0     # 堆叠放置偏移
 
     # ==================== 检测服务 [选填-仅 vision.detection] ====================
     detector_spawn: bool = True         # 是否自动启动检测子进程
@@ -892,7 +892,7 @@ def _api_kwargs_from_cfg(cfg: MyConfig) -> dict:
         "detector_service_url": cfg.detector_url,
         "z_correction_mm": cfg.z_correction_mm,
         "grasp_z_offset_mm": cfg.grasp_z_offset_mm,
-        "chip_thickness_mm": cfg.chip_thickness_mm,
+        "place_z_offset_mm": cfg.place_z_offset_mm,
     }
 
 build_my_session = make_builder(
