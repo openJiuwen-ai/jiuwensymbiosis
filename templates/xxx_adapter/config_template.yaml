@@ -43,7 +43,7 @@ z_min_safe_mm: 50.0  # [选填] Z 向安全下限 (SafetyRail 用)
 # ==================== 检测校正 [选填-仅 vision.detection] ====================
 # z_correction_mm: 0.0          # [选填-仅 vision.detection] Z 向校正
 # grasp_z_offset_mm: -25.0      # [选填-仅 vision.detection] 抓取深度偏移
-# chip_thickness_mm: 75.0       # [选填-仅 vision.detection] 堆叠偏移
+# place_z_offset_mm: 75.0       # [选填-仅 vision.detection] 堆叠偏移
 
 # ==================== 检测服务 [选填-仅 vision.detection] ====================
 # detector:

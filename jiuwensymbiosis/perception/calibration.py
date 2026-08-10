@@ -117,5 +117,19 @@ def load_calibration(
         )
 
     payload["intrinsics"] = np.asarray(payload["intrinsics"], dtype=np.float64)
-    payload["object"]["xyz_base_mm"] = np.asarray(payload["object"]["xyz_base_mm"], dtype=np.float64)
+    # ``object`` (base-frame anchor) is optional in schema-2+ eye-to-hand
+    # calibrations, where the camera is fixed in base and there is no workspace
+    # anchor coupling. Legacy schema (<2) still requires it (eye-in-hand piper
+    # files always had one); keep that contract so existing files are not
+    # silently accepted in a degraded form.
+    obj = payload.get("object")
+    if obj is not None:
+        if "xyz_base_mm" not in obj:
+            raise ValueError(f"[calib] {path}: 'object' present but missing 'xyz_base_mm'.")
+        obj["xyz_base_mm"] = np.asarray(obj["xyz_base_mm"], dtype=np.float64)
+    elif version < CURRENT_SCHEMA_VERSION:
+        raise ValueError(
+            f"[calib] {path}: schema_version={version} requires an 'object.xyz_base_mm' "
+            f"anchor; re-run calibration to produce schema_version>={CURRENT_SCHEMA_VERSION}."
+        )
     return payload

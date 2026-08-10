@@ -27,11 +27,26 @@ detector client and hand-eye calibration — so they stay abstract and raise
 
 from __future__ import annotations
 
+import logging
 import math
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+import numpy as np
 
 from jiuwensymbiosis.api.decorators import robot_tool
+from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.perception.vision import (
+    GraspFailure,
+    GraspResult,
+    apply_xy_correction,
+    build_grasp_result,
+    detect_and_centroid,
+    dump_grasp_debug,
+)
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Mixins are composed into BaseRobotApi subclasses, which set `self.env`.
@@ -225,13 +240,77 @@ class ParallelGripperMixin:
 class VisionMixin:
     """Vision and object detection capability mixin.
 
-    ``get_image`` has a working default (raw frame grab); the higher-level
-    detection methods need the adapter's detector + calibration and stay abstract.
+    ``get_image`` / ``get_grasp_info_simple`` / ``pixel_to_base_xyz`` ship working
+    defaults: the full grab → detect → project → correct → grasp/place pipeline
+    lives here and delegates only the vendor-specific "pixel + depth → RAW base
+    XYZ" projection to :meth:`_project_pixel_to_base_raw` (eye-in-hand reads the
+    live flange; eye-to-hand uses a constant ``T_base_cam``). ``analyze_scene``
+    still needs the adapter's detector wiring and stays abstract.
     """
 
     env: BaseRobotEnv  # provided by the composing BaseRobotApi subclass
 
     capability = "vision.detection"
+
+    # Detector wiring + grasp/place geometry constants. Adapters set these in
+    # __init__; the class-level defaults let a common-case body compose the mixin
+    # with no vision code beyond the projection seam.
+    _detector_service_url: str = "http://127.0.0.1:8114"
+    _seg_fn: Callable[..., list[dict]] | None = None
+    _z_correction_mm: float = 0.0
+    _grasp_z_offset_mm: float = -25.0
+    _place_z_offset_mm: float = 75.0
+    _floor_margin_mm: float = 0.0
+
+    # ---- vendor-specific projection seam ------------------------------------
+    def _project_pixel_to_base_raw(self, u: float, v: float, depth_m: float) -> np.ndarray:
+        """Project (pixel + metric depth) → RAW base-frame XYZ (mm), NO correction.
+
+        The one vendor-specific step: eye-in-hand composes
+        ``tf_base_flange(live) @ tf_flange_cam``; eye-to-hand uses a constant
+        ``tf_base_cam``. Must NOT apply xy/z correction — that is owned by the
+        shared geometry so it runs exactly once. Adapters must implement this.
+        """
+        raise NotImplementedError
+
+    def _vision_driver(self) -> Any:
+        """The low-level driver for vision reads (``grab_frames`` / ``calibration``).
+
+        A controlled penetration point (see ``env/base.py``): typed ``Any`` because
+        the concrete driver satisfies CameraDriver / VisionDriver structurally, not
+        the base ``RobotDriver``. Raises if the env is not connected.
+        """
+        ll = self.env.low_level
+        if ll is None:
+            raise RuntimeError(f"{type(self).__name__}: env not connected. Use `with session:` / session.connect().")
+        return ll
+
+    def _ensure_detector(self) -> None:
+        """Lazy-init the detector segmentation function if not already bound."""
+        if self._seg_fn is not None:
+            return
+        try:
+            self._seg_fn = init_detector(self._detector_service_url)
+            logger.info("[VisionMixin] detector client bound to %s", self._detector_service_url)
+        except Exception as exc:  # detector init best-effort; tools degrade to ok=False
+            logger.warning("[VisionMixin] detector init failed (%s); detection tools will return ok=False.", exc)
+
+    def _grasp_debug_tcp(self) -> Any:
+        """TCP snapshot used ONLY for diagnostic dumps (needs ``.x/.y/.z/.r``).
+
+        Eye-in-hand bodies report the live flange; eye-to-hand bodies (where the
+        flange is irrelevant to projection) override this to return zeros.
+        """
+        p = self.env.get_flange_pose()
+        return SimpleNamespace(x=p.x, y=p.y, z=p.z, r=getattr(p, "rz", getattr(p, "r", 0.0)))
+
+    def _grasp_debug_extra(self) -> dict:
+        """Adapter-specific fields merged into the grasp-debug JSON.
+
+        Base default records the concrete API class; adapters override to add
+        frame-model / live-pose context.
+        """
+        return {"api_class": self.__class__.__name__}
 
     @robot_tool(
         desc="One-shot: detect `object_name` in the live frame, project "
@@ -240,21 +319,126 @@ class VisionMixin:
         '"grasp_position": [x,y,z]_mm, "place_z": float, "place_position": [x,y,z]_mm, '
         '"score": float, "pixel_uv": [u,v], "depth_m": float}.',
     )
-    def get_grasp_info_simple(self, object_name: str) -> dict:
+    def get_grasp_info_simple(self, object_name: str) -> GraspResult | GraspFailure:
         """Detect an object and return its 3D grasp/place geometry.
 
-        No generic default: requires the adapter's detector client and hand-eye
-        calibration. Adapters must implement this.
+        The full pipeline lives here; adapters supply only the projection seam
+        :meth:`_project_pixel_to_base_raw`.
         """
-        raise NotImplementedError
+        return cast("GraspResult | GraspFailure", self._grasp_info_with_intermediates(object_name)[0])
 
-    @robot_tool(desc="Convert a pixel (u,v) at known depth to base-frame XYZ in mm.")
+    def _grasp_info_with_intermediates(self, object_name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Shared grasp pipeline; returns ``(result, intermediates | None)``.
+
+        ``intermediates`` carries the detection/projection snapshots so an adapter
+        fast-path (e.g. SO-101 tracking) can reuse the same detection instead of
+        re-running it; the public tool ignores it. ``None`` on any failure.
+        """
+        ll = self._vision_driver()
+        frames = ll.grab_frames()
+        if frames is None:
+            return {"ok": False, "reason": "no_camera", "object": object_name}, None
+        rgb, depth_img_m = frames
+
+        tcp = self._grasp_debug_tcp()
+        self._ensure_detector()
+        det = detect_and_centroid(
+            rgb=rgb,
+            depth_img_m=depth_img_m,
+            seg_fn=self._seg_fn,
+            object_name=object_name,
+            tcp_at_grab=tcp,
+        )
+        if not det.get("ok"):
+            return det, None
+
+        u, v, depth_m = det["u"], det["v"], det["depth_m"]
+        best = det["best"]
+        img_w, img_h = det["img_shape"]
+        mask_h, mask_w = det["mask_shape"]
+
+        xyz_raw = np.asarray(self._project_pixel_to_base_raw(u, v, depth_m), dtype=np.float64)
+        calib = getattr(ll, "calibration", None)
+        result, xyz_final = build_grasp_result(
+            object_name=object_name,
+            best=best,
+            u=u,
+            v=v,
+            depth_m=depth_m,
+            xyz_raw=xyz_raw,
+            calib=calib,
+            z_correction_mm=self._z_correction_mm,
+            grasp_z_offset_mm=self._grasp_z_offset_mm,
+            place_z_offset_mm=self._place_z_offset_mm,
+            z_floor=self.env.z_min_safe,
+            floor_margin_mm=self._floor_margin_mm,
+        )
+        logger.info(
+            "[grasp-debug] %s: raw_xyz_mm=(%.2f, %.2f, %.2f) final_xyz_mm=(%.2f, %.2f, %.2f) "
+            "grasp_z=%.1f place_z=%.1f score=%.2f",
+            object_name,
+            float(xyz_raw[0]),
+            float(xyz_raw[1]),
+            float(xyz_raw[2]),
+            float(xyz_final[0]),
+            float(xyz_final[1]),
+            float(xyz_final[2]),
+            result["grasp_z"],
+            result["place_z"],
+            result["score"],
+        )
+        try:
+            dump_grasp_debug(
+                rgb=rgb,
+                object_name=object_name,
+                best=best,
+                u=u,
+                v=v,
+                depth_m=depth_m,
+                tcp_grab=tcp,
+                tcp_proj=tcp,
+                xyz_raw=xyz_raw,
+                xyz_final=xyz_final,
+                xy_corr=calib.get("xy_correction_mm") if calib is not None else None,
+                xy_transform=calib.get("xy_transform") if calib is not None else None,
+                img_shape=(img_w, img_h),
+                mask_shape=(mask_w, mask_h),
+                extra_info=self._grasp_debug_extra(),
+            )
+        except Exception as exc:  # debug dump must never break a grasp
+            logger.debug("[grasp-debug] dump failed: %s", exc)
+
+        intermediates = {
+            "rgb": rgb,
+            "depth_img_m": depth_img_m,
+            "best": best,
+            "u": u,
+            "v": v,
+            "depth_m": depth_m,
+            "xyz_raw": xyz_raw,
+            "xyz_final": xyz_final,
+        }
+        return result, intermediates
+
+    @robot_tool(
+        desc="Pixel (u,v) at depth_m (meters) → base-frame XYZ in mm. Requires a loaded calibration.",
+    )
     def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
-        """Reproject a pixel to base-frame XYZ.
+        """Reproject a pixel to base-frame XYZ (raw projection + xy correction).
 
-        No generic default: requires the adapter's hand-eye calibration.
+        Mirrors the projection step of :meth:`get_grasp_info_simple` but WITHOUT
+        the constant ``z_correction_mm`` (that is applied for grasp geometry only),
+        matching the standalone tool's historical behavior.
         """
-        raise NotImplementedError
+        xyz = self._project_pixel_to_base_raw(u, v, depth_m)
+        calib = getattr(self.env.low_level, "calibration", None)
+        if calib is not None:
+            xyz, _desc = apply_xy_correction(
+                np.asarray(xyz, dtype=np.float64),
+                xy_transform=calib.get("xy_transform"),
+                xy_correction_mm=calib.get("xy_correction_mm"),
+            )
+        return {"x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2])}
 
     @robot_tool(desc="Grab the latest RGB frame as numpy HxWx3 (rarely needed by the agent itself).")
     def get_image(self) -> Any:

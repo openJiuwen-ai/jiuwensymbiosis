@@ -202,3 +202,22 @@ class TestEnvVarOverrides:
         monkeypatch.setenv("CAMERA_SERIAL", "999999999999")
         cfg = PiperConfig.from_dict({})
         assert cfg.camera_serial == "999999999999"
+
+
+class TestPlaceZOffsetAlias:
+    def test_default(self):
+        assert PiperConfig.from_dict({}).place_z_offset_mm == 75.0
+
+    def test_canonical_name(self):
+        cfg = PiperConfig.from_dict({"place_z_offset_mm": 30.0})
+        assert cfg.place_z_offset_mm == 30.0
+
+    def test_deprecated_chip_thickness_mm_alias_maps_and_warns(self, caplog):
+        with caplog.at_level("WARNING"):
+            cfg = PiperConfig.from_dict({"chip_thickness_mm": 20.0})
+        assert cfg.place_z_offset_mm == 20.0
+        assert "chip_thickness_mm is deprecated" in caplog.text
+
+    def test_both_names_conflict_raises(self):
+        with pytest.raises(ValueError, match="cannot both be"):
+            PiperConfig.from_dict({"place_z_offset_mm": 30.0, "chip_thickness_mm": 20.0})

@@ -19,7 +19,7 @@ env:
       tool_offset_mm: 95.0          # 法兰→指尖（真机实测夹爪长 ~9.5cm，2026-06-08）
       z_correction_mm: -57.0        # 检测Z高估~57mm(T_flange_cam初值未标定)，触碰标定得；下拉
       grasp_z_offset_mm: -25.0      # 检测顶面下方多少 mm 夹盒身；get_grasp_info_simple 据此给出确定化 grasp_z
-      chip_thickness_mm: 75.0       # 叠放偏移=被抓盒指尖到底面距离；get_grasp_info_simple 给出 place_z=目标顶+此值
+      place_z_offset_mm: 75.0       # 叠放偏移=被抓盒指尖到底面距离；get_grasp_info_simple 给出 place_z=目标顶+此值
 
       # --- workspace
       calib_path: "piper_calib.json"   # 与本 yaml 同目录；T_flange_cam + 内参 + 锚点

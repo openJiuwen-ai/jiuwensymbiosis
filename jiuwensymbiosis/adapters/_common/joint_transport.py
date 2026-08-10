@@ -9,10 +9,10 @@ waypoints, arrival polling, safety) has to live above the SDK. ``JointTransport`
 is that lower seam: the *only* part an adapter for a joint-level arm must hand-
 write. Everything above it is provided once by ``KinematicArmDriver``.
 
-Design mirrors ``perception.vision.default_get_grasp_info_simple`` — the
-framework owns the pipeline; the adapter injects the single vendor-specific
-piece. Structural typing (``Protocol``) keeps the SDK object free of any
-framework base class.
+Design mirrors ``VisionMixin.get_grasp_info_simple`` (whose only vendor-specific
+step is the ``_project_pixel_to_base_raw`` seam) — the framework owns the
+pipeline; the adapter injects the single vendor-specific piece. Structural
+typing (``Protocol``) keeps the SDK object free of any framework base class.
 
 Contract:
   * ``open`` / ``close`` are the SDK connection lifecycle; ``close`` is idempotent.

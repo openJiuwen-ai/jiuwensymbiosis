@@ -300,7 +300,7 @@ def _detection_config_fields() -> str:
         # ============== 检测校正 [选填-仅 vision.detection] ==============
         z_correction_mm: float = 0.0        # Z 向常值校正
         grasp_z_offset_mm: float = -25.0    # 抓取点相对物体顶面偏移
-        chip_thickness_mm: float = 75.0     # 堆叠放置偏移
+        place_z_offset_mm: float = 75.0     # 堆叠放置偏移
         detector_url: str = "http://127.0.0.1:8114"  # 检测服务地址
         calib_path: Optional[str] = None    # 手眼标定文件 (JSON)
         """,
@@ -925,13 +925,13 @@ def _api_detection_init() -> str:
             detector_service_url: str = "http://127.0.0.1:8114",
             z_correction_mm: float = 0.0,
             grasp_z_offset_mm: float = -25.0,
-            chip_thickness_mm: float = 75.0,
+            place_z_offset_mm: float = 75.0,
         ) -> None:
             super().__init__(env)
             self._detector_service_url = detector_service_url
             self._z_correction_mm = float(z_correction_mm)
             self._grasp_z_offset_mm = float(grasp_z_offset_mm)
-            self._chip_thickness_mm = float(chip_thickness_mm)
+            self._place_z_offset_mm = float(place_z_offset_mm)
             self._seg_fn = None
         """,
         4,
@@ -948,18 +948,12 @@ def _api_vision_block() -> str:
         def get_grasp_info_simple(self, object_name: str) -> dict:
             \"\"\"Detect object_name and return grasp geometry.
 
-            Reference shape::
-
-                frames = self.env.low_level.grab_frames()
-                if frames is None:
-                    return {{"ok": False, "object": object_name, "reason": "no_camera"}}
-                rgb, depth_m = frames
-                detector_result = run_detector(rgb, object_name)
-                u, v = detector_result.pixel_uv
-                xyz = self.pixel_to_base_xyz(u, v, depth_m[v, u])
-                return build_grasp_result(object_name, xyz, detector_result)
-
-            For eye-in-hand RGB-D, compare piper/api.py and _common/vision.py.
+            Recommended: implement ``_project_pixel_to_base_raw`` (the projection
+            seam) and inherit this method from VisionMixin instead of overriding
+            it — the shared pipeline runs detect -> project -> correct ->
+            grasp/place geometry for you. This stub keeps the adapter smoke-clean
+            until you wire the detector + calibration; see piper/api.py for a
+            worked eye-in-hand example.
             \"\"\"
             {SENTINEL}
             return {{"ok": False, "object": object_name, "reason": "not_implemented"}}
@@ -1135,7 +1129,7 @@ def render_session(spec: Spec) -> str:
                 "detector_url:detector_service_url",
                 "z_correction_mm",
                 "grasp_z_offset_mm",
-                "chip_thickness_mm",
+                "place_z_offset_mm",
             ],
         )
 
@@ -1276,7 +1270,7 @@ def render_yaml(spec: Spec) -> str:
             "# ---- 检测 ----",
             "z_correction_mm: 0.0",
             "grasp_z_offset_mm: -25.0",
-            "chip_thickness_mm: 75.0",
+            "place_z_offset_mm: 75.0",
             'detector_url: "http://127.0.0.1:8114"',
             "# calib_path: calib.json",
         ]
@@ -1874,8 +1868,8 @@ def render_api_joint_ik(spec: Spec) -> str:
         delegate to the Env verbs (the KinematicArmDriver does the IK and forwards
         the camera). Only the honest soft-posture goto and, for a parallel gripper,
         the two-state card are specialized; the vision stubs are the same the rest
-        of the framework generates (fill them with your detector, or wire
-        perception.vision.default_get_grasp_info_simple with the driver's FK pose).
+        of the framework generates (fill them with your detector, or implement the
+        VisionMixin projection seam _project_pixel_to_base_raw — see piper/api.py).
         """
 
         __IMPORTS__
@@ -1966,7 +1960,7 @@ def render_yaml_joint_ik(spec: Spec) -> str:
             "# ---- 检测 (手眼标定+检测服务; 未标定前视觉工具是诚实占位) ----",
             "z_correction_mm: 0.0",
             "grasp_z_offset_mm: -25.0",
-            "chip_thickness_mm: 75.0",
+            "place_z_offset_mm: 75.0",
             'detector_url: "http://127.0.0.1:8114"',
             "# calib_path: calib.json",
         ]

@@ -583,8 +583,9 @@ class KinematicArmDriver:
     # ----------------------------------------------------------- vision (forwarded)
     # Camera / hand-eye calibration live on the transport (they are not part of
     # the kinematics). The driver forwards the CameraDriver + VisionDriver surface
-    # so the existing eye-in-hand helpers (perception.vision.default_*) work when
-    # the transport carries a camera, and read as "absent" (None) otherwise.
+    # so VisionMixin's shared grasp pipeline (via the _project_pixel_to_base_raw
+    # seam) works when the transport carries a camera, and reads as "absent"
+    # (None) otherwise.
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         grab = getattr(self._transport, "grab_frames", None)
         return grab() if callable(grab) else None
