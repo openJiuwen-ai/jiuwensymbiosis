@@ -353,7 +353,11 @@ class So101Api(
 
     def _grasp_debug_extra(self) -> dict:
         """SO-101 eye-to-hand debug marker."""
-        return {"eye_to_hand": True, "frame_model": "so101_eye_to_hand_T_base_cam"}
+        return {
+            "api_class": self.__class__.__name__,
+            "eye_to_hand": True,
+            "frame_model": "so101_eye_to_hand_T_base_cam",
+        }
 
     def get_grasp_tracking_sample(self, object_name: str) -> dict[str, Any]:
         """Private SO101 fast-path sample including mask/depth-quality metadata.

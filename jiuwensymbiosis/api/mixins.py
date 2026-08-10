@@ -305,8 +305,12 @@ class VisionMixin:
         return SimpleNamespace(x=p.x, y=p.y, z=p.z, r=getattr(p, "rz", getattr(p, "r", 0.0)))
 
     def _grasp_debug_extra(self) -> dict:
-        """Adapter-specific fields merged into the grasp-debug JSON. Default none."""
-        return {}
+        """Adapter-specific fields merged into the grasp-debug JSON.
+
+        Base default records the concrete API class; adapters override to add
+        frame-model / live-pose context.
+        """
+        return {"api_class": self.__class__.__name__}
 
     @robot_tool(
         desc="One-shot: detect `object_name` in the live frame, project "
