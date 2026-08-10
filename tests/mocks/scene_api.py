@@ -49,7 +49,7 @@ class SceneMockApi(MockApi):
     and back-project through the scene's intrinsics + ``tf_base_cam``.
     """
 
-    def __init__(self, env, *, grasp_z_offset_mm: float = 0.0, chip_thickness_mm: float = 5.0) -> None:
+    def __init__(self, env, *, grasp_z_offset_mm: float = 0.0, place_z_offset_mm: float = 5.0) -> None:
         super().__init__(env)
         scene = getattr(env, "_scene", None)
         if scene is None:
@@ -58,7 +58,7 @@ class SceneMockApi(MockApi):
             )
         self._scene: MockScene = scene
         self._grasp_z_offset_mm = grasp_z_offset_mm
-        self._chip_thickness_mm = chip_thickness_mm
+        self._place_z_offset_mm = place_z_offset_mm
 
     @robot_tool(
         desc="Detect object_name in the scene and return grasp/place geometry. "
@@ -91,7 +91,7 @@ class SceneMockApi(MockApi):
         z_floor = self.env.z_min_safe
         if z_floor is not None:
             grasp_z = max(grasp_z, float(z_floor))
-        place_z = top_z + self._chip_thickness_mm
+        place_z = top_z + self._place_z_offset_mm
         return {
             "ok": True,
             "object": object_name,

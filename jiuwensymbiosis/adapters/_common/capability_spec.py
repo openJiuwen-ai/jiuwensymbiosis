@@ -19,8 +19,11 @@ from __future__ import annotations
 # Mixin → its still-abstract methods (the ones that ``raise NotImplementedError``
 # in api/mixins.py). Only these have no working default; the rest delegate to the
 # Env verbs, so NOT overriding them is normal and must not be flagged.
+# ``get_grasp_info_simple`` / ``pixel_to_base_xyz`` are now COMPLETE VisionMixin
+# defaults built on the ``_project_pixel_to_base_raw`` projection seam, so an
+# adapter must override only that seam plus ``analyze_scene``.
 MIXIN_ABSTRACT_METHODS: dict[str, list[str]] = {
-    "VisionMixin": ["get_grasp_info_simple", "pixel_to_base_xyz", "analyze_scene"],
+    "VisionMixin": ["_project_pixel_to_base_raw", "analyze_scene"],
 }
 
 # Capability → low-level driver members the Env/Api delegate to (structural

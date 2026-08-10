@@ -345,130 +345,45 @@ def apply_xy_correction(
 
 
 # ---------------------------------------------------------------------------
-# Default eye-in-hand implementations.
+# Shared grasp/place geometry.
 #
-# ``get_grasp_info_simple`` / ``pixel_to_base_xyz`` cannot have a *generic*
-# default on the mixin because they depend on the adapter's hand-eye
-# calibration — but the ~130-line pipeline (grab → detect → centroid → depth
-# → project → xy-correct → grasp/place geometry) is identical for every
-# eye-in-hand camera robot. These helpers factor it out; an adapter only
-# supplies:
-#   * its detector ``seg_fn`` (lazy-bound like PiperApi._ensure_detector),
-#   * a ``pose_to_tf(flange_pose) -> 4x4`` callback (the one truly vendor-
-#     specific piece: how the vendor's flange pose becomes a base-frame
-#     transform; Piper uses FlangePose(...).to_tf_base_flange()).
-# and reads calibration (``tf_flange_cam`` / ``intrinsics`` / ``calibration`` /
-# ``grab_frames``) straight off ``api.env.low_level`` — already a VisionDriver
-# Protocol surface.
+# The grab → detect → project → correct → grasp/place pipeline is identical for
+# every camera robot; only the "pixel + depth → base XYZ" projection differs
+# (eye-in-hand reads the live flange, eye-to-hand uses a constant T_base_cam).
+# ``VisionMixin`` owns the pipeline and delegates that one step to a per-adapter
+# ``_project_pixel_to_base_raw`` seam that returns a RAW (uncorrected) base XYZ.
+# This function turns that raw projection into the final result, so xy/z
+# correction and grasp/place heights are computed in exactly one place.
 # ---------------------------------------------------------------------------
 
 
-def _resolve_intrinsics(ll: Any) -> np.ndarray | None:
-    """Intrinsics from calibration (preferred) else live camera."""
-    calib = getattr(ll, "calibration", None)
-    intrinsics = calib.get("intrinsics") if calib is not None else None
-    if intrinsics is None:
-        intrinsics = getattr(ll, "intrinsics", None)
-    return intrinsics
-
-
-def default_pixel_to_base_xyz(
-    api: Any, u: float, v: float, depth_m: float, *, pose_to_tf: Callable[[Any], np.ndarray]
-) -> dict:
-    """Back-project (u, v, depth_m) → base-frame XYZ (mm) via eye-in-hand math.
-
-    Reads ``tf_flange_cam`` / ``intrinsics`` from ``api.env.low_level``; applies
-    the calibration's ``xy_transform``/``xy_correction_mm`` when present.
-    ``pose_to_tf`` converts the env's vendor flange pose to a 4x4 base←flange
-    transform (the one vendor-specific step).
-    """
-    from jiuwensymbiosis.utils.geometry import (
-        apply_transform,
-        pixel_and_depth_to_camera_xyz,
-    )
-
-    ll = api.env.low_level
-    if ll.tf_flange_cam is None:
-        raise RuntimeError("pixel_to_base_xyz needs a loaded calibration (set calib_path in YAML).")
-    intrinsics = _resolve_intrinsics(ll)
-    if intrinsics is None:
-        raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
-    tf_base_flange = pose_to_tf(api.env.get_flange_pose())
-    tf_base_cam = tf_base_flange @ ll.tf_flange_cam
-    xyz = apply_transform(tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics))
-    calib = getattr(ll, "calibration", None)
-    if calib is not None:
-        xyz, _desc = apply_xy_correction(
-            np.asarray(xyz, dtype=np.float64),
-            xy_transform=calib.get("xy_transform"),
-            xy_correction_mm=calib.get("xy_correction_mm"),
-        )
-    return {"x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2])}
-
-
-def default_get_grasp_info_simple(
-    api: Any,
-    object_name: str,
+def build_grasp_result(
     *,
-    seg_fn: Callable[..., list[dict]] | None,
-    pose_to_tf: Callable[[Any], np.ndarray],
-    z_correction_mm: float = 0.0,
-    grasp_z_offset_mm: float = -25.0,
-    chip_thickness_mm: float = 75.0,
-    score_threshold: float = 0.05,
-) -> dict:
-    """Default ``get_grasp_info_simple`` for an eye-in-hand camera robot.
+    object_name: str,
+    best: dict,
+    u: float,
+    v: float,
+    depth_m: float,
+    xyz_raw: np.ndarray,
+    calib: dict | None,
+    z_correction_mm: float,
+    grasp_z_offset_mm: float,
+    place_z_offset_mm: float,
+    z_floor: float | None,
+    floor_margin_mm: float = 0.0,
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Turn a raw base-frame projection into the deterministic grasp/place result.
 
-    Runs the standard detect → centroid → depth → back-project → xy-correct →
-    grasp/place-geometry pipeline, returning the same shape Piper does:
-    ``{ok, object, position, grasp_z, grasp_position, place_z, place_position,
-    score, pixel_uv, depth_m}``. On failure returns a ``GraspFailure`` whose
-    ``reason`` is drawn from ``DETECTION_REASONS``.
+    Applies xy correction (multi-point ``xy_transform`` preferred over legacy
+    ``xy_correction_mm``) then the constant ``z_correction_mm``, and computes the
+    ready-to-execute heights so the agent never does z math:
+      * ``grasp_z = max(top + grasp_z_offset_mm, z_floor + floor_margin_mm)``
+      * ``place_z = top + place_z_offset_mm``
 
-    Args:
-      api: an Api-like object exposing ``env`` (with ``low_level`` a
-        VisionDriver and ``get_flange_pose``/``z_min_safe``).
-      seg_fn: the detector segmentation callable (``None`` → detector_unavailable).
-      pose_to_tf: vendor flange-pose → 4x4 base←flange transform.
-      z_correction_mm / grasp_z_offset_mm / chip_thickness_mm: grasp geometry
-        constants (see PiperConfig for semantics).
+    Returns ``(result, xyz_final)`` — ``result`` is a ``GraspResult``-shaped dict;
+    ``xyz_final`` lets the caller dump debug / tracking data against both the raw
+    and corrected XYZ.
     """
-    from types import SimpleNamespace
-
-    from jiuwensymbiosis.utils.geometry import (
-        apply_transform,
-        pixel_and_depth_to_camera_xyz,
-    )
-
-    ll = api.env.low_level
-    frames = ll.grab_frames()
-    if frames is None:
-        return {"ok": False, "reason": "no_camera", "object": object_name}
-    rgb, depth_img_m = frames
-
-    det = detect_and_centroid(
-        rgb=rgb,
-        depth_img_m=depth_img_m,
-        seg_fn=seg_fn,
-        object_name=object_name,
-        tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
-        score_threshold=score_threshold,
-    )
-    if not det.get("ok"):
-        return det
-
-    if ll.tf_flange_cam is None:
-        raise RuntimeError("get_grasp_info_simple needs a loaded calibration (set calib_path in YAML).")
-    intrinsics = _resolve_intrinsics(ll)
-    if intrinsics is None:
-        raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
-
-    u, v, depth_m = det["u"], det["v"], det["depth_m"]
-    tf_base_flange = pose_to_tf(api.env.get_flange_pose())
-    tf_base_cam = tf_base_flange @ ll.tf_flange_cam
-    xyz_raw = apply_transform(tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics))
-
-    calib = getattr(ll, "calibration", None)
     xy_transform = calib.get("xy_transform") if calib is not None else None
     xy_corr = calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
     xyz_final, _corr_desc = apply_xy_correction(xyz_raw, xy_transform=xy_transform, xy_correction_mm=xy_corr)
@@ -477,14 +392,12 @@ def default_get_grasp_info_simple(
         xyz_final[2] += z_correction_mm
 
     top_z = float(xyz_final[2])
-    z_floor = api.env.z_min_safe
     grasp_z = top_z + grasp_z_offset_mm
     if z_floor is not None:
-        grasp_z = max(grasp_z, float(z_floor))
-    place_z = top_z + chip_thickness_mm
+        grasp_z = max(grasp_z, float(z_floor) + float(floor_margin_mm))
+    place_z = top_z + place_z_offset_mm
     x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
-    best = det["best"]
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "object": object_name,
         "position": [x_f, y_f, top_z],
@@ -496,6 +409,7 @@ def default_get_grasp_info_simple(
         "pixel_uv": [u, v],
         "depth_m": depth_m,
     }
+    return result, np.asarray(xyz_final, dtype=np.float64)
 
 
 def _default_debug_dir() -> Path:

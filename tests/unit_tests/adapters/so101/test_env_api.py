@@ -291,8 +291,9 @@ class TestSo101ApiDelegates:
                 "box": [2.0, 2.0, 6.0, 6.0],
             }
         ]
+        # dump_grasp_debug is now invoked from the shared VisionMixin pipeline.
         monkeypatch.setattr(
-            "jiuwensymbiosis.adapters.so101.api.dump_grasp_debug",
+            "jiuwensymbiosis.api.mixins.dump_grasp_debug",
             lambda **_kwargs: None,
         )
         tracking_metadata = MagicMock(wraps=api._tracking_metadata)

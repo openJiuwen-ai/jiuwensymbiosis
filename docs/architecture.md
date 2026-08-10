@@ -115,15 +115,14 @@ class RobotApi(MotionMixin, SuctionMixin, VisionMixin, BaseRobotApi):
 
 `api/decorators.py` 的 `robot_tool` 给方法挂上 `ToolMeta`（名称、描述、从类型注解自动生成的 JSON Schema、能力、标签）。重写方法**自动继承**父类的装饰器元数据——想定制描述再重装饰即可。
 
-### 仅有 3 个方法没有默认实现
+### 视觉：只需实现一个相机坐标系到基座坐标系的投影函数
 
-框架已提供大部分默认实现，剩下必须由适配作者实现的是依赖具体硬件的视觉方法：
+框架已提供大部分默认实现。`get_grasp_info_simple` / `pixel_to_base_xyz` / `get_image` 现在都是 `VisionMixin` 的**完整默认实现**——检测→质心→投影→矫正→抓放几何的整条流程都在 Mixin 里。适配作者对视觉只需提供两样：
 
-- `get_grasp_info_simple` —— 一次检测 + 像素到 base XYZ 投影
-- `pixel_to_base_xyz` —— 像素重投影（依赖手眼标定）
-- `analyze_scene` —— 场景分析（依赖检测器客户端）
+- `_project_pixel_to_base_raw(u, v, depth_m) -> base 系裸投影 XYZ` —— **唯一 per-vendor 的一步**：eye-in-hand 读实时 flange（`tf_base_flange @ tf_flange_cam`），eye-to-hand 用常量 `tf_base_cam`；**不做任何 xy/z 矫正**（共享几何负责）。这一步吸收了 eye-in-hand 与 eye-to-hand 的全部差异。
+- `analyze_scene` —— 场景分析（依赖检测器客户端），仍在 Mixin 层 `raise NotImplementedError`。
 
-这 3 个在 Mixin 层 `raise NotImplementedError`，因为它们依赖具体机器人的检测器与手眼标定矩阵，无法给出**mixin 级**通用默认。但 eye-in-hand 相机机器人的检测→质心→投影→矫正→抓放几何流程是通用的，`perception/vision.py` 提供 `default_get_grasp_info_simple` / `default_pixel_to_base_xyz` 帮助函数把它抽出——适配作者只需提供检测器 `seg_fn` 和一个 `pose_to_tf(flange_pose) -> 4x4` 回调（把厂商 flange 位姿转成 base←flange 变换，这是唯一真正 per-vendor 的几何步骤），标定数据从 `env.low_level`（`tf_flange_cam` / `intrinsics` / `calibration` / `grab_frames`）读取。`analyze_scene` 仍需 per-adapter 实现。
+标定数据从 `env.low_level`（`tf_flange_cam` / `tf_base_cam` / `intrinsics` / `calibration` / `grab_frames`）读取；共享几何（xy/z 矫正 + 确定化 grasp/place 高度）由 `perception/vision.build_grasp_result` 统一完成，所以 z 数学只在一处发生。检测器绑定 `_ensure_detector` 也已上移到 Mixin。
 
 ### 已有的能力 Mixin
 
@@ -376,7 +375,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot 
 2. **填 YAML** `config_template.yaml`（CAN 口、夹爪行程、Z 安全下限、工作区边界……）
 3. **写 `lowlevel.py`** —— 唯一的硬件逻辑：把厂商 SDK 翻译成 `move_to_pose_blocking(pose, ...)` / `set_gripper` / `grab_frames` 等动词
 4. **写 `env.py`** —— 声明 `capabilities` frozenset，暴露 4 个属性（从模板填值即可）
-5. **写 `api.py`** —— 多继承需要的 Mixin；**只有当本体几何与默认假设（tip==flange）不符时**才重写（如 Piper 的倾斜工具换算）；eye-in-hand 视觉可委托 `_common/vision.default_get_grasp_info_simple` / `default_pixel_to_base_xyz`
+5. **写 `api.py`** —— 多继承需要的 Mixin；**只有当本体几何与默认假设（tip==flange）不符时**才重写（如 Piper 的倾斜工具换算）；视觉只需实现投影函数 `_project_pixel_to_base_raw`（`get_grasp_info_simple` / `pixel_to_base_xyz` 由 `VisionMixin` 提供）
 6. **写 `session.py`** —— `make_builder(...)` 一行
 7. **静态校验** `python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.acme`
 8. **运行时冒烟** `python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.acme` —— 用可连接的 mock env 驱动每个 `@robot_tool`，断言不崩、返回可序列化
