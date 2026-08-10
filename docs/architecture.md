@@ -115,7 +115,7 @@ class RobotApi(MotionMixin, SuctionMixin, VisionMixin, BaseRobotApi):
 
 `api/decorators.py` 的 `robot_tool` 给方法挂上 `ToolMeta`（名称、描述、从类型注解自动生成的 JSON Schema、能力、标签）。重写方法**自动继承**父类的装饰器元数据——想定制描述再重装饰即可。
 
-### 视觉：只需实现一个投影缝
+### 视觉：只需实现一个相机坐标系到基座坐标系的投影函数
 
 框架已提供大部分默认实现。`get_grasp_info_simple` / `pixel_to_base_xyz` / `get_image` 现在都是 `VisionMixin` 的**完整默认实现**——检测→质心→投影→矫正→抓放几何的整条流程都在 Mixin 里。适配作者对视觉只需提供两样：
 
@@ -375,7 +375,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot 
 2. **填 YAML** `config_template.yaml`（CAN 口、夹爪行程、Z 安全下限、工作区边界……）
 3. **写 `lowlevel.py`** —— 唯一的硬件逻辑：把厂商 SDK 翻译成 `move_to_pose_blocking(pose, ...)` / `set_gripper` / `grab_frames` 等动词
 4. **写 `env.py`** —— 声明 `capabilities` frozenset，暴露 4 个属性（从模板填值即可）
-5. **写 `api.py`** —— 多继承需要的 Mixin；**只有当本体几何与默认假设（tip==flange）不符时**才重写（如 Piper 的倾斜工具换算）；视觉只需实现投影缝 `_project_pixel_to_base_raw`（`get_grasp_info_simple` / `pixel_to_base_xyz` 由 `VisionMixin` 提供）
+5. **写 `api.py`** —— 多继承需要的 Mixin；**只有当本体几何与默认假设（tip==flange）不符时**才重写（如 Piper 的倾斜工具换算）；视觉只需实现投影函数 `_project_pixel_to_base_raw`（`get_grasp_info_simple` / `pixel_to_base_xyz` 由 `VisionMixin` 提供）
 6. **写 `session.py`** —— `make_builder(...)` 一行
 7. **静态校验** `python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.acme`
 8. **运行时冒烟** `python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.acme` —— 用可连接的 mock env 驱动每个 `@robot_tool`，断言不崩、返回可序列化

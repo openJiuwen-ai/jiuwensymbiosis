@@ -117,7 +117,7 @@ capability   RobotDriver  实现观测      返回 ok/error   必填/选填     
 > 运动/末端动词由 `BaseRobotEnv` 默认委托给驱动。Api（步骤 4）的运动/抓取/取图方法由 Mixin
 > 默认委托，只需覆写带专属几何的方法（`get_pose`/`goto_xyzr`）；视觉方面
 > `get_grasp_info_simple` / `pixel_to_base_xyz` 已由 `VisionMixin` 完整实现，只需补一个
-> 投影缝 `_project_pixel_to_base_raw`（eye-in-hand / eye-to-hand 的差异都在这里）。
+> 投影函数 `_project_pixel_to_base_raw`（eye-in-hand / eye-to-hand 的差异都在这里）。
 
 每步详细说明见后续章节。
 
