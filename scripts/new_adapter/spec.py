@@ -13,8 +13,8 @@ from __future__ import annotations
 import keyword
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 # Shared with ``main.py`` — same logger object, configured once in ``main()``
 # with a raw ``%(message)s`` handler so wizard output looks exactly like print.
@@ -27,7 +27,7 @@ TOOL_GEOMETRIES = ("straight_down", "tilted")
 CONNECTIONS = ("can", "serial", "tcp", "usb", "ros", "custom")
 
 # The motion backend is the primary axis that decides how Cartesian motion is
-# produced (see docs/hardware-porting-guide.md):
+# produced (see docs/zh/tutorial/02-build-first-adapter.md):
 #   sdk_cartesian — the vendor SDK already exposes move_linear(pose); the driver
 #                   is a thin wrapper (the historical default, e.g. an arm whose
 #                   firmware does the IK).
@@ -99,7 +99,7 @@ _HELP_JOINT_COUNT = """\
 与「对外位姿维度」解耦：无论几个关节，对外仍是 x,y,z + rx,ry,rz 六维位姿。"""
 
 
-def validate_name(name: str) -> Optional[str]:
+def validate_name(name: str) -> str | None:
     """Return an error string if ``name`` is not a usable package name, else None."""
     if not name:
         return "名字不能为空"
@@ -205,7 +205,7 @@ class Spec:
         """Placeholder joint names for a joint_ik skeleton (user edits to real ones)."""
         return [f"joint_{i}" for i in range(1, max(1, self.joint_count) + 1)]
 
-    def normalized(self) -> "Spec":
+    def normalized(self) -> Spec:
         """Resolve implied flags and derive the orthogonal-axis defaults."""
         if self.detection:
             self.camera = True
@@ -240,8 +240,8 @@ def _show_help(text: str) -> None:
 def _ask_str(
     prompt: str,
     default: str,
-    validate: Optional[Callable[[str], Optional[str]]] = None,
-    help_text: Optional[str] = None,
+    validate: Callable[[str], str | None] | None = None,
+    help_text: str | None = None,
 ) -> str:
     while True:
         raw = input(f"{prompt} [{default}]: ").strip()
@@ -257,7 +257,7 @@ def _ask_str(
         return value
 
 
-def _ask_bool(prompt: str, default: bool, help_text: Optional[str] = None) -> bool:
+def _ask_bool(prompt: str, default: bool, help_text: str | None = None) -> bool:
     hint = "Y/n" if default else "y/N"
     suffix = "（或 ? 看说明）" if help_text else ""
     while True:
@@ -274,9 +274,7 @@ def _ask_bool(prompt: str, default: bool, help_text: Optional[str] = None) -> bo
         logger.info(f"  ✗ 请输入 y 或 n{suffix}")
 
 
-def _ask_choice(
-    prompt: str, choices: tuple[str, ...], default: str, help_text: Optional[str] = None
-) -> str:
+def _ask_choice(prompt: str, choices: tuple[str, ...], default: str, help_text: str | None = None) -> str:
     options = " / ".join(f"[{c}]" if c == default else c for c in choices)
     suffix = "（或 ? 看说明）" if help_text else ""
     while True:
@@ -354,12 +352,8 @@ def ask_interactive() -> Spec:
         "none",
         help_text=_HELP_EE,
     )
-    detection = _ask_bool(
-        "需要自然语言目标检测吗？(需检测服务+手眼标定)", False, help_text=_HELP_DETECTION
-    )
-    camera = (
-        True if detection else _ask_bool("有相机可取 RGB 图像吗？", False, help_text=_HELP_CAMERA)
-    )
+    detection = _ask_bool("需要自然语言目标检测吗？(需检测服务+手眼标定)", False, help_text=_HELP_DETECTION)
+    camera = True if detection else _ask_bool("有相机可取 RGB 图像吗？", False, help_text=_HELP_CAMERA)
     tilt = _ask_bool("工具是垂直向下安装的吗？(否=倾斜/有偏移几何)", True, help_text=_HELP_TILT)
     tool_geometry = "straight_down" if tilt else "tilted"
     connection = _ask_choice("硬件连接方式", CONNECTIONS, "can", help_text=_HELP_CONNECTION)

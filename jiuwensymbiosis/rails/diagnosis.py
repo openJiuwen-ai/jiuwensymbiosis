@@ -3,7 +3,7 @@
 
 """DiagnosisRail — inject a compact failure diagnosis into the next LLM turn.
 
-Online half of the Trace Feedback Loop (``docs/trace-feedback-loop-design.md``
+Online half of the Trace Feedback Loop (``design/trace-feedback-loop.md``
 §4.2): on a failed step, stage a message with the current params, a small
 causal chain, and system state (recovery result / pose), then flush it before
 the next model call. Best-effort — a diagnosis failure never becomes a tool

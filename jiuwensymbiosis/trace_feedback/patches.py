@@ -3,7 +3,7 @@
 
 """SkillPatchProposal generation (P3 of the Trace Feedback Loop).
 
-``docs/trace-feedback-loop-design.md`` §4.4: turn ``FailureCluster``s into
+``design/trace-feedback-loop.md``: turn ``FailureCluster``s into
 human-review SKILL.md patch proposals. First pass is deterministic — no LLM,
 no SKILL.md parsing. ``target_skill`` is always ``"<unresolved>"``; skill
 matching is deferred to a later phase.

@@ -3,7 +3,7 @@
 
 """Trace Feedback Loop offline analysis (P2/P3).
 
-See ``docs/trace-feedback-loop-design.md`` §3.3 / §4.4. Loads trace JSON written
+See ``design/trace-feedback-loop.md``. Loads trace JSON written
 by ``TraceRail``, clusters failed steps by normalised signature, and renders
 failure reports + skill patch proposals for human review.
 """

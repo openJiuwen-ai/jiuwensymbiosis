@@ -3,7 +3,7 @@
 
 """Render failure clusters and patch proposals as JSON / markdown.
 
-P2/P3 report output of ``docs/trace-feedback-loop-design.md`` §4.3. All renderers
+Offline report output from ``design/trace-feedback-loop.md``. All renderers
 are pure functions over already-built data — no re-analysis, no file reads — so
 they can be snapshotted or piped to any writer.
 """

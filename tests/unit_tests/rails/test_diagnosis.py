@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for DiagnosisRail — see ``docs/trace-feedback-loop-design.md`` §7.1."""
+"""Tests for DiagnosisRail — see ``design/trace-feedback-loop.md``."""
 
 from __future__ import annotations
 

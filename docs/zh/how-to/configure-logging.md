@@ -1,8 +1,8 @@
-# 日志使用指南（`jiuwensymbiosis/utils/logging.py`）
+# 配置和使用日志
+
+> 类别：How-to。内容以治理前原始文档为基线重组。
 
 本模块是整个 jiuwensymbiosis 框架**唯一的日志配置入口**：一处 `configure_logging` 统一格式 + 可选文件输出，一处 `get_logger` 呼出，外加一个把关键日志推入执行轨迹的 `TraceLogHandler`。
-
----
 
 ## 一、快速上手
 
@@ -84,7 +84,7 @@ YAML → raw["agent"] → RobotAgentConfig.from_dict(raw["agent"])   # piper_pic
 ```
 
 - `from_dict` 用 `cls(**data)` 原样透传，YAML 里写什么 `log_level`/`log_dir` 就用什么。
-- **未知键会抛 `TypeError`**（[agent/config.py](../jiuwensymbiosis/agent/config.py) `RobotAgentConfig.from_dict`）——拼错（如 `enable_trace` 写成 `enable_trace`）会在加载期立刻报错，而不是被静默忽略。
+- **未知键会抛 `TypeError`**（[agent/config.py](../../../jiuwensymbiosis/agent/config.py) `RobotAgentConfig.from_dict`）——拼错（如 `enable_trace` 写成 `enable_trace`）会在加载期立刻报错，而不是被静默忽略。
 
 `log_level` / `log_dir` 字段：
 
@@ -128,13 +128,13 @@ python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock --de
 
 ### 2.3 与执行轨迹（trace）联动
 
-日志还能进执行轨迹（`enable_tracing` 开启时）。相关配置项在 `agent:` 块里（详见 [docs/trace.md](trace.md)）：
+日志还能进执行轨迹（`enable_tracing` 开启时）。相关配置项在 `agent:` 块里（详见[执行轨迹参考](../reference/tracing.md)）：
 
 ```yaml
 agent:
   enable_tracing: true                 # 开启 TraceRail，记录每轮工具调用
   trace_capture_loggers: ["jiuwensymbiosis"]   # 哪些 logger 的 WARNING+ 进 trace
-  # capture_log_level 目前固定 WARNING（见 §三.2），不开放配置
+  # capture_log_level 目前固定 WARNING（见 §三.3），不开放配置
 ```
 
 ---
@@ -155,7 +155,8 @@ configure_logging(level="INFO", log_dir=None)               # 仅控制台（关
 
 **幂等机制**：每个由本模块创建的 handler 都被打上 `_OWNED_TAG = "_jiuwensymbiosis_owned"` 标记。重复调用时：
 - StreamHandler：存在则只更新 formatter，不新增。
-- FileHandler：`log_dir` 从无→有则新增；从有→无则移除并关闭旧的；有→换路径会先移除旧的再建新的。
+- FileHandler：`log_dir` 从无→有则新增，从有→无则移除并关闭旧的；从一个非空路径直接换到另一个非空路径
+  不会替换已有 handler。需要先调用一次 `configure_logging(log_dir=None)`，再传入新路径，或重启进程。
 
 ```
 configure_logging(level, log_dir)
@@ -188,9 +189,9 @@ logging.getLogger("jiuwensymbiosis").addHandler(handler)
 # 此后 jiuwensymbiosis.* 下任何 logger.warning(...) 都会进入 trace
 ```
 
-- **捕获级别固定 `WARNING`**：在 `build_robot_agent` 里硬编码（`capture_log_level=_logging.WARNING`），不开放配置。理由见 §四.3。
+- **捕获级别固定 `WARNING`**：在 `build_robot_agent` 里硬编码（`capture_log_level=_logging.WARNING`），不开放配置。理由见[日志集成设计](../../../design/logging.md)。
 - **emit 行为**：`sink is None` 时 no-op（可提前构造）；否则组装 `{logger, level, msg, ts}` 调 `sink.record_log_event(...)`；sink 异常被精确类型 `(AttributeError, TypeError, ValueError)` 吞掉——日志 handler 绝不能抛。
-- **生命周期**由 `TraceRail` 管理（详见 [docs/trace.md](trace.md)）：`set_sink(sink)` 切换 sink（每个 invoke 开始时绑回、结束后置 None）。
+- **生命周期**由 `TraceRail` 管理（详见[执行轨迹内部设计](../../../design/tracing.md)）：`set_sink(sink)` 切换 sink（每个 invoke 开始时绑回、结束后置 None）。
 
 ### 3.4 常量
 
@@ -215,72 +216,18 @@ root.handlers = [
 这保证了：
 - `configure_logging` 不会误删 pytest 的日志捕获 handler。
 - 重复调用不会堆叠 owned handler。
-- `log_dir` 切换时只动 owned FileHandler。
+- `log_dir` 启停时只动 owned FileHandler；非空路径之间的切换需先显式关闭旧 handler。
 
 ---
 
-## 四、集成点与设计决策
-
-### 4.1 `build_robot_agent` 集成
-
-[agent/builder.py](../jiuwensymbiosis/agent/builder.py) 在构造开头调一次：
-
-```python
-configure_logging(level=config.log_level, log_dir=config.log_dir)
-```
-
-tracing 开启时还会挂 `TraceLogHandler`（§3.3）。
-
-### 4.2 Piper 命令日志
-
-Piper 驱动的 `_attach_cmd_log_handler`（[adapters/piper/lowlevel.py](../jiuwensymbiosis/adapters/piper/lowlevel.py)）每运行一个时间戳子目录，复用 `configure_logging` 的统一格式 + 同款 formatter，**额外**挂一个 per-run 的 `commands.log` 文件 handler：
-
-```python
-from jiuwensymbiosis.utils.logging import _OWNED_TAG, DEFAULT_FMT, configure_logging
-
-configure_logging(level="DEBUG", log_dir=None)   # 统一控制台 + DEBUG
-handler = logging.FileHandler(path, mode="w", encoding="utf-8")
-handler.setFormatter(logging.Formatter(DEFAULT_FMT, datefmt="%H:%M:%S"))
-setattr(handler, _OWNED_TAG, True)   # 标记为 owned，格式与全框架一致
-logger.addHandler(handler)
-```
-
-**保留的向后兼容环境变量**：
-
-| 环境变量 | 作用 |
-|----------|------|
-| `JIUWEN_PIPER_CMD_LOG=0` | 禁用 Piper 命令日志 |
-| `JIUWEN_PIPER_CMD_LOG_DIR` / `JIUWEN_CMD_LOG_DIR` | 覆盖命令日志输出目录（默认 `./logs/motion`） |
-
-命令日志默认写到 `./logs/motion/<stamp>/commands.log`，与框架日志同处 `logs/` 根目录（openjiuwen 日志因实现原因落在 `logs/logs/`，彼此独立）；`commands.log` 文件名与每运行一个时间戳子目录的结构不变。
-
-### 4.3 为什么 `TraceLogHandler` 默认 `WARNING`？
-
-`INFO` 级别在机器人控制循环里量很大（每步运动、每次检测都 log），全量进 trace 会淹没真正的关键信号。`WARNING`+ 聚焦"需要关注的异常"（home 失败、检测不可达、编码失败等）。目前捕获级别在 `build_robot_agent` 硬编码为 `WARNING`，未作为配置项开放。
-
-### 4.4 为什么 `jiuwensymbiosis.log` 只存我们自己的日志？
-
-`configure_logging` 把文件 handler 挂在 root logger 上，而 Python logging 的传播机制让**所有**子 logger（含 openjiuwen 用标准库打的那部分）的记录都冒泡到 root，被同一个文件 handler 接住。不加过滤的话，openjiuwen 初始化时的一大堆 `Registered parser ...` 会淹没我们的框架日志。
-
-`_FrameworkFilter` 只放行 `jiuwensymbiosis.*` 记录，解决这个噪声问题。设计取舍：
-
-- **只过滤文件、不过滤控制台**：文件是给人/工具按名空间检索的，要干净；控制台是调试时看的，openjiuwen 的初始化线索（如哪个 parser 注册了）有诊断价值，应保留全量。
-- **只挡标准库通道的 openjiuwen 日志**：openjiuwen 自有的日志后端（json/trace_id 那套，写 `logs/logs/run/jiuwen.log` 等）根本不经过 root logger，与我们的文件 handler 互不相干——所以过滤与否都不影响它，它一直落在自己的子目录里。
-
-### 4.5 为什么不用 `logging.config.dictConfig`？
-
-`dictConfig` 功能更强但更重，且对"幂等更新已有 handler 的 formatter"支持不直观。本模块用显式的 `_owned_handlers()` + 标记位实现幂等，逻辑更透明、更易测试。
-
----
-
-## 五、相关文件
+## 四、相关文件
 
 | 文件 | 角色 |
 |------|------|
-| [jiuwensymbiosis/utils/logging.py](../jiuwensymbiosis/utils/logging.py) | 本模块实现 |
-| [jiuwensymbiosis/utils/\_\_init\_\_.py](../jiuwensymbiosis/utils/__init__.py) | re-export `configure_logging` / `get_logger` / `TraceLogHandler` / `DEFAULT_FMT` |
-| [jiuwensymbiosis/agent/config.py](../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.log_level` / `log_dir` 字段 + `from_dict`（YAML 透传） |
-| [jiuwensymbiosis/agent/builder.py](../jiuwensymbiosis/agent/builder.py) | `build_robot_agent` 调 `configure_logging`；tracing 开启时挂 `TraceLogHandler` |
-| [examples/piper_pick_demo.py](../examples/piper_pick_demo.py) | `--debug` 覆盖 `log_level`；演示 YAML `agent:` 块加载链路 |
-| [jiuwensymbiosis/adapters/piper/lowlevel.py](../jiuwensymbiosis/adapters/piper/lowlevel.py) | Piper `_attach_cmd_log_handler` 复用 `configure_logging` |
-| [docs/trace.md](trace.md) | 执行轨迹设计文档（`TraceLogHandler` 的消费者） |
+| [jiuwensymbiosis/utils/logging.py](../../../jiuwensymbiosis/utils/logging.py) | 本模块实现 |
+| [jiuwensymbiosis/utils/\_\_init\_\_.py](../../../jiuwensymbiosis/utils/__init__.py) | re-export `configure_logging` / `get_logger` / `TraceLogHandler` / `DEFAULT_FMT` |
+| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.log_level` / `log_dir` 字段 + `from_dict`（YAML 透传） |
+| [jiuwensymbiosis/agent/builder.py](../../../jiuwensymbiosis/agent/builder.py) | `build_robot_agent` 调 `configure_logging`；tracing 开启时挂 `TraceLogHandler` |
+| [examples/piper_pick_demo.py](../../../examples/piper_pick_demo.py) | `--debug` 覆盖 `log_level`；演示 YAML `agent:` 块加载链路 |
+| [jiuwensymbiosis/adapters/piper/lowlevel.py](../../../jiuwensymbiosis/adapters/piper/lowlevel.py) | Piper `_attach_cmd_log_handler` 复用 `configure_logging` |
+| [执行轨迹参考](../reference/tracing.md) | `TraceLogHandler` 的消费者与数据格式 |

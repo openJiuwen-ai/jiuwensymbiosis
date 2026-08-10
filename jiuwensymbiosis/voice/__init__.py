@@ -6,7 +6,7 @@
 Pipeline: microphone → wake word → ASR → ``on_command`` callback → TTS feedback.
 The callback hands transcribed text to :func:`jiuwensymbiosis.run_robot_task`, so
 the existing DeepAgent stays the decision-maker; this layer only adds the voice
-I/O. See ``docs/voice-control-integration-design.md``.
+I/O. See ``design/voice-control-integration.md``.
 
 Heavy/optional deps (funasr, sounddevice, soundfile, webrtcvad, ChatTTS) are
 imported lazily by the real backends; importing this package pulls in none of

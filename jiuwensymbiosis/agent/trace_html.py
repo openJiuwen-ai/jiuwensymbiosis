@@ -152,11 +152,11 @@ def _step_timeline(entry: dict) -> list[dict]:
 #
 # _LOGO_SRC is the logo <img> source — the official wordmark PNG, inlined as a
 # base64 data: URI so the rendered page stays a single self-contained HTML file
-# with zero external requests. The PNG ships at <repo>/docs/design/jiuwensymbiosis-
+# with zero external requests. The PNG ships at <repo>/docs/images/jiuwensymbiosis-
 # logo.png, resolved relative to this module so it works regardless of cwd. If
 # the file is missing the loader returns an empty string and the <img>'s onerror
 # swaps in _LOGO_SVG, so the header never shows a broken-image icon.
-_LOGO_PNG_LOCAL = Path(__file__).resolve().parents[2] / "docs" / "design" / "jiuwensymbiosis-logo.png"
+_LOGO_PNG_LOCAL = Path(__file__).resolve().parents[2] / "docs" / "images" / "jiuwensymbiosis-logo.png"
 
 
 def _load_logo_src() -> str:

@@ -187,7 +187,7 @@ def _run_voice(
     """语音模式：把 VoiceLoop 的 on_command 回调接到 run_robot_task。
 
     语音层是机器人无关的；这里是它与框架的唯一接缝（文本进、反馈出）。换 N2 时只换
-    session，本函数不变。详见 docs/voice-control-integration-design.md。
+    session，本函数不变。详见 design/voice-control-integration.md。
     """
     import numpy as np
 
@@ -314,7 +314,7 @@ def main() -> int:
         ),
     )
     p.add_argument("--debug", action="store_true")
-    # --- voice mode (语音前端；详见 docs/voice-control-integration-design.md) ---
+    # --- voice mode (语音前端；详见 design/voice-control-integration.md) ---
     p.add_argument(
         "--voice",
         action="store_true",

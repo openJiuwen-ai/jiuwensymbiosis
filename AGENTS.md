@@ -173,7 +173,8 @@ tests/
 scripts/validate_adapter.py  # Static compatibility checker for new adapters
 scripts/smoke_test_adapter.py # Runtime smoke test: drive each @robot_tool with MockEnv
 examples/                 # Runnable demos (piper_pick_demo)
-docs/                     # Deep-dive manuals: architecture.md, hardware-porting-guide.md, logging.md, trace.md
+docs/                     # Diátaxis docs: zh/en tutorial, how-to, reference, explanation
+design/                   # Internal design and migration records
 Makefile                  # check / fix / format / lint / type-check / test targets (conda env "jiuwensymbiosis" by default)
 ```
 

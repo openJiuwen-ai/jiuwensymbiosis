@@ -1,4 +1,4 @@
-# JiuwenSymbiosis 架构指南：一份代码适配所有机器人形态
+# JiuwenSymbiosis 架构指南
 
 > JiuwenSymbiosis 是基于 `openjiuwen` 构建的具身智能体（embodied agent）框架，设计目标是让**同一份代码库适配不同机器人形态**——SCARA、6-DoF、吸盘、夹爪等。其核心是**能力混入（Capability Mixin）组合**机制：新增一种硬件只需 1 个 YAML 配置和 6 个适配器文件，框架核心层无需修改。
 
@@ -6,27 +6,29 @@
 
 ## 一、七层架构总览
 
-数据流自上而下（命令）与自下而上（观测），7 层职责清晰：
+运行时命令沿 Agent → Rails → Tool → API → Env → Hardware 六层主链向下，观测与故障向上回流；Skill 作为第七个架构域从侧面指导 Agent：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Agent Layer       RobotSession + build_robot_agent()       │  入口
-├─────────────────────────────────────────────────────────────┤
-│  Safety Rails      SafetyRail / RecoveryRail / VisualFB Rail │  before_tool_call 拦截
-│  (平行观测)        TraceRail —— 可选，默认关，零开销        │  记录/落盘/回放（见 §七）
-├─────────────────────────────────────────────────────────────┤
-│  Tool Layer        build_robot_tools | RobotControlTool    │  LLM 可调用的工具
-│                    | InProcessCodeTool                       │
-├─────────────────────────────────────────────────────────────┤
-│  Skill Layer       SKILL.md (visual_pick / visual_place)    │  可复用技能文档
-├─────────────────────────────────────────────────────────────┤
-│  API Layer         MotionMixin / VisionMixin / SuctionMixin │  @robot_tool 方法
-├─────────────────────────────────────────────────────────────┤
-│  Env Layer         BaseRobotEnv —— 唯一的硬件契约           │  connect/disconnect/observe
-├─────────────────────────────────────────────────────────────┤
-│  Hardware Layer    XxxDriver —— 适配作者的主要工作          │  serial/CAN/socket
-└─────────────────────────────────────────────────────────────┘
-```
+![JiuwenSymbiosis 七层架构总览](../../images/architecture-layers.zh.svg)
+
+下面的模块关系图与概览使用同一结构：左侧六条泳道对应执行主链，右侧集中放置 Skill 指导面、Tool/API/Env 能力门控和可选视觉感知支路。Detector sidecar 不再作为孤立的“层外服务”，而是与 Detector client、GroundingDINO/SAM2 共同组成视觉支路，并同时标出 Session 的生命周期管理和 VisionMixin 的调用关系：
+
+![JiuwenSymbiosis 七层模块依赖图](../../images/architecture-dependencies.zh.svg)
+
+一次任务的先后关系单独用时序图表示。六层主链逐一对应为 Agent → Rails → Tool → API → Env → Hardware；Skill 指导、Vision sidecar 和 Trace 存储作为侧面参与者接入：
+
+![JiuwenSymbiosis 单次任务调用时序](../../images/architecture-task-sequence.zh.svg)
+
+关键调用路径：
+
+| 场景 | 调用关系 |
+|---|---|
+| 启动 | YAML → Adapter Config → `make_builder()` → Session(Env/Api/sidecars)；RobotAgentConfig + Session → `run_robot_task()` |
+| 普通工具调用 | Agent → Rail 前置检查 → Tool → Api Mixin/覆写 → Env 动词 → Driver → 硬件 |
+| 视觉工具调用 | `VisionMixin` → 相机帧 → 检测 sidecar → 适配器 RAW 投影 → 共享校正与抓放几何 |
+| 观测与诊断 | Driver/相机 → `RobotObservation`/工具结果 → VisualFeedback/Trace/Diagnosis → 下一轮模型或离线分析 |
+| 关闭 | `RobotSession.disconnect()` → Trace 收尾 → `Env.disconnect()` → `Driver.close()` → sidecar 退出 |
+
+当前框架与各内置适配器具体支持哪些能力，见[特性矩阵](../reference/feature-matrix.md)。
 
 下面自底向上逐层拆解，重点看**能力如何被声明、被门控、最终成为 LLM 工具**。
 
@@ -77,11 +79,13 @@ env 还需暴露 5 个只读属性供安全 rails 读取（**适配作者只需�
 |---|---|
 | `motion.cartesian` | base 坐标系下的 XYZ(R) 末端命令 |
 | `motion.joint` | 关节空间命令 |
+| `motion.servo` | 非阻塞实时伺服位姿命令 |
 | `grasp.suction` | 吸盘开/关 |
 | `grasp.parallel` | 平行夹爪开/合 |
 | `vision.camera` | 原始图像流可用 |
 | `vision.depth` | 深度流可用 |
 | `vision.detection` | 高层目标检测 |
+| `vision.eye_to_hand` | 相机固定在机器人基座或世界坐标系 |
 | `sorting.command` | 不透明分拣协议（无笛卡尔运动） |
 | `speech.tts` | 文本转语音可用 |
 
@@ -211,10 +215,11 @@ if tool_name == "robot_control":
 
 每次运动/抓取后抓一帧图像注入上下文，供 VLM **核验**结果。需 `vision.camera` 能力。
 
-**两阶段注入**（保证消息顺序合法）：`after_tool_call` 只抓帧 + 编码 + 暂存到 `ctx.extra["visual_feedback_pending"]`（`_PendingFrame` 结构体，带 `b64`/`tool_name`/`trace_step`/`frame_path`），不碰 `ModelContext`；`before_model_call`（此时 openjiuwen 已写完所有 `ToolMessage`）才 `await ctx.context.add_messages(UserMessage([text, image_url]))` flush 暂存帧。最终序列为 `assistant(tool_calls) → tool(result) → user(image) → 下一轮 model call`——若在 `after_tool_call` 直接注入，会变成 `… → user(image) → tool(result)`，OpenAI 风格 API 会拒绝（tool result 必须紧跟 tool call）。`trace_step` 在 `after_tool_call` 时从 `ctx.extra[_TRACE_RAIL_KEY]` 读 TraceRail 的 `trace.current_step` 暂存，flush 时显式传给 `record_rail_event_at_step(step=...)`，事件钉到正确 entry（多 tool calls 一轮迭代也能分别对位，不会全落到 `entries[-1]`）。`frame_path` 由 `frame_sink` 返回、同样暂存，flush 时进事件 `detail`（`{tool_name, frame_path}` 契约，见 `docs/trace.md`）。`after_invoke` 清理未被消费的暂存帧。注入失败永不逃逸（`_inject` 返回 bool，`except Exception` 吞掉；`CancelledError` 继承 `BaseException` 不被吞，正常传播），避免成功动作被框架误判为 tool failure。fast-path op-ctx 无 `ModelContext`，`_inject` 返回 False，帧仍经 `frame_sink` 落盘供回放。
+**两阶段注入**（保证消息顺序合法）：`after_tool_call` 只抓帧 + 编码 + 暂存到 `ctx.extra["visual_feedback_pending"]`（`_PendingFrame` 结构体，带 `b64`/`tool_name`/`trace_step`/`frame_path`），不碰 `ModelContext`；`before_model_call`（此时 openjiuwen 已写完所有 `ToolMessage`）才 `await ctx.context.add_messages(UserMessage([text, image_url]))` flush 暂存帧。最终序列为 `assistant(tool_calls) → tool(result) → user(image) → 下一轮 model call`——若在 `after_tool_call` 直接注入，会变成 `… → user(image) → tool(result)`，OpenAI 风格 API 会拒绝（tool result 必须紧跟 tool call）。`trace_step` 在 `after_tool_call` 时从 `ctx.extra[_TRACE_RAIL_KEY]` 读 TraceRail 的 `trace.current_step` 暂存，flush 时显式传给 `record_rail_event_at_step(step=...)`，事件钉到正确 entry（多 tool calls 一轮迭代也能分别对位，不会全落到 `entries[-1]`）。`frame_path` 由 `frame_sink` 返回、同样暂存，flush 时进事件 `detail`（`{tool_name, frame_path}` 契约，见[执行轨迹参考](../reference/tracing.md)）。`after_invoke` 清理未被消费的暂存帧。注入失败永不逃逸（`_inject` 返回 bool，`except Exception` 吞掉；`CancelledError` 继承 `BaseException` 不被吞，正常传播），避免成功动作被框架误判为 tool failure。fast-path op-ctx 无 `ModelContext`，`_inject` 返回 False，帧仍经 `frame_sink` 落盘供回放。
 
 > 另有 `SkillUseRail`（`agent/builder.py`），非安全 rail——仅 `enable_skill=True` 时附加，加载内置 `SKILL.md` 并附 `RobotControlTool`。详见第五章。
 > 还有平行观测 rail `TraceRail`，不拦截动作，只记录与回放，见下一节。
+> `DiagnosisRail` 同样不是安全 rail；它依赖 `TraceRail`，在失败后把诊断证据注入下一轮模型调用。完整用法见[Trace Feedback Loop](../how-to/use-trace-feedback.md)。
 
 > **并行工具调用默认关 + 运动硬校验**：`RobotAgentConfig.parallel_tool_calls` 默认 `False`，透传给 `create_deep_agent`（单机器人）与 `SubAgentConfig`（多机器人）。机器人运动本就顺序；且 openjiuwen 各 tool-call 的 `ctx.extra` 是共享 dict，并行会让所有按 `ctx.extra`/`trace.entries[-1]` 定位当前步的 rail 竞态。更进一步：`build_robot_agent` / `build_robot_agent_config` 在 `parallel_tool_calls=True` 且 env 含 `motion.*` / `grasp.*` 能力时直接 `raise ValueError`——运动/抓取不允许并行。非运动能力（如 `vision.*` / `speech.tts`）不受限，允许"视觉+语音"并行。**TraceRail 与并行互斥**：`parallel_tool_calls=True` 且 `enable_tracing=True` 也直接 `raise ValueError`——TraceRail 用共享 `ctx.extra` 的 `_TRACE_CURRENT_KEY` 定位当前步、用 `entries[-1]` 兼容旧 sink，两者在并行下都会钉到错步。
 
@@ -237,15 +242,15 @@ agent:
   trace_console: true       # 可选：运行时逐轮 dashboard
 ```
 
-字段语义、配置项全表、handler 生命周期、序列化规则、典型 JSON 结构等细节见 [trace.md](trace.md)。
+字段语义、配置项全表、handler 生命周期、序列化规则、典型 JSON 结构等细节见[执行轨迹参考](../reference/tracing.md)。
 
 ### 样例 trace（`examples/sample_trace/`）
 
 仓库内置一份真机运行产物，供不接硬件时直接翻阅 trace 长什么样：
 
-- [piper-demo-…1743847.json](../examples/sample_trace/piper-demo-77816242_20260626_113438_033124_1743847.json) —— 一次完整 invoke 的 trace JSON
-- [piper-demo-…1743847.html](../examples/sample_trace/piper-demo-77816242_20260626_113438_033124_1743847.html) —— `jiuwensymbiosis-replay` 生成的自包含 HTML 回放
-- [frames/…/step_NNN.jpg](../examples/sample_trace/frames/piper-demo-77816242_20260626_113438_033124_1743847/) —— 每步动作后帧 + `step_000.jpg` 首帧
+- [piper-demo-…1743847.json](../../../examples/sample_trace/piper-demo-77816242_20260626_113438_033124_1743847.json) —— 一次完整 invoke 的 trace JSON
+- [piper-demo-…1743847.html](../../../examples/sample_trace/piper-demo-77816242_20260626_113438_033124_1743847.html) —— `jiuwensymbiosis-replay` 生成的自包含 HTML 回放
+- [frames/…/step_NNN.jpg](../../../examples/sample_trace/frames/piper-demo-77816242_20260626_113438_033124_1743847/) —— 每步动作后帧 + `step_000.jpg` 首帧
 
 **这份 trace 演示了什么**（query「把黑盒子放到白盒子上面」，共 30 步）：
 
@@ -350,8 +355,8 @@ build_xxx_session.from_dict({...})
 | `config_template.yaml` | 填写硬件参数（CAN 口、夹爪行程、安全 Z 轴下限等） | ✅ 中文注释逐项引导 |
 | `config.py` | `@dataclass` + `from_yaml()`/`from_dict()` | ✅ 模板已给 |
 | `lowlevel.py` | 驱动：串口/CAN/Socket 翻译成 `move_to_pose_blocking(pose, ...)` 等动词 | ⚠️ 唯一需要写真实硬件逻辑的地方 |
-| `env.py` | `BaseRobotEnv` 子类：声明 `capabilities` + 暴露 4 个属性 | ✅ 模板已给 |
-| `api.py` | 多继承 Mixin，**仅重写有几何差异的方法**；eye-in-hand 视觉可委托 `_common/vision.default_*` 帮助函数 | ✅ 多数方法无需手写 |
+| `env.py` | `BaseRobotEnv` 子类：声明 `capabilities` + 暴露 5 个属性 | ✅ 模板已给 |
+| `api.py` | 多继承 Mixin，**仅重写有几何差异的方法**；视觉适配器实现 `_project_pixel_to_base_raw` 投影接缝 | ✅ 多数方法无需手写 |
 | `session.py` | `make_builder(...)` 一行（声明式 `api_kwargs_from_cfg` + `make_detector_sidecar()`） | ✅ 一行代码 |
 
 关键点在于：**`api.py` 里绝大多数方法无需自己实现**。框架的 Mixin 默认实现会把 `goto_xyzr` 这类高层动作委托给 `self.env.<动词>()`。只有当机器人本体的几何与标准假设不一致时才需要重写——例如 Piper 是倾斜工具（tip 不等于 flange），需要重写 `goto_xyzr` 做 tip→flange 的坐标换算（见 `jiuwensymbiosis/adapters/piper/api.py` 的 `goto_xyzr`）。
@@ -374,7 +379,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot 
 1. **拷贝模板** `templates/xxx_adapter/` → `jiuwensymbiosis/adapters/acme/`
 2. **填 YAML** `config_template.yaml`（CAN 口、夹爪行程、Z 安全下限、工作区边界……）
 3. **写 `lowlevel.py`** —— 唯一的硬件逻辑：把厂商 SDK 翻译成 `move_to_pose_blocking(pose, ...)` / `set_gripper` / `grab_frames` 等动词
-4. **写 `env.py`** —— 声明 `capabilities` frozenset，暴露 4 个属性（从模板填值即可）
+4. **写 `env.py`** —— 声明 `capabilities` frozenset，暴露 5 个属性（从模板填值即可）
 5. **写 `api.py`** —— 多继承需要的 Mixin；**只有当本体几何与默认假设（tip==flange）不符时**才重写（如 Piper 的倾斜工具换算）；视觉只需实现投影函数 `_project_pixel_to_base_raw`（`get_grasp_info_simple` / `pixel_to_base_xyz` 由 `VisionMixin` 提供）
 6. **写 `session.py`** —— `make_builder(...)` 一行
 7. **静态校验** `python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.acme`
@@ -383,7 +388,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot 
 
 **整个流程里，框架核心层（agent/api/env/tools/rails）无需改动。** 这是 Capability Mixin 架构的杠杆点：把"形态差异"完全收敛进适配器目录，把"共性能力"沉淀为可组合的 Mixin。
 
-更详细的硬件移植步骤见 [hardware-porting-guide.md](hardware-porting-guide.md)。
+更详细的硬件移植步骤见[移植机器人硬件适配器](../how-to/port-hardware-adapter.md)。
 
 ---
 
@@ -406,3 +411,18 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot 
 ---
 
 **总结**：JiuwenSymbiosis 把"机器人形态的多样性"这个本质复杂度，用**能力 Mixin + 能力门控 + 单一硬件契约**三个机制收敛到了适配器目录里。对开发者而言，接入新硬件的成本被压缩到了 **1 个 YAML + 1 个驱动文件 + 4 个填空文件**，而 agent 层、安全层、工具层、感知层的能力是开箱即用的——只要 env 声明了对应能力，工具和安全策略就会自动就位。
+
+---
+
+## 十四、相关内部设计
+
+本页描述面向使用者的稳定架构认知。具体功能的设计目的、内部取舍、核心数据结构和接口约束归档在
+仓根 `design/`：
+
+- [执行轨迹模块设计](../../../design/tracing.md)：Trace 生命周期、事件归属、持久化与资源边界。
+- [Trace Feedback Loop 模块设计](../../../design/trace-feedback-loop.md)：在线诊断和离线失败聚类闭环。
+- [日志模块设计](../../../design/logging.md)：handler 所有权、输出隔离与 Trace 日志转发。
+- [语音控制集成模块设计](../../../design/voice-control-integration.md)：语音前端与文本任务执行器的接缝。
+- [Piper Pick Box 标定配置迁移设计](../../../design/piper-pick-box-migration.md)：候选外参来源及真机发布门禁。
+
+这些内部设计记录面向维护者，不替代 Tutorial、How-to 或 Reference 文档。
