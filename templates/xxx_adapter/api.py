@@ -4,7 +4,7 @@
 """XxxApi — capability-mixin implementation for the Xxx robot.
 
 Inherits from the Mixins that match your hardware capabilities
-(see the Capability ↔ Mixin table in docs/hardware-porting-guide.md §3.2)
+(see docs/zh/how-to/port-hardware-adapter.md)
 and overrides every abstract @robot_tool method.
 
 Key patterns shown here:

@@ -3,7 +3,7 @@
 
 """Offline failure extraction and clustering for the Trace Feedback Loop.
 
-P2 of ``docs/trace-feedback-loop-design.md`` §4.4: load trace JSON written by
+Offline analysis from ``design/trace-feedback-loop.md``: load trace JSON written by
 ``TraceRail``, pull each failed step plus its neighbour context into a
 ``FailureEvidence``, normalise it into a hashable ``FailureSignature``, and
 group repeated failures into ``FailureCluster``.

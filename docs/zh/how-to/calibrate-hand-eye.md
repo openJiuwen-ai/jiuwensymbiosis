@@ -1,8 +1,10 @@
 # 手眼标定指南（Hand-Eye Calibration）
 
+> 类别：How-to。本文说明如何采集、求解、质检和复验手眼标定。
+
 让装在机械臂腕部的相机「知道」自己相对机械臂的位置——标定后，相机看到的物体能被准确换算成机械臂坐标，视觉抓取才会准。
 
-标定程序：[scripts/calibrate/calibrate_hand_eye.py](../scripts/calibrate/calibrate_hand_eye.py)，产出标定文件 `configs/piper/piper_calib.json`。
+标定程序：[scripts/calibrate/calibrate_hand_eye.py](../../../scripts/calibrate/calibrate_hand_eye.py)，产出标定文件 `configs/piper/piper_calib.json`。
 
 **什么时候需要做标定**
 
@@ -56,7 +58,7 @@ python scripts/calibrate/calibrate_hand_eye.py --generate-board board.png \
 
 ### 1.3 配置机器人
 
-编辑 [scripts/calibrate/calibrate.yaml](../scripts/calibrate/calibrate.yaml)，填入你的 RealSense 序列号：
+编辑 [scripts/calibrate/calibrate.yaml](../../../scripts/calibrate/calibrate.yaml)，填入你的 RealSense 序列号：
 
 ```yaml
       camera_serial: "你的相机序列号"

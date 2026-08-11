@@ -10,7 +10,7 @@ Usage::
         agent = build_robot_agent(session)
         ...
 
-See docs/hardware-porting-guide.md Step 6 for wiring details.
+See docs/zh/how-to/port-hardware-adapter.md for wiring details.
 """
 
 from __future__ import annotations

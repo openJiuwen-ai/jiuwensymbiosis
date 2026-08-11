@@ -795,7 +795,7 @@ def render_env(spec: Spec) -> str:
         """{spec.env_cls} — hardware abstraction wrapping {spec.driver_cls}.
 
         connect() creates self.low_level; Env verbs (home / move_to_flange / ...)
-        delegate to it. See docs/hardware-porting-guide.md Step 3.
+        delegate to it. See docs/zh/how-to/port-hardware-adapter.md.
         """
 
         from __future__ import annotations
@@ -1046,7 +1046,7 @@ def render_api(spec: Spec) -> str:
 
         Motion / grasp / get_image inherit working defaults that delegate to the
         Env verbs; only the offset/tilt geometry and (if any) the vision methods
-        are overridden here. See docs/hardware-porting-guide.md Step 4.
+        are overridden here. See docs/zh/how-to/port-hardware-adapter.md.
         """
 
         __IMPORTS__
