@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "_comment": "INITIAL VALUES — ported from an initial left.json (T_tcp_camera) by composing with the flange->tcp tool offset: T_flange_cam = translate(0,0,-135.8mm) @ T_tcp_camera. MUST be validated on the real Piper (see docs/piper_pick_box_migration_design.md §7/§9 V2). 'object.xyz_base_mm' is a PLACEHOLDER table-height anchor and MUST be re-measured: it sets z_min_safe (= object_z + z_safe_margin) and the fallback home height.",
+  "_comment": "INITIAL VALUES — ported from an initial left.json (T_tcp_camera) by composing with the flange->tcp tool offset: T_flange_cam = translate(0,0,-135.8mm) @ T_tcp_camera. MUST be validated on the real Piper (see design/piper-pick-box-migration.md). 'object.xyz_base_mm' is a PLACEHOLDER table-height anchor and MUST be re-measured: it sets z_min_safe (= object_z + z_safe_margin) and the fallback home height.",
   "T_flange_cam": {
     "_frame": "camera pose in flange frame; translation in mm",
     "matrix_4x4": [

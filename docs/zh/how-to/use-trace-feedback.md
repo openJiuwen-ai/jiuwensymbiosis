@@ -1,11 +1,11 @@
-# Trace Feedback Loop 使用指南
+# 使用 Trace Feedback Loop
 
 > 本模块把 `TraceRail` 从「可回放记录」升级为**双层反馈系统**：
 >
 > - **在线**：`DiagnosisRail` 在失败步后把当前参数 + 相关历史 + 系统状态回灌下一轮 LLM，让模型当次就能自纠正。
 > - **离线**：`analyze_traces` 批量聚类多次运行的失败 step，产出失败报告和人审用的 SKILL.md 补丁建议。
 >
-> 采集层（`TraceRail` / trace JSON 格式 / 回放）见 [trace.md](trace.md)；设计原理见 [trace-feedback-loop-design.md](trace-feedback-loop-design.md)。本文只讲怎么用。
+> 采集层（`TraceRail` / trace JSON 格式 / 回放）见[执行轨迹参考](../reference/tracing.md)；设计原理见[Trace Feedback Loop 设计](../../../design/trace-feedback-loop.md)。本文只讲怎么用。
 
 ---
 
@@ -317,5 +317,5 @@ print(render_patch_proposals(proposals))
 | `jiuwensymbiosis/trace_feedback/report.py` | 离线 json/markdown 渲染 |
 | `jiuwensymbiosis/trace_feedback/patches.py` | 离线 SkillPatchProposal |
 | `scripts/analyze_traces.py` | 离线 CLI |
-| `docs/trace.md` | 采集层（TraceRail）手册 |
-| `docs/trace-feedback-loop-design.md` | 设计原理 |
+| [执行轨迹参考](../reference/tracing.md) | 采集层（TraceRail）手册 |
+| [Trace Feedback Loop 设计](../../../design/trace-feedback-loop.md) | 设计原理 |

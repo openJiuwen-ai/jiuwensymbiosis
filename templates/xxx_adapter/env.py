@@ -8,7 +8,7 @@ Follow the *driver delegation* pattern:
   - env.disconnect() → calls self.low_level.disconnect(); sets to None
   - env.get_observation() → reads from self.low_level
 
-See docs/hardware-porting-guide.md Step 3 for details.
+See docs/zh/how-to/port-hardware-adapter.md for details.
 """
 
 from __future__ import annotations

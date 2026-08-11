@@ -1,4 +1,4 @@
-# JiuwenSymbiosis 开发指南
+# JiuwenSymbiosis 贡献指南
 
 本文档面向新加入仓库的开发者，覆盖：Git/GitCode 协作流程、开发行为规则、提交前的格式化 / 扫描 / 测试 / 文档更新。
 
@@ -242,7 +242,9 @@ make test-all
 # 5.（按需）adapter 改动 → 脚本冒烟（非 make 目标）
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>
 python scripts/smoke_test_adapter.py
-python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock  # 端到端冒烟（无硬件/LLM）
+python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock \
+  --max-iter 1 --no-visual-feedback --workspace /tmp/jiuwensymbiosis-smoke \
+  --query "把黑色盒子放到白色盒子上面"  # Agent 接线冒烟（无硬件/真实 LLM）
 
 # 6.（新增依赖时）依赖审计
 pip-audit
@@ -274,9 +276,9 @@ git push origin <branch>
 提交前自检：是否需要同步文档？
 
 - **用户可见行为变更**（新 `@robot_tool`、新 mixin 方法、新 env 属性、capability 增减、CLI/配置项变化）→ 同步更新 `examples/`、`docs/`，并视情况更新 `AGENTS.md` 与 `CLAUDE.md` 的相关章节。
-- **新 adapter** → 更新 `AGENTS.md` "Source Tree Layout"，必要时补 `docs/hardware-porting-guide.md`。
+- **新 adapter** → 更新 `AGENTS.md` "Source Tree Layout"，并同步更新 `docs/zh/tutorial/02-build-first-adapter.md` 及相关 How-to/Reference。
 - **新安全/物理安全相关** → 复核 `.claude/rules/security.md` 与 `skills/security-review` 是否需要补充。
-- 深参考手册按需查读：`docs/architecture.md`、`docs/hardware-porting-guide.md`、`docs/logging.md`、`docs/trace.md`、`docs/hand-eye-calibration.md`。
+- 深参考手册从 [`docs/README.md`](docs/README.md) 进入，按 Tutorial、How-to、Reference、Explanation 分类查读。
 
 ---
 

@@ -293,7 +293,7 @@ class TestStepPreciseFlush:
     async def test_frame_path_preserved_in_event(self, mock_session, tmp_path):
         """frame_sink returns a path; after_tool_call must stash it on the
         _PendingFrame and before_model_call must pass it through to the trace
-        event (contract: docs/trace.md detail={tool_name, frame_path})."""
+        event (contract: docs/zh/reference/tracing.md detail={tool_name, frame_path})."""
         from jiuwensymbiosis.agent.trace import TraceRail
 
         trace_rail = TraceRail(mock_session, workspace=str(tmp_path), save_frames=False)

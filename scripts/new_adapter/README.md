@@ -193,7 +193,7 @@ self._connected = True
 | `pixel_to_base_xyz()` | 像素和深度反投影到基座坐标 |
 | `analyze_scene()` | 返回高层场景分析结果 |
 
-这几项通常依赖检测服务、相机内参、手眼标定文件。手眼标定流程见 [docs/hand-eye-calibration.md](../../docs/hand-eye-calibration.md)。
+这几项通常依赖检测服务、相机内参、手眼标定文件。手眼标定流程见[手眼标定指南](../../docs/zh/how-to/calibrate-hand-eye.md)。
 
 ---
 

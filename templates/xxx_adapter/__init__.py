@@ -4,7 +4,7 @@
 # --COPY AND RENAME THIS DIRECTORY--
 # 1. cp -r templates/xxx_adapter/ jiuwensymbiosis/adapters/your_robot/
 # 2. Rename all Xxx / xxx placeholders to your robot name
-# 3. Follow docs/hardware-porting-guide.md for step-by-step instructions
+# 3. Follow docs/zh/tutorial/02-build-first-adapter.md for step-by-step instructions
 
 """build_xxx_session — one call from YAML to a ready-to-connect session.
 

@@ -203,13 +203,13 @@ description: 将 JiuwenSymbiosis 的提交、分支、PR/MR、暂存区或工作
 
 架构基线以仓库最新文档为权威来源，不要信任本节内嵌的任何概括。每次检视时先读取以下文档建立基线，再以 base revision 的实现对照：
 
-- `docs/architecture.md` —— 七层架构、各层职责与数据流。重点对照：
+- `docs/zh/explanation/architecture.md` —— 七层架构、各层职责与数据流。重点对照：
   - 二、Env 层：唯一的硬件契约（`BaseRobotEnv` 为唯一 contract）
   - 三、API 层：能力 Mixin 与 `@robot_tool` 装饰器
   - 四、能力门控（Capability Gating）
   - 六、安全 Rails：横切策略与职责边界
   - 八、RobotSession：生命周期聚合器（env 与 sidecar 的唯一所有者）
-- `docs/hardware-porting-guide.md` —— 新硬件通过配置与 adapter 扩展的完整流程；adapter 只承担配置、驱动和形体/几何差异的边界依据。
+- `docs/zh/tutorial/02-build-first-adapter.md` 与 `docs/zh/how-to/port-hardware-adapter.md` —— 新硬件通过配置与 adapter 扩展的完整流程；adapter 只承担配置、驱动和形体/几何差异的边界依据。
 - `AGENTS.md` 的 “Architecture: Layered Capability-Gated Design” 与 “Hardware Adapter Pattern (6 files)” 节 —— 精简约束清单，用于快速定位，细节以上述 `docs/` 为准。
 
 将内嵌的下列检查项仅作为提示，逐条回到上述文档确认其当前措辞与适用范围是否仍然成立：
