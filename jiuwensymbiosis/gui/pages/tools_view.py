@@ -27,9 +27,9 @@ from jiuwensymbiosis.gui.run_engine import resolve_real_session_config
 
 __all__ = ["ToolsView"]
 
-# Tool list: (key, icon, name). Add a tool here and build its workspace in _build.
-_TOOLS: list[tuple[str, str, str]] = [
-    ("perception", "🎯", "感知测试"),
+# Tool list: (key, name). Add a tool here and build its workspace in _build.
+_TOOLS: list[tuple[str, str]] = [
+    ("perception", "感知测试"),
 ]
 
 
@@ -64,7 +64,6 @@ class ToolsView:
         }
 
         # 「感知测试」 workspace UI handles: actually built in _build_perception_panel; declared here first.
-        self._context: Any = None
         self._start_btn: Any = None
         self._stop_btn: Any = None
         self._banner: Any = None
@@ -84,18 +83,14 @@ class ToolsView:
         with ui.row().classes("w-full no-wrap gap-4"):
             with ui.column().classes("w-56 shrink-0 gap-1"):
                 ui.label("工具").classes("text-sm text-gray-500")
-                for key, icon, label in _TOOLS:
+                for key, label in _TOOLS:
                     row = ui.row().classes(
                         "w-full items-center cursor-pointer rounded px-2 py-2 hover:bg-gray-100 no-wrap gap-2"
                     )
                     with row:
-                        ui.label(icon)
                         ui.label(label).classes("text-sm")
                     row.on("click", lambda _e, k=key: self._select_tool(k))
                     self._tool_rows[key] = row
-                ui.label("更多工具即将到来\n(标定、检测测试…)").classes(
-                    "text-gray-400 text-xs whitespace-pre-line mt-2"
-                )
             with ui.column().classes("grow gap-2"):
                 self._build_perception_panel()
         self._highlight_tool()
@@ -117,14 +112,10 @@ class ToolsView:
     def _build_perception_panel(self) -> None:
         with ui.row().classes("w-full items-center gap-3"):
             ui.label("感知测试").classes("text-lg font-bold")
-            self._context = ui.label("").classes("text-sm text-gray-500 grow")
+            ui.space()
             self._start_btn = ui.button("▶ 开始预览", on_click=self._start).props("color=primary")
             self._stop_btn = ui.button("■ 停止", on_click=self._stop).props("color=negative")
             self._stop_btn.disable()
-
-        ui.label(
-            "点画面任意位置 → 显示该点在基座坐标系下的 (x, y, z)。青色十字随光标移动=瞄准处;点击后红色圈=已测量的点。"
-        ).classes("text-sm text-gray-600")
 
         self._banner = (
             ui.label().classes("w-full").style("background:#fff3cd; color:#7a5b00; padding:6px; border-radius:4px;")
@@ -148,6 +139,7 @@ class ToolsView:
                     .classes("w-full rounded")
                     .style("background:#111; max-width:760px; cursor:crosshair;")
                 )
+                ui.label("点击画面任意位置显示其深度与基座坐标系下的坐标。").classes("text-sm text-gray-600")
             with ui.column().classes("w-1/3 gap-2"):
                 with ui.card().classes("w-full gap-1"):
                     ui.label("点选读数").classes("font-bold")
@@ -163,7 +155,6 @@ class ToolsView:
     # ------------------------------------------------------------------ lifecycle
     def refresh(self) -> None:
         """Recompute preconditions (selected task / config); call on page entry or state change."""
-        self._update_context()
         if self.is_previewing():
             return
         reason = self._precondition_block()
@@ -195,15 +186,6 @@ class ToolsView:
         if not low_level.get("calib_path"):
             return "需要手眼标定文件(calib_path)才能把像素换算成基座坐标。"
         return None
-
-    def _update_context(self) -> None:
-        task_key = self._state.current_task
-        body_key = self._state.current_body
-        if task_key is None or body_key is None:
-            self._context.set_text("")
-            return
-        task = registry.get_task(task_key)
-        self._context.set_text(f"本体:{body_key}   任务:{task.display_name}")
 
     # ------------------------------------------------------------------ interaction
     def _start(self) -> None:

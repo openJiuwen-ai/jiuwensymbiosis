@@ -71,8 +71,6 @@ env:
       grasp_z_offset_mm: -5.0
       place_z_offset_mm: 30.0
 
-    prompt: "抓起桌面上的香蕉"
-
 # GroundingDINO+SAM2 sidecar。本机路径可由 GDINO_MODEL_ID/SAM2_MODEL_ID 覆盖。
 api_servers:
   - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
