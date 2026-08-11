@@ -18,10 +18,11 @@ Common temporary overrides include `--model`, `--server-url`, `--api-key`, `--ma
 ## `jiuwensymbiosis-replay`
 
 ```bash
-jiuwensymbiosis-replay TRACE_JSON [--text]
+jiuwensymbiosis-replay TRACE_JSON [--open] [--text]
 ```
 
-The default mode generates a self-contained HTML replay and prints its path. `--text` prints a terminal timeline and
+The default mode generates a self-contained HTML replay and prints its path. `--open` additionally launches the HTML in
+the default browser. `--text` prints a terminal timeline and
 frame paths without generating the visual report.
 
 ## `jiuwensymbiosis-gui`
