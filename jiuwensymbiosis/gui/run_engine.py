@@ -29,6 +29,7 @@ from threading import Thread
 from typing import Any
 
 from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig, run_robot_task
+from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
 from jiuwensymbiosis.gui import imaging
 from jiuwensymbiosis.gui.bridge import UIBridgeRail
 from jiuwensymbiosis.gui.config_model import ConfigModel
@@ -137,6 +138,11 @@ class RunEngine:
         self._events: queue.Queue = queue.Queue()
         self._thread: Thread | None = None
         self._stop = False
+        # Run-scoped cancel token: attached to the session in _build so framework
+        # enforcement points (connect / compile LLM / servo / per-op) can abandon
+        # a blocking stage within one poll on stop. The _stop bool remains the
+        # complementary between-step path (UIBridgeRail.before_tool_call).
+        self._cancel = CancelToken()
 
     def clone(self) -> RunEngine:
         """以同样的本体/任务/配置/工作区新建一个引擎(供运行页「重新执行」)。
@@ -181,8 +187,9 @@ class RunEngine:
         self._thread.start()
 
     def request_stop(self) -> None:
-        """请求停止(下一步开始前生效)。"""
+        """请求停止:置步间标志,并触发取消 token(打断在飞的连接/编译/运动等待)。"""
         self._stop = True
+        self._cancel.set()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -222,11 +229,24 @@ class RunEngine:
                 # 通常要等十几~几十秒。给个明确提示:这段是在等云侧模型响应,不是本地卡死。
                 # 第一条执行指令的叙述到达后会自动覆盖。
                 self.narration("等待云侧服务响应中…")
-                result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
+                result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id, cancel_token=self._cancel)
             self._events.put(
                 (
                     "run_finished",
                     {"ok": True, "result": result, "conversation_id": conv_id, "workspace": self._workspace},
+                )
+            )
+        except RunCancelled:
+            # 用户在某个阻塞阶段(连接/等云侧模型/运动中)点了停止。收尾成「已停止」,
+            # 与步间停止(UIBridgeRail.request_force_finish)一致,而非「失败」。
+            self._events.put(
+                (
+                    "run_finished",
+                    {
+                        "ok": True,
+                        "result": {"result_type": "stopped", "output": "用户已停止运行"},
+                        "workspace": self._workspace,
+                    },
                 )
             )
         except Exception as exc:  # 运行失败需回传界面而非崩溃
@@ -257,6 +277,7 @@ class RunEngine:
         agent_cfg.workspace = self._workspace
 
         session = body.build_real_session(self._real_session_config())
+        session.cancel_token = self._cancel
         self._apply_fast_exec_config(session, agent_cfg)
 
         bridge = UIBridgeRail(self, session, should_stop=lambda: self._stop)

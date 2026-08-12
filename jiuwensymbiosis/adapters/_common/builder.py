@@ -96,7 +96,10 @@ def make_detector_sidecar(cfg_attr: str = "detector"):
             "text_threshold": det.text_threshold,
             "use_sam2": det.use_sam2,
         }
-        return lambda: detector_subprocess(**kwargs)
+        # Accept an optional cancel token so RobotSession.connect can make the
+        # detector model-load wait interruptible; default None keeps it a valid
+        # zero-arg starter for any caller that invokes it without one.
+        return lambda token=None: detector_subprocess(**kwargs, cancel_token=token)
 
     return _build
 

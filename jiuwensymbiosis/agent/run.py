@@ -88,16 +88,22 @@ def run_robot_task(
     config: RobotAgentConfig | None = None,
     *,
     conversation_id: str | None = None,
+    cancel_token: Any = None,
 ) -> Any:
     """Run a task on ``session`` using the mechanism selected by ``config.exec_mode``.
 
     The session's ``connect()``/``disconnect()`` is the caller's responsibility
     (use ``with session:``).
+
+    ``cancel_token`` (GUI-only ``CancelToken``) makes the fast path's compile LLM
+    call abandonable; ``run_sequence`` reads it off ``session.cancel_token``. The
+    slow agent path does not use it (its LLM calls live inside openjiuwen). ``None``
+    → unchanged behaviour for CLI / tests.
     """
     config = config or RobotAgentConfig()
     if config.exec_mode == "fast":
         conv_id = conversation_id or f"task-{uuid.uuid4().hex[:8]}"
-        return run_fast_task(session, query, config, conversation_id=conv_id)
+        return run_fast_task(session, query, config, conversation_id=conv_id, cancel_token=cancel_token)
 
     # --- slow path: per-step LLM orchestration (unchanged behaviour) ---
     agent = build_robot_agent(session, config)
@@ -137,6 +143,7 @@ def run_fast_task(
     config: RobotAgentConfig,
     *,
     conversation_id: str | None = None,
+    cancel_token: Any = None,
 ) -> dict:
     """Fast path: compile the task to an action sequence (1 LLM call), then run it
     through the SAME agent + rails the slow path uses — no per-step LLM.
@@ -188,6 +195,7 @@ def run_fast_task(
             api_key=spec.api_key,
             model_name=spec.model_name,
             temperature=spec.temperature,
+            cancel_token=cancel_token,
         )
     except RuntimeError as exc:
         logger.error("[fast] sequence compiler unavailable/failed: %s", exc)
