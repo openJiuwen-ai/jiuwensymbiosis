@@ -276,6 +276,7 @@ def _track_detect(
     obs_x, obs_y, obs_z = float(pose0["x"]), float(pose0["y"]), float(pose0["z"])
 
     api = session.api
+    token = getattr(session, "cancel_token", None)
     tracker = BackgroundTracker(
         lambda: _detect_once(api, object_name),
         max_hz=cfg.detect_hz,
@@ -284,7 +285,7 @@ def _track_detect(
     )
     tracker.start()
     try:
-        if not tracker.wait_first(cfg.first_target_timeout_s):
+        if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             cached = cache.get(object_name)
             if cached is not None:
                 logger.info("[runner] track_detect %r: live miss → home pre-scan", object_name)
@@ -318,7 +319,7 @@ def _track_detect(
             config=cfg.servo,
             phase="track_detect",
             target_is_live=target_is_live,
-            cancel_token=getattr(session, "cancel_token", None),
+            cancel_token=token,
         )
         logger.info(
             "[runner] track_detect %r: %s in %d ticks / %.2fs%s",
@@ -358,6 +359,7 @@ def _track_grasp(
     # adopting any actual-pose drift between phases.
     rz0 = float(pose0.get("rz", pose0.get("r", 0.0)))
     api = session.api
+    token = getattr(session, "cancel_token", None)
     tracking_provider = getattr(api, "get_grasp_tracking_sample", None)
     mask_filter: MaskTargetFilter | None = None
     if callable(tracking_provider) and cfg.mask_tracking.enabled:
@@ -382,7 +384,7 @@ def _track_grasp(
     )
     tracker.start()
     try:
-        if not tracker.wait_first(cfg.first_target_timeout_s):
+        if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             return None
 
         def target_is_live() -> bool:
@@ -413,7 +415,6 @@ def _track_grasp(
                 "rz": rz0,
             }
 
-        token = getattr(session, "cancel_token", None)
         approach = _run_servo_phase(
             binding,
             approach_target,
@@ -469,6 +470,7 @@ def _track_grasp(
             tracker,
             descend_finished_t,
             timeout_s=cfg.first_target_timeout_s,
+            cancel_token=token,
         )
         if final is None:
             raise RuntimeError("track_grasp descend reached but no fresh post-descend detection arrived")
@@ -505,6 +507,7 @@ def _track_grasp(
                 tracker,
                 descend_finished_t,
                 timeout_s=cfg.first_target_timeout_s,
+                cancel_token=token,
             )
             if final is None:
                 raise RuntimeError("track_grasp re-align reached but no fresh detection arrived")
@@ -537,9 +540,10 @@ def _wait_post_descend_target(
     descend_finished_t: float,
     *,
     timeout_s: float,
+    cancel_token: CancelToken | None = None,
 ) -> tuple[dict[str, Any], float] | None:
     """Wait for a post-descend detection whose image capture time is ``>= descend_finished_t``."""
-    return tracker.wait_for_capture_after(descend_finished_t, timeout_s=timeout_s)
+    return tracker.wait_for_capture_after(descend_finished_t, timeout_s=timeout_s, cancel_token=cancel_token)
 
 
 # An executor runs ONE primitive op through whatever dispatch path the caller

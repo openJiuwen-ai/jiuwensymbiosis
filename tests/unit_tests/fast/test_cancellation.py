@@ -17,6 +17,7 @@ from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
 from jiuwensymbiosis.agent.fast import planner as planner_module
 from jiuwensymbiosis.agent.fast import runner as runner_module
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController
+from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
 from jiuwensymbiosis.agent.fast.runner import run_sequence
 from jiuwensymbiosis.agent.fast.sequence import parse_sequence
 
@@ -91,6 +92,35 @@ def test_servo_controller_stops_within_a_tick_on_token():
     ).run()
     assert result.reason == "stopped"
     assert result.ok is False
+
+
+def test_tracker_wait_first_cancels_mid_wait():
+    # The detector never fires (returns None), so wait_first would otherwise block
+    # the full timeout; a cancel must interrupt it within ~a poll interval.
+    tracker = BackgroundTracker(lambda: None, staleness_s=None, name="test")
+    token = CancelToken()
+    _trip_after(token, 0.1)
+    start = time.monotonic()
+    with pytest.raises(RunCancelled):
+        tracker.wait_first(timeout_s=8.0, cancel_token=token)
+    assert time.monotonic() - start < 0.5
+
+
+def test_tracker_wait_for_capture_after_cancels_mid_wait():
+    tracker = BackgroundTracker(lambda: None, staleness_s=None, name="test")
+    token = CancelToken()
+    _trip_after(token, 0.1)
+    start = time.monotonic()
+    with pytest.raises(RunCancelled):
+        tracker.wait_for_capture_after(0.0, timeout_s=8.0, cancel_token=token)
+    assert time.monotonic() - start < 0.5
+
+
+def test_tracker_wait_first_no_token_unchanged():
+    # Without a token, wait_first returns False after the (short) timeout — the
+    # original blocking-poll behaviour, unchanged for CLI / tests.
+    tracker = BackgroundTracker(lambda: None, staleness_s=None, name="test")
+    assert tracker.wait_first(timeout_s=0.05) is False
 
 
 def test_compile_sequence_bails_before_calling_chat_when_cancelled(monkeypatch):
