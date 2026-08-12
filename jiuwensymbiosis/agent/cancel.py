@@ -138,8 +138,7 @@ def cancellable_call(fn: Callable[[], Any], token: CancelToken | None, *, poll: 
 
 
 def sleep_cancellable(seconds: float, token: CancelToken | None, *, poll: float = 0.05) -> None:
-    """Sleep for ``seconds`` but raise ``RunCancelled`` promptly if ``token``
-    trips. ``token is None`` → a plain ``time.sleep`` (strict pass-through)."""
+    """Sleep ``seconds``, raising ``RunCancelled`` if ``token`` trips; ``None`` → plain ``time.sleep``."""
     if token is None:
         time.sleep(seconds)
         return
