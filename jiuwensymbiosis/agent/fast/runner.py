@@ -26,8 +26,9 @@ import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled, cancellable_call, sleep_cancellable
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
 from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter, MaskTrackingConfig
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, ServoResult
@@ -142,9 +143,18 @@ def _run_servo_phase(
     config: ServoConfig,
     phase: str,
     target_is_live: Callable[[], bool],
+    cancel_token: CancelToken | None = None,
 ) -> ServoResult:
-    """Run one servo phase with the adapter's shared control policy."""
-    return ServoController(
+    """Run one servo phase with the adapter's shared control policy.
+
+    ``cancel_token`` (GUI-only) is polled once per control tick via
+    ``should_continue``; a set token ends the loop within one tick and is turned
+    into a clean ``RunCancelled`` here. We key the cancel on ``raise_if_set()``,
+    NOT on ``result.reason == "stopped"`` — the latter also means a servo_to
+    hardware failure, which must still fall through to the normal failed-step
+    path (token stays unset there).
+    """
+    result = ServoController(
         binding.read_pose,
         binding.servo_to,
         target_provider,
@@ -153,7 +163,11 @@ def _run_servo_phase(
         target_is_live=target_is_live,
         slew_from_last_command=binding.slew_from_last_command,
         reached_angular_keys=binding.reached_angular_keys,
+        should_continue=(None if cancel_token is None else lambda: not cancel_token.is_set()),
     ).run()
+    if cancel_token is not None:
+        cancel_token.raise_if_set()
+    return result
 
 
 def _detect_once(api: Any, object_name: str, *, require_grasp: bool = False) -> dict[str, Any] | None:
@@ -262,6 +276,7 @@ def _track_detect(
     obs_x, obs_y, obs_z = float(pose0["x"]), float(pose0["y"]), float(pose0["z"])
 
     api = session.api
+    token = getattr(session, "cancel_token", None)
     tracker = BackgroundTracker(
         lambda: _detect_once(api, object_name),
         max_hz=cfg.detect_hz,
@@ -270,7 +285,7 @@ def _track_detect(
     )
     tracker.start()
     try:
-        if not tracker.wait_first(cfg.first_target_timeout_s):
+        if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             cached = cache.get(object_name)
             if cached is not None:
                 logger.info("[runner] track_detect %r: live miss → home pre-scan", object_name)
@@ -304,6 +319,7 @@ def _track_detect(
             config=cfg.servo,
             phase="track_detect",
             target_is_live=target_is_live,
+            cancel_token=token,
         )
         logger.info(
             "[runner] track_detect %r: %s in %d ticks / %.2fs%s",
@@ -343,6 +359,7 @@ def _track_grasp(
     # adopting any actual-pose drift between phases.
     rz0 = float(pose0.get("rz", pose0.get("r", 0.0)))
     api = session.api
+    token = getattr(session, "cancel_token", None)
     tracking_provider = getattr(api, "get_grasp_tracking_sample", None)
     mask_filter: MaskTargetFilter | None = None
     if callable(tracking_provider) and cfg.mask_tracking.enabled:
@@ -367,7 +384,7 @@ def _track_grasp(
     )
     tracker.start()
     try:
-        if not tracker.wait_first(cfg.first_target_timeout_s):
+        if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             return None
 
         def target_is_live() -> bool:
@@ -404,6 +421,7 @@ def _track_grasp(
             config=cfg.servo,
             phase="track_grasp.approach",
             target_is_live=target_is_live,
+            cancel_token=token,
         )
         logger.info(
             "[runner] track_grasp %r approach: %s in %d ticks / %.2fs (detections=%d)%s",
@@ -426,6 +444,7 @@ def _track_grasp(
             config=cfg.servo,
             phase="track_grasp.descend",
             target_is_live=target_is_live,
+            cancel_token=token,
         )
         logger.info(
             "[runner] track_grasp %r descend: %s in %d ticks / %.2fs (detections=%d)%s",
@@ -451,6 +470,7 @@ def _track_grasp(
             tracker,
             descend_finished_t,
             timeout_s=cfg.first_target_timeout_s,
+            cancel_token=token,
         )
         if final is None:
             raise RuntimeError("track_grasp descend reached but no fresh post-descend detection arrived")
@@ -474,6 +494,7 @@ def _track_grasp(
                 config=cfg.servo,
                 phase="track_grasp.re_descend",
                 target_is_live=target_is_live,
+                cancel_token=token,
             )
             if not re_descend.ok:
                 raise RuntimeError(
@@ -486,6 +507,7 @@ def _track_grasp(
                 tracker,
                 descend_finished_t,
                 timeout_s=cfg.first_target_timeout_s,
+                cancel_token=token,
             )
             if final is None:
                 raise RuntimeError("track_grasp re-align reached but no fresh detection arrived")
@@ -518,9 +540,10 @@ def _wait_post_descend_target(
     descend_finished_t: float,
     *,
     timeout_s: float,
+    cancel_token: CancelToken | None = None,
 ) -> tuple[dict[str, Any], float] | None:
     """Wait for a post-descend detection whose image capture time is ``>= descend_finished_t``."""
-    return tracker.wait_for_capture_after(descend_finished_t, timeout_s=timeout_s)
+    return tracker.wait_for_capture_after(descend_finished_t, timeout_s=timeout_s, cancel_token=cancel_token)
 
 
 # An executor runs ONE primitive op through whatever dispatch path the caller
@@ -600,6 +623,7 @@ def _retry_unconfirmed_grasp(
     run_op: Executor,
 ) -> tuple[dict[str, Any], Any, int]:
     """Home, re-detect, and repeat a grasp after an adapter reports no contact."""
+    token = getattr(session, "cancel_token", None)
     for attempt in range(1, cfg.max_grasp_retries + 1):
         logger.warning(
             "[runner] grasp of %r was not confirmed; returning home for retry %d/%d",
@@ -616,7 +640,7 @@ def _retry_unconfirmed_grasp(
                     context=f"grasp retry {attempt} {op} failed",
                 )
             if op == "open_gripper":
-                time.sleep(max(0.0, cfg.settle_grip_s))
+                sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
 
         detection = _track_grasp(session, context.object_name, context.approach_mm, cfg)
         if detection is None:
@@ -630,13 +654,25 @@ def _retry_unconfirmed_grasp(
                 context=f"grasp retry {attempt} close_gripper failed",
             )
         close_result = close_res.get("result")
-        time.sleep(max(0.0, cfg.settle_grip_s))
+        sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
         confirmed = _grasp_confirmation(session.api, close_result)
         if confirmed is not False:
             logger.info("[runner] grasp retry %d/%d confirmed", attempt, cfg.max_grasp_retries)
             return detection, close_result, attempt
 
     raise RuntimeError(f"grasp_not_confirmed: no contact after initial attempt + {cfg.max_grasp_retries} retry")
+
+
+def _cancellable_executor(run_op: Executor, token: CancelToken) -> Executor:
+    """Wrap an executor so each op checks the token first, then runs under
+    ``cancellable_call`` — so a single long blocking op yields the worker within
+    one poll on cancel instead of blocking to completion."""
+
+    def _run(op: str, params: dict[str, Any]) -> dict[str, Any]:
+        token.raise_if_set()
+        return cast("dict[str, Any]", cancellable_call(lambda: run_op(op, params), token))
+
+    return _run
 
 
 def run_sequence(
@@ -665,7 +701,13 @@ def run_sequence(
         (rails/RecoveryRail already handled any safe retreat for real runs).
     """
     cfg = config or SkillExecConfig()
-    run_op: Executor = executor or direct_executor(action_index or session.api)
+    base_run_op: Executor = executor or direct_executor(action_index or session.api)
+    # Cancellation (GUI-only): wrap the executor once so EVERY op — here and in
+    # helpers that receive run_op (e.g. _retry_unconfirmed_grasp) — yields the
+    # worker within one poll on cancel. token is None for CLI/tests → base_run_op
+    # runs unwrapped, exactly as before.
+    token: CancelToken | None = getattr(session, "cancel_token", None)
+    run_op: Executor = base_run_op if token is None else _cancellable_executor(base_run_op, token)
     # The env holds only detection bindings (added as tracking/detection steps run).
     # No seeded constants: working heights come from grasp_z/place_z, and any
     # other offset a skill needs is a literal number in its compiled expression.
@@ -680,6 +722,8 @@ def run_sequence(
     ok_all = True
     for i, step in enumerate(steps):
         try:
+            if token is not None:
+                token.raise_if_set()
             params = resolve_params(step.params, env)
             if step.op == TRACK_DETECT:
                 det = _track_detect(session, params["object_name"], cfg, cache, occluded=holding)
@@ -720,7 +764,7 @@ def run_sequence(
                         )
                     env[step.bind] = normalize_detection(result)
                 if step.op in _GRIP_CLOSE_OPS:
-                    time.sleep(max(0.0, cfg.settle_grip_s))
+                    sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
                     confirmed = _grasp_confirmation(session.api, result)
                     if confirmed is False and tracked_grasp is not None and cfg.max_grasp_retries > 0:
                         retry_det, result, retry_count = _retry_unconfirmed_grasp(
@@ -743,9 +787,14 @@ def run_sequence(
                 elif step.op in _GRIP_OPEN_OPS:
                     holding = False
                     tracked_grasp = None
-                    time.sleep(max(0.0, cfg.settle_grip_s))
+                    sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
             out.append({"i": i, "op": step.op, "ok": True, "result": result})
             logger.info("[runner] step %d ok: %s(%s)", i, step.op, params)
+        except RunCancelled:
+            # User cancellation: do NOT record a failed step or run _safe_retreat
+            # (which would issue another home/release motion). Let it unwind to the
+            # GUI, which finalizes the run as "已停止".
+            raise
         except Exception as exc:  # noqa: BLE001 - surface as structured failure
             logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
             if isinstance(exc, _StepExecutionError) and exc.recovery_managed:

@@ -22,6 +22,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from jiuwensymbiosis.agent.cancel import CancelToken
+
 logger = logging.getLogger(__name__)
 
 Pose = dict[str, float]
@@ -154,16 +156,20 @@ class BackgroundTracker:
         """Total successful detections since start (diagnostic)."""
         return self._detections
 
-    def wait_first(self, timeout_s: float = 5.0) -> bool:
+    def wait_first(self, timeout_s: float = 5.0, *, cancel_token: CancelToken | None = None) -> bool:
         """Block until the first target lands, or ``timeout_s`` elapses.
 
         Uses the internal target + detection counter directly (not the
         staleness-filtered ``latest_target``), so a slow detector whose
         per-result age exceeds ``staleness_s`` is still observed as "first
-        frame arrived".
+        frame arrived". ``cancel_token`` (GUI-only) is polled each iteration so a
+        stop during this wait raises ``RunCancelled`` within ~20ms instead of
+        blocking to ``timeout_s``.
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            if cancel_token is not None:
+                cancel_token.raise_if_set()
             with self._lock:
                 if self._target is not None and self._detections > 0:
                     return True
@@ -188,7 +194,7 @@ class BackgroundTracker:
         return None, 0.0
 
     def wait_for_capture_after(
-        self, capture_threshold_t: float, *, timeout_s: float = 5.0
+        self, capture_threshold_t: float, *, timeout_s: float = 5.0, cancel_token: CancelToken | None = None
     ) -> tuple[Pose, float] | None:
         """Block until a frame whose image capture time is ``>= capture_threshold_t``.
 
@@ -197,9 +203,13 @@ class BackgroundTracker:
         not a detection-generation counter, so a frame grabbed during a motion
         whose inference finishes after the motion is accepted iff the *grab*
         postdated ``capture_threshold_t`` — the post-motion-observation contract.
+        ``cancel_token`` (GUI-only) is polled each iteration so a stop during this
+        wait raises ``RunCancelled`` within ~20ms instead of blocking to ``timeout_s``.
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            if cancel_token is not None:
+                cancel_token.raise_if_set()
             with self._lock:
                 target = self._target
                 stamp = self._stamp

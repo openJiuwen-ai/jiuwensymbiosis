@@ -47,8 +47,8 @@ def _use_hardware_free_session(monkeypatch, tmp_path):
 def _patch_script_runner(monkeypatch, script):
     """Drive the UI rail directly; RunEngine unit tests do not need DeepAgent."""
 
-    def fake_run_robot_task(_session, _query, cfg, *, conversation_id):
-        del conversation_id
+    def fake_run_robot_task(_session, _query, cfg, *, conversation_id, cancel_token=None):
+        del conversation_id, cancel_token
         bridge = next(rail for rail in cfg.extra_rails if isinstance(rail, UIBridgeRail))
 
         async def drive_script():

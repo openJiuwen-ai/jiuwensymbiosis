@@ -22,6 +22,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, cast
 
+from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled, cancellable_call
 from jiuwensymbiosis.agent.fast.sequence import SequenceError, parse_sequence
 
 logger = logging.getLogger(__name__)
@@ -94,12 +95,17 @@ def _chat(
     attempts: int,
     max_tokens: int,
     thinking_mode: str | None = None,
+    cancel_token: CancelToken | None = None,
 ) -> str:
     """One OpenAI-compatible chat call with retries; returns the reply text.
 
     Default DIRECT connection — the LLM endpoints used here are domestic and
     reachable directly; a proxy is used ONLY when explicitly passed, never
     auto-picked from the environment. Raises ``RuntimeError`` if all attempts fail.
+
+    ``cancel_token`` (GUI-only) makes the in-flight POST abandonable: the socket
+    is closed on cancel and ``RunCancelled`` propagates. ``None`` → the original
+    synchronous path, unchanged for CLI / tests.
     """
     import httpx
 
@@ -118,18 +124,35 @@ def _chat(
 
     last_exc: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
+        if cancel_token is not None:
+            cancel_token.raise_if_set()
         try:
             client_kwargs: dict[str, Any] = {"timeout": timeout_s}
             if proxy:
                 client_kwargs["proxy"] = proxy
             with httpx.Client(**client_kwargs) as client:
-                resp = client.post(url, json=payload, headers=headers)
+                resp = _post(client, url, payload, headers, cancel_token)
             resp.raise_for_status()
             return cast(str, resp.json()["choices"][0]["message"]["content"])
+        except RunCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - retry on transient LLM/HTTP failure
             last_exc = exc
             logger.warning("[planner] attempt %d/%d failed: %s", attempt, attempts, exc)
     raise RuntimeError(f"planner LLM call failed after {attempts} attempts: {last_exc}") from last_exc
+
+
+def _post(client: Any, url: str, payload: dict, headers: dict, cancel_token: CancelToken | None) -> Any:
+    """POST the chat request; when a token is present make the socket read
+    abandonable by registering ``client.close`` and polling under
+    ``cancellable_call``. ``None`` → a plain blocking ``client.post``."""
+    if cancel_token is None:
+        return client.post(url, json=payload, headers=headers)
+    unregister = cancel_token.on_cancel(client.close)
+    try:
+        return cancellable_call(lambda: client.post(url, json=payload, headers=headers), cancel_token)
+    finally:
+        unregister()
 
 
 def plan_skills(
@@ -226,6 +249,7 @@ def compile_sequence(
     proxy: str | None = None,
     attempts: int = 4,
     thinking_mode: str | None = "disabled",
+    cancel_token: CancelToken | None = None,
 ) -> list[dict[str, Any]]:
     """One LLM inference → a validated action sequence (the C1 fast path).
 
@@ -271,6 +295,8 @@ def compile_sequence(
     # mistake, so we tell the model exactly what was wrong and let it self-fix.
     correction = ""
     for attempt in range(1, max(1, attempts) + 1):
+        if cancel_token is not None:
+            cancel_token.raise_if_set()
         try:
             text = _chat(
                 _COMPILER_SYSTEM,
@@ -284,6 +310,7 @@ def compile_sequence(
                 attempts=1,
                 max_tokens=1500,
                 thinking_mode=thinking_mode,
+                cancel_token=cancel_token,
             )
         except RuntimeError as exc:
             # Transient LLM/HTTP failure (e.g. read timeout on a slow generation).
