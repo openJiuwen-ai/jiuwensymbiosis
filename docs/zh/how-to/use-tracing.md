@@ -92,6 +92,7 @@ agent = build_robot_agent(session, config)
 
 ```bash
 jiuwensymbiosis-replay <trace.json>                  # 默认：生成 HTML + 打印可点击路径（不自动开浏览器）
+jiuwensymbiosis-replay <trace.json> --open           # 生成 HTML 后自动用默认浏览器打开
 jiuwensymbiosis-replay <trace.json> --text           # 回退纯文本时间线（帧仅显示路径）
 ```
 

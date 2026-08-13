@@ -129,3 +129,40 @@ class TestReplayHtml:
         p.write_text("{not json", encoding="utf-8")
         rc = replay_html(str(p))
         assert rc == 1
+
+    def test_open_browser_calls_webbrowser(self, tmp_path, monkeypatch):
+        import webbrowser
+
+        p = tmp_path / "conv-1.json"
+        p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
+        opened = []
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+        rc = replay_html(str(p), out=io.StringIO(), open_browser=True)
+        assert rc == 0
+        assert opened == [p.with_suffix(".html").resolve().as_uri()]
+
+    def test_default_does_not_open_browser(self, tmp_path, monkeypatch):
+        import webbrowser
+
+        p = tmp_path / "conv-1.json"
+        p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
+
+        def _fail(url):
+            raise AssertionError("should not open a browser by default")
+
+        monkeypatch.setattr(webbrowser, "open", _fail)
+        rc = replay_html(str(p), out=io.StringIO())
+        assert rc == 0
+
+    def test_main_open_flag(self, tmp_path, monkeypatch):
+        import webbrowser
+
+        from jiuwensymbiosis.cli import replay_main
+
+        p = tmp_path / "conv-1.json"
+        p.write_text(json.dumps(_sample_trace()), encoding="utf-8")
+        opened = []
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+        monkeypatch.setattr("sys.argv", ["jiuwensymbiosis-replay", str(p), "--open"])
+        assert replay_main() == 0
+        assert opened == [p.with_suffix(".html").resolve().as_uri()]

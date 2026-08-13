@@ -10,6 +10,7 @@ import json
 import logging
 import runpy
 import sys
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -148,7 +149,7 @@ def replay(trace_path: str, *, out=sys.stdout) -> int:
     return 0
 
 
-def replay_html(trace_path: str, *, out=sys.stdout) -> int:
+def replay_html(trace_path: str, *, out=sys.stdout, open_browser: bool = False) -> int:
     """Render a trace as a self-contained HTML page and print its path.
 
     The HTML is written next to the trace JSON as ``{json_stem}.html`` with
@@ -159,6 +160,7 @@ def replay_html(trace_path: str, *, out=sys.stdout) -> int:
     Args:
         trace_path: Path to a ``traces/*.json`` written by ``TraceRail``.
         out: Output stream for the "wrote …" status line.
+        open_browser: When True, open the written HTML in the default browser.
 
     Returns:
         Process exit code (0 on success, 1 if the trace is missing/invalid).
@@ -185,10 +187,14 @@ def replay_html(trace_path: str, *, out=sys.stdout) -> int:
             return 1
 
     print(f"wrote {out_path}", file=out)
-    print(
-        "(open the path above in your browser)",
-        file=out,
-    )
+    if open_browser:
+        if not webbrowser.open(out_path.resolve().as_uri()):
+            logger.warning("could not open a browser; open the path above manually")
+    else:
+        print(
+            "(open the path above in your browser, or re-run with --open)",
+            file=out,
+        )
     return 0
 
 
@@ -210,7 +216,12 @@ def replay_main() -> int:
         action="store_true",
         help="Print a text timeline instead of generating HTML.",
     )
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="After generating the HTML, open it in the default browser.",
+    )
     args = parser.parse_args()
     if args.text:
         return replay(args.trace_path)
-    return replay_html(args.trace_path)
+    return replay_html(args.trace_path, open_browser=args.open)

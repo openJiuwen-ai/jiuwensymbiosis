@@ -101,6 +101,7 @@ jiuwensymbiosis-replay path/to/trace.json
 
 The command writes `<run-token>.html` beside the JSON when possible and prints its path. Images are embedded as base64,
 so the HTML can be moved or shared without the original frame directory.
+Add `--open` to launch the generated HTML in your default browser automatically.
 
 For a terminal timeline:
 

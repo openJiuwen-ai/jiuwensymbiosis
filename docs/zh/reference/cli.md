@@ -13,10 +13,10 @@ piper-pick-demo --config PATH [--query TEXT | --voice ...] [--mock]
 ## jiuwensymbiosis-replay
 
 ```bash
-jiuwensymbiosis-replay TRACE_JSON [--text]
+jiuwensymbiosis-replay TRACE_JSON [--open] [--text]
 ```
 
-默认生成自包含 HTML 回放并打印路径；`--text` 输出终端时间线。
+默认生成自包含 HTML 回放并打印路径；`--open` 生成后自动用默认浏览器打开；`--text` 输出终端时间线。
 
 ## jiuwensymbiosis-gui
 
