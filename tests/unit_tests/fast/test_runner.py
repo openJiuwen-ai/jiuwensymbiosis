@@ -460,7 +460,7 @@ def test_track_detect_rejects_first_detection_that_is_already_stale(monkeypatch)
         def stop(self):
             return None
 
-        def wait_first(self, timeout_s):
+        def wait_first(self, timeout_s, *, cancel_token=None):
             return True
 
         def latest_target(self):
@@ -499,7 +499,7 @@ def test_track_detect_stall_watchdog_beats_eight_second_cached_target(monkeypatc
         def stop(self):
             return None
 
-        def wait_first(self, timeout_s):
+        def wait_first(self, timeout_s, *, cancel_token=None):
             return True
 
         def latest_target(self):
@@ -675,7 +675,7 @@ class _DeterministicTracker:
     def stop(self):
         return None
 
-    def wait_first(self, timeout_s):
+    def wait_first(self, timeout_s, *, cancel_token=None):
         return True
 
     def latest_target(self):
@@ -688,7 +688,7 @@ class _DeterministicTracker:
         self._detections += 1
         return dict(self._latest), runner_module.time.monotonic()
 
-    def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0):
+    def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0, cancel_token=None):
         # Pop the next scripted frame. Its capture time is "now" (monotonic),
         # which is >= any earlier descend_finished_t, so it is accepted —
         # mirroring how the real tracker stamps a freshly-grabbed frame.
@@ -766,7 +766,7 @@ def test_post_descend_barrier_skips_in_flight_detection():
             self.detections = 1
             self._frames = [(old, 9.0), (fresh, 11.0)]
 
-        def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0):
+        def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0, cancel_token=None):
             # Pop scripted frames; accept only those whose capture time is
             # >= the threshold (mirroring the real tracker's stamp judgement).
             while self._frames:
@@ -795,7 +795,7 @@ def test_post_descend_barrier_accepts_frame_that_landed_in_baseline_gap():
         def __init__(self):
             self.detections = 2
 
-        def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0):
+        def wait_for_capture_after(self, capture_threshold_t, *, timeout_s=5.0, cancel_token=None):
             if 11.0 >= capture_threshold_t:
                 return dict(fresh), 11.0
             return None

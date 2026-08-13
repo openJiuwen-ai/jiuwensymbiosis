@@ -22,6 +22,8 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from jiuwensymbiosis.agent.cancel import CancelToken
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,12 +33,18 @@ def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return s.connect_ex((host, port)) == 0
 
 
-def _wait_for_port(host: str, port: int, timeout: float) -> bool:
+def _wait_for_port(host: str, port: int, timeout: float, *, cancel_token: CancelToken | None = None) -> bool:
+    # A present token means the model-load wait must be interruptible: poll faster
+    # and raise RunCancelled on cancel (the caller's finally terminates the proc).
+    # None → the original 1.0s cadence, unchanged for CLI.
+    poll = 0.1 if cancel_token is not None else 1.0
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if cancel_token is not None:
+            cancel_token.raise_if_set()
         if _port_open(host, port, timeout=1.0):
             return True
-        time.sleep(1.0)
+        time.sleep(poll)
     return False
 
 
@@ -53,6 +61,7 @@ def detector_subprocess(
     box_threshold: float = 0.35,
     text_threshold: float = 0.25,
     use_sam2: bool = True,
+    cancel_token: CancelToken | None = None,
 ) -> Iterator[subprocess.Popen | None]:
     """Start (or attach to) the GroundingDINO(+SAM2) detection server.
 
@@ -95,7 +104,7 @@ def detector_subprocess(
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
 
     try:
-        if not _wait_for_port(host, port, startup_timeout_s):
+        if not _wait_for_port(host, port, startup_timeout_s, cancel_token=cancel_token):
             raise RuntimeError(f"detector server did not start on {host}:{port} within {startup_timeout_s}s")
         logger.info("detector ready at %s:%d (pid=%d)", host, port, proc.pid)
         yield proc
