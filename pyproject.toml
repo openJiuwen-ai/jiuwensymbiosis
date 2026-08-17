@@ -45,6 +45,13 @@ full = [
     "httpx>=0.28",
 ]
 piper = ["piper_sdk>=0.6.1"]
+cruzr = [
+    # Cruzr 双臂机器人：pinocchio(pip 包名 `pin`)提供臂 IK(GN+restarts)与自碰撞检测
+    # (coal/hppfcl 由 pinocchio 打包)。全部惰性 import + fail-open(无 pin 时臂 IK 退回
+    # 传统 DLS)——不装本组仍可 import 适配器并跑 mock 单测；真机运行才需安装。
+    # rclpy(ROS2 Jazzy)由 source 机器人工作区提供，非 pip 依赖，故不列于此。
+    "pin>=4.1",
+]
 so101 = [
     # SO101 适配器仅支持 Python>=3.12。feetech 提供 STS3215 串口总线驱动，
     # kinematics 提供 RobotKinematics/placo，用于基于 URDF 的 IK/FK。
@@ -77,9 +84,14 @@ calib = [
 ]
 
 [project.scripts]
-piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"
+jiuwensymbiosis-run = "jiuwensymbiosis.cli:run_task"
+piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"  # 向后兼容别名 → run_task
 jiuwensymbiosis-replay = "jiuwensymbiosis.cli:replay_main"
 jiuwensymbiosis-gui = "jiuwensymbiosis.gui.__main__:main"
+# Introspection — what a planner / coding agent reads to author a workflow.
+jiuwensymbiosis-actions = "jiuwensymbiosis.cli:actions_main"
+jiuwensymbiosis-skills = "jiuwensymbiosis.cli:skills_main"
+jiuwensymbiosis-state = "jiuwensymbiosis.cli:state_main"
 
 [tool.setuptools.packages.find]
 include = ["jiuwensymbiosis*"]
@@ -130,6 +142,13 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # White-box tests legitimately reach into the internals of objects under test.
 "tests/**" = ["SLF001"]
+# The algorithm half of the `ApproachMixin` ↔ `motion.approach` split. Its
+# `api`-first loops are driven through the host hooks documented in the module
+# docstring (`_approach_tuning` / `_drive_base` / `_redetect` / `_coarse_*` …).
+# Those underscored names ARE the extension contract a second body implements
+# (hardware-porting-guide.md 附录 D.3), not foreign privates — the mixin and the
+# module are two halves of one object.
+"jiuwensymbiosis/motion/approach.py" = ["SLF001"]
 # Package init clears proxy env (os.environ.pop) before the agent/openjiuwen
 # imports, so those imports are not "at top of file" per E402 — by design.
 "jiuwensymbiosis/__init__.py" = ["E402"]

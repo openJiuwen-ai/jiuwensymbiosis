@@ -24,6 +24,18 @@ class TestKnownCapabilities:
             "vision.eye_to_hand",
             "sorting.command",
             "speech.tts",
+            # Mobility capabilities (P1, 2026-07-15)
+            "motion.base",
+            "motion.base_servo",
+            "motion.lift",
+            "motion.waist",
+            "motion.goal",
+            "grasp.dual_arm",
+            # Planning-time URDF reachability (2026-07-30)
+            "planning.reachability",
+            # The body can aim a camera by turning something (head / waist / base), so it
+            # can look around for a target instead of only seeing what is in front of it.
+            "vision.search",
         }
         assert KNOWN_CAPABILITIES == expected
 
@@ -144,3 +156,21 @@ class TestOptionalHardwareContract:
 
     def test_workspace_bounds_defaults_none(self):
         assert self._make_env().workspace_bounds is None
+
+    @pytest.mark.parametrize(
+        ("verb", "args"),
+        [
+            ("navigate_arc", (0.8, 0.5)),
+            ("start_base_drive", ()),
+            ("base_drive_running", ("h",)),
+            ("steer_base_drive", ("h", 0.1)),
+            ("hold_base_drive", ("h",)),
+            ("stop_base_drive", ("h",)),
+            ("grab_calibrated_frame", ()),
+        ],
+    )
+    def test_optional_verbs_name_the_missing_capability(self, verb, args):
+        """A body that skipped a verb must learn which capability it belongs to, not just that it is missing."""
+        env = self._make_env()
+        with pytest.raises(NotImplementedError, match=r"declare/implement '[a-z._]+'"):
+            getattr(env, verb)(*args)

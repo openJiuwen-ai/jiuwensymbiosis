@@ -4,8 +4,8 @@
 """XxxDriver — low-level hardware communication.
 
 Replace this file with your hardware-specific driver (serial, CAN, socket, etc.).
-A plain Python class satisfying the ``RobotDriver`` Protocol
-(adapters/_common/protocol.py) — add the sibling protocols for the capabilities
+A plain Python class satisfying the ``CartesianDriver`` Protocol
+(env/protocol.py) — add the sibling protocols for the capabilities
 you declare. The Env verbs delegate here:
 
     connect() / disconnect()            — idempotent lifecycle (called by Env)

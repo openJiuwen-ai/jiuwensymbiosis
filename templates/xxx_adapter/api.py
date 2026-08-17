@@ -1,45 +1,58 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""XxxApi — capability-mixin implementation for the Xxx robot.
+"""XxxApi — this body's implementation of the shared action vocabulary.
 
-Inherits from the Mixins that match your hardware capabilities
-(see docs/zh/how-to/port-hardware-adapter.md)
-and overrides every abstract @robot_tool method.
+Porting a robot is **not** inventing actions: pick the ones your hardware can do from
+the shared vocabulary (``jiuwensymbiosis-actions --vocabulary``) and bind each with
+``@implements(SPEC)``. The contract — name, capability gate, parameters, result shape,
+pre-conditions and effects — comes from that one spec, so a plan or a SKILL.md written
+for another robot means the same thing here. Your job is only *how*.
 
-Key patterns shown here:
-  - Motion / end-effector use the Env verbs (``self.env.home() /
-    move_to_flange() / move_joint() / set_end_effector()``).
-  - Robot body constants (``home_pose``, ``tool_offset_mm``) use Env properties
-    (``self.env.home_pose`` / ``self.env.tool_offset_mm``).
-  - Vision calibration data uses ``self.env.low_level`` (the ``RobotDriver``
-    protocol) — this is a controlled penetration for sensor-specific data that
-    does not belong on the Env body abstraction.
-  - @robot_tool decorators provide hardware-specific descriptions.
-  - Every method returns ``{"ok": True/False, ...}`` shape.
+Two kinds of method below:
+
+* **generic** — the implementation is the Env verb, so forward to ``api.defaults``.
+  One line each; they are here (rather than inherited) so this file is the complete
+  list of what the body offers.
+* **body-specific** — your geometry / SDK / calibration. Write it out.
+
+A tool only this robot has (bring-up, calibration, a vendor demo) uses the plain
+``@robot_tool`` decorator instead: it stays callable but is invisible to the planner,
+because a plan written against a one-robot tool would not survive being moved.
+
+Key patterns:
+  - Motion / end-effector go through the Env verbs (``self.env.home()`` /
+    ``move_to_flange()`` / ``move_joint()`` / ``set_end_effector()``).
+  - Body constants come from Env properties (``self.env.home_pose`` /
+    ``self.env.tool_offset_mm``).
+  - Vision calibration reads ``self.env.low_level`` (the ``RobotDriver`` protocol) —
+    a controlled penetration for sensor data that does not belong on the Env body
+    abstraction.
+  - Every action returns an ``{"ok": True/False, ...}``-shaped dict.
 """
 
 from __future__ import annotations
 
-from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.api.decorators import robot_tool
-from jiuwensymbiosis.api.mixins import (
-    MotionMixin,
-    # JointMotionMixin,     # [选填] Uncomment if your robot supports joint motion
-    # SuctionMixin,         # [选填] Uncomment for suction end-effector
-    # ParallelGripperMixin, # [选填] Uncomment for parallel gripper
-    # VisionMixin,          # [选填] Uncomment for vision+detection
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import (
+    GET_HOME_POSE,
+    GET_POSE,
+    GOTO_XYZR,
+    MOVE_DIRECTION,
+    # CLOSE_GRIPPER,          # [选填] parallel gripper
+    # OPEN_GRIPPER,
+    # ACTIVATE_SUCTION,       # [选填] suction end-effector
+    # DEACTIVATE_SUCTION,
+    # GET_IMAGE,              # [选填] camera
+    # GET_GRASP_INFO_SIMPLE,  # [选填] detection → ready-to-use grasp pose
+    # PIXEL_TO_BASE_XYZ,
+    # MOVE_JOINT,             # [选填] joint-space motion
+    implements,
 )
+from jiuwensymbiosis.api.base import BaseRobotApi
 
 
-class XxxApi(
-    MotionMixin,
-    # JointMotionMixin,
-    # SuctionMixin,
-    # ParallelGripperMixin,
-    # VisionMixin,
-    BaseRobotApi,  # always last
-):
+class XxxApi(BaseRobotApi):
     """Robot API for Xxx — TODO: replace with your robot description."""
 
     # If your Api.__init__ needs extra parameters beyond env (e.g. detector URL,
@@ -47,119 +60,87 @@ class XxxApi(
     # via ``api_kwargs_from_cfg``.
 
     # ================================================================ Motion
+    # ``home`` comes from BaseRobotApi (delegates to env.home()). Override it only
+    # if returning safely takes more than that — e.g. straightening a torso first.
 
-    @robot_tool(
-        desc="Return Xxx to the configured home pose (safe upper height).",
-        tags=["motion"],
-    )
-    def home(self) -> None:
-        """Return to the home pose (motion command → Env verb)."""
-        self.env.home()
+    @implements(MOVE_DIRECTION)
+    def move_direction(self, direction: str, distance_mm: float) -> dict:
+        """Relative nudge with a bounds check — generic, nothing to write."""
+        return defaults.move_direction(self, direction, distance_mm)
 
-    @robot_tool(desc="Get current TIP pose (mm/deg, base frame).")
+    @implements(GET_HOME_POSE)
+    def get_home_pose(self) -> dict:
+        return defaults.get_home_pose(self)
+
+    @implements(GET_POSE)
     def get_pose(self) -> dict:
-        """Get current end-effector pose."""
+        """TIP pose. The generic default assumes tip == flange; this body has a tool
+        offset, so it subtracts it. Delete this and call ``defaults.get_pose(self)``
+        if your tip IS the flange.
+        """
         p = self.env.get_flange_pose()
-        tool_off = self.env.tool_offset_mm
         return {
             "x": p.x,
             "y": p.y,
-            "z": p.z - tool_off,
+            "z": p.z - self.env.tool_offset_mm,
             "rx": p.rx,
             "ry": p.ry,
             "rz": p.rz,
         }
 
-    @robot_tool(desc="Get the home pose constants (read-only).")
-    def get_home_pose(self) -> dict:
-        """Get home pose constants (read-only)."""
-        return {
-            "x": self.env.home_pose.x,
-            "y": self.env.home_pose.y,
-            "z": self.env.home_pose.z,
-            "rx": self.env.home_pose.rx,
-            "ry": self.env.home_pose.ry,
-            "rz": self.env.home_pose.rz,
-        }
-
-    @robot_tool(
-        desc=(
-            "Move the TIP to absolute (x, y, z[, r]) in mm/deg, base frame. If r is omitted, current r is preserved."
-        ),
-        tags=["motion"],
-    )
+    @implements(GOTO_XYZR)
     def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
-        """Move tip to target Cartesian pose. tip↔flange geometry stays in the api layer."""
-        if r is None:
-            r = self.env.get_flange_pose().rz
-        pose = type("Pose", (), {"x": x, "y": y, "z": z, "rx": 180.0, "ry": 0.0, "rz": r})()
-        self.env.move_to_flange(pose)
+        """Move the tip to an absolute pose.
 
-    # ============================================================= Joint [选填]
-    # Uncomment if your robot supports joint-space motion:
-    #
-    # @robot_tool(desc="Move to joint configuration q (degrees).", tags=["motion"])
+        The generic default (``defaults.goto_xyzr``) commands the flange straight down
+        with no offset. Keep this override only if your body needs the tip↔flange
+        conversion or a tilted tool; otherwise forward to the default.
+        """
+        raise NotImplementedError("TODO: convert the TIP target to a flange command and dispatch it")
+
+    # ================================================================ Joint  [选填]
+    # @implements(MOVE_JOINT)
     # def move_joint(self, q: list[float]) -> None:
-    #     self.env.move_joint(q)
+    #     return defaults.move_joint(self, q)
 
-    # ============================================================= Suction [选填]
-    # Uncomment for suction end-effector:
+    # ================================================================ End effector  [选填]
+    # Two-state bodies forward to the defaults; width_mm / force_n are accepted for
+    # contract parity and ignored — the contract already calls both a HINT, so there is
+    # nothing to add. A body with real width or force control writes its own instead.
     #
-    # @robot_tool(desc="Turn suction ON.", tags=["grasp"])
-    # def activate_suction(self) -> dict:
-    #     self.env.set_end_effector(True)
-    #     return {"ok": True, "state": "on"}
-    #
-    # @robot_tool(desc="Turn suction OFF.", tags=["grasp"])
-    # def deactivate_suction(self) -> dict:
-    #     self.env.set_end_effector(False)
-    #     return {"ok": True, "state": "off"}
-
-    # ============================================================ Gripper [选填]
-    # Uncomment for parallel gripper:
-    #
-    # @robot_tool(desc="Close the parallel gripper.", tags=["grasp"])
-    # def close_gripper(self, force_n: Optional[float] = None) -> dict:
-    #     self.env.set_end_effector(True)
-    #     return {"ok": True, "state": "closed"}
-    #
-    # @robot_tool(desc="Open the parallel gripper.", tags=["grasp"])
+    # @implements(OPEN_GRIPPER)
     # def open_gripper(self, width_mm: float = 80.0) -> dict:
-    #     self.env.set_end_effector(False)
-    #     return {"ok": True, "state": "open"}
+    #     return defaults.open_gripper(self, width_mm)
+    #
+    # @implements(CLOSE_GRIPPER)
+    # def close_gripper(self, force_n: float | None = None) -> dict:
+    #     return defaults.close_gripper(self, force_n)
+    #
+    # @implements(ACTIVATE_SUCTION)
+    # def activate_suction(self) -> dict:
+    #     return defaults.activate_suction(self)
+    #
+    # @implements(DEACTIVATE_SUCTION)
+    # def deactivate_suction(self) -> dict:
+    #     return defaults.deactivate_suction(self)
 
-    # ============================================================= Vision [选填]
-    # Uncomment for a vision-enabled robot. Requires:
-    #   1. GroundingDINO+SAM2 detection server running (see _common/detector_sidecar)
-    #   2. Camera calibration (hand-eye + intrinsics)
-    #   3. Driver implementing grab_frames()
+    # ================================================================ Vision  [选填]
+    # ``get_image`` is generic; the rest need YOUR detector client and hand-eye
+    # calibration, which is why they have no default.
     #
-    # VisionMixin already implements get_grasp_info_simple / pixel_to_base_xyz /
-    # get_image / _ensure_detector on top of the shared grasp geometry. A new
-    # adapter supplies ONLY (a) the geometry constants via __init__ (or accepts
-    # the mixin class defaults) and (b) the projection seam below.
+    # @implements(GET_IMAGE)
+    # def get_image(self):
+    #     return defaults.get_image(self)
     #
-    # from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
+    # @implements(PIXEL_TO_BASE_XYZ)
+    # def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
+    #     """Back-project a pixel to base XYZ using this body's calibration."""
+    #     raise NotImplementedError
     #
-    # def __init__(self, env, *, detector_service_url="http://127.0.0.1:8114",
-    #              z_correction_mm=0.0, grasp_z_offset_mm=-25.0, place_z_offset_mm=75.0):
-    #     super().__init__(env)
-    #     self._detector_service_url = detector_service_url
-    #     self._z_correction_mm = float(z_correction_mm)
-    #     self._grasp_z_offset_mm = float(grasp_z_offset_mm)
-    #     self._place_z_offset_mm = float(place_z_offset_mm)
-    #     self._seg_fn = None
-    #
-    # def _project_pixel_to_base_raw(self, u, v, depth_m):
-    #     # The one vendor-specific step: pixel + depth -> RAW base-frame XYZ (mm).
-    #     # Apply NO xy/z correction here — the shared geometry owns that.
-    #     #   eye-in-hand:  tf_base_cam = pose_to_tf(self.env.get_flange_pose()) @ tf_flange_cam
-    #     #   eye-to-hand:  tf_base_cam = <constant T_base_cam from calibration>
-    #     ll = self.env.low_level
-    #     intrinsics = (ll.calibration or {}).get("intrinsics") or ll.intrinsics
-    #     p_cam = pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics)
-    #     return apply_transform(tf_base_cam, p_cam)  # per-robot tf_base_cam
-    #
-    # @robot_tool(desc="Run scene analysis grounded on object_name.")
-    # def analyze_scene(self, object_name: Optional[str] = None) -> dict:
-    #     return {"ok": False, "reason": "not_implemented"}
+    # @implements(GET_GRASP_INFO_SIMPLE)
+    # def get_grasp_info_simple(self, object_name: str):
+    #     """Detect + project + apply gripper geometry. See
+    #     ``perception/vision.py:default_get_grasp_info_simple`` — it factors out the
+    #     whole eye-in-hand pipeline, leaving you a ``seg_fn`` and a pose→TF callback.
+    #     """
+    #     raise NotImplementedError

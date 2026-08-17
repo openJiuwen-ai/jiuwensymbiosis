@@ -66,6 +66,7 @@ class SceneMockApi(MockApi):
         'mock scene. Returns {"ok": bool, "object": str, "position": [x,y,z]_mm, '
         '"grasp_z": float, "grasp_position": [x,y,z]_mm, "place_z": float, '
         '"place_position": [x,y,z]_mm, "score": float, "pixel_uv": [u,v], "depth_m": float}.',
+        produces_location=True,
     )
     def get_grasp_info_simple(self, object_name: str) -> dict:
         self._call_log.append(f"get_grasp_info_simple({object_name!r})")
@@ -105,7 +106,10 @@ class SceneMockApi(MockApi):
             "depth_m": depth_m,
         }
 
-    @robot_tool(desc="Pixel (u,v) at depth_m → base-frame XYZ in mm via the mock camera model.")
+    @robot_tool(
+        desc="Pixel (u,v) at depth_m → base-frame XYZ in mm via the mock camera model.",
+        produces_location=True,
+    )
     def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
         self._call_log.append(f"pixel_to_base_xyz({u},{v},{depth_m})")
         scene = self._scene

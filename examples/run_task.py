@@ -1,24 +1,25 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Piper vision-driven robot demo (jiuwensymbiosis).
+"""Generic task runner (jiuwensymbiosis) — one entry for every robot + task.
 
-Builds a Piper session (6-DoF AgileX arm over CAN + parallel gripper + wrist
-RealSense + open-vocab detection). The *workflow* (which skills, step ordering,
-failure handling) comes from the capability-generic SKILL.md files (loaded via
-``enable_skill=True`` → SkillUseRail + the ``robot_control`` dispatcher). The
-**task is not in the config** — give it at run time via ``--query "..."`` or
-``--voice``; the compiler turns it (+ the SKILL.md) into an action sequence.
-Pass ``--no-skill`` to revert to the fully prompt-driven hybrid.
+Pick the robot with ``--config`` (the YAML's ``adapter:`` field selects the
+adapter from the registry; ``--robot`` overrides). Give the task at run time
+with ``--query "..."`` or ``--voice`` — the **task is not in the config**.
+Nothing here is task- or robot-specific, so a new task is a new ``--query`` and
+a new robot is a new ``--config`` — no new Python file.
+
+Default execution is ``fastagent`` (declared in the shipped configs): one LLM
+call compiles the task (+ the capability-generic SKILL.md files) into an action
+sequence, then it runs with no per-step LLM. Pass ``--stepagent`` for the
+per-step LLM path (single-step debugging / verification); ``--mock`` implies it.
 
 Usage::
 
-    PYTHONPATH=/xxx/jiuwensymbiosis/  /xxx/python examples/piper_pick_demo.py
-        --config configs/piper/piper.yaml
-        --no-visual-feedback --query "<你的任务>"
-        --max-iter 30 2>&1 | tail -40
+    jiuwensymbiosis-run --config configs/cruzr/cruzr.yaml --query "把箱子搬到桌上"
+    jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到左边"
 
-For a dry run without hardware (mock arm + gripper), pass ``--mock``.
+For a dry run without hardware or a real LLM (piper only), pass ``--mock``.
 """
 
 from __future__ import annotations
@@ -53,67 +54,77 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _robot_session_builders() -> dict[str, Any]:
     """适配器注册表：机器人名 → 会话构建器（暴露 ``.from_yaml(path)``）。
 
-    这是 demo 支持多机器人的关键：新增一款机器人只需在此注册一条，``--robot <name>``
-    即可选中它，其余代码无需改动。当前内置 Piper；其它适配器实现好后加进来即可。
+    支持多机器人的关键：新增一款机器人只需在此注册一条。机器人由 config 的 ``adapter:``
+    字段选中（``--robot`` 覆盖），其余代码无需改动。
     """
+    from jiuwensymbiosis.adapters.cruzr import build_cruzr_session
     from jiuwensymbiosis.adapters.piper import build_piper_session
+    from jiuwensymbiosis.adapters.so101 import build_so101_session
 
-    return {"piper": build_piper_session}
+    return {"piper": build_piper_session, "cruzr": build_cruzr_session, "so101": build_so101_session}
+
+
+def _resolve_robot(args: argparse.Namespace, raw: dict[str, Any]) -> str:
+    """机器人身份：``--robot`` > config 顶层 ``adapter:`` > piper（向后兼容）。"""
+    return args.robot or raw.get("adapter") or "piper"
 
 
 def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSession:
-    """构建 RobotSession：piper 的 --mock 用 MockArmEnv 干跑，否则按 --robot 从注册表加载。"""
-    robot = getattr(args, "robot", "piper")
+    """构建 RobotSession：piper 的 --mock 用 MockArmEnv 干跑，否则按机器人从注册表加载。"""
+    robot = _resolve_robot(args, raw)
     if args.mock and robot == "piper":
-        from jiuwensymbiosis.api.base import BaseRobotApi
-        from jiuwensymbiosis.api.decorators import robot_tool
-        from jiuwensymbiosis.api.mixins import (
-            MotionMixin,
-            ParallelGripperMixin,
-            VisionMixin,
+        from jiuwensymbiosis.api.actions import (
+            CLOSE_GRIPPER,
+            GET_GRASP_INFO_SIMPLE,
+            GET_HOME_POSE,
+            GET_POSE,
+            GOTO_XYZR,
+            OPEN_GRIPPER,
+            PIXEL_TO_BASE_XYZ,
+            implements,
         )
+        from jiuwensymbiosis.api.base import BaseRobotApi
         from jiuwensymbiosis.env.mock import MockArmEnv
 
-        class _MockPiperApi(MotionMixin, ParallelGripperMixin, VisionMixin, BaseRobotApi):
-            """无硬件环境下的 Piper 机械臂模拟 API。"""
+        class _MockPiperApi(BaseRobotApi):
+            """无硬件环境下的 Piper 机械臂模拟 API。
+
+            每个方法都绑定共享动作词表里的一条契约，和真实适配器同形——mock 换掉的
+            只是「怎么做」，不是「做什么」。``home`` 由 BaseRobotApi 提供。
+            """
 
             # Narrow the base ``env`` (BaseRobotEnv) to the mock subtype so the
             # selftest tools can see ``move`` / ``set_suction`` / ``home_pose``.
             env: MockArmEnv
 
-            @robot_tool(desc="home", tags=["motion"])
-            def home(self) -> None:
-                """回归机械臂初始位姿。"""
-                self.env.home()
-
-            @robot_tool
+            @implements(GET_POSE)
             def get_pose(self) -> dict:
                 """获取当前位姿。"""
                 return self.env.get_observation().pose or {}
 
-            @robot_tool
+            @implements(GET_HOME_POSE)
             def get_home_pose(self) -> dict:
                 """获取初始位姿。"""
                 return self.env.home_pose
 
-            @robot_tool(tags=["motion"])
+            @implements(GOTO_XYZR)
             def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
                 """移动到指定坐标 (x, y, z, r)。"""
                 self.env.move(x, y, z, r)
 
-            @robot_tool(tags=["grasp"])
+            @implements(CLOSE_GRIPPER)
             def close_gripper(self, force_n: float | None = None) -> dict:
                 """关闭夹爪（模拟吸合）。"""
                 self.env.set_suction(True)
                 return {"ok": True, "state": "closed"}
 
-            @robot_tool(tags=["grasp"])
+            @implements(OPEN_GRIPPER)
             def open_gripper(self, width_mm: float = 70.0) -> dict:
                 """打开夹爪（模拟释放）。"""
                 self.env.set_suction(False)
                 return {"ok": True, "state": "open"}
 
-            @robot_tool
+            @implements(GET_GRASP_INFO_SIMPLE)
             def get_grasp_info_simple(self, object_name: str) -> dict:
                 """获取抓取目标的位姿信息（返回模拟值）。"""
                 hp = self.env.home_pose
@@ -125,7 +136,7 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
                     "depth_m": 0.20,
                 }
 
-            @robot_tool
+            @implements(PIXEL_TO_BASE_XYZ)
             def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
                 """将像素坐标 + 深度转换为基坐标系下的三维坐标（返回模拟值）。"""
                 hp = self.env.home_pose
@@ -246,10 +257,10 @@ def _run_voice(
 
 
 def main() -> int:
-    """Piper 视觉抓取演示入口：解析参数、构建会话和 agent，执行抓取任务并输出结果。"""
-    p = argparse.ArgumentParser(description="Piper vision pick-box demo (jiuwensymbiosis).")
-    p.add_argument("--config", required=True, help="Path to a configs/piper/*.yaml.")
-    p.add_argument("--query", help="User query for the agent. Defaults to the YAML's task prompt.")
+    """通用任务入口：按 config 的 adapter 建会话，用 --query 给任务，执行并输出结果。"""
+    p = argparse.ArgumentParser(description="Generic task runner (jiuwensymbiosis).")
+    p.add_argument("--config", required=True, help="Path to a robot config YAML (its adapter: field picks the robot).")
+    p.add_argument("--query", help="User task, e.g. --query \"把箱子搬到桌上\". The task is not in the config.")
     p.add_argument(
         "--server-url",
         default=None,
@@ -261,18 +272,23 @@ def main() -> int:
         default=None,
         help=("Override the LLM API key (overrides YAML model.api_key)."),
     )
-    p.add_argument("--mock", action="store_true", help="Use MockArmEnv — no hardware required.")
+    p.add_argument("--mock", action="store_true",
+                   help="Piper-only dry run: MockArmEnv + offline model. Implies --stepagent (no real LLM).")
     p.add_argument(
         "--robot",
-        default="piper",
-        help="选择机器人（见适配器注册表 _robot_session_builders）；默认 piper。加新机器人只需注册一条。",
+        default=None,
+        help="Override the config's adapter: field (registry key: piper / so101 / cruzr).",
+    )
+    p.add_argument(
+        "--stepagent",
+        action="store_true",
+        help="Force exec_mode=stepagent (per-step LLM) for single-step debugging / verification. "
+        "Default: the config's exec_mode (fastagent — compile once, no per-step LLM).",
     )
     p.add_argument(
         "--no-skill",
         action="store_true",
-        help="Disable the SkillUseRail + robot_control dispatcher (revert to the "
-        "old fully prompt-driven hybrid). Default: skills ON (visual_pick / "
-        "visual_place SKILL.md drive the pick-place workflow).",
+        help="Override config: disable the SkillUseRail + robot_control dispatcher.",
     )
     p.add_argument(
         "--mode",
@@ -281,27 +297,20 @@ def main() -> int:
         help="Agent mode: tool-calling, code-as-action, or both.",
     )
     p.add_argument(
-        "--no-visual-feedback", action="store_true", help="Disable VisualFeedbackRail (use a non-VLM model)."
+        "--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail."
     )
-    p.add_argument(
-        "--fast",
-        action="store_true",
-        help="Fast path (exec_mode=fast): plan once with the LLM (selecting "
-        "skills), then run an in-process real-time Perceive+Act servo loop with "
-        "NO LLM per step. Default: the per-step LLM agent (slow).",
-    )
-    # --- fast-path tuning (real-time servo tracking) ---
+    # --- fastagent tuning (real-time servo tracking at track_detect steps) ---
     p.add_argument(
         "--control-hz",
         type=float,
         default=10.0,
-        help="Fast path: servo control-loop rate (Hz). Start low on the Piper (firmware EndPoseCtrl).",
+        help="fastagent: servo control-loop rate (Hz). Start low on the Piper (firmware EndPoseCtrl).",
     )
     p.add_argument(
         "--servo-step-mm",
         type=float,
         default=5.0,
-        help="Fast path: max linear move per servo tick (mm, slew limit).",
+        help="fastagent: max linear move per servo tick (mm, slew limit).",
     )
     p.add_argument("--max-iter", type=int, default=30)
     p.add_argument(
@@ -358,62 +367,61 @@ def main() -> int:
         )
         return 2
 
+    robot = _resolve_robot(args, raw)
     try:
         session = _build_session(args, raw)
     except ImportError as exc:
-        logger.error("failed to import piper adapter (%s).", exc)
+        logger.error("failed to import the %r adapter (%s).", robot, exc)
         return 2
     spec = _build_model_spec(raw, args)
 
-    logger.info("=== jiuwensymbiosis piper pick-box demo ===")
+    # exec_mode: the config declares it (fastagent by default); --stepagent or
+    # --mock (offline, no real LLM to compile) force the per-step stepagent path.
+    exec_mode = "stepagent" if (args.mock or args.stepagent) else (raw.get("agent") or {}).get("exec_mode", "fastagent")
+
+    logger.info("=== jiuwensymbiosis task runner ===")
+    logger.info("  robot : %s", robot)
     logger.info("  config: %s", cfg_path)
-    logger.info("  mode  : %s", args.mode)
-    logger.info("  model : %s @ %s", spec.model_name, spec.api_base)
     logger.info(
-        "  skill : %s", "OFF (prompt-driven hybrid)" if args.no_skill else "ON (visual_pick / visual_place SKILL.md)"
+        "  exec  : %s",
+        "fastagent (compile-once, no per-step LLM)" if exec_mode == "fastagent" else "stepagent (per-step LLM)",
     )
+    logger.info("  model : %s @ %s", spec.model_name, spec.api_base)
     logger.info("  query : %s", query[:120] + ("..." if len(query) > 120 else ""))
     logger.info("")
 
-    logger.info("  exec  : %s", "FAST (plan-once + real-time servo loop)" if args.fast else "AGENT (per-step LLM)")
     exec_config = None
-    if args.fast:
+    if exec_mode == "fastagent":
         from jiuwensymbiosis.agent.fast import SkillExecConfig
         from jiuwensymbiosis.agent.fast.realtime import ServoConfig
 
         exec_config = SkillExecConfig(
             servo=ServoConfig(control_hz=args.control_hz, max_lin_step_mm=args.servo_step_mm),
         )
-        logger.info(
-            "  loop  : SKILL.md workflow + tracking (no approach/lift offsets; control_hz=%.1f, step=%.1fmm)",
-            args.control_hz,
-            args.servo_step_mm,
-        )
     with session:
-        # YAML ``agent:`` block is the declarative base (trace/logging/mode
-        # knobs live there); CLI flags override on top. ``model_spec`` is owned
-        # by the ``model:`` block (via ``_build_model_spec``) and assigned here.
+        # YAML ``agent:`` block is the declarative base (exec_mode / rails / trace /
+        # logging live there); CLI flags override only when explicitly given.
         agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))
         agent_cfg.model_spec = spec
-        # --mock: drive the agent with an offline model so the YAML placeholder
-        # api_key/api_base are never validated against a real client (mirrors
-        # MockArmEnv for the LLM side). build_robot_agent then short-circuits
-        # on config.model and skips build_model entirely.
+        # --mock: offline model so the YAML placeholder api_key/api_base is never
+        # validated against a real client (mirrors MockArmEnv for the LLM side).
         if args.mock:
             from jiuwensymbiosis.agent.mock_model import build_mock_model
 
             agent_cfg.model = build_mock_model()
         agent_cfg.mode = args.mode
-        agent_cfg.enable_visual_feedback = not args.no_visual_feedback
-        agent_cfg.enable_skill = not args.no_skill
         agent_cfg.max_iterations = args.max_iter
+        agent_cfg.exec_mode = exec_mode
+        agent_cfg.exec_config = exec_config
+        if args.no_visual_feedback:
+            agent_cfg.enable_visual_feedback = False
+        if args.no_skill:
+            agent_cfg.enable_skill = False
         if args.debug:
             agent_cfg.log_level = "DEBUG"
         if args.workspace:
             agent_cfg.workspace = args.workspace
-        agent_cfg.exec_mode = "fast" if args.fast else "agent"
-        agent_cfg.exec_config = exec_config
-        conv_id = f"piper-demo-{uuid.uuid4().hex[:8]}"
+        conv_id = f"task-{uuid.uuid4().hex[:8]}"
         if _voice_enabled(args):
             result = _run_voice(session, agent_cfg, conv_id, raw, args)
         else:

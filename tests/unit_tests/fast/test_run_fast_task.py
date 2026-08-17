@@ -10,8 +10,8 @@ manual invoke-lifecycle priming in ``run_fast_task`` (``_prime_fast_agent`` +
 ``_fire_invoke_event`` BEFORE/AFTER), TraceRail's ``self._trace`` would stay
 ``None`` (``before_invoke`` never fires) and no trace JSON would be written.
 
-``compile_sequence`` is monkeypatched to a fixed sequence so no real LLM is
-needed; the assertions are about trace persistence, not planning.
+``plan_task`` is monkeypatched to a fixed sequence so no real LLM is needed; the
+assertions are about trace persistence, not planning.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig
+from jiuwensymbiosis.agent.fast import PlanResult
 from jiuwensymbiosis.agent.run import run_fast_task
 from jiuwensymbiosis.agent.trace import TraceRail
 from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
@@ -106,11 +107,11 @@ def _install_fast_agent_doubles(monkeypatch, session):
 
 
 def _patched_run_fast_task(monkeypatch, session, cfg, query, conv_id):
-    """Call run_fast_task with compile_sequence stubbed and DeepAgent faked."""
+    """Call run_fast_task with plan_task stubbed and DeepAgent faked."""
     _install_fast_agent_doubles(monkeypatch, session)
     with mock.patch(
-        "jiuwensymbiosis.agent.fast.compile_sequence",
-        return_value=_FIXED_SEQUENCE,
+        "jiuwensymbiosis.agent.fast.plan_task",
+        return_value=PlanResult(sequence=_FIXED_SEQUENCE, tier="skill", skills=("visual_pick",)),
     ):
         return run_fast_task(session, query, cfg, conversation_id=conv_id)
 
@@ -122,7 +123,7 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()  # non-None so run_fast_task proceeds past the spec check
-        cfg.exec_mode = "fast"
+        cfg.exec_mode = "fastagent"
         cfg.enable_tracing = True
         cfg.workspace = str(tmp_path)
         cfg.enable_visual_feedback = False
@@ -153,7 +154,7 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()
-        cfg.exec_mode = "fast"
+        cfg.exec_mode = "fastagent"
         cfg.enable_tracing = False  # default — zero overhead, no trace file
         cfg.workspace = str(tmp_path)
         cfg.enable_visual_feedback = False
@@ -171,7 +172,7 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()
-        cfg.exec_mode = "fast"
+        cfg.exec_mode = "fastagent"
         cfg.enable_tracing = True
         cfg.workspace = str(tmp_path)
         cfg.enable_visual_feedback = False

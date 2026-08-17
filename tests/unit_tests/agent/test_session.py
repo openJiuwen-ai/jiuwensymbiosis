@@ -8,17 +8,22 @@ from __future__ import annotations
 import pytest
 
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.api.mixins import JointMotionMixin
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import MOVE_JOINT, implements
 from jiuwensymbiosis.env.mock import MockArmEnv
 from tests.mocks.mock_api import MockApi
 
 
-class _ApiWithJointMixin(JointMotionMixin, MockApi):
+class _ApiWithJointMotion(MockApi):
     """MockApi + joint motion: declares motion.joint, which MockArmEnv lacks.
 
     This makes ``api_only == {"motion.joint"}`` — a clear config error to test
     the strict_capabilities gate.
     """
+
+    @implements(MOVE_JOINT)
+    def move_joint(self, q: list[float]) -> None:
+        return defaults.move_joint(self, q)
 
 
 class TestRobotSessionConstruction:
@@ -135,7 +140,7 @@ class TestStrictCapabilities:
     def test_strict_raises_on_api_only(self):
         # api declares motion.joint but env does not — a config error.
         env = MockArmEnv()
-        api = _ApiWithJointMixin(env)
+        api = _ApiWithJointMotion(env)
         assert "motion.joint" in api.capabilities
         assert "motion.joint" not in env.capabilities
 
@@ -150,7 +155,7 @@ class TestStrictCapabilities:
         import logging
 
         env = MockArmEnv()
-        api = _ApiWithJointMixin(env)
+        api = _ApiWithJointMotion(env)
         s = RobotSession(env=env, api=api, name="t", strict_capabilities=False)
         with caplog.at_level(logging.WARNING):
             s.connect()  # must NOT raise
@@ -171,9 +176,11 @@ class TestStrictCapabilities:
         # surfaced as a tool, not necessarily an error. strict must not fire.
         env = MockArmEnv()
         api = MockApi(env)
-        # MockArmEnv has vision.camera; MockApi does not declare it.
-        assert "vision.camera" in env.capabilities
-        assert "vision.camera" not in api.capabilities
+        # MockArmEnv declares motion.servo; the api implements no servo action, so it
+        # never advertises it. (vision.camera IS on both sides — the api implements
+        # get_image / pixel_to_base_xyz, which are gated on it.)
+        assert "motion.servo" in env.capabilities
+        assert "motion.servo" not in api.capabilities
         s = RobotSession(env=env, api=api, name="t", strict_capabilities=True)
         s.connect()
         assert s._connected is True

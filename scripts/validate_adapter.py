@@ -19,7 +19,7 @@
 
 检查项:
     ERROR (必须修复)  — Config/Env/Api 结构不满足框架约定
-    WARN  (建议修复)  — Mixin 未覆写 / 能力不一致
+    WARN  (建议修复)  — 能力声明与动作实现不一致
     INFO  (仅供参考)  — 标记能力 / 可选特性
 """
 
@@ -43,7 +43,8 @@ from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES
 from jiuwensymbiosis.adapters._common.capability_spec import (
     CAPABILITY_DRIVER_MEMBERS,
     CAPABILITY_TRANSPORT_MEMBERS,
-    MIXIN_ABSTRACT_METHODS,
+    ACTIONS_WITH_GENERIC_DEFAULT,
+    CAPABILITY_ACTIONS,
 )
 
 # Dedicated logger — configured in main() with a raw-message handler so the
@@ -51,7 +52,7 @@ from jiuwensymbiosis.adapters._common.capability_spec import (
 # are suppressed via the root logger level.
 logger = logging.getLogger("validate_adapter")
 
-# ``KNOWN_CAPABILITIES`` (E-04), ``MIXIN_ABSTRACT_METHODS`` (A-10) and
+# ``KNOWN_CAPABILITIES`` (E-04), ``CAPABILITY_ACTIONS`` (A-10) and
 # ``CAPABILITY_DRIVER_MEMBERS`` (D-14) are all imported above from the package
 # so this checker and the generator stay single-sourced.
 
@@ -364,14 +365,17 @@ def run_checks(module_str: str) -> list[CheckResult]:
         results.append(("A-06", _SEVERITY_INFO, f"[OK] Api 类 {api_cls.__name__} 继承自 BaseRobotApi"))
 
     # ====================================================================
-    # [A-07] Api 至少继承了一个 Mixin ................ WARN
+    # [A-07] Api 暴露了至少一个动作 .................. WARN
     # ====================================================================
+    # Inheriting a mixin is no longer how a body gets actions — it declares each one
+    # with @implements(SPEC). So the question is whether it exposes any, not what it
+    # inherits.
     if api_cls is not None:
         api_caps = _compute_api_capabilities(api_cls)
         if not api_caps:
-            results.append(("A-07", _SEVERITY_WARN, "Api 未继承任何 Capability Mixin — 不会生成工具"))
+            results.append(("A-07", _SEVERITY_WARN, "Api 未实现任何带能力门的动作 — 不会生成工具"))
         else:
-            results.append(("A-07", _SEVERITY_INFO, f"[OK] Api Mixin capabilities: {sorted(api_caps)}"))
+            results.append(("A-07", _SEVERITY_INFO, f"[OK] Api capabilities: {sorted(api_caps)}"))
 
     # ====================================================================
     # [A-08] Api Mixin capabilities ⊆ Env.capabilities .... ERROR
@@ -411,21 +415,16 @@ def run_checks(module_str: str) -> list[CheckResult]:
             results.append(("A-09", _SEVERITY_INFO, "[OK] 无标记能力"))
 
     # ====================================================================
-    # [A-10] Mixin 抽象方法已在 Api 覆写 ............ WARN
+    # [A-10] 声明的能力都有对应动作实现 ............ WARN
     # ====================================================================
     if api_cls is not None:
-        unmeth_overridden = _check_mixin_overrides(api_cls)
-        if unmeth_overridden:
-            items = [f"{m}.{meth}" for m, meth, _ in unmeth_overridden]
+        empty_caps = _check_capability_actions(api_cls)
+        if empty_caps:
+            items = [f"{cap}（{reason}）" for cap, _s, reason in empty_caps]
             results.append(
-                (
-                    "A-10",
-                    _SEVERITY_WARN,
-                    f"以下 Mixin 抽象方法未覆写: {', '.join(items)}。" f"调用时将抛 NotImplementedError",
-                )
-            )
+                ("A-10", _SEVERITY_WARN, f"以下能力已声明但无任何动作实现: {'; '.join(items)}"))
         else:
-            results.append(("A-10", _SEVERITY_INFO, "[OK] 所有 Mixin 抽象方法已覆写"))
+            results.append(("A-10", _SEVERITY_INFO, "[OK] 每个声明的能力都至少有一个动作实现"))
 
     # ====================================================================
     # [S-11] Session builder 存在且可调用 ........... ERROR
@@ -479,7 +478,7 @@ def run_checks(module_str: str) -> list[CheckResult]:
                         "D-14",
                         _SEVERITY_ERROR,
                         f"驱动类 {driver_cls.__name__} 缺少 capability 所需方法: {missing}。"
-                        f"Env/Api 委托调用时会 AttributeError (见 _common/protocol.py)",
+                        f"Env/Api 委托调用时会 AttributeError (见 env/protocol.py)",
                     )
                 )
             else:
@@ -590,45 +589,78 @@ def _missing_members(cls: type, caps: set[str], contract: dict[str, list[str]]) 
 
 
 def _compute_api_capabilities(api_cls: type) -> set[str]:
+    """What the Api offers — mirrors ``BaseRobotApi.capabilities``.
+
+    Capability comes from the ACTIONS a body implements (each carries its own gate),
+    plus any ``capability`` class attr for a marker capability that has no action of
+    its own. Reading only the class attrs, as this used to, reports nothing for a body
+    that declares its actions explicitly instead of inheriting them.
+    """
+    return _api_declared_capabilities(api_cls)
+
+
+def _check_capability_actions(api_cls: type) -> list[tuple[str, str, str]]:
+    """Capabilities the body advertises but implements NO action for.
+
+    The old failure mode — inheriting an abstract mixin stub and forgetting to override
+    it, so the tool exists and raises the moment it is called — is gone: without a base
+    class there is no stub to inherit. What remains is the mirror error, and the one a
+    porting author actually makes: advertising a capability the Api does no work for.
+
+    "At least one", not "all": a capability usually offers alternative flavours, and
+    picking one is the point. ``vision.detection`` is either the single-gripper grasp
+    pose (``get_grasp_info_simple``) or the base-frame 3-D geometry a mobile body drives
+    on (``locate_for_grasp`` / ``locate_for_place``) — demanding both would flag every
+    body for not being the other kind. Likewise the diagnostic actions under
+    ``motion.joint`` are genuinely optional.
+
+    Returns list of (capability, "", reason).
+    """
+    implemented = {
+        meta.name
+        for name in dir(api_cls)
+        if (meta := getattr(getattr(api_cls, name, None), "__robot_tool__", None)) is not None
+    }
+    results: list[tuple[str, str, str]] = []
+    for cap in sorted(_api_declared_capabilities(api_cls)):
+        actions = CAPABILITY_ACTIONS.get(cap)
+        if not actions:
+            continue  # marker capability (vision.depth, motion.servo, ...) — no action of its own
+        if not any(a in implemented for a in actions):
+            results.append((cap, "", f"未实现其下任何动作（该能力的动作有: {', '.join(actions)}）"))
+    return results
+
+
+def _api_declared_capabilities(api_cls: type) -> set[str]:
+    """Capabilities the Api advertises: every action's gate, plus any marker attr."""
     caps: set[str] = set()
     for cls in api_cls.__mro__:
-        cap = getattr(cls, "capability", None)
+        cap = cls.__dict__.get("capability")
         if isinstance(cap, str):
             caps.add(cap)
         elif isinstance(cap, (set, frozenset, list, tuple)):
             caps.update(cap)
+        for value in cls.__dict__.values():
+            meta = getattr(value, "__robot_tool__", None)
+            if meta is not None and meta.capability:
+                caps.add(meta.capability)
     return caps
 
 
-def _check_mixin_overrides(api_cls: type) -> list[tuple[str, str, str]]:
-    """Check that Api overrides all abstract methods from its Mixins.
-    Returns list of (mixin_name, method_name, reason).
-    """
-    results = []
-    api_mro_names = {cls.__name__ for cls in api_cls.__mro__}
-
-    for mixin_name, methods in MIXIN_ABSTRACT_METHODS.items():
-        if mixin_name not in api_mro_names:
-            continue
-        # Find the Mixin class from the MRO
-        mixin_cls = None
-        for cls in api_cls.__mro__:
-            if cls.__name__ == mixin_name:
-                mixin_cls = cls
-                break
-        if mixin_cls is None:
-            continue
-
-        for meth_name in methods:
-            api_meth = getattr(api_cls, meth_name, None)
-            mixin_meth = getattr(mixin_cls, meth_name, None)
-            if api_meth is None:
-                results.append((mixin_name, meth_name, "方法缺失"))
-                continue
-            # If the method bodies are the same object, it's not overridden
-            if api_meth is mixin_meth:
-                results.append((mixin_name, meth_name, "未覆写（将抛 NotImplementedError）"))
-    return results
+def _api_declared_capabilities(api_cls: type) -> set[str]:
+    """Capabilities the Api class advertises: every action's gate, plus marker attrs."""
+    caps: set[str] = set()
+    for cls in api_cls.__mro__:
+        cap = cls.__dict__.get("capability")
+        if isinstance(cap, str):
+            caps.add(cap)
+        elif isinstance(cap, (set, frozenset, list, tuple)):
+            caps.update(cap)
+        for value in cls.__dict__.values():
+            meta = getattr(value, "__robot_tool__", None)
+            if meta is not None and meta.capability:
+                caps.add(meta.capability)
+    return caps
 
 
 def _check_tool_tags(api_cls: type, env_caps: set[str]) -> list[str]:
