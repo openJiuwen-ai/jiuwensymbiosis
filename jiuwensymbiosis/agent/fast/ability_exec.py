@@ -68,7 +68,16 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             }
         # RobotControlTool wraps the api return under data["result"].
         data = getattr(output, "data", None) or {}
-        return {"ok": True, "result": data.get("result", data)}
+        result = data.get("result", data)
+        # A tool that ran without raising can still report business ok=False
+        # (e.g. approach_for_grasp nav_failed/too_close); surface it as a step
+        # failure like direct_executor so the runner aborts instead of grasping
+        # an unreached target. No exception fired, so RecoveryRail did not run —
+        # leave recovery_managed unset for the runner's own safe retreat.
+        ok = result.get("ok", True) if isinstance(result, dict) else True
+        if not ok:
+            return {"ok": False, "reason": result.get("reason") or f"{op} reported not-ok", "result": result}
+        return {"ok": True, "result": result}
 
     def run(op: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
