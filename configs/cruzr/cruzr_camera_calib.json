@@ -1,0 +1,46 @@
+{
+  "_note": "tf_base_cam = base_link -> waist_front_rgbd_color_optical_frame, from robot TF (tf2), translation in mm. Chain crosses lifter/waist_yaw/torso joints -> valid for the current body pose; re-run after the pose changes. intrinsics from camera_info.",
+  "tf_base_cam": [
+    [
+      0.019339519229316426,
+      -0.6461986416818774,
+      0.7629241761043332,
+      65.87564124754992
+    ],
+    [
+      -0.999786205126855,
+      -0.006915366715928517,
+      0.019486450195619343,
+      8.906951592162034
+    ],
+    [
+      -0.007316217193401697,
+      -0.763137925405153,
+      -0.646194227592833,
+      927.9468509183895
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "intrinsics": [
+    [
+      345.42852783203125,
+      0.0,
+      322.50811767578125
+    ],
+    [
+      0.0,
+      345.36895751953125,
+      182.50399780273438
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
+}

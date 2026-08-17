@@ -1,0 +1,172 @@
+# configs/cruzr/cruzr.yaml — Cruzr 双臂机器人配置（与任务无关，对标 configs/piper/piper.yaml）。
+#
+# 描述“这台机器人”：ROS 工作区、腰部相机、标定、URDF/运动学、真机调优的抓取参数、
+# 检测服务、编排 LLM 端点、执行/护栏。**不含任务**——任务由 jiuwensymbiosis-run 的
+# --query 给出。以后无论让 Cruzr 做什么任务，都用这一份配置。
+# 运行前需 source ROS + Cruzr_ws，并启动检测服务 :8114。
+
+name: cruzr
+adapter: cruzr          # 通用 runner（jiuwensymbiosis-run）据此从注册表建 session；--robot 可覆盖
+ros_workspace: /home/riemann/Robot/Cruzr_ws
+ros_backend: auto
+
+# agent: 执行/护栏声明（RobotAgentConfig 字段）。SafetyRail 按本体能力派生策略，替双臂本体
+# 预检 move_joint/底盘/lifter/waist 指令；双臂无夹爪故关视觉反馈，几何安全仍靠 IK+自碰撞；
+# RecoveryRail 经 always-safe home() 退避。
+agent:
+  exec_mode: fastagent   # 默认快路径；单步调试用 --stepagent
+  enable_skill: true
+  enable_visual_feedback: false
+  enable_safety: true
+  enable_recovery: true
+
+# 编排 LLM 端点（fastagent 用它编译动作序列）。api_key 用 --api-key 覆盖。
+model:
+  provider: OpenAI
+  api_base: "your own api"
+  api_key: ""   # 用 --api-key 覆盖
+  model_name: "your own model"
+  temperature: 0.3
+  max_tokens: 2048
+
+# 开放词汇检测服务。
+api_servers:
+  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server
+    host: 127.0.0.1
+    port: 8114
+    use_sam2: true
+
+env:
+  cfg:
+    low_level:
+      # 常驻 worker：node/rclpy/TF 常驻(省冷启动)，但相机传感器订阅【每次 grab 现建、抓完销毁】——不再持久
+      # 保活订阅，规避 cruzr-inprocess-dds-shm 老坑(持久订阅拖垮 SDK/相机流→no_color_frame)。真机验证中：
+      # 若仍 no_color_frame，可能 SDK 已被此前持久订阅拖垮，需先 reboot 机器人再测。
+      resident_workers: true
+      ros_python: /home/riemann/.local/bin/cruzr_ros_python
+      camera_fastdds_profiles_file: ""
+      viz_detections: true   # 调试：把腰/头两路检测(prompt+画面+mask)显示到一个 cv2 窗口
+      # 头部搜索 pan 角度(rad, 左正)：部署用【左右各看一次】完成一个朝向的搜寻(未命中再转底盘180°)。
+      # dataclass 默认是 5-look(0,±0.6,±1.2, 遗留 run_approach 用)；此处覆盖为 2-look。
+      head_search_yaw_positions_rad: [0.6, -0.6]
+      # 头部俯仰(rad)：-pitch=低头, +pitch=抬头。-0.35(≈-20°)看地面/低台。往 0 更平/更远，
+      # 往更负更低头。两阶段可分别调：
+      head_search_pitch_rad: -0.35    # 搜索扫视时的固定俯仰(tunable)
+      head_approach_pitch_rad: -0.35  # 找到后连续驱近时的固定俯仰(tunable，只需头/腰视野衔接)
+      # 驱近时头部偏航跟踪：每帧把头按 gain×画面方位转回对准目标，抵消一次性开环转身的欠/过冲，
+      # 底盘按 head_yaw+画面方位的真实方位转向(否则头钉正前方→grounded 复检不在参照物上→卡死)。
+      head_yaw_track_gain: 0.9      # 跟踪增益(tunable)：≈0.9 一步基本对正；调小更稳、调大更快但可能抖
+      head_yaw_track_max_rad: 1.2   # 跟踪偏航限位(rad)：勿超头部机械限位 ±1.658
+      # grounded 抓取("X 在 Y 上")时，若头部点云/TF 拿不到、核验不出目标确在参照物上：
+      #   true(严格/fail-closed) = 核验不了就【不算命中、不前进】——彻底贴合"条件满足才前进"，
+      #     绝不靠纯 bearing 盲开近。代价：必须先接通头部点云话题
+      #     (/sensor/camera/stereo/pointcloud/jazzy)+base←stereo_left_rgb_optical_link TF，
+      #     否则 grounded 抓取会在搜索阶段就以 object_not_found 中止(日志打 head_cloud DEGRADED,指出缺哪块)。
+      #   false(默认/fail-open) = 降级为纯 bearing 先驱近，腰部 RGBD 做最终判定(点云未接好时的过渡)。
+      head_grounded_strict: true
+      # 腰部 RGBD 相机话题。
+      waist_color_topic: /sensor/camera/waist_front_rgbd/color/raw
+      waist_depth_topic: /sensor/camera/waist_front_rgbd/depth/raw
+      waist_camera_info_topic: /sensor/camera/waist_front_rgbd/color/info
+      nav_python: /home/riemann/.local/bin/cruzr_ros_python
+      camera_calib_path: configs/cruzr/cruzr_camera_calib.json
+      # URDF 路径（FK / IK）。
+      urdf_path: /home/riemann/Robot/Cruzr_ws/cruzr_s2_description/cruzr_s2_description/urdf/cruzr_s2_v1/cruzr_s2_v1.urdf
+      # 末端执行器链接名（双臂）。
+      left_arm_leaf: L_sixforce_link
+      right_arm_leaf: R_sixforce_link
+      # 接触力确认阈值（N）。配合更浅的夹入一起调低，避免把箱子夹变形；仍能确认真实接触。
+      contact_force_threshold_n: 2.5
+      # 夹板每侧【横向】夹入箱面的深度（mm，符号见 geometry.py:129）。夹距=箱宽-2·inset：
+      #   正值=夹板越过箱面向箱心内缩(压紧)；负值=停在箱面外侧留缝(够不到、无接触力)。
+      # 夹瘪→调小(趋 0)；没够到/夹力不足→调大。配合 contact_force_threshold_n 调。
+      grasp_inset_mm: 5.0
+      # 放置【下压到桌面】时双夹板再向内过盈的总量（mm，左右各半）。只保持夹距=零过盈→桌前手臂
+      # 内向刚度弱、夹力不足→下压那一下掉箱。此值让放置像抓取一样压住。掉→调大；夹瘪→调小；0=旧行为。
+      place_squeeze_mm: -5.0
+      # 安静低速运动：高频密集设定点 + smoothstep。此全局 ramp 现在只管【腰/举升/回家】这类
+      # 不接触箱子、也无独立旋钮的动作(turn_waist、set_lifter 前倾、home)。夹紧/放置下压已拆到
+      # arm_contact_ramp_duration_s、空载移动拆到 arm_transit_ramp_duration_s。
+      control_rate_hz: 250.0
+      ramp_duration_s: 1.0
+      # 头部专用快 ramp(轻负载 2-DOF、不搬箱)：每次"看一眼"的头动 1.5s→0.4s。搜索/接近头动十几~几十次,
+      # 这条是最安全的大头提速(不碰抓取)。想更顺滑就调大一点,想更快可再压到 ~0.3。
+      head_ramp_duration_s: 0.4
+      # 夹取/放置里【不夹箱的空载移动】专用快 ramp(举到 ready、下探到箱面外、放好松开后抬离)。
+      # 不接触、不夹紧→smoothstep 末速仍为 0、落点不变,只是中段更快。夹取/放置各省下 2 段慢动作。
+      # 想更快继续压(如 0.4);嫌抖就调大。夹紧/下压那两下不受它影响(见 arm_contact_ramp_duration_s)。
+      arm_transit_ramp_duration_s: 0.6
+      # 夹取/放置里【和箱子接触】那两下(夹紧 clamp、放置下压到位)专用 ramp,从原来的 1.0 提到 0.6。
+      # ⚠ 这两下有夹变形/掉箱/接触力误判风险:压得越小接触峰值速度越高、冲击越大。真机逐段确认,
+      # 若出现箱子夹瘪/滑掉/no_contact 误判就先把这条往回调大(接触力核验 FT 门槛仍在,不会盲抬)。
+      arm_contact_ramp_duration_s: 0.6
+      # 放置【下压把箱子放到桌面】专用 ramp,从夹紧 clamp 拆出来:只放慢放置那一下,夹紧不受影响。
+      # 真机反馈"最后放箱子太快" → 1.2(比夹紧 0.6 慢一倍,落得更稳)。嫌慢就往回压,嫌磕桌就调大。
+      place_contact_ramp_duration_s: 2.0
+      # 底盘接近（approach_object）：近距微调用轮速直驱——目标盒/桌在 lidar 里就是障碍物，
+      # 位于抓取距离的碰撞 margin 内，避障规划器会在边界振荡到不了位。
+      # 底盘参数分两组,兼得“搜索快 + 接近准”:
+      #  ·【搜索大转身】用全局 base_k_*(180° 掉头、朝粗方位转身等,过冲无所谓,求快);
+      #  ·【approach 精定位】(approach_object/approach_surface 每步转身+驶近)用下面的 approach_k_*
+      #    温和值——过冲会把腰部相机边缘的箱子甩出视野→重检 0 cand→dual_arm_grasp 拿不到目标静默跳过
+      #    →编排继续去放置→空放。两组分离,搜索提速不再伤及精定位。
+      # 整体底盘移动/转向提速 ×1.5：轮速旋钮统一乘 1.5(减速尾段/最小速阈值不变→落地防撞不变)。
+      base_k_rot: 3.3             # 搜索转向轮速(rad/s):快(过冲无所谓);2.2→3.3(×1.5)
+      base_k_rot_slow_rad: 0.5    # 搜索减速尾段(rad):提前减速消原地旋转过冲(0.35→0.5,增益不变)
+      base_k_fwd: 1.2            # 全局前进轮速(rad/s):前进只发生在 approach(另用 approach_k_fwd),此处保守即可;0.8→1.2(×1.5)
+      # approach 精定位【温和】参数=真机验证过的稳值,避免过冲丢目标。
+      approach_k_rot: 2.25        # 精定位转向轮速(rad/s):1.5→2.25(×1.5)。⚠转向是唯一过冲敏感项(过冲会把腰部相机边缘的箱子甩出视野);由 approach_k_rot_slow_rad=0.75 早减速兜底,若甩出视野先回调此项
+      approach_k_rot_slow_rad: 0.75  # 精定位减速尾段(rad):越大减速越早、过冲越小
+      # 精定位前进回到保守速:前进相位已加临近减速斜坡(base_k_fwd_slow_m/base_k_fwd_min),过冲被
+      # 从根上限制,不再靠"过冲小才敢提速"。避免高速顶到箱子(硬件实测精调阶段会撞目标)。
+      approach_k_fwd: 2.25       # 精定位前进轮速(rad/s):1.5→2.25(×1.5);末段仍按 base_k_fwd_slow_m 减速到 k_fwd_min 落位,提速只快在中段、落地防撞不变
+      approach_drive_wheel_rs: 1.95  # 连续驱近爬行轮速(rad/s):底座移动耗时大头,提速(0.5→0.9→1.3→1.95,×1.5);~1.2-1.5m 早交接腰部+前向雷达急停兜底,此段提速最安全
+      # 贴近已知目标：前向 lidar 急停实际关闭（视觉引导、地面清空）。对标 search_grasp。
+      base_safe_dist_m: 0.05
+      base_lidar_self_floor_m: 0.04
+      # 抓取带 / 停车距离（真机调）：落点约比 target 远 ~0.11m；放宽带上限避免复检再顶箱子。
+      # 铁律：max 必须 > target，否则箱子收敛到 target(=max) 时检测噪声让 rng 略超上界，
+      # plan_grasp_pose_goal 永远停在"远→径向"相位，Phase-2 绕正(按箱角对正身体)永不触发。
+      grasp_target_forward_m: 0.6
+      grasp_forward_max_m: 0.66
+      # 抓取正对 square 容差(rad,≈15°)。approach_object 迟滞锁面后用它判"够正→前进"。必须 > footprint yaw
+      # 帧间抖动(近方形箱实测 ~0.26),否则远处近方形箱每帧 |square_turn|≈抖动>容差 → 只原地转永不前进(死锁)。
+      # 细长箱 yaw 稳定会收敛到远小于此值;近方形箱最终 square 残差以此为界(任意面都可抓故可接受)。真机调。
+      grasp_square_tol_rad: 0.26
+      # 【单发驶近总开关】开=approach_object 用"算直角路线→一次开完→一次终检+终对准"(≤2 次复检、无轮询);
+      # 关=老的离散轮询循环(每步复检、最多 approach_converge_iters 次)。真机要"不重复检测"必须开=true。
+      grasp_arc_enabled: true
+      # 直角路线终点(待命点)比 grasp_d 再远此【预留距离】(m)。接近段开环、末端会前冲,且从箱心算还差半个箱深,
+      # 预留太小会在末端蹭到箱子(真机实测)。停在安全外圈,由后面里程计闭环+视觉纠正的直入精确收尾。还蹭箱就加大。
+      grasp_arc_standoff_m: 0.25
+      # 直角路线【横向段】距离标定增益。几何横移=到法线线的垂距,理论精确;真机里程计/轮滑/箱心y偏内侧
+      # 让实际横移偏短→停不到线上仍偏一侧。>1 补偿(只乘横向段,前进段不受影响);过冲由终检对正吸收。
+      # 真机反馈"横向移动距离不够" → 先给 1.2(+20%);仍不够继续加,过头就回调。1.0=几何原值。
+      grasp_lat_gain: 1.1
+      # 【末段连续视觉伺服】开=近距抓取末段"边开边检不停车"(复用连续行驶原语,消除单发末段那两次静止重检的
+      # 冻结卡顿),关=走单发老末段(两次静止重检)。真机要"近距不卡顿"必须开=true。接近途中挪动箱子会跟到最新位置。
+      grasp_servo_enabled: true
+      # 末段爬行轮速(rad/s,抓取&放置伺服共用):0.6→0.75→1.2 提速,更快逼近目标/桌边;仍<粗驱近
+      # approach_drive_wheel_rs(1.95),给"边开边检"留反应余量;几何 fwd_max(到点+reserve)自停兜底防冲箱/冲桌。
+      # 想更快→继续上调(<1.95);冲箱/冲桌或甩箱→调低。
+      grasp_servo_creep_k_fwd: 1.2
+      # 伺服前进【绝对上限】(m,几何安全兜底):伺服现负责整段前进,worker 实际自停=min(到抓取点+reserve, 此值);
+      # 此值只在种子检测异常偏远时封顶——检测卡死/父死也停在箱前(前向雷达急停已基本关)。须 < 到箱心距离。冲到箱就调小。
+      grasp_servo_fwd_max_m: 1.2
+      # 提交距离(m):锁定后箱离开视野且剩余前进≤此→开环走完末段(之后仍须再检才抓);否则丢框即 hold(不盲进)。
+      # 须 ≤ 2×grasp_approach_forward_reserve_m(=0.30)才能让正常 commit 走满;早丢框够不到就调大。
+      grasp_servo_commit_dist_m: 0.3
+      # 伺服轮询上限(安全):检测卡死时防死循环(每轮≈一次腰部抓帧检测)。
+      grasp_servo_max_polls: 40
+      # 锁定后丢失且未进提交距离时是否 hold(暂停轮子不盲进);false=继续直行到 fwd_max。默认 true。
+      grasp_servo_lost_hold: true
+      # 绕正“朝向一致性”门槛(rad,≈25°)：仅当连续两帧 footprint yaw 一致才据其绕正。真机实测近方形箱
+      # (aspect≈1.05)yaw 逐帧 ±30° 跳变→只对准中心不追噪声;明确长方形且朝向稳定才绕正。太小会打断
+      # 长方形箱正常收敛,太大放进噪声。默认 0.44;若长方形箱仍不绕正就调大,若近方形箱乱转就调小。
+      grasp_yaw_consistency_tol_rad: 0.44
+      # 【放置侧连续直行伺服】开=底盘正对近边后"直入桌边"段并入一次连续直行爬行(边开边检不停车),消除放置侧逐段
+      # 硬停卡顿。载箱→纯直行不 steer(打弯会转偏已正对底盘、甩箱)。数值旋钮复用上面 grasp_servo_*(creep_k_fwd/
+      # fwd_max_m/commit_dist_m/max_polls/lost_hold)。关=走离散直入(现状)。真机要"放置侧不卡顿"开=true。
+      place_servo_enabled: true
+      # 放箱前底盘停在桌子近边前方此距离（手臂够到桌面）。太大够不到→place_unreachable；太小怼桌。真机调。
+      place_approach_edge_m: 0.35
