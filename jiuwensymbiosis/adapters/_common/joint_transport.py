@@ -3,7 +3,7 @@
 """``JointTransport`` — the vendor seam for a joint-level SDK.
 
 Some arms expose a real Cartesian interface in firmware (their driver wraps a
-``move_linear(pose)`` and satisfies ``RobotDriver`` directly). Others only take
+``move_linear(pose)`` and satisfies ``CartesianDriver`` directly). Others only take
 joint-motor targets plus an observation stream; the Cartesian layer (FK/IK,
 waypoints, arrival polling, safety) has to live above the SDK. ``JointTransport``
 is that lower seam: the *only* part an adapter for a joint-level arm must hand-
