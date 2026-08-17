@@ -26,7 +26,7 @@ from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jiuwensymbiosis.adapters.so101.lowlevel import So101Driver
-    from jiuwensymbiosis.env.protocol import RobotDriver
+    from jiuwensymbiosis.env.protocol import CartesianDriver
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,9 @@ class So101Env(BaseRobotEnv):
             "motion.cartesian",
             "motion.joint",
             "motion.servo",
+            # It ships a URDF, so the generic reach judge applies — proprioception is a
+            # property of having a kinematic model, not of being a particular robot.
+            "planning.reachability",
             "grasp.parallel",
             "vision.camera",
             "vision.depth",
@@ -49,7 +52,9 @@ class So101Env(BaseRobotEnv):
             "vision.eye_to_hand",
         }
     )
-    _BASE_CAPABILITIES = frozenset({"motion.cartesian", "motion.joint", "grasp.parallel", "motion.servo"})
+    _BASE_CAPABILITIES = frozenset(
+        {"motion.cartesian", "motion.joint", "grasp.parallel", "motion.servo", "planning.reachability"}
+    )
     name = "so101"
 
     def __init__(self, cfg: So101Config) -> None:
@@ -81,12 +86,12 @@ class So101Env(BaseRobotEnv):
 
     # --- controlled penetration point (read-only) ---------------------------
     @property
-    def low_level(self) -> RobotDriver | None:
+    def low_level(self) -> CartesianDriver | None:
         """The underlying driver, or None before connect()."""
         return self._inner
 
     @low_level.setter
-    def low_level(self, _: RobotDriver | None) -> None:
+    def low_level(self, _: CartesianDriver | None) -> None:
         raise AttributeError("So101Env.low_level is read-only (binds to self._inner via connect/disconnect)")
 
     @property
@@ -273,8 +278,8 @@ class So101Env(BaseRobotEnv):
         """Dispatch a flange-frame Cartesian move to the driver.
 
         ``So101Driver.move_to_pose_blocking`` requires a :class:`So101Pose`; the
-        generic capability mixins (:meth:`MotionMixin.goto_xyzr`,
-        :meth:`MotionMixin.move_direction`) hand a ``SimpleNamespace`` here, so
+        generic implementations (``defaults.goto_xyzr`` / ``defaults.move_direction``)
+        hand a ``SimpleNamespace`` here, so
         normalize a complete mapping or attribute-bag pose into a ``So101Pose``
         before delegating. Missing coordinates are rejected instead of silently
         becoming zero-valued hardware targets. A ``So101Pose`` is passed through.

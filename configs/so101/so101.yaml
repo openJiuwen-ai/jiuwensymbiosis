@@ -1,5 +1,7 @@
 # SO-101 左臂香蕉抓取本机实验配置（标定 ID: so101_left）。
 
+adapter: so101          # 通用 runner（jiuwensymbiosis-run）据此从注册表建 session；--robot 可覆盖
+
 env:
   cfg:
     low_level:

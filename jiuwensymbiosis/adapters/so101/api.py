@@ -1,22 +1,21 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""``So101Api`` — capability-mixed API for the SO-101 adapter.
+"""``So101Api`` — what the SO-101 does, action by action.
 
-Capability composition: ``MotionMixin`` + ``JointMotionMixin``
-+ ``ParallelGripperMixin`` + ``VisionMixin`` + ``BaseRobotApi``. Vision is
+Every method binds one entry of the shared action vocabulary with
+``@implements(SPEC)``; the generic ones forward to ``api.defaults``. Vision is
 desktop-fixed eye-to-hand (milestone B): a RealSense D405 bolted to the desk,
 NOT the wrist. The hand-eye calibration therefore solves ``T_base_cam`` (a
 CONSTANT camera-in-base transform), so projection does NOT read the flange pose
 per step — ``p_base = T_base_cam @ p_cam`` — unlike piper's eye-in-hand
 ``tf_base_flange @ tf_flange_cam``.
 
-Two overrides fix contract mismatches with the LeRobot percentage gripper:
+Two places where this body departs from the generic implementation:
 
-- ``open_gripper`` / ``close_gripper`` are re-decorated with
-  ``input_params={"type": "object", "properties": {}}`` so the LLM-facing tool
-  has NO parameters (the SO-101 gripper is two-state percentage, not mm/N).
-  Python keeps the mixin-compatible ``width_mm``/``force_n`` params but ignores
-  them — no fake unit conversion.
+- ``open_gripper`` / ``close_gripper`` keep the contract's ``width_mm`` /
+  ``force_n`` params but ignore them — the SO-101 gripper is two-state
+  percentage, not mm/N. The contract already calls both a HINT, so this needs no
+  per-body caveat.
 - ``goto_pose`` takes a nested ``pose: So101Pose`` value object (six fields
   describing one Cartesian pose). ``SafetyRail.before_tool_call`` unpacks the
   nested ``pose`` object to read ``x``/``y``/``z`` for Z-floor / XY-bound
@@ -27,21 +26,38 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
 from jiuwensymbiosis.adapters.so101.lowlevel import So101PreDispatchError
-from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.api.decorators import robot_tool
-from jiuwensymbiosis.api.mixins import (
-    JointMotionMixin,
-    MotionMixin,
-    ParallelGripperMixin,
-    VisionMixin,
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import (
+    ANALYZE_SCENE,
+    CLOSE_GRIPPER,
+    GET_GRASP_INFO_SIMPLE,
+    GET_HOME_POSE,
+    GET_IMAGE,
+    GET_POSE,
+    GOTO_POSE,
+    GOTO_XYZR,
+    MOVE_DIRECTION,
+    MOVE_JOINT,
+    OPEN_GRIPPER,
+    PIXEL_TO_BASE_XYZ,
+    implements,
 )
-from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
+from jiuwensymbiosis.api.base import BaseRobotApi
+from jiuwensymbiosis.api.components import Reachability
+from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.perception.vision import (
+    GraspFailure,
+    GraspResult,
+    apply_xy_correction,
+    detect_and_centroid,
+    dump_grasp_debug,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jiuwensymbiosis.adapters.so101.env import So101Env
@@ -51,14 +67,54 @@ logger = logging.getLogger(__name__)
 __all__ = ["So101Api"]
 
 
-class So101Api(
-    MotionMixin,
-    JointMotionMixin,
-    ParallelGripperMixin,
-    VisionMixin,
-    BaseRobotApi,
-):
-    """SO-101 5-DoF arm + parallel gripper + desktop eye-to-hand vision."""
+class So101Api(BaseRobotApi):
+    """SO-101 5-DoF arm + parallel gripper + desktop eye-to-hand vision.
+
+    Every action this body offers is declared below, so this file IS the capability
+    list. Generic ones forward to ``api.defaults``; the rest are SO-101 specifics
+    (orientation policy, two-state percentage gripper, eye-to-hand calibration).
+    """
+
+    # Marker capabilities: real things this body can do that no ACTION advertises, so the
+    # class attr is the only way to declare them (see BaseRobotApi.capabilities). Leaving one
+    # out is not cosmetic — the agent gates on ``api.capabilities & env.capabilities``, so an
+    # ability the hardware has and the api forgets to claim is silently switched off.
+    #   motion.servo        — servo_to_tip streams non-blocking tip targets, so the fast path
+    #                         can FOLLOW a moving target rather than aim once.
+    #   vision.eye_to_hand  — the camera is bolted to the desk, not the wrist, so a detection
+    #                         is already an ABSOLUTE base-frame point; tracking uses that
+    #                         directly instead of the eye-in-hand relative correction.
+    #   vision.depth        — the D405 returns aligned depth.
+    #   planning.reachability — it ships a URDF, so it holds the generic reach judge below.
+    capability = {"motion.servo", "vision.eye_to_hand", "vision.depth", "planning.reachability"}
+
+    # ---- generic actions: the Env delegation is the whole implementation ----
+    # Planning-time proprioception: read by the planner (agent/run.py), never by the LLM.
+    def check_reachable(self, target: Any) -> bool | None:
+        return self._reach.check_reachable(target)
+
+    def describe_reach(self) -> dict | None:
+        return self._reach.describe_reach()
+
+    @implements(GET_POSE)
+    def get_pose(self) -> dict:
+        return defaults.get_pose(self)
+
+    @implements(GET_HOME_POSE)
+    def get_home_pose(self) -> dict:
+        return defaults.get_home_pose(self)
+
+    @implements(MOVE_DIRECTION)
+    def move_direction(self, direction: str, distance_mm: float) -> dict:
+        return defaults.move_direction(self, direction, distance_mm)
+
+    @implements(MOVE_JOINT)
+    def move_joint(self, q: list[float]) -> None:
+        return defaults.move_joint(self, q)
+
+    @implements(GET_IMAGE)
+    def get_image(self):
+        return defaults.get_image(self)
 
     # The low-level servo maintains a previous-planned-pose / previous-IK-seed
     # chain. Tell the generic fast controller to slew from its previous command
@@ -69,7 +125,7 @@ class So101Api(
     # requiring an independently unattainable rz while preserving the generic
     # angular reached check for every other adapter.
     servo_reached_angular_keys: tuple[str, ...] = ()
-    # At the SO-101's configured 20 Hz rate, per-tick INFO logs are affordable
+    # At the SO-101's configured 5 Hz rate, per-tick INFO logs are affordable
     # and essential for distinguishing planned convergence from live TCP lag.
     servo_log_ticks = True
 
@@ -81,25 +137,18 @@ class So101Api(
         z_correction_mm: float = 0.0,
         grasp_z_offset_mm: float = -25.0,
         place_z_offset_mm: float = 75.0,
-        floor_margin_mm: float = 0.0,
     ) -> None:
         super().__init__(env)
+        # Held, not inherited: any body that ships a URDF gets the same judge.
+        self._reach = Reachability(self)
         self._detector_service_url = detector_service_url
         self._seg_fn: Callable[..., list[dict[str, Any]]] | None = None
         self._z_correction_mm = float(z_correction_mm)
         self._grasp_z_offset_mm = float(grasp_z_offset_mm)
         self._place_z_offset_mm = float(place_z_offset_mm)
-        # Extra clearance above (z_min_safe + this) enforced by the shared grasp
-        # geometry; wired from cfg.minimum_floor_margin_mm (SO-101 desk model).
-        self._floor_margin_mm = float(floor_margin_mm)
 
     # --- gripper overrides (two-state percentage, no mm/N params) ------------
-    @robot_tool(
-        desc="Open the SO-101 gripper to the configured fully-open percentage position.",
-        capability="grasp.parallel",
-        input_params={"type": "object", "properties": {}},
-        tags=["grasp"],
-    )
+    @implements(OPEN_GRIPPER)
     def open_gripper(self, width_mm: float = 80.0) -> dict:
         """Open the gripper. ``width_mm`` is accepted for API parity and ignored —
         the SO-101 gripper is a two-state percentage actuator (no width control).
@@ -109,12 +158,7 @@ class So101Api(
         self.env.set_end_effector(False)
         return self._gripper_response("open")
 
-    @robot_tool(
-        desc="Close the SO-101 gripper to the configured fully-closed percentage position.",
-        capability="grasp.parallel",
-        input_params={"type": "object", "properties": {}},
-        tags=["grasp"],
-    )
+    @implements(CLOSE_GRIPPER)
     def close_gripper(self, force_n: float | None = None) -> dict:
         """Close the gripper. ``force_n`` is accepted for API parity and ignored —
         the SO-101 gripper is a two-state percentage actuator (no force control).
@@ -152,16 +196,7 @@ class So101Api(
         self._ll().recovery_home()
 
     # --- cartesian overrides -------------------------------------------------
-    @robot_tool(
-        desc=(
-            "Move the SO-101 control frame to absolute (x, y, z[, r]) in mm/deg, base frame. "
-            "orientation_policy is preserve (keep live orientation), grasp (use the calibrated "
-            "grasp orientation), or top_down (legacy rx=180, ry=0). If omitted, the configured "
-            "policy is used; r overrides the selected rz."
-        ),
-        capability="motion.cartesian",
-        tags=["motion"],
-    )
+    @implements(GOTO_XYZR)
     def goto_xyzr(
         self,
         x: float,
@@ -257,34 +292,7 @@ class So101Api(
             raise So101PreDispatchError(f"resolved orientation must be finite, got {values!r}.")
         return values
 
-    @robot_tool(
-        desc=(
-            "Move the SO-101 control frame to absolute (x, y, z, rx, ry, rz) "
-            "in mm/deg, base frame. Position is strongly constrained; orientation "
-            "is best-effort (5-DoF underactuated arm). SafetyRail checks x/y/z "
-            "bounds before this runs (reads the nested pose object)."
-        ),
-        capability="motion.cartesian",
-        tags=["motion"],
-        input_params={
-            "type": "object",
-            "properties": {
-                "pose": {
-                    "type": "object",
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "z": {"type": "number"},
-                        "rx": {"type": "number"},
-                        "ry": {"type": "number"},
-                        "rz": {"type": "number"},
-                    },
-                    "required": ["x", "y", "z", "rx", "ry", "rz"],
-                }
-            },
-            "required": ["pose"],
-        },
-    )
+    @implements(GOTO_POSE)
     def goto_pose(self, pose: So101Pose) -> None:
         """Move to an absolute Cartesian pose.
 
@@ -328,56 +336,200 @@ class So101Api(
             raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
         return intrinsics, "live"
 
-    def _project_pixel_to_base_raw(self, u: float, v: float, depth_m: float) -> np.ndarray:
-        """Eye-to-hand RAW projection: ``p_base = tf_base_cam @ p_cam`` (constant T_base_cam).
+    def _ensure_detector(self) -> None:
+        """Lazy-init the detector segmentation function if not already bound."""
+        if self._seg_fn is not None:
+            return
+        try:
+            self._seg_fn = init_detector(self._detector_service_url)
+            logger.info("[So101Api] detector client bound to %s", self._detector_service_url)
+        except Exception as exc:  # noqa: BLE001 - detector init best-effort
+            logger.warning("[So101Api] detector init failed (%s); detection tools will return ok=False.", exc)
 
-        The vendor-specific seam VisionMixin delegates to; applies NO xy/z
-        correction (the shared geometry owns that). ``tf_base_cam`` is desk-fixed,
-        so this does NOT read the flange pose.
+    @implements(PIXEL_TO_BASE_XYZ)
+    def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
+        """Back-project (u, v, depth_m) -> base-frame XYZ (mm).
+
+        Eye-to-hand: ``p_base = tf_base_cam @ pixel_and_depth_to_camera_xyz(uv, depth, K)``
+        where ``tf_base_cam`` is a constant (camera fixed to the desk). Applies
+        the calibration's ``xy_transform``/``xy_correction_mm`` when present.
         """
+        from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
+
         ll = self._ll()
         if ll.tf_base_cam is None:
-            raise RuntimeError("get_grasp_info_simple needs a loaded eye-to-hand calibration (set calib_path in YAML).")
+            raise RuntimeError("pixel_to_base_xyz needs a loaded eye-to-hand calibration (set calib_path in YAML).")
         intrinsics, _src = self._resolve_intrinsics(ll)
-        return apply_transform(
+        xyz_raw = apply_transform(
             ll.tf_base_cam,
             pixel_and_depth_to_camera_xyz((float(u), float(v)), float(depth_m), intrinsics),
         )
+        calib = getattr(ll, "calibration", None)
+        if calib is not None:
+            xyz_raw, _desc = apply_xy_correction(
+                np.asarray(xyz_raw, dtype=np.float64),
+                xy_transform=calib.get("xy_transform"),
+                xy_correction_mm=calib.get("xy_correction_mm"),
+            )
+        return {"x": float(xyz_raw[0]), "y": float(xyz_raw[1]), "z": float(xyz_raw[2])}
 
-    def _grasp_debug_tcp(self) -> Any:
-        """Eye-to-hand: the flange pose is irrelevant to projection, so the debug
-        dump records zeros (matches the historical SO-101 grasp-debug artifacts)."""
-        from types import SimpleNamespace
+    @implements(GET_GRASP_INFO_SIMPLE)
+    def get_grasp_info_simple(self, object_name: str) -> GraspResult | GraspFailure:
+        """Detect an object and return its 3D grasp/place geometry (eye-to-hand).
 
-        return SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0)
-
-    def _grasp_debug_extra(self) -> dict:
-        """SO-101 eye-to-hand debug marker."""
-        return {
-            "api_class": self.__class__.__name__,
-            "eye_to_hand": True,
-            "frame_model": "so101_eye_to_hand_T_base_cam",
-        }
+        Pipeline: grab -> detect_and_centroid -> eye-to-hand back-project ->
+        xy-correct -> grasp/place geometry. ``tf_base_cam`` is a constant, so
+        projection does NOT read the flange pose (the camera is desk-fixed).
+        """
+        result, _tracking = self._compute_grasp_info(object_name, include_tracking=False)
+        return cast(GraspResult | GraspFailure, result)
 
     def get_grasp_tracking_sample(self, object_name: str) -> dict[str, Any]:
         """Private SO101 fast-path sample including mask/depth-quality metadata.
 
         This method intentionally has no ``@robot_tool`` decorator: it is an
-        adapter-to-runner hook, not an LLM/API action. It reuses the shared
-        VisionMixin pipeline (so the public :meth:`get_grasp_info_simple` result
-        is unchanged) and appends SO-101-private tracking fields.
+        adapter-to-runner hook, not an LLM/API action.  The public
+        :meth:`get_grasp_info_simple` response remains JSON-compatible and
+        unchanged.
         """
-        result, intermediates = self._grasp_info_with_intermediates(object_name)
-        if intermediates is not None:
-            result.update(
-                self._tracking_metadata(
-                    best=intermediates["best"],
-                    depth_img_m=intermediates["depth_img_m"],
-                    u=float(intermediates["u"]),
-                    v=float(intermediates["v"]),
-                )
-            )
+        result, tracking = self._compute_grasp_info(object_name, include_tracking=True)
+        if tracking is not None:
+            result.update(tracking)
         return result
+
+    def _compute_grasp_info(
+        self,
+        object_name: str,
+        *,
+        include_tracking: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Compute public grasp geometry plus optional private tracking data."""
+        from types import SimpleNamespace
+
+        from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
+
+        ll = self._ll()
+        frames = ll.grab_frames()
+        if frames is None:
+            return {"ok": False, "reason": "no_camera", "object": object_name}, None
+        rgb, depth_img_m = frames
+
+        self._ensure_detector()
+        det = detect_and_centroid(
+            rgb=rgb,
+            depth_img_m=depth_img_m,
+            seg_fn=self._seg_fn,
+            object_name=object_name,
+            tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
+        )
+        if not det.get("ok"):
+            return dict(det), None
+
+        u, v, depth_m = det["u"], det["v"], det["depth_m"]
+        best = det["best"]
+        img_w, img_h = det["img_shape"]
+        mask_h, mask_w = det["mask_shape"]
+
+        if ll.tf_base_cam is None:
+            raise RuntimeError("get_grasp_info_simple needs a loaded eye-to-hand calibration (set calib_path in YAML).")
+        intrinsics, intrinsics_src = self._resolve_intrinsics(ll)
+
+        # Eye-to-hand: constant T_base_cam, no flange read.
+        xyz_raw = apply_transform(
+            ll.tf_base_cam,
+            pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics),
+        )
+        calib = getattr(ll, "calibration", None)
+        xy_transform = calib.get("xy_transform") if calib is not None else None
+        xy_corr = calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
+        xyz_final, corr_desc = apply_xy_correction(
+            np.asarray(xyz_raw, dtype=np.float64),
+            xy_transform=xy_transform,
+            xy_correction_mm=xy_corr,
+        )
+        if self._z_correction_mm:
+            xyz_final = np.asarray(xyz_final, dtype=np.float64).copy()
+            xyz_final[2] += self._z_correction_mm
+            corr_desc = f"{corr_desc}+z{self._z_correction_mm:+.0f}"
+
+        logger.info(
+            "[grasp-debug] K_src=%s eye_to_hand T_base_cam "
+            "raw_xyz_mm=(%.2f, %.2f, %.2f) corr=%s "
+            "final_xyz_mm=(%.2f, %.2f, %.2f)",
+            intrinsics_src,
+            float(xyz_raw[0]),
+            float(xyz_raw[1]),
+            float(xyz_raw[2]),
+            corr_desc,
+            float(xyz_final[0]),
+            float(xyz_final[1]),
+            float(xyz_final[2]),
+        )
+
+        try:
+            dump_grasp_debug(
+                rgb=rgb,
+                object_name=object_name,
+                best=best,
+                u=u,
+                v=v,
+                depth_m=depth_m,
+                tcp_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
+                tcp_proj=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
+                xyz_raw=np.asarray(xyz_raw, dtype=np.float64),
+                xyz_final=np.asarray(xyz_final, dtype=np.float64),
+                xy_corr=xy_corr,
+                xy_transform=xy_transform,
+                intrinsics_src=intrinsics_src,
+                intrinsics=np.asarray(intrinsics, dtype=float).reshape(-1).tolist(),
+                img_shape=(img_w, img_h),
+                mask_shape=(mask_w, mask_h),
+                extra_info={
+                    "eye_to_hand": True,
+                    "frame_model": "so101_eye_to_hand_T_base_cam",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - debug dump must never break a grasp
+            logger.debug("[grasp-debug] dump failed: %s", exc)
+
+        top_z = float(xyz_final[2])
+        z_floor = self.env.z_min_safe
+        grasp_z = top_z + self._grasp_z_offset_mm
+        if z_floor is not None:
+            grasp_z = max(grasp_z, float(z_floor) + float(self.env.cfg.minimum_floor_margin_mm))
+        place_z = top_z + self._place_z_offset_mm
+        x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
+        logger.info(
+            "[So101Api] %s: pos=(%.1f, %.1f, %.1f) grasp_z=%.1f place_z=%.1f score=%.2f",
+            object_name,
+            x_f,
+            y_f,
+            top_z,
+            grasp_z,
+            place_z,
+            best["score"],
+        )
+        result: dict[str, Any] = {
+            "ok": True,
+            "object": object_name,
+            "position": [x_f, y_f, top_z],
+            "grasp_z": grasp_z,
+            "grasp_position": [x_f, y_f, grasp_z],
+            "place_z": place_z,
+            "place_position": [x_f, y_f, place_z],
+            "score": float(best["score"]),
+            "pixel_uv": [u, v],
+            "depth_m": depth_m,
+        }
+        tracking = None
+        if include_tracking:
+            tracking = self._tracking_metadata(
+                best=best,
+                depth_img_m=depth_img_m,
+                u=float(u),
+                v=float(v),
+            )
+        return result, tracking
 
     @staticmethod
     def _tracking_metadata(
@@ -410,12 +562,8 @@ class So101Api(
             "_tracking_valid_depth_ratio": valid_ratio,
         }
 
-    # ``get_image`` is inherited from VisionMixin (grabs frames via env.low_level).
 
-    @robot_tool(
-        desc="Run a higher-level scene analysis grounded on object_name. "
-        "Returns detection counts + top scores; useful for quick sanity checks."
-    )
+    @implements(ANALYZE_SCENE)
     def analyze_scene(self, object_name: str | None = None) -> dict:
         """Scene analysis grounded on ``object_name`` (detection counts + scores)."""
         target = object_name or "object"
@@ -430,9 +578,15 @@ class So101Api(
         except Exception as exc:  # noqa: BLE001 - surface detector failure as ok=False
             return {"ok": False, "reason": str(exc)}
         scores = sorted((float(r.get("score", 0.0)) for r in results), reverse=True)
+        # Shared meaning is "every instance"; this body has no per-instance depth, so an
+        # entry carries score + pixel only — enough for a planner to size a multi-target loop.
+        objects = [{"object": target, "score": float(r.get("score", 0.0)),
+                    "pixel_uv": r.get("center") or r.get("pixel_uv")} for r in results]
         return {
             "ok": True,
             "object": target,
+            "count": len(objects),
+            "objects": objects,
             "n_detections": len(results),
             "top_scores": scores[:5],
         }

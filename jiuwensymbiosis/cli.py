@@ -32,8 +32,14 @@ def _run_example(script: str) -> None:
     runpy.run_path(str(script_path), run_name="__main__")
 
 
+def run_task() -> None:
+    """Generic task runner: ``jiuwensymbiosis-run --config <robot>.yaml --query "<task>"``."""
+    _run_example("run_task.py")
+
+
 def piper_pick_demo() -> None:
-    _run_example("piper_pick_demo.py")
+    """Back-compat alias for ``jiuwensymbiosis-run`` (points at the same generic runner)."""
+    _run_example("run_task.py")
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +220,82 @@ def replay_main() -> int:
     if args.text:
         return replay(args.trace_path)
     return replay_html(args.trace_path)
+
+
+# ---------------------------------------------------------------------------
+# Introspection CLI — what a planner (or a coding agent writing a skill) reads
+# instead of the adapter source or the SKILL.md prose.
+#
+#   jiuwensymbiosis-actions --config <yaml> [--json]
+#   jiuwensymbiosis-actions --vocabulary [--json]     (no config: the shared vocabulary)
+#   jiuwensymbiosis-skills  [--json]
+#   jiuwensymbiosis-state   --config <yaml> [--json]
+# ---------------------------------------------------------------------------
+def _introspect_parser(prog: str, description: str, *, needs_config: bool) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description=description)
+    if needs_config:
+        parser.add_argument("--config", help="Robot config YAML (its adapter: field picks the body).")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of the readable table.")
+    return parser
+
+
+def actions_main() -> int:
+    """Console-script entry: print a body's action contracts, or the shared vocabulary."""
+    from jiuwensymbiosis import introspect
+
+    parser = _introspect_parser(
+        "jiuwensymbiosis-actions", "Print every action a body exposes, with its planning contract.", needs_config=True
+    )
+    parser.add_argument(
+        "--vocabulary",
+        action="store_true",
+        help="Print the framework-wide action vocabulary (no robot needed) instead of one body's subset. "
+        "This is what to read when writing a skill that must run on more than one body.",
+    )
+    args = parser.parse_args()
+    if args.vocabulary:
+        specs = introspect.action_vocabulary()
+        introspect.emit(specs, introspect.render_vocabulary(specs), as_json=args.json)
+        return 0
+    if not args.config:
+        logger.error("--config is required (or pass --vocabulary for the body-independent action list)")
+        return 1
+    try:
+        session = introspect.build_session(args.config)
+    except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
+        logger.error("could not build a session from %s: %s", args.config, exc)
+        return 1
+    contracts = introspect.action_contracts(session)
+    introspect.emit(contracts, introspect.render_actions(contracts), as_json=args.json)
+    return 0
+
+
+def skills_main() -> int:
+    """Console-script entry: print the skill library's planning view."""
+    from jiuwensymbiosis import introspect
+
+    args = _introspect_parser(
+        "jiuwensymbiosis-skills", "Print the registered skills and their planning contracts.", needs_config=False
+    ).parse_args()
+    skills = introspect.skill_contracts()
+    introspect.emit(skills, introspect.render_skills(skills), as_json=args.json)
+    return 0
+
+
+def state_main() -> int:
+    """Console-script entry: print the live world state (connects to hardware)."""
+    from jiuwensymbiosis import introspect
+    from jiuwensymbiosis.api.world_state import WorldState
+
+    args = _introspect_parser(
+        "jiuwensymbiosis-state", "Print the body's current world state (connects to the robot).", needs_config=True
+    ).parse_args()
+    try:
+        session = introspect.build_session(args.config)
+    except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
+        logger.error("could not build a session from %s: %s", args.config, exc)
+        return 1
+    with session:
+        state = WorldState.snapshot(session).describe()
+    introspect.emit(state, introspect.render_state(state), as_json=args.json)
+    return 0

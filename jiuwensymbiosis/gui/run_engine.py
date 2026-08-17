@@ -314,7 +314,7 @@ class RunEngine:
         匹配的 ``ServoConfig``(如 so101 safe 档 10Hz/3mm),否则 None → 沿用框架默认。仅在
         用户未显式设 ``exec_config`` 时填入。
         """
-        if agent_cfg.exec_mode != "fast" or agent_cfg.exec_config is not None:
+        if agent_cfg.exec_mode != "fastagent" or agent_cfg.exec_config is not None:
             return
         from jiuwensymbiosis.agent.fast import SkillExecConfig, servo_config_from_session
 

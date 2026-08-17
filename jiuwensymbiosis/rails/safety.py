@@ -8,13 +8,24 @@ defense against LLM hallucinations like "goto_xyzr(0, 0, -50)" when the
 table is at z=0. The env-level driver should already enforce these limits;
 we just reject earlier with a clearer message so the LLM can self-correct without raising.
 
+Which tools are watched is derived from the body's declared capabilities
+(``_CAPABILITY_WATCH_TOOLS``), so a mobile manipulator gets its base / lifter /
+waist commands checked without anyone re-listing tool names per adapter.
+
 Currently checks:
-- Cartesian Z floor: explicit ``z_floor_mm``, else the env's ``z_min_safe``.
-- Cartesian XY bounds: explicit ``xy_bounds_mm``, else the env's
+- ``motion.cartesian`` — Z floor: explicit ``z_floor_mm``, else the env's
+  ``z_min_safe``; XY bounds: explicit ``xy_bounds_mm``, else the env's
   ``workspace_bounds`` (unless ``enforce_xy_from_env=False``).
-- Joint soft limits on ``move_joint(q)``: explicit ``joint_limits``, else the
-  env's ``joint_limits``. Each rejected branch (missing q / wrong type /
-  wrong length / non-finite / out of range) gets its own message.
+- ``motion.joint`` — joint soft limits on ``move_joint(q)``: explicit
+  ``joint_limits``, else the env's. Each rejected branch (missing q / wrong
+  type / wrong length / non-finite / out of range) gets its own message.
+- ``motion.base`` — per-command translation / turn cap from the env's
+  ``base_step_limits``, so a hallucinated "drive 50 m" never reaches the wheels.
+- ``motion.lift`` — lifter joint range from the env's ``lift_limits``.
+- ``motion.waist`` — per-command torso yaw cap from ``waist_step_limit_rad``.
+
+Absent limits mean "no range check" (the type / finite checks still run) —
+same contract as ``joint_limits``, so a body opts in by declaring an envelope.
 
 Reject mechanism: forces a tool error result instead of executing the tool,
 by raising via ``ctx.request_force_finish`` is not appropriate here (we
@@ -34,6 +45,25 @@ from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
 
 logger = logging.getLogger(__name__)
+
+# Capability → the tools whose policy that capability switches on. Adding a mobile
+# body means declaring its capabilities, not editing a tool-name list here.
+_CAPABILITY_WATCH_TOOLS: dict[str, frozenset[str]] = {
+    # goto_flange_pose is a body-only entry (it speaks the FLANGE frame, so it never enters the
+    # shared vocabulary) — but it drives the arm, so it is watched exactly like the others.
+    "motion.cartesian": frozenset({"goto_xyzr", "goto_pose", "goto_flange_pose"}),
+    "motion.joint": frozenset({"move_joint"}),
+    "motion.base": frozenset({"navigate_relative", "rotate_base", "drive_arc"}),
+    "motion.lift": frozenset({"set_lift_pose"}),
+    "motion.waist": frozenset({"turn_waist"}),
+}
+
+# Always watched on top of the derived set. These three predate capability-derived
+# watching and some envs under-declare the arm capability behind them; watching a
+# tool a body does not have is free (it never fires), missing one it does have is a hole.
+_ALWAYS_WATCHED: frozenset[str] = frozenset({"goto_xyzr", "goto_pose", "move_joint"})
+
+_BASE_TOOLS: frozenset[str] = _CAPABILITY_WATCH_TOOLS["motion.base"]
 
 
 def _coerce_tool_args(value: Any) -> dict[str, Any]:
@@ -88,9 +118,27 @@ class SafetyRail(AgentRail):
         self.xy_bounds = xy_bounds_mm
         self.joint_limits = joint_limits
         self.enforce_xy_from_env = enforce_xy_from_env
-        # Default: intercept cartesian + joint moves. ``home`` is always safe.
-        self.watch_tools = set(watch_tools) if watch_tools else {"goto_xyzr", "goto_pose", "move_joint"}
+        # Default: whatever the body's capabilities imply. ``home`` is always safe.
+        self.watch_tools = set(watch_tools) if watch_tools else self._derive_watch_tools(session)
         self.trace_sink = trace_sink
+
+    @staticmethod
+    def _derive_watch_tools(session: Any) -> set[str]:
+        """Tools to intercept, from the session's declared capabilities.
+
+        Reads env ∪ api rather than the tool-gating intersection: a capability
+        either side declares is hardware that can move, and over-watching costs
+        nothing (the tool simply never fires).
+        """
+        caps: set[str] = set()
+        for holder in (getattr(session, "env", None), getattr(session, "api", None)):
+            declared = getattr(holder, "capabilities", None)
+            if declared:
+                caps |= set(declared)
+        watched = set(_ALWAYS_WATCHED)
+        for cap in caps:
+            watched |= _CAPABILITY_WATCH_TOOLS.get(cap, frozenset())
+        return watched
 
     def _notify_reject(self, tool_name: str, reason: str) -> None:
         sink = self.trace_sink
@@ -150,6 +198,15 @@ class SafetyRail(AgentRail):
         if tool_name == "move_joint":
             self._check_joint_limits(tool_name, args)
             return
+        if tool_name in _BASE_TOOLS:
+            self._check_base_step(tool_name, args)
+            return
+        if tool_name == "set_lift_pose":
+            self._check_lift_pose(tool_name, args)
+            return
+        if tool_name == "turn_waist":
+            self._check_waist_step(tool_name, args)
+            return
 
         # goto_pose ships x/y/z inside a nested ``pose`` object (one Cartesian
         # pose as a value object); goto_xyzr keeps them top-level. Flatten the
@@ -200,24 +257,9 @@ class SafetyRail(AgentRail):
         contract as the tool path). Non-numeric / non-finite values raise.
         """
 
-        def _coerce(name: str, raw: Any) -> float | None:
-            if raw is None:
-                return None
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                reason = f"{name} is not a number: {raw!r}"
-                self._notify_reject(tool_name, reason)
-                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.") from None
-            if not math.isfinite(value):
-                reason = f"{name} is non-finite: {raw!r}"
-                self._notify_reject(tool_name, reason)
-                raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
-            return value
-
-        cx = _coerce("x", x)
-        cy = _coerce("y", y)
-        cz = _coerce("z", z)
+        cx = self._coerce_number(tool_name, "x", x)
+        cy = self._coerce_number(tool_name, "y", y)
+        cz = self._coerce_number(tool_name, "z", z)
 
         z_floor = self._resolve_z_floor()
         if cz is not None and z_floor is not None and cz < float(z_floor):
@@ -236,6 +278,114 @@ class SafetyRail(AgentRail):
                 reason = f"y={y} out of bounds [{ymin}, {ymax}]"
                 self._notify_reject(tool_name, reason)
                 raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+
+    def _coerce_number(self, tool_name: str, name: str, raw: Any) -> float | None:
+        """One motion argument as a finite float. ``None`` stays ``None`` ("absent → skip")."""
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            reason = f"{name} is not a number: {raw!r}"
+            self._notify_reject(tool_name, reason)
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.") from None
+        if not math.isfinite(value):
+            reason = f"{name} is non-finite: {raw!r}"
+            self._notify_reject(tool_name, reason)
+            raise ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+        return value
+
+    def _reject(self, tool_name: str, reason: str) -> ValueError:
+        """Notify the trace sink and build the rejection to raise."""
+        self._notify_reject(tool_name, reason)
+        return ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+
+    def _check_base_step(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Cap one mobile-base command's translation and turn.
+
+        Relative verbs have no absolute frame to bound, so the envelope is a
+        per-command step cap: it stops a hallucinated "drive 50 m" without
+        constraining where the base may legitimately end up.
+        """
+        dyaw = self._coerce_number(tool_name, "dyaw_rad", args.get("dyaw_rad"))
+        if tool_name == "drive_arc":
+            radius = self._coerce_number(tool_name, "radius_m", args.get("radius_m"))
+            # Arc length is what the wheels actually travel; radius alone says nothing.
+            distance = None if radius is None or dyaw is None else abs(radius * dyaw)
+        elif tool_name == "rotate_base":
+            distance = 0.0
+        else:
+            dx = self._coerce_number(tool_name, "dx_m", args.get("dx_m"))
+            dy = self._coerce_number(tool_name, "dy_m", args.get("dy_m"))
+            distance = None if dx is None and dy is None else math.hypot(dx or 0.0, dy or 0.0)
+
+        limits = self._resolve_base_step_limits()
+        if limits is None:
+            return
+        max_step, max_turn = limits
+        if distance is not None and distance > max_step:
+            raise self._reject(tool_name, f"base step {distance:.3f}m exceeds max {max_step}m")
+        if dyaw is not None and abs(dyaw) > max_turn:
+            raise self._reject(tool_name, f"base turn {abs(dyaw):.3f}rad exceeds max {max_turn}rad")
+
+    def _check_lift_pose(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Validate an absolute lifter target, the ``move_joint`` analogue for the torso."""
+        q_lifter = args.get("q_lifter")
+        if q_lifter is None:
+            raise self._reject(tool_name, "missing required lifter joint map q_lifter")
+        if not isinstance(q_lifter, dict):
+            raise self._reject(tool_name, f"q_lifter must be a mapping, got {type(q_lifter).__name__}")
+
+        limits = self._resolve_lift_limits()
+        for name, raw in q_lifter.items():
+            value = self._coerce_number(tool_name, str(name), raw)
+            if value is None or limits is None:
+                continue
+            bounds = limits.get(str(name))
+            if bounds is None:
+                raise self._reject(tool_name, f"unknown lifter joint {name!r} (known: {sorted(limits)})")
+            lo, hi = float(bounds[0]), float(bounds[1])
+            if not lo <= value <= hi:
+                raise self._reject(tool_name, f"{name}={value} out of limits [{lo}, {hi}]")
+
+    def _check_waist_step(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Cap one torso-yaw command; ``turn_waist`` is a delta, so the envelope is a step cap."""
+        delta = self._coerce_number(tool_name, "delta_rad", args.get("delta_rad"))
+        limit = self._resolve_waist_step_limit()
+        if delta is not None and limit is not None and abs(delta) > limit:
+            raise self._reject(tool_name, f"waist turn {abs(delta):.3f}rad exceeds max {limit}rad")
+
+    def _env_limit(self, attr: str) -> Any:
+        """Read one safety-envelope value off the env; missing / unreadable → None."""
+        return getattr(getattr(self.session, "env", None), attr, None)
+
+    def _resolve_base_step_limits(self) -> tuple[float, float] | None:
+        """Base step cap from the env's ``base_step_limits``, else None."""
+        limits = self._env_limit("base_step_limits")
+        if limits is None:
+            return None
+        try:
+            max_step, max_turn = limits
+            return (float(max_step), float(max_turn))
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_lift_limits(self) -> dict[str, tuple[float, float]] | None:
+        """Lifter joint limits from the env's ``lift_limits``, else None."""
+        limits = self._env_limit("lift_limits")
+        if limits is None:
+            return None
+        return cast("dict[str, tuple[float, float]] | None", limits)
+
+    def _resolve_waist_step_limit(self) -> float | None:
+        """Waist step cap from the env's ``waist_step_limit_rad``, else None."""
+        limit = self._env_limit("waist_step_limit_rad")
+        if limit is None:
+            return None
+        try:
+            return float(limit)
+        except (TypeError, ValueError):
+            return None
 
     def _resolve_z_floor(self) -> float | None:
         """Z floor: explicit ``z_floor``, else the env's ``z_min_safe``, else None."""

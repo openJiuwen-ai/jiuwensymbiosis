@@ -260,7 +260,7 @@ def _lerobot_version_tuple(version: str) -> tuple[int, ...]:
 class So101Driver:
     """Wraps ``SOFollower`` for the jiuwensymbiosis env/api contract.
 
-    Satisfies the ``RobotDriver`` + ``JointDriver`` + ``GripperDriver`` protocols
+    Satisfies the ``CartesianDriver`` + ``JointDriver`` + ``GripperDriver`` protocols
     (see ``jiuwensymbiosis/env/protocol.py``). Construction is cheap and does not
     open the serial port; that happens in :meth:`connect`.
     """
@@ -331,7 +331,7 @@ class So101Driver:
         # URDF resolution: explicit > packaged.
         self._urdf_path: str = self._resolve_urdf_path()
 
-    # --- RobotDriver Protocol: required properties ---------------------------
+    # --- CartesianDriver Protocol: required properties -----------------------
     @property
     def home_pose(self) -> So101Pose:
         """FK(home_joints_deg) -> control-frame pose. Read-only report, no motion."""
