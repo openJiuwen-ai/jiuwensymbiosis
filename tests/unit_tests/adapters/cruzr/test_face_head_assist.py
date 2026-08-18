@@ -87,7 +87,7 @@ def _api(waist_seq, head_seq, *, side="object", drive_polls=0):
         api.locate_for_grasp = lambda object_name="box", reference=None, relation="on": next(wit)  # type: ignore[method-assign]
     else:
         api.locate_for_place = lambda object_name="table", reference=None, relation="on": next(wit)  # type: ignore[method-assign]
-    api._nav._look_for = lambda object_name="box", on=None, camera=None: next(hit)           # type: ignore[method-assign]
+    api._nav.look_for = lambda object_name="box", on=None, camera=None: next(hit)           # type: ignore[method-assign]
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                     # type: ignore[method-assign]
     return api, env
 
@@ -270,7 +270,7 @@ def test_grounded_grasp_head_searches_target_verified_on_reference():
         head_calls.append((object_name, on))
         return _hfound(bearing=0.2)
 
-    api._nav._look_for = _head          # type: ignore[method-assign]
+    api._nav.look_for = _head          # type: ignore[method-assign]
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}   # type: ignore[method-assign]
     out = api._nav._face_object("white box", reference="brown table")
     assert out["ok"]
@@ -300,7 +300,7 @@ def test_grounded_grasp_hands_off_only_on_grounded_confirm():
     _detect.n = 0
 
     api.locate_for_grasp = _detect                                         # type: ignore[method-assign]
-    api._nav._look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
+    api._nav.look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                 # type: ignore[method-assign]
     out = api._nav._face_object("white box", reference="brown table")
     assert out["ok"]
@@ -326,7 +326,7 @@ def test_grounded_place_head_searches_reference_object_verified_on_surface():
         head_calls.append((object_name, on))
         return _hfound(bearing=0.2)
 
-    api._nav._look_for = _head          # type: ignore[method-assign]
+    api._nav.look_for = _head          # type: ignore[method-assign]
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}   # type: ignore[method-assign]
     out = api._nav._face_surface("white table", reference="water cup", relation="under")
     assert out["ok"]
@@ -356,7 +356,7 @@ def test_grounded_place_hands_off_only_on_grounded_confirm():
     _sense.n = 0
 
     api.locate_for_place = _sense                                          # type: ignore[method-assign]
-    api._nav._look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
+    api._nav.look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                # type: ignore[method-assign]
     out = api._nav._face_surface("white table", reference="water cup", relation="under")
     assert out["ok"]

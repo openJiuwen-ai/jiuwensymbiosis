@@ -313,7 +313,8 @@ class DiagnosisRail(AgentRail):
         """Drop sections causal → system_state (never the current step), then
         hard-truncate. Design §7.1: 优先保留当前步和系统状态. Sections are
         matched by header text, not index, so a missing block can't shift
-        which section gets dropped."""
+        which section gets dropped.
+        """
         if len(text) <= self.max_chars:
             return text
         for header in ("### 相关历史", "### 系统状态"):

@@ -1,13 +1,18 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Cruzr-only detection visualizer: a single cv2 window with the waist + head camera panes,
-each showing its prompt, the live frame, and the mask overlay. Debug aid; a no-op when cv2/GUI
-is unavailable so headless runs and tests are unaffected. Displays already-grabbed frames only —
-it opens NO camera subscription (respects the one-shot subprocess camera model)."""
+"""Cruzr-only detection visualizer: one cv2 window with the waist + head camera panes.
+
+Each pane shows its prompt, the live frame, and the mask overlay. Debug aid; a no-op when
+cv2/GUI is unavailable so headless runs and tests are unaffected. Displays already-grabbed
+frames only — it opens NO camera subscription (respects the one-shot subprocess camera model).
+"""
 from __future__ import annotations
 
 import atexit
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class DetectionViz:
@@ -15,7 +20,8 @@ class DetectionViz:
 
     Self-disables permanently on any failure (missing cv2, no DISPLAY, a failing cv2 call), so
     every method is a safe no-op in headless runs and unit tests. Frames are DISPLAYED only — no
-    camera subscription is opened here (grabbing stays with the one-shot subprocess workers)."""
+    camera subscription is opened here (grabbing stays with the one-shot subprocess workers).
+    """
 
     WINDOW = "cruzr detections (waist | head)"
 
@@ -38,7 +44,8 @@ class DetectionViz:
                mask: Any = None, box: Any = None, score: Optional[float] = None,
                ok: bool = False) -> None:
         """Render one camera pane (rgb->bgr, mask alpha-overlay, box, score, prompt, ok/miss)
-        and refresh the combined window. Any failure disables the viz permanently (no-op after)."""
+        and refresh the combined window. Any failure disables the viz permanently (no-op after).
+        """
         if not self._enabled:
             return
         try:
@@ -81,5 +88,5 @@ class DetectionViz:
         if self._enabled and self._cv2 is not None:
             try:
                 self._cv2.destroyAllWindows()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[viz] destroyAllWindows failed on teardown: %s", exc)

@@ -156,7 +156,8 @@ def _axxb_eye_to_hand(stations: list[Station], tf_base_cam: np.ndarray) -> tuple
 
 def _board_in_flange_spread(stations: list[Station], tf_base_cam: np.ndarray) -> np.ndarray:
     """Board origin in the flange frame per station (mm). Board clamped rigid =>
-    constant. Spread measures rigidity / calibration quality."""
+    constant. Spread measures rigidity / calibration quality.
+    """
     pts = []
     for s in stations:
         b_in_f = invert_transform(s.tf_base_flange) @ tf_base_cam @ s.detection.tf_cam_target

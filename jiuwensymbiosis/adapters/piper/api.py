@@ -482,7 +482,8 @@ class PiperApi(BaseRobotApi):
 
 class _PoseShim:
     """Exposes a piper pose with an ``r`` alias for debug helpers
-    (``detect_and_centroid`` / ``dump_grasp_debug``) that log ``pose.x/y/z/r``."""
+    (``detect_and_centroid`` / ``dump_grasp_debug``) that log ``pose.x/y/z/r``.
+    """
 
     __slots__ = ("x", "y", "z", "rx", "ry", "rz", "r")
 

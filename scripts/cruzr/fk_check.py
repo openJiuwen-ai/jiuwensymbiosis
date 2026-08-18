@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-import sys
+import logging
 import time
 
 import numpy as np
@@ -15,18 +15,21 @@ from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.kinematics.fk import fk_chain
 from jiuwensymbiosis.kinematics.urdf_chain import parse_chain
 
+logger = logging.getLogger(__name__)
+
 
 def main() -> int:
     import rclpy
     import tf2_ros
-    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from mc_state_msgs.msg import RobotState
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from tf2_ros import Buffer, TransformListener
 
     cfg = CruzrConfig()
     rclpy.init()
     node = rclpy.create_node("cruzr_fk_check")
-    buf = Buffer(); TransformListener(buf, node)
+    buf = Buffer()
+    TransformListener(buf, node)
     state = {"q": {}}
     qos = QoSProfile(depth=10)
     qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -50,22 +53,24 @@ def main() -> int:
         if state["q"] and tf is not None:
             break
     if not state["q"] or tf is None:
-        print("missing joint_states or TF", file=sys.stderr)
+        logger.error("missing joint_states or TF")
         return 1
 
-    T = fk_chain(chain, state["q"])
-    p_fk = T[:3, 3]
+    tf = fk_chain(chain, state["q"])
+    p_fk = tf[:3, 3]
     t = tf.transform.translation
     p_tf = np.array([t.x, t.y, t.z])
     err = float(np.linalg.norm(p_fk - p_tf))
-    print(f"FK  base->{cfg.left_arm_leaf} (m): {p_fk}")
-    print(f"TF  base->{cfg.left_arm_leaf} (m): {p_tf}")
-    print(f"position error (m): {err:.4f}  ({'OK' if err < 0.01 else 'CHECK'})")
+    logger.info("FK  base->%s (m): %s", cfg.left_arm_leaf, p_fk)
+    logger.info("TF  base->%s (m): %s", cfg.left_arm_leaf, p_tf)
+    logger.info("position error (m): %.4f  (%s)", err, "OK" if err < 0.01 else "CHECK")
     for ax, name in zip(np.eye(3), ["x", "y", "z"]):
-        print(f"tool local {name}-axis in base: {T[:3,:3] @ ax}")
-    print("lifter joints:", {k: round(state['q'].get(k, 0.0), 4)
-                              for k in ("lifter_pitch_1_joint", "lifter_pitch_2_joint", "lifter_pitch_3_joint")})
-    node.destroy_node(); rclpy.shutdown()
+        logger.info("tool local %s-axis in base: %s", name, tf[:3, :3] @ ax)
+    logger.info("lifter joints: %s", {k: round(state['q'].get(k, 0.0), 4)
+                                      for k in ("lifter_pitch_1_joint", "lifter_pitch_2_joint",
+                                                "lifter_pitch_3_joint")})
+    node.destroy_node()
+    rclpy.shutdown()
     return 0
 
 

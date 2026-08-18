@@ -37,7 +37,8 @@ def _model(urdf_path: str):
 
 def warm(urdf_path: str) -> bool:
     """Pre-build and cache the pinocchio model so the first IK solve doesn't pay
-    ``buildModelFromUrdf``. No-op returning False when pinocchio isn't installed."""
+    ``buildModelFromUrdf``. No-op returning False when pinocchio isn't installed.
+    """
     if not pin_available():
         return False
     _model(urdf_path)
@@ -46,8 +47,10 @@ def warm(urdf_path: str) -> bool:
 
 def _orthobasis(x, y) -> np.ndarray:
     """Right-handed basis with column 0 = normalized x, column 2 ⟂ (x,y) plane."""
-    x = np.asarray(x, dtype=float); x = x / np.linalg.norm(x)
-    z = np.cross(x, np.asarray(y, dtype=float)); z = z / np.linalg.norm(z)
+    x = np.asarray(x, dtype=float)
+    x = x / np.linalg.norm(x)
+    z = np.cross(x, np.asarray(y, dtype=float))
+    z = z / np.linalg.norm(z)
     return np.column_stack([x, np.cross(z, x), z])
 
 
@@ -64,9 +67,9 @@ def solve_pose_ik_pin(
     leaf_link: str,
     limits: dict[str, tuple[float, float]],
     target_pos_m,
+    *,
     approach_target,
     paddle_target,
-    *,
     tool_approach_local,
     tool_paddle_local,
     tcp_offset_local,
@@ -94,7 +97,7 @@ def solve_pose_ik_pin(
     fid = model.getFrameId(leaf_link)
     r_target = _target_rotation(approach_target, paddle_target, tool_approach_local, tool_paddle_local)
     leaf_pos = np.asarray(target_pos_m, dtype=float) - r_target @ np.asarray(tcp_offset_local, dtype=float)
-    oMdes = pin.SE3(r_target, leaf_pos)
+    target_se3 = pin.SE3(r_target, leaf_pos)
 
     idx_q = {j: model.joints[model.getJointId(j)].idx_q for j in arm_joints}
     idx_v = [model.joints[model.getJointId(j)].idx_v for j in arm_joints]
@@ -109,10 +112,10 @@ def solve_pose_ik_pin(
                 q[model.joints[model.getJointId(name)].idx_q] = float(val)
         return q
 
-    warm = None
+    q_warm = None
     if q_init:
-        warm = np.array([float(q_init.get(j, 0.5 * (limits[j][0] + limits[j][1]))) for j in arm_joints])
-    nominal = warm if warm is not None else 0.5 * (lo + hi)
+        q_warm = np.array([float(q_init.get(j, 0.5 * (limits[j][0] + limits[j][1]))) for j in arm_joints])
+    nominal = q_warm if q_warm is not None else 0.5 * (lo + hi)
 
     from jiuwensymbiosis.kinematics import self_collision as _sc
 
@@ -122,7 +125,7 @@ def solve_pose_ik_pin(
     best: IKResult | None = None               # closest-error fallback (incl. converged-but-colliding)
     for restart in range(n_restarts + 1):
         q = _base_q()
-        arm = warm.copy() if (restart == 0 and warm is not None) else lo + rng.random(len(arm_joints)) * (hi - lo)
+        arm = q_warm.copy() if (restart == 0 and q_warm is not None) else lo + rng.random(len(arm_joints)) * (hi - lo)
         for k, j in enumerate(arm_joints):
             q[idx_q[j]] = arm[k]
 
@@ -131,7 +134,7 @@ def solve_pose_ik_pin(
         for it in range(1, max_iters + 1):
             pin.forwardKinematics(model, data, q)
             pin.updateFramePlacement(model, data, fid)
-            i_md = data.oMf[fid].actInv(oMdes)
+            i_md = data.oMf[fid].actInv(target_se3)
             err = pin.log6(i_md).vector
             pos_err = float(np.linalg.norm(err[:3]))
             rot_err = float(np.linalg.norm(err[3:]))

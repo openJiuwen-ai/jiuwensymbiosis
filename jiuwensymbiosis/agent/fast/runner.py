@@ -679,13 +679,16 @@ def _retry_unconfirmed_grasp(
 def _cancellable_executor(run_op: Executor, token: CancelToken) -> Executor:
     """Wrap an executor so each op checks the token first, then runs under
     ``cancellable_call`` — so a single long blocking op yields the worker within
-    one poll on cancel instead of blocking to completion."""
+    one poll on cancel instead of blocking to completion.
+    """
 
     def _run(op: str, params: dict[str, Any]) -> dict[str, Any]:
         token.raise_if_set()
         return cast("dict[str, Any]", cancellable_call(lambda: run_op(op, params), token))
 
     return _run
+
+
 def _resolve_dict_bindings(op: str, params: dict, env: Mapping[str, Any], api: Any) -> dict:
     """Turn a param that names a whole detection binding into that binding dict.
 
@@ -710,10 +713,26 @@ def _resolve_dict_bindings(op: str, params: dict, env: Mapping[str, Any], api: A
     return out
 
 
-def _run_action(
-    step: ActionStep, env: dict, run_op: Executor, session: Any,
-    cfg: SkillExecConfig, cache: dict, out: list[dict], state: dict,
-) -> bool:
+@dataclass
+class _RunContext:
+    """Everything a step needs besides the step itself — one object so the per-step
+    helpers take (step, ctx) instead of eight positional arguments.
+
+    ``env`` / ``out`` / ``state`` are mutated in place by the helpers (bindings, the
+    step record, and the shared holding/index cursor), so they must stay the SAME
+    objects ``run_sequence`` holds, never copies.
+    """
+
+    env: dict
+    run_op: Executor
+    session: Any
+    cfg: SkillExecConfig
+    cache: dict
+    out: list[dict]
+    state: dict
+
+
+def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     """Execute one ``ActionStep``; append its record to ``out``; return ok.
 
     This is the upstream single-step semantics refactored out of ``run_sequence``
@@ -723,6 +742,8 @@ def _run_action(
     ``tracked_grasp`` / ``i`` through the shared ``state`` dict. ``_resolve_dict_bindings``
     upgrades whole-binding params (``box`` / ``surface``) before dispatch.
     """
+    env, run_op, session, cfg, cache, out, state = (
+        ctx.env, ctx.run_op, ctx.session, ctx.cfg, ctx.cache, ctx.out, ctx.state)
     i = state["i"]
     holding = state["holding"]
     tracked_grasp: _TrackedGraspContext | None = state["tracked_grasp"]
@@ -820,15 +841,13 @@ def _run_action(
         return False
 
 
-def _run_loop(
-    loop: LoopStep, env: dict, run_op: Executor, session: Any,
-    cfg: SkillExecConfig, cache: dict, out: list[dict], state: dict,
-) -> bool:
+def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
     """Perception-terminated loop: detect one target → run body → repeat until none.
 
     Iteration count = however many targets exist (2→2, 100→100, 0→0). Re-detects
     each pass (robust to objects moving); stops cleanly when detect finds no target.
     """
+    env, run_op, session, out, state = ctx.env, ctx.run_op, ctx.session, ctx.out, ctx.state
     cap = loop.max_iters if loop.max_iters else _LOOP_HARD_CAP
     for _ in range(cap):
         i = state["i"]
@@ -853,7 +872,7 @@ def _run_loop(
         state["i"] = i + 1
         # 2. process this one target: run the body once
         for bstep in loop.body:
-            if not _run_action(bstep, env, run_op, session, cfg, cache, out, state):
+            if not _run_action(bstep, ctx):
                 return False
     logger.warning("[runner] loop hit max_iters cap %d; stopping", cap)
     return True
@@ -967,6 +986,8 @@ def run_sequence(
 
     out: list[dict] = []
     state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
+    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg,
+                      cache=cache, out=out, state=state)
     # Empty without a replanner, which makes _drift a dict lookup that always misses.
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)
@@ -976,7 +997,8 @@ def run_sequence(
         step = pending[0]
         why = _drift(step, metas, session) if isinstance(step, ActionStep) else None
         if why is not None and replans < max_replans:
-            fresh = _request_replan(replan, session, why, out, state)  # type: ignore[arg-type]  # replan is set whenever metas is
+            # replan is set whenever metas is
+            fresh = _request_replan(replan, session, why, out, state)  # type: ignore[arg-type]
             if fresh is not None:
                 replans += 1
                 pending = list(fresh)
@@ -988,9 +1010,9 @@ def run_sequence(
             logger.warning("[runner] %s; re-plan budget (%d) spent — dispatching anyway", why, max_replans)
         pending.pop(0)
         if isinstance(step, LoopStep):
-            ok_all = _run_loop(step, env, run_op, session, cfg, cache, out, state)
+            ok_all = _run_loop(step, ctx)
         else:
-            ok_all = _run_action(step, env, run_op, session, cfg, cache, out, state)
+            ok_all = _run_action(step, ctx)
         if not ok_all:
             break
 

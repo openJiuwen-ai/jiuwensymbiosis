@@ -13,7 +13,7 @@ them — but as **functions it calls**, not as a base class it inherits:
         def move_direction(self, direction: str, distance_mm: float) -> dict:
             return defaults.move_direction(self, direction, distance_mm)
 
-Inheritance would bundle: taking ``goto_xyzr`` used to mean taking ``get_pose``,
+Inheritance would bundle: taking ``goto_xyzr`` would mean taking ``get_pose``,
 ``get_home_pose`` and ``move_direction`` too, and the MRO decided which of two
 mixins won when both defined a name. A function has neither problem, and — the
 point of the shape — **the adapter file lists every action the body offers**,
@@ -82,7 +82,8 @@ def home(api: Any) -> None:
 
 def get_pose(api: Any) -> dict:
     """Current pose. Reports the flange pose — assumes tip == flange, so a body with
-    a tool offset overrides this rather than calling it."""
+    a tool offset overrides this rather than calling it.
+    """
     return pose_to_dict(api.env.get_flange_pose())
 
 
@@ -158,7 +159,8 @@ def deactivate_suction(api: Any) -> dict:
 
 def open_gripper(api: Any, width_mm: float = 80.0) -> dict:
     """Open the gripper. ``width_mm`` is accepted for contract parity and ignored —
-    a body with real width control writes its own."""
+    a body with real width control writes its own.
+    """
     del width_mm
     api.env.set_end_effector(False)
     return {"ok": True, "state": "open"}
@@ -166,7 +168,8 @@ def open_gripper(api: Any, width_mm: float = 80.0) -> dict:
 
 def close_gripper(api: Any, force_n: float | None = None) -> dict:
     """Close the gripper. ``force_n`` is accepted for contract parity and ignored —
-    a body with real force control writes its own."""
+    a body with real force control writes its own.
+    """
     del force_n
     api.env.set_end_effector(True)
     return {"ok": True, "state": "closed"}
@@ -190,7 +193,8 @@ def navigate_relative(api: Any, dx_m: float, dy_m: float = 0.0, dyaw_rad: float 
 
 def rotate_base(api: Any, dyaw_rad: float) -> dict:
     """Turn in place — the same Env verb with the translation pinned to zero, which is
-    exactly the guarantee ``rotate_base`` makes over ``navigate_relative``."""
+    exactly the guarantee ``rotate_base`` makes over ``navigate_relative``.
+    """
     return api.env.navigate_relative(0.0, 0.0, float(dyaw_rad))
 
 

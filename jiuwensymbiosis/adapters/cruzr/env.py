@@ -89,7 +89,8 @@ class CruzrEnv(BaseRobotEnv):
         (~15-20 s of driving) overlap the build; by grasp time the model is cached
         (``dual_arm_grasp`` joins this thread before its collision check). Daemon → never
         blocks connect/shutdown; a build failure degrades inside ``self_collision``
-        (the collision check just disables, never crashes), so best-effort here too."""
+        (the collision check just disables, never crashes), so best-effort here too.
+        """
         import threading
 
         urdf = getattr(self.cfg, "urdf_path", "")
@@ -111,7 +112,8 @@ class CruzrEnv(BaseRobotEnv):
     def _warm_ik_async(self) -> None:
         """Pre-build the pinocchio IK model in the background at connect so the first grasp's IK
         solve doesn't pay ``buildModelFromUrdf``. Daemon, best-effort (IK falls back to legacy DLS
-        when pin is absent); mirrors ``_warm_self_collision_async``."""
+        when pin is absent); mirrors ``_warm_self_collision_async``.
+        """
         import threading
 
         urdf = getattr(self.cfg, "urdf_path", "")
@@ -132,7 +134,8 @@ class CruzrEnv(BaseRobotEnv):
     def _warm_camera_async(self) -> None:
         """Grab one waist + one head frame in the background at connect so the first real detect
         doesn't pay the camera worker's rclpy/DDS-discovery + TF-fill cold start. Daemon,
-        best-effort — frames are discarded; a failed grab just leaves the cold start for later."""
+        best-effort — frames are discarded; a failed grab just leaves the cold start for later.
+        """
         import threading
 
         inner = self._inner

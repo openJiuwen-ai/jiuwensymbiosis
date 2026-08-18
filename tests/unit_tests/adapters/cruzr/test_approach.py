@@ -41,7 +41,7 @@ class FakeApi:
         """A body holds its approach component; the head pan-scan looks through it."""
         return self
 
-    def _look_for(self, object_name="box", on=None, camera=None):
+    def look_for(self, object_name="box", on=None, camera=None):
         """One look through one camera — the seam the head pan-scan drives."""
         self.calls.append(("search_target", object_name))
         return self._search.pop(0)

@@ -11,22 +11,20 @@ the interpreter's Python must match the ROS build (e.g. the conda env on Jazzy).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
-from typing import Any, Optional
-
-from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
-
-import json
-import subprocess
-import tempfile
 from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 
+from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.perception.frame import CameraFrame
 from jiuwensymbiosis.ros2 import worker as ros2_worker
 from jiuwensymbiosis.ros2.image_decode import decode_image_msg as decode_image_msg  # re-export
@@ -45,13 +43,14 @@ class CruzrLowLevel:
         self._closed = False
         self._latest_joints: dict[str, float] = {}
         self._lock = threading.RLock()
+        self._head_fk_cache: Optional[tuple] = None   # (urdf_path, model, data, frame_id), built on first use
 
         try:
             import rclpy
-            from rclpy.executors import SingleThreadedExecutor
-            from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
             from mc_state_msgs.msg import RobotState
             from mc_task_msgs.msg import JointCmd, RobotCommand
+            from rclpy.executors import SingleThreadedExecutor
+            from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
         except ImportError as exc:
             raise RuntimeError(
                 "[Cruzr] in-process rclpy is required but unavailable for the current interpreter "
@@ -61,8 +60,8 @@ class CruzrLowLevel:
             ) from exc
 
         self._rclpy = rclpy
-        self._JointCmd = JointCmd
-        self._RobotCommand = RobotCommand
+        self._joint_cmd_cls = JointCmd
+        self._robot_command_cls = RobotCommand
 
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -121,7 +120,8 @@ class CruzrLowLevel:
 
     def grab_head_frame(self):
         """抓头部一帧【带组织化点云 + base<-optical TF】(仅 grounded 3D 验证用) ->
-        ``(rgb, cloud_xyz[H,W,3] | None, tf_base_cam[4x4] | None)``；worker 整体失败返回 None。"""
+        ``(rgb, cloud_xyz[H,W,3] | None, tf_base_cam[4x4] | None)``；worker 整体失败返回 None。
+        """
         result = self.camera.grab_head_frame()
         if result is None:
             return None
@@ -147,7 +147,7 @@ class CruzrLowLevel:
         try:
             import pinocchio as pin
 
-            cache = getattr(self, "_head_fk_cache", None)
+            cache = self._head_fk_cache
             urdf_path = str(self.cfg.urdf_path)
             if cache is None or cache[0] != urdf_path:
                 model = pin.buildModelFromUrdf(urdf_path)
@@ -203,7 +203,8 @@ class CruzrLowLevel:
                           k_rot_slow_rad: Optional[float] = None,
                           k_fwd: Optional[float] = None) -> dict:
         """相对当前位姿导航（差速轮速 + odom 闭环，经子进程 worker）。
-        k_rot/k_rot_slow_rad/k_fwd 非 None 时覆盖全局 base_k_*(approach 精定位用温和值)。"""
+        k_rot/k_rot_slow_rad/k_fwd 非 None 时覆盖全局 base_k_*(approach 精定位用温和值)。
+        """
         return self.nav.navigate_relative(
             float(dx_m), float(dy_m), float(dyaw_rad),
             k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd)
@@ -227,7 +228,8 @@ class CruzrLowLevel:
     def start_base_drive(self, *, k_fwd: Optional[float] = None, fwd_max_m: Optional[float] = None) -> Any:
         """启动非阻塞【连续驱近前进】worker（匀速前进、可中断、雷达急停）；返回句柄供轮询/停止。
 
-        ``k_fwd`` / ``fwd_max_m``：末段抓取伺服用的慢速爬行 / 更紧前进自限；``None``=配置默认（粗定位不传即原行为）。"""
+        ``k_fwd`` / ``fwd_max_m``：末段抓取伺服用的慢速爬行 / 更紧前进自限；``None``=配置默认（粗定位不传即原行为）。
+        """
         return self.nav.start_drive(k_fwd=k_fwd, fwd_max_m=fwd_max_m)
 
     def base_drive_running(self, handle: Any) -> bool:
@@ -340,12 +342,12 @@ class CruzrLowLevel:
         """Publish one ``RobotCommand`` containing all requested joint positions."""
         if self._closed:
             raise RuntimeError("[Cruzr] driver is closed.")
-        cmd = self._RobotCommand()
+        cmd = self._robot_command_cls()
         cmd.header.stamp = self._node.get_clock().now().to_msg()
         for name, pos in joint_positions.items():
-            joint = self._JointCmd()
+            joint = self._joint_cmd_cls()
             joint.name = str(name)
-            joint.control_mode = self._JointCmd.MODE_POSITION
+            joint.control_mode = self._joint_cmd_cls.MODE_POSITION
             joint.position = float(pos)
             cmd.joint_cmd.append(joint)
         self._publisher.publish(cmd)
@@ -354,7 +356,8 @@ class CruzrLowLevel:
         """Return the selected arm to the configured home position."""
         joint = self.cfg.joint_name_for_arm(arm)
         self.move_joint_blocking({joint: self.cfg.home_position_rad})
-        return {"ok": True, "arm": arm or self.cfg.default_arm, "joint": joint, "position_rad": self.cfg.home_position_rad}
+        return {"ok": True, "arm": arm or self.cfg.default_arm, "joint": joint,
+                "position_rad": self.cfg.home_position_rad}
 
     def raise_arm_blocking(
         self,
@@ -448,7 +451,8 @@ class CruzrLowLevel:
         """Move multiple joints to targets via a native multi-JointCmd smoothstep ramp.
 
         ``ramp_duration_s`` overrides the global ``cfg.ramp_duration_s`` for this move only
-        (e.g. ``set_head`` passes the shorter ``cfg.head_ramp_duration_s``)."""
+        (e.g. ``set_head`` passes the shorter ``cfg.head_ramp_duration_s``).
+        """
         targets = {str(k): float(v) for k, v in targets.items()}
         ramp_ok = self._ramp_to_targets_native(targets, ramp_duration_s=ramp_duration_s)
         deadline = time.monotonic() + float(timeout_s)
@@ -557,7 +561,8 @@ class CruzrLowLevel:
         target = float(target)
         direction = 1.0 if target >= current else -1.0
         while True:
-            if (direction > 0 and current >= target) or (direction < 0 and current <= target):
+            reached = (direction > 0 and current >= target) or (direction < 0 and current <= target)
+            if reached:
                 current = target
                 self.publish_joint_position(joint_name, current)
                 break
@@ -619,7 +624,8 @@ class CruzrCamera:
         ``(rgb, cloud_xyz[H,W,3] | None, tf_base_cam[4x4] | None)``；worker 整体失败返回 None。
 
         cloud/tf 任一为 None 表示该项拿不到，上层据此优雅降级回纯 bearing。不用 CameraFrame
-        (它是 shared 契约、不携带点云)，故回一个 Cruzr 私有 tuple。"""
+        (它是 shared 契约、不携带点云)，故回一个 Cruzr 私有 tuple。
+        """
         def _read(out: Path, meta: dict):
             rgb = np.load(out / "color.npy")
             cloud = None
@@ -701,7 +707,8 @@ class CruzrCamera:
         (the waist starts fast and isn't affected). Each attempt is a brand-new subprocess, so a
         retry re-runs full DDS discovery and succeeds once the stream is up. Bounded by
         ``camera_grab_retries`` (total attempts = retries + 1); the steady-state path hits on the
-        first attempt with zero retry overhead."""
+        first attempt with zero retry overhead.
+        """
         attempts = max(1, int(getattr(self.cfg, "camera_grab_retries", 2)) + 1)
         settle = float(getattr(self.cfg, "camera_grab_retry_settle_s", 0.5))
         for attempt in range(1, attempts + 1):
@@ -718,7 +725,8 @@ class CruzrCamera:
         """One frame-grab attempt: run the worker in a temp dir and, on a valid (ok) result, call
         ``reader(out, meta)`` INSIDE the temp dir (its files vanish on exit) and return that value.
         Returns None on any subprocess / meta failure. Shared by ``_grab`` (waist/head RGB[D]) and
-        ``grab_head_frame`` (head RGB + point cloud)."""
+        ``grab_head_frame`` (head RGB + point cloud).
+        """
         if getattr(self.cfg, "resident_workers", False):
             return self._resident_grab(build_cmd, reader)
         with tempfile.TemporaryDirectory(prefix="cruzr_cam_") as tmp:
@@ -762,7 +770,8 @@ class CruzrCamera:
         """Resident-worker grab: reuse a persistent --serve camera worker (rclpy/TF kept warm) by
         writing a 'grab <dir>' request and reading back one meta line. Returns None on any failure
         (dropping the handle so ``_run_and_read``'s retry restarts a fresh worker) — same contract as
-        ``_run_and_read_once``."""
+        ``_run_and_read_once``.
+        """
         worker = self._ensure_resident(build_cmd)
         with tempfile.TemporaryDirectory(prefix="cruzr_cam_") as tmp:
             out = Path(tmp)
@@ -927,7 +936,8 @@ class CruzrNav:
 
     def _serve_cmd(self) -> list[str]:
         """CLI for a persistent --serve wheel worker. Global base_k_* are the startup defaults; each
-        request overrides k_rot/k_fwd/k_rot_slow inline (navigate_relative's gentle-approach values)."""
+        request overrides k_rot/k_fwd/k_rot_slow inline (navigate_relative's gentle-approach values).
+        """
         c = self.cfg
         return [
             getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker), "--serve",
@@ -954,7 +964,8 @@ class CruzrNav:
     def _resident_move_request(self, dx, dyaw, k_rot, k_rot_slow, k_fwd) -> Optional[dict]:
         """Send one 'dx dyaw k_rot k_fwd k_rot_slow' request to the persistent --serve wheel worker and
         read back its JSON result. Returns None (→ caller falls back to the one-shot path) when the
-        worker can't be started or dies mid-request."""
+        worker can't be started or dies mid-request.
+        """
         c = self.cfg
         krot = k_rot if k_rot is not None else getattr(c, "base_k_rot", 0.6)
         kfwd = k_fwd if k_fwd is not None else getattr(c, "base_k_fwd", 0.8)
@@ -1007,7 +1018,8 @@ class CruzrNav:
     def stop_spin(proc: subprocess.Popen) -> dict:
         """Halt the spin worker and collect its result. Sends the stdin 'stop' sentinel (clean
         wheel stop) when still running, else just drains the completed run. Falls back to
-        SIGTERM (handled → clean stop) then kill, so the base is never left commanded."""
+        SIGTERM (handled → clean stop) then kill, so the base is never left commanded.
+        """
         return ros2_worker.stop_and_collect(
             proc, label="[CruzrNav] spin", kind="spin", empty_result={"ok": True, "yaw_turned": 0.0})
 
@@ -1055,7 +1067,8 @@ class CruzrNav:
     def steer_drive(proc: subprocess.Popen, bearing_rad: float) -> None:
         """Feed a live head bearing (rad, + = target left) to the running forward worker so it curves
         toward the target via differential wheels. Best-effort: a closed stdin / dead worker is
-        ignored — the drive self-bounds and the next ``stop_drive`` still collects its result."""
+        ignored — the drive self-bounds and the next ``stop_drive`` still collects its result.
+        """
         try:
             if proc.stdin is not None and proc.poll() is None:
                 proc.stdin.write(f"{float(bearing_rad):.4f}\n")
@@ -1067,7 +1080,8 @@ class CruzrNav:
     def hold_drive(proc: subprocess.Popen) -> None:
         """Tell the running forward worker to PAUSE the wheels (hold position) because the head lost
         the anchor — so it stops creeping blind on the last bearing. The next ``steer_drive`` resumes
-        it. Best-effort like ``steer_drive``: a closed stdin / dead worker is ignored."""
+        it. Best-effort like ``steer_drive``: a closed stdin / dead worker is ignored.
+        """
         try:
             if proc.stdin is not None and proc.poll() is None:
                 proc.stdin.write("hold\n")
@@ -1079,6 +1093,7 @@ class CruzrNav:
     def stop_drive(proc: subprocess.Popen) -> dict:
         """Halt the forward worker and collect its result. Sends the stdin 'stop' sentinel (clean
         wheel stop) when still running, else just drains the completed run. Falls back to SIGTERM
-        (handled → clean stop) then kill, so the base is never left commanded."""
+        (handled → clean stop) then kill, so the base is never left commanded.
+        """
         return ros2_worker.stop_and_collect(
             proc, label="[CruzrNav] drive", kind="drive", empty_result={"ok": True, "dist_traveled": 0.0})

@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -177,7 +178,8 @@ def render_vocabulary(specs: list[dict[str, Any]]) -> str:
             lines.append(f"## {cap or '（无能力门 —— 所有本体都有）'}")
             lines.append("")
         flag = "" if spec["planner_visible"] else "   [调试/标定，不进规划器词表]"
-        lines.append(f"{spec['name']}{_param_sig({'properties': dict.fromkeys(spec['params'], {}), 'required': spec['required_params']})}{flag}")
+        schema = {"properties": dict.fromkeys(spec["params"], {}), "required": spec["required_params"]}
+        lines.append(f"{spec['name']}{_param_sig(schema)}{flag}")
         lines.append(f"    {spec['description']}")
         fields = sorted(spec["returns"].get("properties") or {})
         if fields:
@@ -224,4 +226,7 @@ def render_state(state: dict[str, Any]) -> str:
 
 def emit(payload: Any, text: str, *, as_json: bool) -> None:
     """Print the machine or the human rendering of one view."""
-    print(json.dumps(payload, ensure_ascii=False, indent=2) if as_json else text)
+    # The CLI's machine/human rendering goes to stdout so `--json | jq` works;
+    # routing it through a logger would add prefixes and send it to stderr.
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) if as_json else text
+    sys.stdout.write(rendered + "\n")

@@ -87,7 +87,10 @@ def _rectify_cruzr_stereo_left(rgb):
 
 
 def _emit(meta: dict) -> None:
-    print(json.dumps(meta), flush=True)
+    # stdout IS this worker's protocol (parsed by ros2/worker.py), not logging: a logger
+    # would prefix/redirect the line and the parent would find no result.
+    sys.stdout.write(json.dumps(meta) + "\n")
+    sys.stdout.flush()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -171,21 +174,22 @@ def main(argv: Optional[list] = None) -> int:
     # Message types imported once; the sensor SUBSCRIPTIONS are created per-grab in _grab_once and
     # destroyed right after (a persistent sensor subscription degrades the SDK camera stream over a
     # long-lived worker — cruzr-inprocess-dds-shm). node / rclpy / TF stay resident for the savings.
-    ColorMsg = _import_msg(args.color_msg_type)
-    DepthMsg = _import_msg(args.depth_msg_type) if args.depth_topic else None
+    color_msg_cls = _import_msg(args.color_msg_type)
+    depth_msg_cls = _import_msg(args.depth_msg_type) if args.depth_topic else None
     want_cloud = bool(args.pointcloud_topic)
     from sensor_msgs.msg import CameraInfo, PointCloud2
 
     def _grab_once(dst: Path) -> dict:
         """Create the sensor subscriptions, grab one frame, then DESTROY them (never persistent — that
-        is what degrades the SDK camera stream over a long-lived worker). node/rclpy/TF stay resident."""
+        is what degrades the SDK camera stream over a long-lived worker). node/rclpy/TF stay resident.
+        """
         state["color"] = None
         state["depth"] = None
         state["K"] = None
         state["cloud"] = None
-        subs = [node.create_subscription(ColorMsg, args.color_topic, lambda m: state.__setitem__("color", m), qos)]
-        if DepthMsg is not None:
-            subs.append(node.create_subscription(DepthMsg, args.depth_topic,
+        subs = [node.create_subscription(color_msg_cls, args.color_topic, lambda m: state.__setitem__("color", m), qos)]
+        if depth_msg_cls is not None:
+            subs.append(node.create_subscription(depth_msg_cls, args.depth_topic,
                                                  lambda m: state.__setitem__("depth", m), qos))
         if args.camera_info_topic:
             subs.append(node.create_subscription(CameraInfo, args.camera_info_topic,
@@ -294,11 +298,11 @@ def main(argv: Optional[list] = None) -> int:
                     continue
                 t = tr.transform.translation
                 q = tr.transform.rotation
-                R = _quat_to_rot(q.x, q.y, q.z, q.w)
+                rot = _quat_to_rot(q.x, q.y, q.z, q.w)
                 tf_base_cam = [
-                    [R[0][0], R[0][1], R[0][2], t.x * 1000.0],
-                    [R[1][0], R[1][1], R[1][2], t.y * 1000.0],
-                    [R[2][0], R[2][1], R[2][2], t.z * 1000.0],
+                    [rot[0][0], rot[0][1], rot[0][2], t.x * 1000.0],
+                    [rot[1][0], rot[1][1], rot[1][2], t.y * 1000.0],
+                    [rot[2][0], rot[2][1], rot[2][2], t.z * 1000.0],
                     [0.0, 0.0, 0.0, 1.0],
                 ]
                 break

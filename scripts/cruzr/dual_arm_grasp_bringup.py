@@ -15,13 +15,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
+from jiuwensymbiosis.adapters.cruzr.grasp_planner import solve_grasp
+
+from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
-from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
-from jiuwensymbiosis.adapters.cruzr.grasp_planner import solve_grasp
 from jiuwensymbiosis.kinematics.urdf_chain import parse_chain
 from jiuwensymbiosis.perception.object_geometry import ObjectGeometry3D
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> int:
@@ -52,25 +56,25 @@ def main() -> int:
     # --- Full orchestrated pipeline (M3): grasp, then place back + home ---
     if args.full:
         det = api.locate_for_grasp(args.object)
-        print("locate_for_grasp:", det.get("ok"), det.get("reason"))
+        logger.info("locate_for_grasp: ok=%s reason=%s", det.get("ok"), det.get("reason"))
         if not det.get("ok"):
-            print("detection failed; safe retreat ...")
-            print("home:", api.home())
+            logger.warning("detection failed; safe retreat ...")
+            logger.info("home: %s", api.home())
             return 1
         result = api.dual_arm_grasp(object_name=args.object)  # uses cached detection
-        print("dual_arm_grasp result:", result)
+        logger.info("dual_arm_grasp result: %s", result)
         if result.get("ok") and result.get("box"):
-            print("placing box back ...")
-            print("dual_arm_place:", api.dual_arm_place())  # uses last grasped box
+            logger.info("placing box back ...")
+            logger.info("dual_arm_place: %s", api.dual_arm_place())  # uses last grasped box
         # dual_arm_place no longer returns to zero — home owns that.
-        print("home:", api.home())
+        logger.info("home: %s", api.home())
         return 0 if result.get("ok") else 3
 
     # --- Step 1: detect box 3D geometry ---
     d = api.locate_for_grasp(args.object)
-    print("locate_for_grasp:", d)
+    logger.info("locate_for_grasp: %s", d)
     if not d["ok"]:
-        print("Detection failed:", d.get("reason"))
+        logger.error("detection failed: %s", d.get("reason"))
         return 1
 
     box = ObjectGeometry3D(
@@ -91,22 +95,16 @@ def main() -> int:
 
     # --- Step 3: read lifter/waist q_fixed from live hardware ---
     q = env.low_level.get_joint_positions()
-    q_fixed = {k: q.get(k, 0.0) for k in (
-        "lifter_pitch_1_joint",
-        "lifter_pitch_2_joint",
-        "lifter_pitch_3_joint",
-        "waist_yaw_joint",
-    )}
+    _fixed_names = ("lifter_pitch_1_joint", "lifter_pitch_2_joint",
+                    "lifter_pitch_3_joint", "waist_yaw_joint")
+    q_fixed = {k: q.get(k, 0.0) for k in _fixed_names}
 
     # --- Step 4: solve dual-arm grasp IK ---
     plan = solve_grasp(box, left, right, q_fixed)
-    print("plan.ok=", plan.ok, "reason=", plan.reason)
+    logger.info("plan.ok=%s reason=%s", plan.ok, plan.reason)
     for arm in ("left", "right"):
-        print(
-            arm,
-            "ik converged=", plan.ik[arm].converged,
-            "pos_err_m=", round(plan.ik[arm].pos_err_m, 4),
-        )
+        logger.info("%s ik converged=%s pos_err_m=%s",
+                    arm, plan.ik[arm].converged, round(plan.ik[arm].pos_err_m, 4))
 
     # --- Step 5: dry-run exits here ---
     if args.dry_run or not plan.ok:
@@ -115,7 +113,7 @@ def main() -> int:
     # --- Step 6: single-arm low-speed reach (hardware, DEFERRED to user) ---
     if args.single_arm:
         env.low_level.move_joints_blocking(plan.ik["left"].q)
-        print("single-arm reach done; readback:", env.low_level.get_joint_positions())
+        logger.info("single-arm reach done; readback: %s", env.low_level.get_joint_positions())
 
     return 0
 

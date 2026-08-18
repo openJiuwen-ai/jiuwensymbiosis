@@ -43,7 +43,7 @@ def _api_with_senses(senses):
     api = CruzrApi(env)
     it = iter(senses)
     api.locate_for_place = lambda object_name="table": next(it)   # type: ignore[method-assign]
-    api._nav._look_for = lambda object_name="table", on=None, camera=None: {"ok": True, "found": False,  # type: ignore[method-assign]
+    api._nav.look_for = lambda object_name="table", on=None, camera=None: {"ok": True, "found": False,  # type: ignore[method-assign]
                                                               "reason": "no_detection", "image_h": 100, "image_w": 200}
     api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}       # type: ignore[method-assign]
     return api, env

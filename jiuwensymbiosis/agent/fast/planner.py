@@ -140,28 +140,28 @@ def _format_scene(scene: Any) -> str:
     missing = scene.get("missing") or []
     unqual = scene.get("unqualified") or []
     prior = scene.get("reach_prior")
-    if not objs and not refs and not missing and not unqual and not isinstance(prior, dict):
+    if not any((objs, refs, missing, unqual)) and not isinstance(prior, dict):
         return ""
 
-    def _one(i: int, o: dict) -> str:
-        name = o.get("object", "?")
-        dist = o.get("distance_mm")
-        c = o.get("center_mm")
+    def _one(i: int, obj: dict) -> str:
+        name = obj.get("object", "?")
+        dist = obj.get("distance_mm")
+        c = obj.get("center_mm")
         dist_s = f"{float(dist):.0f}mm" if isinstance(dist, (int, float)) else "?"
         c_s = f"[{c[0]:.0f},{c[1]:.0f},{c[2]:.0f}]" if isinstance(c, (list, tuple)) and len(c) == 3 else "?"
-        r = o.get("reachable")
+        r = obj.get("reachable")
         reach_s = "" if r is None else f", 可达={'是' if r else '否'}"
         return f"  - #{i} {name}: 距离 {dist_s}, base系中心 {c_s}mm{reach_s}"
 
     lines: list[str] = []
     if objs:
         lines.append(f"【场景感知】(规划前检测到 {len(objs)} 个目标实例，按最近优先)：")
-        lines.extend(_one(i, o) for i, o in enumerate(objs))
+        lines.extend(_one(i, obj) for i, obj in enumerate(objs))
     if refs:
         # Referenced objects are NOT what the task grasps — say so, or the planner will happily
         # plan to pick up the drawer the apple is in.
         lines.append("【参照物】(用于定位目标，不是抓取对象)：")
-        lines.extend(_one(i, o) for i, o in enumerate(refs))
+        lines.extend(_one(i, obj) for i, obj in enumerate(refs))
     if missing:
         # "Looked for and not found" ≠ "not there": the body may simply not be facing it. Saying
         # which is which is what lets the planner choose to search instead of reaching blindly.
@@ -455,7 +455,8 @@ def _chat(
 def _post(client: Any, url: str, payload: dict, headers: dict, cancel_token: CancelToken | None) -> Any:
     """POST the chat request; when a token is present make the socket read
     abandonable by registering ``client.close`` and polling under
-    ``cancellable_call``. ``None`` → a plain blocking ``client.post``."""
+    ``cancellable_call``. ``None`` → a plain blocking ``client.post``.
+    """
     if cancel_token is None:
         return client.post(url, json=payload, headers=headers)
     unregister = cancel_token.on_cancel(client.close)
