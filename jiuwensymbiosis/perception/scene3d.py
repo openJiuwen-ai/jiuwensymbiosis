@@ -121,7 +121,8 @@ def on_surface(
 ) -> bool:
     """True if point (px, py, pz) rests ON a surface: its (x, y) is inside the surface
     footprint (± margin) and its z is at/above the surface top. The 'on' relation shared
-    by both directions — target-on-reference (grasp) and reference-on-surface (place)."""
+    by both directions — target-on-reference (grasp) and reference-on-surface (place).
+    """
     return (front_x - margin <= px <= back_x + margin
             and abs(py - center_y) <= half_width + margin
             and pz >= top_z - margin)
@@ -212,7 +213,8 @@ def _one_over_the_other(a: Extent, b: Extent) -> bool:
     """True if either centre lies within the other's footprint — i.e. they are stacked, not
     side by side. Deliberately margin-free: the ``on`` margin exists to absorb depth noise
     when deciding "is this resting on that", and inflating a *lateral* test by it would call
-    two neighbours a hand's width apart a stack."""
+    two neighbours a hand's width apart a stack.
+    """
     def over(p: Extent, q: Extent) -> bool:
         return (q.front_x_mm <= p.center_mm[0] <= q.back_x_mm
                 and abs(p.center_mm[1] - q.center_mm[1]) <= q.width_mm / 2.0)
@@ -282,7 +284,8 @@ def relation_holds(
 
 def object_geometry_fields(geo: Any) -> dict:
     """Base-frame geometry payload for a detected object (mm), shared by the plain and the
-    grounded (``on=``) detect paths so they never drift. ``geo`` is an ``ObjectGeometry3D``."""
+    grounded (``on=``) detect paths so they never drift. ``geo`` is an ``ObjectGeometry3D``.
+    """
     return {
         "center_mm": list(geo.center_mm),
         "width_mm": geo.width_mm,
@@ -303,7 +306,8 @@ def surface_footprint_fields(surf: Any) -> dict:
     """Common base-frame footprint payload for a sensed support surface, shared by the plain and the
     grounded (``has=``) sense paths so they NEVER drift — the place-side squaring reads
     ``yaw_rad`` / ``edge_normal`` and a path that omits them silently disables squaring (the exact bug
-    this centralises away). ``surf`` is an ``ObjectGeometry3D``."""
+    this centralises away). ``surf`` is an ``ObjectGeometry3D``.
+    """
     return {
         "surface_z_mm": surf.top_z_mm,
         "center_mm": list(surf.center_mm),
@@ -319,7 +323,8 @@ def surface_footprint_fields(surf: Any) -> dict:
 
 def edge_log_str(surf: Any) -> str:
     """Human-readable near-edge fit summary for the surface-sensing log — so the table-edge normal the
-    base squares to can be CONFIRMED from the log. Empty when the fit is untrusted (zero normal)."""
+    base squares to can be CONFIRMED from the log. Empty when the fit is untrusted (zero normal).
+    """
     if math.hypot(surf.edge_normal_x, surf.edge_normal_y) <= 1e-6:
         return " edge=untrusted"
     return " edge_mid=(%.0f,%.0f) edgeN=%.0fdeg q=%.3f len=%.0fmm" % (
@@ -331,7 +336,8 @@ def edge_log_str(surf: Any) -> str:
 def color_stats_str(rgb: Any, mask: Any) -> str:
     """Brightness / saturation / mean-RGB of a masked region for the color-mismatch reject LOG only,
     mirroring region_color_matches' math (same mask resize + mean/bright/sat) so a rejection can be
-    diagnosed against its gate (e.g. 'white' ⇒ sat<0.25 & bright>0.35) instead of guessed by eye."""
+    diagnosed against its gate (e.g. 'white' ⇒ sat<0.25 & bright>0.35) instead of guessed by eye.
+    """
     import numpy as np
 
     m = np.asarray(mask).astype(bool)
@@ -368,7 +374,8 @@ def candidate_geometries(
     edge fit latch onto the REFERENCE's edge (giving a normal for the surface, not the target).
 
     Returns ``(geometry, detection)`` pairs; ``detection`` is the source ``{mask, box, score}``
-    kept so the grounded callers can overlay the picked target's mask in the debug window."""
+    kept so the grounded callers can overlay the picked target's mask in the debug window.
+    """
     import numpy as np
 
     from jiuwensymbiosis.perception.object_geometry import object_geometry_from_mask
@@ -492,12 +499,14 @@ def sense_surface_geometry(
     return {"ok": True, "object": object_name, **surface_footprint_fields(surf)}
 
 
-def log_grounded_pick(log_prefix: str, object_name: str, on: str, n_cand: int, n_picks: int,
-                      geo: Any, *, face_flatness_max: float, square_min_aspect: float) -> None:
+def log_grounded_pick(log_prefix: str, object_name: str, on: str, *,
+                      n_cand: int, n_picks: int, geo: Any,
+                      face_flatness_max: float, square_min_aspect: float) -> None:
     """One line covering everything a grounded pick can go wrong in: how many candidates survived the
     'on' relation, the footprint the base will square to, and whether the point-cloud face normal is
     trusted. The face normal should point roughly BACK at the robot, so its angle and the
-    target→robot bearing are logged together — a wildly-off normal is then obvious from the log."""
+    target→robot bearing are logged together — a wildly-off normal is then obvious from the log.
+    """
     lo, hi = min(geo.long_mm, geo.short_mm), max(geo.long_mm, geo.short_mm)
     trusted = math.hypot(geo.face_normal_x, geo.face_normal_y) > 0.5 and geo.face_flatness <= face_flatness_max
     face_ang = math.degrees(math.atan2(geo.face_normal_y, geo.face_normal_x))

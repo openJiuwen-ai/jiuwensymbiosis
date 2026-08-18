@@ -177,8 +177,6 @@ def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str,
     Debug bypass: set ``JIUWEN_SKIP_COLOR_VERIFY`` to disable the gate entirely (always match) —
     e.g. to test a grasp or confirm the face normal on a detection the color gate keeps rejecting.
     """
-    import os
-
     if os.environ.get("JIUWEN_SKIP_COLOR_VERIFY"):
         return True
     import colorsys
@@ -209,9 +207,9 @@ def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str,
     hue = colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
     if cw == "brown":  # dark, low-brightness orange/red
         return (hue < 60.0 or hue >= 342.0) and brightness < 0.55
-    _HUE = {"red": [(0, 18), (342, 360)], "orange": [(18, 42)], "yellow": [(42, 70)],
+    hue_ranges = {"red": [(0, 18), (342, 360)], "orange": [(18, 42)], "yellow": [(42, 70)],
             "green": [(70, 170)], "blue": [(170, 262)], "purple": [(262, 315)], "pink": [(315, 342)]}
-    rng = _HUE.get(cw)
+    rng = hue_ranges.get(cw)
     return True if rng is None else any(lo <= hue < hi for lo, hi in rng)
 
 
@@ -345,7 +343,7 @@ def detect_all_object_geometry(
             "top_z_mm": g.top_z_mm,
             "score": float(r.get("score", 0.0)),
         })
-    objs.sort(key=lambda o: o["distance_mm"])  # nearest-first
+    objs.sort(key=lambda obj: obj["distance_mm"])  # nearest-first
     logger.info("[scene] detect_all %r: %d raw → %d instances", object_name, len(raw), len(objs))
     return objs
 

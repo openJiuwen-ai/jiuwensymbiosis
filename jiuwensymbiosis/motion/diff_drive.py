@@ -65,7 +65,8 @@ def ramped_speed(speed: float, min_speed: float, remaining: float, slow_band: fl
     return min(speed, max(min_speed, speed * remaining / max(slow_band, _EPS)))
 
 
-def rotate_wheels(remaining_rad: float, *, k_rot: float, k_rot_min: float, k_rot_slow_rad: float) -> tuple[float, float]:
+def rotate_wheels(remaining_rad: float, *, k_rot: float, k_rot_min: float,
+                  k_rot_slow_rad: float) -> tuple[float, float]:
     """Wheel pair for turning in place, decelerating into the target heading.
 
     ``remaining_rad`` is the *shortest-angle* error (see :func:`wrap_angle`) and is
@@ -179,13 +180,10 @@ def sector_min_range(
     closest = float("inf")
     angle = angle_min
     for distance in ranges:
-        if (
-            -half_sector_rad <= angle <= half_sector_rad
-            and not math.isinf(distance)
-            and not math.isnan(distance)
-            and range_min <= distance <= range_max
-            and distance > self_floor
-        ):
+        in_sector = -half_sector_rad <= angle <= half_sector_rad
+        usable = (math.isfinite(distance) and range_min <= distance <= range_max
+                  and distance > self_floor)
+        if in_sector and usable:
             closest = min(closest, distance)
         angle += angle_increment
     return closest

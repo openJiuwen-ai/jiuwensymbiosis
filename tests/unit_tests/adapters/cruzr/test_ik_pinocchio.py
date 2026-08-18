@@ -48,7 +48,7 @@ def test_recovers_reachable_poses_via_restarts():
         paddle = rot @ np.asarray(TOOL_PADDLE_LOCAL, dtype=float)
         res = pik.solve_pose_ik_pin(
             cfg.urdf_path, arm, cfg.left_arm_leaf, limits,
-            tcp, approach, paddle,
+            tcp, approach_target=approach, paddle_target=paddle,
             tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
             tcp_offset_local=(0.0, 0.0, 0.0), q_fixed=_FIXED, q_init=None, seed=t,
         )
@@ -61,7 +61,7 @@ def test_returns_ikresult_contract():
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     res = pik.solve_pose_ik_pin(
         cfg.urdf_path, ARM_JOINTS["left"], cfg.left_arm_leaf, chain.limits(),
-        (0.40, 0.20, 0.65), APPROACH_FORWARD, PADDLE_INWARD,
+        (0.40, 0.20, 0.65), approach_target=APPROACH_FORWARD, paddle_target=PADDLE_INWARD,
         tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
         tcp_offset_local=(-0.09, 0.0, 0.0), q_fixed=_FIXED, q_init=None, seed=0,
     )
@@ -82,7 +82,8 @@ def test_prefers_solution_closest_to_warm_start():
     approach = tf[:3, :3] @ np.asarray(TOOL_APPROACH_LOCAL, float)
     paddle = tf[:3, :3] @ np.asarray(TOOL_PADDLE_LOCAL, float)
     res = pik.solve_pose_ik_pin(
-        cfg.urdf_path, arm, cfg.left_arm_leaf, limits, tf[:3, 3], approach, paddle,
+        cfg.urdf_path, arm, cfg.left_arm_leaf, limits, tf[:3, 3],
+        approach_target=approach, paddle_target=paddle,
         tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
         tcp_offset_local=(0.0, 0.0, 0.0), q_fixed=_FIXED,
         q_init={j: 0.2 for j in arm}, seed=0)
@@ -99,7 +100,7 @@ def test_check_collision_rejects_self_colliding(monkeypatch):
     monkeypatch.setattr(sc, "in_self_collision", lambda *a, **k: True)   # everything "collides"
     res = pik.solve_pose_ik_pin(
         cfg.urdf_path, ARM_JOINTS["left"], cfg.left_arm_leaf, chain.limits(),
-        (0.40, 0.20, 0.65), APPROACH_FORWARD, PADDLE_INWARD,
+        (0.40, 0.20, 0.65), approach_target=APPROACH_FORWARD, paddle_target=PADDLE_INWARD,
         tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
         tcp_offset_local=(-0.09, 0.0, 0.0), q_fixed=_FIXED, q_init=None,
         check_collision=True, seed=0)

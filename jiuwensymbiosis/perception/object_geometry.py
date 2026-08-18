@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 
@@ -60,6 +61,22 @@ class ObjectGeometry3D:
 _EMPTY = (0.0, 0.0, 0.0)
 
 
+class NearEdge(NamedTuple):
+    """``near_edge_line`` result: near-edge midpoint, robot-facing unit normal, fit quality.
+
+    A NamedTuple (not a plain 7-tuple) so callers can unpack or index exactly as before while
+    the fields carry their own names. ``ok=False`` marks an untrustworthy fit.
+    """
+
+    mid_x_mm: float
+    mid_y_mm: float
+    normal_x: float
+    normal_y: float
+    quality: float
+    length_mm: float
+    ok: bool
+
+
 def face_normal_ground(
     pts_base: np.ndarray, *, inlier_tol_mm: float = 12.0, min_inlier_frac: float = 0.12,
     ransac_iters: int = 300, max_points: int = 2000, seed: int = 1234,
@@ -85,7 +102,9 @@ def face_normal_ground(
     caller falls back to a plain radial approach.
     """
     pts = np.asarray(pts_base, dtype=np.float64)
-    if pts.ndim != 2 or pts.shape[1] < 3 or pts.shape[0] < 30 or not np.all(np.isfinite(pts)):
+    if pts.ndim != 2 or pts.shape[1] < 3 or pts.shape[0] < 30:
+        return 0.0, 0.0, 1.0
+    if not np.all(np.isfinite(pts)):
         return 0.0, 0.0, 1.0
     x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
     z_lo, z_hi = np.quantile(z, 0.05), np.quantile(z, 0.95)
@@ -168,7 +187,7 @@ def face_normal_ground(
 def near_edge_line(
     pts_base: np.ndarray, *, n_bins: int = 24, min_slices: int = 6, min_span_mm: float = 150.0,
     debug: "dict | None" = None,
-) -> tuple[float, float, float, float, float, float, bool]:
+) -> NearEdge:
     """Fit the footprint's NEAR edge — the boundary nearest the robot (a table top's front lip) — and
     return its midpoint, outward normal (toward the robot) and a quality metric.
 
@@ -183,22 +202,24 @@ def near_edge_line(
     and the fitted edge length. ``ok=False`` (zeros, quality ``1.0``) when the fit is untrustworthy: too
     few slices, an edge shorter than ``min_span_mm``, or a footprint centred at the origin.
     """
-    _FAIL = (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, False)
+    fail = NearEdge(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, False)
     pts = np.asarray(pts_base, dtype=np.float64)
-    if pts.ndim != 2 or pts.shape[1] < 2 or pts.shape[0] < 30 or not np.all(np.isfinite(pts[:, :2])):
-        return _FAIL
+    if pts.ndim != 2 or pts.shape[1] < 2 or pts.shape[0] < 30:
+        return fail
+    if not np.all(np.isfinite(pts[:, :2])):
+        return fail
     xy = pts[:, :2]
     c = np.array([float(np.median(xy[:, 0])), float(np.median(xy[:, 1]))])  # footprint centre (ground)
     c_norm = float(np.hypot(c[0], c[1]))
     if c_norm < 1e-6:
-        return _FAIL
+        return fail
     u = c / c_norm                                   # robot→centre (inward); the near edge faces −u
     t0 = np.array([-u[1], u[0]])                     # tangential (along the edge) direction
     s = xy @ t0                                       # tangential coordinate
     d = xy @ u                                        # depth coordinate (larger ⇒ deeper/farther)
     s_lo, s_hi = float(np.quantile(s, 0.05)), float(np.quantile(s, 0.95))
     if s_hi - s_lo < 1e-6:
-        return _FAIL
+        return fail
     edges = np.linspace(s_lo, s_hi, n_bins + 1)
     slot = np.clip(np.digitize(s, edges) - 1, 0, n_bins - 1)
     contour = []                                      # per-slice nearest-to-robot point = the front contour
@@ -208,7 +229,7 @@ def near_edge_line(
             continue
         contour.append(xy[sel[np.argmin(d[sel])]])
     if len(contour) < min_slices:
-        return _FAIL
+        return fail
     contour = np.asarray(contour, dtype=np.float64)
     mid = contour.mean(0)                             # on the TLS line ⇒ the near edge's midpoint
     e = contour - mid
@@ -220,12 +241,12 @@ def near_edge_line(
     span = float(np.ptp(e @ tangent))
     thick = float(np.std(e @ nrm))
     if span < min_span_mm:
-        return _FAIL
+        return fail
     quality = min(thick / span, 1.0) if span > 1e-6 else 1.0
     if debug is not None:
         debug.update(edge_contour_xy=contour, edge_mid_xy=mid, edge_normal=nrm,
                      ne_quality=quality, ne_len_mm=span)
-    return float(mid[0]), float(mid[1]), float(nrm[0]), float(nrm[1]), quality, span, True
+    return NearEdge(float(mid[0]), float(mid[1]), float(nrm[0]), float(nrm[1]), quality, span, True)
 
 
 def save_face_normal_topdown(debug: dict, out_path: str) -> bool:
@@ -235,7 +256,8 @@ def save_face_normal_topdown(debug: dict, out_path: str) -> bool:
 
     Eyeball check: the arrow should be ⊥ to the visible front edge (green) and point back at the robot.
     If the green edge is the wrong side, short, or the arrow is skewed, the normal is untrustworthy.
-    No-op (returns False) if cv2 is unavailable or the debug dict has no points."""
+    No-op (returns False) if cv2 is unavailable or the debug dict has no points.
+    """
     try:
         import cv2
     except Exception:
@@ -302,7 +324,10 @@ def oriented_footprint(xy: np.ndarray, *, q_lo: float = 0.05, q_hi: float = 0.95
         return 0.0, 0.0, 0.0
     _evals, evecs = np.linalg.eigh(np.atleast_2d(cov))  # ascending eigenvalues
     long_axis, short_axis = evecs[:, -1], evecs[:, 0]
-    span = lambda proj: float(np.quantile(proj, q_hi) - np.quantile(proj, q_lo))
+
+    def span(proj) -> float:
+        return float(np.quantile(proj, q_hi) - np.quantile(proj, q_lo))
+
     long_mm, short_mm = span(d @ long_axis), span(d @ short_axis)
     yaw = float(np.arctan2(long_axis[1], long_axis[0]))
     if yaw > np.pi / 2:
@@ -337,7 +362,8 @@ def object_geometry_from_mask(
     ``min_z_mm`` (grounded 'X on Y' detection): compute the FACE NORMAL only from points ABOVE this
     height (the reference surface top). The target's mask often bleeds onto the reference surface; the
     edge-based normal would then latch onto the reference's dominant straight edge, giving a normal for
-    the REFERENCE, not the target. Dropping surface points keeps the fit on the target's own wall."""
+    the REFERENCE, not the target. Dropping surface points keeps the fit on the target's own wall.
+    """
     h, w = depth_m.shape[:2]
     m = _resize_mask_nearest(mask, h, w)
     valid = m & (depth_m > 0) & np.isfinite(depth_m)

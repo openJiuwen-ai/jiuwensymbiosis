@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import jiuwensymbiosis.adapters.cruzr.api as api_mod
 import jiuwensymbiosis.adapters.cruzr.geometry as gp
 from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
 from jiuwensymbiosis.adapters.cruzr.geometry import (
@@ -63,7 +62,7 @@ def _api(monkeypatch, *, converged=True, lifter=None):
         tf[:3, 3] = (0.30, 0.13, 0.70) if "L_" in chain.leaf else (0.30, -0.13, 0.70)
         return tf
 
-    monkeypatch.setattr(api_mod, "parse_chain", _fake_parse)
+    monkeypatch.setattr("jiuwensymbiosis.kinematics.urdf_chain.parse_chain", _fake_parse)
     monkeypatch.setattr("jiuwensymbiosis.kinematics.fk.fk_chain", _fake_fk)
     captured = []
 
@@ -137,7 +136,7 @@ def test_lift_unreachable_makes_no_move(monkeypatch):
 
 
 def test_lift_no_box(monkeypatch):
-    monkeypatch.setattr(api_mod, "parse_chain", lambda *a, **k: _FakeChain())
+    monkeypatch.setattr("jiuwensymbiosis.kinematics.urdf_chain.parse_chain", lambda *a, **k: _FakeChain())
     env = _Env()
     api = CruzrApi(env)
     assert api.lift_to_clearance()["reason"] == "no_box_to_lift"

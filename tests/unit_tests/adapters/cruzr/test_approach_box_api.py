@@ -16,6 +16,7 @@ import math
 from types import SimpleNamespace
 
 from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
+from jiuwensymbiosis.motion.approach import Footprint
 
 
 class _LL:
@@ -218,7 +219,7 @@ def test_grounded_redetect_degrades_to_plain_while_far_then_regrounds():
         return {"ok": True}
 
     api.locate_for_grasp = _detect   # type: ignore[method-assign]
-    api._nav._drive_base = _drive         # type: ignore[method-assign]
+    api._nav.drive_base = _drive         # type: ignore[method-assign]
     out = api.approach_for_grasp()
     assert out["ok"] and out["status"] == "in_band"
     assert (None, 600) in calls                          # degraded to plain while far (grounded missed)
@@ -390,11 +391,11 @@ def test_grasp_near_face_normal_hysteresis_prevents_face_flip():
 
     cfg = _cfg()
     center = [400.0, 400.0, 780.0]                          # box→robot ~45° to the footprint axes
-    n0 = _grasp_near_face_normal(center, 0.05, 300.0, 200.0, cfg, prev_normal=None)
-    n_flip = _grasp_near_face_normal(center, -0.05, 300.0, 200.0, cfg, prev_normal=None)
+    n0 = _grasp_near_face_normal(Footprint(center, 0.05, 300.0, 200.0), cfg, prev_normal=None)
+    n_flip = _grasp_near_face_normal(Footprint(center, -0.05, 300.0, 200.0), cfg, prev_normal=None)
     assert n0 is not None and n_flip is not None
     assert n0[0] * n_flip[0] + n0[1] * n_flip[1] < 0.2      # unlocked → ~90° flip between the two faces
-    n_lock = _grasp_near_face_normal(center, -0.05, 300.0, 200.0, cfg, prev_normal=n0)
+    n_lock = _grasp_near_face_normal(Footprint(center, -0.05, 300.0, 200.0), cfg, prev_normal=n0)
     assert n0[0] * n_lock[0] + n0[1] * n_lock[1] > 0.9      # locked → same face, no flip
 
 

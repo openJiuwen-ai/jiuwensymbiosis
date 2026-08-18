@@ -1,8 +1,9 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Cruzr-only: turn a head detection mask + the head stereo point cloud into a base-frame
-footprint geometry, so the wide-FOV head camera can verify the "target on reference surface"
-relation in 3-D during search (reuses the shared ``_on_surface`` predicate).
+"""Cruzr-only: head detection mask + head stereo point cloud -> base-frame footprint geometry.
+
+This lets the wide-FOV head camera verify the "target on reference surface" relation in 3-D
+during search (reuses the shared ``_on_surface`` predicate).
 
 Pure numpy, offline-testable. The head point cloud
 (``/sensor/camera/stereo/pointcloud/jazzy``) is row-major per-pixel, in METERS, in the same optical
@@ -12,7 +13,8 @@ count matches the RGB resolution we reshape it back to the image grid (see ``rgb
 otherwise the mask would collapse onto row 0. Holes on untextured surfaces come through as NaN and
 are dropped. Coordinates are
 converted to millimetres (×1000) before applying ``tf_base_cam`` (whose translation is already in
-mm) so the result is the same scale as the waist pixel-reprojected geometry."""
+mm) so the result is the same scale as the waist pixel-reprojected geometry.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ class HeadGeom:
 
     ``center_*`` is the point-set centroid (used as a candidate's position for on-surface tests);
     ``front_x``/``back_x``/``half_width``/``top_z`` describe the footprint (used as a reference
-    surface's extent). ``n_valid`` is the number of finite in-mask cloud points that fed it."""
+    surface's extent). ``n_valid`` is the number of finite in-mask cloud points that fed it.
+    """
 
     center_x: float
     center_y: float
@@ -55,7 +58,8 @@ def head_geometry_from_mask(mask: Any, cloud_xyz: Any, tf_base_cam: Any, *,
 
     Returns ``None`` (the degrade signal → caller falls back to bearing-only) when the cloud or TF
     is missing, the cloud is malformed, or fewer than ``min_valid_points`` finite in-mask points
-    survive (untextured NaN holes)."""
+    survive (untextured NaN holes).
+    """
     if cloud_xyz is None or tf_base_cam is None:
         return None
     mask = np.asarray(mask)
@@ -70,13 +74,13 @@ def head_geometry_from_mask(mask: Any, cloud_xyz: Any, tf_base_cam: Any, *,
         rh, rw = int(rgb_hw[0]), int(rgb_hw[1])
         n_pts = int(cloud.size // cloud.shape[-1])
         is_flat = cloud.ndim == 2 or cloud.shape[0] == 1
-        if is_flat and rh > 0 and rw > 0 and rh * rw == n_pts:
+        if is_flat and min(rh, rw) > 0 and rh * rw == n_pts:
             cloud = cloud.reshape(rh, rw, cloud.shape[-1])
     if cloud.ndim != 3 or cloud.shape[2] < 3:
         return None
     ch, cw = int(cloud.shape[0]), int(cloud.shape[1])
     mh, mw = int(mask.shape[0]), int(mask.shape[1])
-    if ch == 0 or cw == 0 or mh == 0 or mw == 0:
+    if 0 in (ch, cw, mh, mw):
         return None
 
     # Downsample the full-res mask onto the cloud grid (uniform nearest; registration = risk ①).

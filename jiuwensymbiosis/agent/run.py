@@ -119,7 +119,8 @@ def _action_param_sig(fn: Any) -> str:
     """Render a bound action's call params as ``(a, b?)`` — ``?`` = optional (has a
     default). Feeds the compiler exact param names for every action so it never
     invents them (e.g. ``target`` instead of ``box``). Object-agnostic: params are
-    the same regardless of which object the task names."""
+    the same regardless of which object the task names.
+    """
     try:
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
@@ -154,7 +155,8 @@ def _scan_for(api: Any, names: list[str]) -> tuple[list[dict], list[str]]:
     return found, scanned
 
 
-def _split_by_qualifier(objs: list[dict], refs: list[dict], reference: str, relation: str) -> tuple[list[dict], list[dict]]:
+def _split_by_qualifier(objs: list[dict], refs: list[dict], reference: str,
+                        relation: str) -> tuple[list[dict], list[dict]]:
     """Split ``objs`` into (satisfies ``<relation> reference``, seen but does not).
 
     Same predicate the grasp path uses, so the pre-plan prompt and execution agree on which
@@ -168,13 +170,13 @@ def _split_by_qualifier(objs: list[dict], refs: list[dict], reference: str, rela
     if ref is None:
         return objs, []
     ok, rejected = [], []
-    for o in objs:
-        if not scene3d.has_extent(o):
-            ok.append(o)
-        elif scene3d.relation_holds(o, ref, relation):
-            ok.append(o)
+    for obj in objs:
+        if not scene3d.has_extent(obj):
+            ok.append(obj)
+        elif scene3d.relation_holds(obj, ref, relation):
+            ok.append(obj)
         else:
-            rejected.append(o)
+            rejected.append(obj)
     return ok, rejected
 
 
@@ -208,7 +210,7 @@ def _perceive_scene(
     # concrete coordinate — and the planner then has every reason to go grasp it.
     unqualified: list[dict] = []
     for name in list(grounding or {}):
-        same = [o for o in objects if o.get("object") == name]
+        same = [obj for obj in objects if obj.get("object") == name]
         quals = qualifiers_for(grounding, name)
         if not same or not quals:
             continue
@@ -218,17 +220,17 @@ def _perceive_scene(
         keep: list[dict] = []
         for g in quals:
             kept, _ = _split_by_qualifier(same, refs, g["reference"], g["relation"])
-            keep.extend(o for o in kept if o not in keep)
-        rejected = [o for o in same if o not in keep]
+            keep.extend(obj for obj in kept if obj not in keep)
+        rejected = [obj for obj in same if obj not in keep]
         if rejected:
-            objects = [o for o in objects if o not in rejected]
+            objects = [obj for obj in objects if obj not in rejected]
             unqualified.append({
                 "object": name,
                 "reference": " / ".join(g["reference"] for g in quals),
                 "relation": " / ".join(g["relation"] for g in quals),
                 "count": len(rejected),
-                "nearest_mm": min((o.get("distance_mm") for o in rejected
-                                   if isinstance(o.get("distance_mm"), (int, float))), default=None),
+                "nearest_mm": min((obj.get("distance_mm") for obj in rejected
+                                   if isinstance(obj.get("distance_mm"), (int, float))), default=None),
             })
     has_reach = "planning.reachability" in getattr(api, "capabilities", frozenset())
     looked_for = [*scanned_t, *scanned_r]
@@ -256,13 +258,13 @@ def _perceive_scene(
     if has_reach:
         # References get it too: whether the drawer is within reach is exactly what decides
         # "open it from here" vs "drive up to it first".
-        for o in (*objects, *refs):
+        for obj in (*objects, *refs):
             try:
-                o["reachable"] = bool(api.check_reachable(o))
+                obj["reachable"] = bool(api.check_reachable(obj))
             except Exception as exc:  # noqa: BLE001 - precheck is best-effort
                 logger.debug("[fast] reachability precheck failed: %s", exc)
-    objects.sort(key=lambda o: o.get("distance_mm", float("inf")))
-    refs.sort(key=lambda o: o.get("distance_mm", float("inf")))
+    objects.sort(key=lambda obj: obj.get("distance_mm", float("inf")))
+    refs.sort(key=lambda obj: obj.get("distance_mm", float("inf")))
     scene: dict[str, Any] = {"count": len(objects), "objects": objects}
     if refs:
         scene["references"] = refs
@@ -270,7 +272,7 @@ def _perceive_scene(
         scene["unqualified"] = unqualified
     # What was LOOKED FOR but not found is as informative as what was: it is the difference
     # between "the apple isn't here" and "nobody ever looked". Only stated when a scan ran.
-    seen = {o.get("object") for o in (*objects, *refs)}
+    seen = {obj.get("object") for obj in (*objects, *refs)}
     missing = [n for n in looked_for if n not in seen]
     if missing:
         scene["missing"] = missing
@@ -298,7 +300,7 @@ def _blocked_access(scene: Any, grounding: Mapping[str, Mapping[str, str]] | Non
     objects = scene.get("objects") or []
     refs = scene.get("references") or []
     missing = set(scene.get("missing") or [])
-    seen = {o.get("object"): o for o in (*objects, *refs) if o.get("object")}
+    seen = {obj.get("object"): obj for obj in (*objects, *refs) if obj.get("object")}
     out: dict[str, str] = {}
     for target in list(grounding or {}):
         for g in qualifiers_for(grounding, target):
@@ -306,15 +308,15 @@ def _blocked_access(scene: Any, grounding: Mapping[str, Mapping[str, str]] | Non
             if g["relation"] in CONTAINMENT_RELATIONS and target in missing and ref in seen:
                 out[target] = str(ref)
                 break
-    for o in objects:
-        name = o.get("object")
-        if not name or name in out or not scene3d.has_extent(o):
+    for obj in objects:
+        name = obj.get("object")
+        if not name or name in out or not scene3d.has_extent(obj):
             continue
         for other in (*objects, *refs):
-            if other is o or not scene3d.has_extent(other) or other.get("object") == name:
+            if other is obj or not scene3d.has_extent(other) or other.get("object") == name:
                 continue
             try:
-                on_top = scene3d.relation_holds(o, other, "under")
+                on_top = scene3d.relation_holds(obj, other, "under")
             except Exception as exc:  # noqa: BLE001 - a predicate that cannot judge blocks nothing
                 logger.debug("[fast] relation_holds(%r under %r) failed: %s", name, other.get("object"), exc)
                 continue

@@ -94,7 +94,8 @@ class ToolMeta:
     def full_description(self) -> str:
         """What a planner reads. Every word of it comes from the ActionSpec: a body has no
         channel for adding prose of its own, because a fact that changes a plan and is true
-        of only one robot means the action is not the same action there."""
+        of only one robot means the action is not the same action there.
+        """
         return self.description
 
 

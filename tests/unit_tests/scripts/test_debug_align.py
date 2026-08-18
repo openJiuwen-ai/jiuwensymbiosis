@@ -5,8 +5,11 @@ organized cloud + masks straight into ``render_alignment`` (no ROS, no detector,
 it returns a 3-panel BGR image. Also covers the flat-cloud reshape and the no-cloud placeholder."""
 
 import numpy as np
+import pytest
 
-from scripts.cruzr.debug_align import render_alignment
+pytest.importorskip("cv2")   # opencv ships in the [full] / [calib] extras, not [dev]
+
+from scripts.cruzr.debug_align import render_alignment  # noqa: E402
 
 
 def _scene():

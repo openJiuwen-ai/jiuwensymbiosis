@@ -11,10 +11,13 @@
 ### 1.1 Python 环境
 
 ```bash
-# 编辑式安装（二选一）
+# 编辑式安装（extras 可组合，如 ".[dev,gui]"）
 pip install -e ".[dev]"                                          # 核心 + 测试依赖
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + 视觉/GPU 依赖
+pip install -e ".[gui]"                                          # + 图形界面（NiceGUI，浏览器模式）
 pip install -e ".[piper]"                                        # + piper 硬件 SDK
+pip install -e ".[so101]"                                        # + SO-101 硬件依赖
+pip install -e ".[cruzr]"                                        # + Cruzr（ROS 2 / 运动学）依赖
 ```
 
 - Python 3.11+（`pyproject.toml` 限定 `requires-python = ">=3.11,<3.14"`）。
@@ -141,9 +144,9 @@ git push origin feat/<short-description>
 
 四条贯穿全程的行为准则（`alwaysApply: true`，所有文件生效）：
 
-1. **先思考再编码**：不臆测、不隐藏困惑。假设显式声明；存在多种理解时摆出来再选；有更简方案要直说；不清楚就停下来问。本仓库分层抽象（capability gating、mixin MRO、Card/Config 拆分、safety rails）交互微妙，遇歧义先问。
-2. **简洁优先**：用解决问题的最小代码量，不写投机性功能 / 抽象 / 可配置项。新硬件仅需 YAML + 6 个 adapter 文件，在第二个形态出现前不要泛化 mixin 层级。"资深工程师会不会觉得过度复杂？"——会，就简化。
-3. **外科式改动**：只动必须动的。不"顺手"改邻近代码 / 注释 / 格式；不重构没坏的东西；匹配既有风格。只清理自己改动产生的孤儿引用，不删既有死代码（可提一句，但不删）。capability mixin 与其 `@robot_tool` 方法跨 MRO 强耦合，改动一行都应能追溯到需求。
+1. **先思考再编码**：不臆测、不隐藏困惑。假设显式声明；存在多种理解时摆出来再选；有更简方案要直说；不清楚就停下来问。本仓库分层抽象（capability gating、共享动作词表 `@implements`、Config 拆分、safety rails）交互微妙，遇歧义先问。
+2. **简洁优先**：用解决问题的最小代码量，不写投机性功能 / 抽象 / 可配置项。新硬件仅需 YAML + 6 个 adapter 文件；已有 piper / so101 / cruzr 三种形态，任何新抽象都要能说出它服务于哪一具本体。"资深工程师会不会觉得过度复杂？"——会，就简化。
+3. **外科式改动**：只动必须动的。不"顺手"改邻近代码 / 注释 / 格式；不重构没坏的东西；匹配既有风格。只清理自己改动产生的孤儿引用，不删既有死代码（可提一句，但不删）。一个动作的契约声明在 `api/actions.py`、实现由本体用 `@implements(SPEC)` 绑定，两端强耦合，改动一行都应能追溯到需求。
 4. **目标驱动**：把任务转成可验证目标——"加校验"→"写失败用例再让其通过"；"修 bug"→"写复现测试再修"。多步任务先列计划：`步骤 → verify: 检查`。
 
 ---
@@ -185,10 +188,10 @@ git push origin feat/<short-description>
 
 - 单测路径镜像源码：`jiuwensymbiosis/tools/build_robot_tools.py` → `tests/unit_tests/tools/test_build_robot_tools.py`。
 - `tests/unit_tests/`：快、确定性、无硬件/GPU、CI 跑；`tests/integration/`：需真硬件/GPU/外部服务，CI 常跳过；`tests/mocks/`：共享 `MockApi` / `MockEnv` / `MockDriver` / `MockScene`，单测用它保持无硬件。
-- 选型：碰 serial/CAN/socket / 真相机 / 检测子进程 → integration；单函数 / mixin / rail 隔离 → unit（用 `MockEnv` / `MockApi`）；改 capability gating 或 tool emission → 在 `tests/unit_tests/api/` 与 `tests/unit_tests/tools/` 补测。
+- 选型：碰 serial/CAN/socket / 真相机 / 检测子进程 → integration；单函数 / 组件（`api/components.py`）/ rail 隔离 → unit（用 `MockEnv` / `MockApi`）；改 capability gating 或 tool emission → 在 `tests/unit_tests/api/` 与 `tests/unit_tests/tools/` 补测。
 - `pytest` + `asyncio_mode = "auto"`（无需 `@pytest.mark.asyncio` 模板）；`pytest-mock` 可用，优先 `mocker` fixture；测试类命名 `Test<Feature>`。
 - 凭据：库代码无真实凭据面，保持如此；测试 LLM 用离线 mock 模型（`build_mock_model()`，来自 `jiuwensymbiosis.agent.mock_model`），通过 `RobotAgentConfig(model=build_mock_model())` 传入 `build_robot_agent`，禁硬编码真实硬件端点。
-- 新公共 API（新 `@robot_tool` / mixin 方法 / env 属性）需对应测试更新；用户可见行为变更需同步更新 `examples/` 与 `docs/`。
+- 新公共 API（新 `@robot_tool` / `@implements` 绑定 / env 属性）需对应测试更新；用户可见行为变更需同步更新 `examples/` 与 `docs/`。
 
 运行（用 Makefile 目标，默认走 conda 环境 `jiuwensymbiosis`）：
 
@@ -242,9 +245,9 @@ make test-all
 # 5.（按需）adapter 改动 → 脚本冒烟（非 make 目标）
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>
 python scripts/smoke_test_adapter.py
-python examples/piper_pick_demo.py --config configs/piper/piper.yaml --mock \
+python examples/run_task.py --config configs/piper/piper.yaml --mock \
   --max-iter 1 --no-visual-feedback --workspace /tmp/jiuwensymbiosis-smoke \
-  --query "把黑色盒子放到白色盒子上面"  # Agent 接线冒烟（无硬件/真实 LLM）
+  --query "把黑色盒子放到白色盒子上面"  # Agent 接线冒烟（--mock 仅 piper：MockArmEnv + 离线模型）
 
 # 6.（新增依赖时）依赖审计
 pip-audit
@@ -275,7 +278,7 @@ git push origin <branch>
 
 提交前自检：是否需要同步文档？
 
-- **用户可见行为变更**（新 `@robot_tool`、新 mixin 方法、新 env 属性、capability 增减、CLI/配置项变化）→ 同步更新 `examples/`、`docs/`，并视情况更新 `AGENTS.md` 与 `CLAUDE.md` 的相关章节。
+- **用户可见行为变更**（新 `@robot_tool`、新 `@implements` 绑定、新 env 属性、capability 增减、CLI/配置项变化）→ 同步更新 `examples/`、`docs/`，并视情况更新 `AGENTS.md` 与 `CLAUDE.md` 的相关章节。
 - **新 adapter** → 更新 `AGENTS.md` "Source Tree Layout"，并同步更新 `docs/zh/tutorial/02-build-first-adapter.md` 及相关 How-to/Reference。
 - **新安全/物理安全相关** → 复核 `.claude/rules/security.md` 与 `skills/security-review` 是否需要补充。
 - 深参考手册从 [`docs/README.md`](docs/README.md) 进入，按 Tutorial、How-to、Reference、Explanation 分类查读。
@@ -291,6 +294,7 @@ git push origin <branch>
 | `python-patterns` | Python 惯用法：frozen dataclass、Protocol、异常层级、async、装饰器、包布局 |
 | `python-testing` | 深度 pytest：TDD、fixtures、factory fixtures、mocking、async、adapter 冒烟 |
 | `security-review` | PR 前清单：secrets、物理安全、subprocess、依赖、log/trace 卫生 |
+| `review-architecture-change` | 从架构视角审查改动：职责漂移、层次侵入、重复抽象、概念分裂 |
 
 ---
 

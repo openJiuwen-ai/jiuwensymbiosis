@@ -41,6 +41,7 @@ from jiuwensymbiosis.api.actions import (
 )
 from jiuwensymbiosis.motion import approach
 from jiuwensymbiosis.perception import scene3d
+from jiuwensymbiosis.perception.frame import CameraFrame
 
 logger = logging.getLogger(__name__)
 
@@ -101,23 +102,24 @@ class _Scene3DBody:
     env: BaseRobotEnv
 
     # Pane/sensor name for bodies with several cameras; also labels debug overlays.
-    _scene_camera: str = "scene"
+    scene_camera: str = "scene"
     # Most recent successful sensing, so the acting step (grasp / place) need not have a
     # large nested geometry dict echoed back to it as a tool argument. A failed re-sense
     # clears it — acting on a stale geometry is worse than failing to act.
-    _last_detection: dict | None = None
-    _last_surface: dict | None = None
+    last_detection: dict | None = None
+    last_surface: dict | None = None
 
     # ---------------------------------------------------------------- body hooks
     def _grab_calibrated_frame(self, camera: str | None = None) -> Any:
         """One rgb + depth + intrinsics + base←camera frame (default: the Env verb)."""
         return self.env.grab_calibrated_frame(camera)
 
-    def _detector_seg_fn(self) -> Any:
+    def detector_seg_fn(self) -> Any:
         """The open-vocabulary segmentation callable, or None when no detector is up."""
         return getattr(self, "_seg_fn", None)
 
-    def _viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
+    @staticmethod
+    def viz_update(camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
         """Debug-overlay hook; no-op unless the body provides a viewer."""
 
     # ------------------------------------------------------------------- tools
@@ -132,7 +134,7 @@ class _Scene3DBody:
         """
         # Invalidate any prior detection up front: a failed detect must not leave a stale
         # geometry that the next grasp would then act on. Only a fresh success re-fills it.
-        self._last_detection = None
+        self.last_detection = None
         bad = _unknown_relation(relation, object_name)
         if bad is not None:
             return bad
@@ -140,21 +142,19 @@ class _Scene3DBody:
         if fail is not None:
             return fail
         if reference:  # fine-grained: keep only the candidate related to the reference
-            return self._detect_related(
-                object_name, reference, relation, frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
-            )
+            return self._detect_related(object_name, reference, relation, frame)
         result = scene3d.detect_object_geometry(
             frame.rgb,
             frame.depth_m,
             frame.intrinsics,
             frame.tf_base_cam,
-            seg_fn=self._detector_seg_fn(),
+            seg_fn=self.detector_seg_fn(),
             object_name=object_name,
             log_prefix="[scene3d-object]",
-            on_pick=lambda best: self._viz_update(self._scene_camera, object_name, frame.rgb, best),
+            on_pick=lambda best: self.viz_update(self.scene_camera, object_name, frame.rgb, best),
         )
         if result.get("ok"):
-            self._last_detection = result
+            self.last_detection = result
         return result
 
     @implements(LOCATE_FOR_PLACE)
@@ -173,12 +173,10 @@ class _Scene3DBody:
         if fail is not None:
             return fail
         if reference:  # fine-grained: keep only the surface related to the reference object
-            return self._sense_surface_related(
-                object_name, reference, relation, frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
-            )
+            return self._sense_surface_related(object_name, reference, relation, frame)
         result = self._sense_surface_plain(object_name, frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam)
         if result.get("ok"):
-            self._last_surface = result
+            self.last_surface = result
         return result
 
     @implements(ANALYZE_SCENE)
@@ -196,7 +194,7 @@ class _Scene3DBody:
             frame.depth_m,
             np.asarray(frame.intrinsics),
             np.asarray(frame.tf_base_cam),
-            seg_fn=self._detector_seg_fn(),
+            seg_fn=self.detector_seg_fn(),
             object_name=object_name,
         )
         return {"ok": True, "object": object_name, "count": len(objs), "objects": objs}
@@ -216,7 +214,7 @@ class _Scene3DBody:
         what was missing instead of a blanket "no camera".
         """
         fail = {"ok": False, "reason": "no_camera", "object": object_name}
-        for camera in getattr(self.env, "cameras", None) or (self._scene_camera,):
+        for camera in getattr(self.env, "cameras", None) or (self.scene_camera,):
             frame = self._grab_calibrated_frame(camera)
             if frame is None:
                 fail = {"ok": False, "reason": "no_camera", "object": object_name}
@@ -243,7 +241,7 @@ class _Scene3DBody:
             depth_m,
             intr,
             tf_base_cam,
-            seg_fn=self._detector_seg_fn(),
+            seg_fn=self.detector_seg_fn(),
             object_name=object_name,
             min_z_mm=min_z_mm,
         )
@@ -251,16 +249,17 @@ class _Scene3DBody:
     def _sense_surface_plain(self, object_name: str, rgb: Any, depth_m: Any, intr: Any, tf: Any) -> dict:
         """Detect a plain support surface from an ALREADY-GRABBED frame. Factored out of
         ``locate_for_place`` so a caller already holding a frame (``_detect_on_surface``) reuses
-        it instead of grabbing again. Does NOT cache — that is the caller's decision."""
+        it instead of grabbing again. Does NOT cache — that is the caller's decision.
+        """
         return scene3d.sense_surface_geometry(
             rgb,
             depth_m,
             intr,
             tf,
-            seg_fn=self._detector_seg_fn(),
+            seg_fn=self.detector_seg_fn(),
             object_name=object_name,
             log_prefix="[scene3d-surface]",
-            on_pick=lambda best: self._viz_update(self._scene_camera, object_name, rgb, best),
+            on_pick=lambda best: self.viz_update(self.scene_camera, object_name, rgb, best),
         )
 
     def _relation_thresholds(self) -> dict[str, float]:
@@ -272,9 +271,7 @@ class _Scene3DBody:
             "near_max_dist_mm": float(getattr(cfg, "near_max_dist_mm", 1000.0)),
         }
 
-    def _measure_reference(
-        self, reference: str, relation: str, rgb: Any, depth_m: Any, intr: Any, tf_base_cam: Any
-    ) -> Any:
+    def _measure_reference(self, reference: str, relation: str, frame: CameraFrame) -> Any:
         """The reference's geometry, measured the way this relation needs it.
 
         ``on`` / ``under`` are relations to a *support surface*, so the reference is sensed
@@ -283,25 +280,25 @@ class _Scene3DBody:
         one: a surface record states no thickness, and ``beside`` compares z-extents.
         Returns None when the reference is not in view.
         """
+        rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
         if relation in ("on", "under"):
             ref = self._sense_surface_plain(reference, rgb, depth_m, intr, tf_base_cam)
             return ref if ref.get("ok") else None
         refs = [g for (g, _d) in self._candidate_geometries(reference, rgb, depth_m, intr, tf_base_cam)]
         return min(refs, key=lambda g: g.center_mm[0]) if refs else None  # nearest
 
-    def _detect_related(
-        self, object_name: str, reference: str, relation: str,
-        rgb: Any, depth_m: Any, intr: Any, tf_base_cam: Any,
-    ) -> dict:
+    def _detect_related(self, object_name: str, reference: str, relation: str,
+                        frame: CameraFrame) -> dict:
         """Two-stage 'X <relation> Y' grounding. Measure the reference, detect **all**
         ``object_name`` candidates from the given frame, and return the one that stands in
         ``relation`` to it. Nearest-to-robot wins. Caches the pick for the grasping step.
         """
+        rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
         cfg = getattr(self.env, "cfg", None)
         # Reuse the frame already grabbed by locate_for_grasp rather than re-grabbing a second
         # one (halves grounded detection's camera cost). This is the target's reference, not a
         # place surface, so it must NOT touch self._last_surface.
-        ref = self._measure_reference(reference, relation, rgb, depth_m, intr, tf_base_cam)
+        ref = self._measure_reference(reference, relation, frame)
         if ref is None:
             return {"ok": False, "reason": f"reference_not_found:{reference}", "object": object_name}
         # Face normal from the target's own wall: for an ON relation drop points at/below the
@@ -315,13 +312,13 @@ class _Scene3DBody:
         picks = [(g, d) for (g, d) in cands if scene3d.relation_holds(g, ref, relation, **thresholds)]
         prompt = f"{object_name} {relation} {reference}"
         if not picks:
-            self._viz_update(self._scene_camera, prompt, rgb, None)
+            self.viz_update(self.scene_camera, prompt, rgb, None)
             logger.info("[scene3d] locate_for_grasp %r %s %r: %d cand → 0 matched",
                         object_name, relation, reference, len(cands))
             return {"ok": False, "reason": "no_target_matching_reference", "object": object_name,
                     "reference": reference, "relation": relation}
         geo, det = min(picks, key=lambda gd: gd[0].center_mm[0])  # nearest (smallest forward X)
-        self._viz_update(self._scene_camera, prompt, rgb, {"ok": True, **det})
+        self.viz_update(self.scene_camera, prompt, rgb, {"ok": True, **det})
         result = {
             "ok": True,
             "reason": "",
@@ -330,28 +327,27 @@ class _Scene3DBody:
             "relation": relation,
             **scene3d.object_geometry_fields(geo),
         }
-        self._last_detection = result
+        self.last_detection = result
         scene3d.log_grounded_pick(
             "[scene3d] locate_for_grasp",
             object_name,
             f"{relation} {reference}",
-            len(cands),
-            len(picks),
-            geo,
+            n_cand=len(cands),
+            n_picks=len(picks),
+            geo=geo,
             face_flatness_max=float(getattr(cfg, "grasp_face_flatness_max", 0.15)),
             square_min_aspect=float(getattr(cfg, "grasp_square_min_aspect", 1.2)),
         )
         return result
 
-    def _sense_surface_related(
-        self, object_name: str, reference: str, relation: str,
-        rgb: Any, depth_m: Any, intr: Any, tf_base_cam: Any,
-    ) -> dict:
+    def _sense_surface_related(self, object_name: str, reference: str, relation: str,
+                               frame: CameraFrame) -> dict:
         """The place-side mirror of ``_detect_related``: among all ``object_name`` surface
         candidates keep the one standing in ``relation`` to the reference. So "the table
         that has the cup on it" arrives here as ``relation='under'``, reference='cup'.
         Nearest matching surface wins; cached for the placing step.
         """
+        rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
         refs = [g for (g, _d) in self._candidate_geometries(reference, rgb, depth_m, intr, tf_base_cam)]
         if not refs:
             return {"ok": False, "reason": f"reference_not_found:{reference}", "object": object_name}
@@ -369,7 +365,7 @@ class _Scene3DBody:
         # MUST carry yaw_rad/edge_normal too, else the place-side squaring reads no normal.
         result = {"ok": True, "object": object_name, "reference": reference, "relation": relation,
                   **scene3d.surface_footprint_fields(surf)}
-        self._last_surface = result
+        self.last_surface = result
         logger.info(
             "[scene3d] locate_for_place %r %s %r: %d surf → %d matched, picked cy=%.1f z=%.1f%s",
             object_name,
@@ -418,36 +414,36 @@ class Scene3D(_Scene3DBody):
 
     # --- cached sensing: one copy, owned by the api, shared with the approach loops ---
     @property
-    def _last_detection(self) -> dict | None:  # type: ignore[override]
-        return getattr(self.api, "_last_detection", None)
+    def last_detection(self) -> dict | None:  # type: ignore[override]
+        return self.api.last_detection
 
-    @_last_detection.setter
-    def _last_detection(self, value: dict | None) -> None:
-        self.api._last_detection = value
+    @last_detection.setter
+    def last_detection(self, value: dict | None) -> None:
+        self.api.last_detection = value
 
     @property
-    def _last_surface(self) -> dict | None:  # type: ignore[override]
-        return getattr(self.api, "_last_surface", None)
+    def last_surface(self) -> dict | None:  # type: ignore[override]
+        return self.api.last_surface
 
-    @_last_surface.setter
-    def _last_surface(self, value: dict | None) -> None:
-        self.api._last_surface = value
+    @last_surface.setter
+    def last_surface(self, value: dict | None) -> None:
+        self.api.last_surface = value
 
     # --- body hooks: the adapter's override wins, else the generic default ---
     @property
-    def _scene_camera(self) -> Any:  # type: ignore[override]
-        return getattr(self.api, "_scene_camera", _Scene3DBody._scene_camera)
+    def scene_camera(self) -> Any:  # type: ignore[override]
+        return getattr(self.api, "scene_camera", _Scene3DBody.scene_camera)
 
     def _grab_calibrated_frame(self, camera: str | None = None) -> Any:
         override = getattr(self.api, "_grab_calibrated_frame", None)
         return override(camera) if override else super()._grab_calibrated_frame(camera)
 
-    def _detector_seg_fn(self) -> Any:
-        override = getattr(self.api, "_detector_seg_fn", None)
+    def detector_seg_fn(self) -> Any:
+        override = getattr(self.api, "detector_seg_fn", None)
         return override() if override else getattr(self.api, "_seg_fn", None)
 
-    def _viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
-        override = getattr(self.api, "_viz_update", None)
+    def viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
+        override = getattr(self.api, "viz_update", None)
         if override:
             override(camera, prompt, rgb, best)
 
@@ -484,20 +480,21 @@ class _ApproachBody:
     env: BaseRobotEnv
 
     # ---------------------------------------------------------------- body hooks
-    def _approach_tuning(self) -> approach.ApproachTuning:
+    def approach_tuning(self) -> approach.ApproachTuning:
         """Approach knobs read off the body config by field name (missing → defaults)."""
         return approach.ApproachTuning.from_cfg(getattr(self.env, "cfg", None))
 
-    def _base_driver(self) -> Any:
+    def base_driver(self) -> Any:
         """Object exposing ``start/steer/hold/stop_base_drive`` + ``base_drive_running``."""
         return self.env
 
-    def _nav_relative(self, dx_m: float, dy_m: float, dyaw_rad: float, **gains: Any) -> dict:
+    def nav_relative(self, dx_m: float, dy_m: float, dyaw_rad: float, **gains: Any) -> dict:
         """Relative base move. ``gains`` are the optional gentle approach-only steering gains;
-        the default drops them — a body whose driver accepts them overrides this."""
+        the default drops them — a body whose driver accepts them overrides this.
+        """
         return self.env.navigate_relative(float(dx_m), float(dy_m), float(dyaw_rad))
 
-    def _detector_seg_fn(self) -> Any:
+    def detector_seg_fn(self) -> Any:
         """The open-vocabulary segmentation callable, or None when no detector is up.
 
         The detector is a body resource that BOTH the sensing and the look-around read, so
@@ -505,10 +502,11 @@ class _ApproachBody:
         """
         return getattr(self, "_seg_fn", None)
 
-    def _viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
+    @staticmethod
+    def viz_update(camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
         """Debug-overlay hook; no-op unless the body provides a viewer."""
 
-    def _search_frames(self, camera: str | None = None) -> Any:
+    def search_frames(self, camera: str | None = None) -> Any:
         """One raw frame tuple (rgb first) from ``camera``, or None if it cannot be read.
 
         Used for the LOOK-AROUND pass, which only ever reports a bearing — so any camera
@@ -519,7 +517,7 @@ class _ApproachBody:
         frame = self.env.grab_calibrated_frame(camera)
         return None if frame is None else (frame.rgb, frame.depth_m)
 
-    def _look_for(self, object_name: str, on: str | None = None, camera: str | None = None) -> dict:
+    def look_for(self, object_name: str, on: str | None = None, camera: str | None = None) -> dict:
         """One look through ONE camera → a bearing dict. The single place "take a look" lives.
 
         Camera-pinned on purpose: a bearing is measured relative to wherever that camera was
@@ -528,7 +526,7 @@ class _ApproachBody:
         """
         return approach.search_target(self, object_name, on, camera=camera)
 
-    def _sweep_for_bearing(self, object_name: str, on: str | None = None) -> dict:
+    def sweep_for_bearing(self, object_name: str, on: str | None = None) -> dict:
         """Look around from where the body stands for ``object_name``, without driving off.
 
         The default **turns the whole body** a step at a time and looks through every camera
@@ -552,14 +550,14 @@ class _ApproachBody:
         cameras = getattr(self.env, "cameras", None) or (None,)
         # Step by a little less than one field of view, so consecutive looks overlap and no
         # sector can fall between two stops. Anything wider trades coverage for speed.
-        tuning = self._approach_tuning()
+        tuning = self.approach_tuning()
         step = 0.8 * float(getattr(tuning, "head_hfov_rad", 1.2))
         can_turn = "motion.base" in getattr(self.env, "capabilities", frozenset())
 
         turned = 0.0
         while True:
             for camera in cameras:
-                hit = self._look_for(object_name, on, camera)
+                hit = self.look_for(object_name, on, camera)
                 if hit.get("found"):
                     return {"found": True, "total_bearing": float(hit.get("bearing_rad", 0.0)),
                             "turned_rad": turned, "exhaustive": True}
@@ -574,7 +572,8 @@ class _ApproachBody:
             turned = 0.0
         return {"found": False, "total_bearing": 0.0, "turned_rad": turned, "exhaustive": can_turn}
 
-    def _reset_search_sensor(self) -> None:
+    @staticmethod
+    def reset_search_sensor() -> None:
         """Re-centre an aimable camera after a sweep; no-op for a fixed one."""
 
     # --------------------------------------------------- search + face (internal)
@@ -652,7 +651,7 @@ class _ApproachBody:
         screen = _screen_ref_2d(reference, relation)
         miss: dict = {"ok": False, "found": False, "reason": "no_camera", "object": object_name}
         for camera in getattr(self.env, "cameras", (None,)):
-            miss = self._look_for(object_name, screen, camera)
+            miss = self.look_for(object_name, screen, camera)
             if miss.get("found"):
                 return miss
         return miss
@@ -669,7 +668,7 @@ class _ApproachBody:
         the drive loop re-detects every iteration and fails with ``lost_after_move`` /
         ``no_detection`` rather than driving on it.
         """
-        if not (self._last_detection or {}).get("ok"):
+        if not (self.last_detection or {}).get("ok"):
             faced = self._face_object(object_name, reference, relation)
             if not faced.get("ok"):
                 return faced
@@ -683,7 +682,7 @@ class _ApproachBody:
         Mirror of ``approach_for_grasp``: the search pass is skipped when a surface is already
         sensed, and already being in range means no motion at all (``status=in_range``).
         """
-        if not (self._last_surface or {}).get("ok"):
+        if not (self.last_surface or {}).get("ok"):
             faced = self._face_surface(object_name, reference, relation)
             if not faced.get("ok"):
                 return faced
@@ -691,7 +690,7 @@ class _ApproachBody:
 
     # -------------------------------------------------------- shared internals
     # Methods, not module functions, so an adapter or a test can substitute them.
-    def _drive_base(
+    def drive_base(
         self,
         forward: float,
         turn: float,
@@ -706,7 +705,7 @@ class _ApproachBody:
             self, forward, turn, invalidate=invalidate, k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd
         )
 
-    def _redetect(self, obj: str, reference: str | None, relation: str = "on") -> dict:
+    def redetect(self, obj: str, reference: str | None, relation: str = "on") -> dict:
         """Post-move grounded re-detect that degrades to a plain one while still far."""
         return approach.redetect(self, obj, reference, relation)
 
@@ -736,20 +735,20 @@ class Approach(_ApproachBody):
 
     # --- sensing cache: owned by the api, shared with Scene3D and the grasp/place steps ---
     @property
-    def _last_detection(self) -> dict | None:
-        return self.api._last_detection
+    def last_detection(self) -> dict | None:
+        return self.api.last_detection
 
-    @_last_detection.setter
-    def _last_detection(self, value: dict | None) -> None:
-        self.api._last_detection = value
+    @last_detection.setter
+    def last_detection(self, value: dict | None) -> None:
+        self.api.last_detection = value
 
     @property
-    def _last_surface(self) -> dict | None:
-        return self.api._last_surface
+    def last_surface(self) -> dict | None:
+        return self.api.last_surface
 
-    @_last_surface.setter
-    def _last_surface(self, value: dict | None) -> None:
-        self.api._last_surface = value
+    @last_surface.setter
+    def last_surface(self, value: dict | None) -> None:
+        self.api.last_surface = value
 
     # --- the body's own actions the loops call back into ---
     def locate_for_grasp(self, object_name: str = "box", reference: str | None = None,
@@ -770,38 +769,38 @@ class Approach(_ApproachBody):
         return self.api.rotate_base(dyaw_rad)
 
     # --- body hooks: the adapter's override wins, else the generic default ---
-    def _approach_tuning(self) -> approach.ApproachTuning:
-        override = getattr(self.api, "_approach_tuning", None)
-        return override() if override else super()._approach_tuning()
+    def approach_tuning(self) -> approach.ApproachTuning:
+        override = getattr(self.api, "approach_tuning", None)
+        return override() if override else super().approach_tuning()
 
-    def _base_driver(self) -> Any:
-        override = getattr(self.api, "_base_driver", None)
-        return override() if override else super()._base_driver()
+    def base_driver(self) -> Any:
+        override = getattr(self.api, "base_driver", None)
+        return override() if override else super().base_driver()
 
-    def _nav_relative(self, dx_m: float, dy_m: float, dyaw_rad: float, **gains: Any) -> dict:
-        override = getattr(self.api, "_nav_relative", None)
-        return override(dx_m, dy_m, dyaw_rad, **gains) if override else super()._nav_relative(
+    def nav_relative(self, dx_m: float, dy_m: float, dyaw_rad: float, **gains: Any) -> dict:
+        override = getattr(self.api, "nav_relative", None)
+        return override(dx_m, dy_m, dyaw_rad, **gains) if override else super().nav_relative(
             dx_m, dy_m, dyaw_rad, **gains)
 
-    def _search_frames(self, camera: str | None = None) -> Any:
-        override = getattr(self.api, "_search_frames", None)
-        return override(camera) if override else super()._search_frames(camera)
+    def search_frames(self, camera: str | None = None) -> Any:
+        override = getattr(self.api, "search_frames", None)
+        return override(camera) if override else super().search_frames(camera)
 
-    def _sweep_for_bearing(self, object_name: str, on: str | None = None) -> dict:
-        override = getattr(self.api, "_sweep_for_bearing", None)
-        return override(object_name, on=on) if override else super()._sweep_for_bearing(object_name, on)
+    def sweep_for_bearing(self, object_name: str, on: str | None = None) -> dict:
+        override = getattr(self.api, "sweep_for_bearing", None)
+        return override(object_name, on=on) if override else super().sweep_for_bearing(object_name, on)
 
-    def _reset_search_sensor(self) -> None:
-        override = getattr(self.api, "_reset_search_sensor", None)
+    def reset_search_sensor(self) -> None:
+        override = getattr(self.api, "reset_search_sensor", None)
         if override:
             override()
 
-    def _detector_seg_fn(self) -> Any:
-        override = getattr(self.api, "_detector_seg_fn", None)
+    def detector_seg_fn(self) -> Any:
+        override = getattr(self.api, "detector_seg_fn", None)
         return override() if override else getattr(self.api, "_seg_fn", None)
 
-    def _viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
-        override = getattr(self.api, "_viz_update", None)
+    def viz_update(self, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
+        override = getattr(self.api, "viz_update", None)
         if override:
             override(camera, prompt, rgb, best)
 
@@ -829,7 +828,8 @@ class Reachability:
     def check_reachable(self, target: Any) -> bool | None:
         """Whether the end effector can reach ``target`` (a scene object dict with ``center_mm``, or an
         xyz-mm sequence) from the current body pose. ``None`` when the body has no URDF (caller skips).
-        Any arm chain reaching the point counts as reachable."""
+        Any arm chain reaching the point counts as reachable.
+        """
         urdf = getattr(self.env, "urdf_path", None)
         chains = getattr(self.env, "arm_chains", None)
         if not urdf or not chains:
@@ -851,7 +851,8 @@ class Reachability:
 
     def describe_reach(self) -> dict | None:
         """Coarse reachable-workspace envelope (forward/lateral/height ranges, m) of one arm at the
-        current pose — a no-target planning prior. ``None`` when the body has no URDF."""
+        current pose — a no-target planning prior. ``None`` when the body has no URDF.
+        """
         urdf = getattr(self.env, "urdf_path", None)
         chains = getattr(self.env, "arm_chains", None)
         if not urdf or not chains:
@@ -867,7 +868,8 @@ class Reachability:
 
     def _reach_joint_positions(self) -> dict[str, float]:
         """Current joint angles for the reachability IK, read from the env observation. Adapters with a
-        richer/faster joint source may override."""
+        richer/faster joint source may override.
+        """
         try:
             obs = self.env.get_observation()
             jp = (obs.extra or {}).get("joint_positions") if obs is not None else None

@@ -119,7 +119,7 @@ def test_square_lock_survives_yaw_jitter(monkeypatch):
     # iter1 → a normal needing a 0.4 turn to face; iter2 → already facing (square_turn 0) → in_range.
     rets = iter([(-math.cos(0.4), -math.sin(0.4)), (-1.0, 0.0)])
 
-    def _fake(center_mm, yaw_rad, long_mm, short_mm, cfg, prev_normal=None):
+    def _fake(fp, cfg, prev_normal=None):
         seen.append(prev_normal)
         return next(rets)
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from jiuwensymbiosis.adapters.cruzr import lowlevel as camera_mod
 from jiuwensymbiosis.adapters.cruzr.lowlevel import CruzrCamera
@@ -169,6 +170,7 @@ def test_head_cloud_worker_can_rectify_vendor_rgb_as_fallback():
 
 
 def test_cruzr_stereo_rectification_shape():
+    pytest.importorskip("cv2")   # opencv ships in the [full] / [calib] extras, not [dev]
     from jiuwensymbiosis.adapters.cruzr.ros2.camera_worker import _rectify_cruzr_stereo_left
 
     rgb = np.zeros((720, 1280, 3), dtype=np.uint8)

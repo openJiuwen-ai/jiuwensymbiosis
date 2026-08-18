@@ -45,6 +45,26 @@ class BaseRobotApi:
         self._last_detection: dict | None = None
         self._last_surface: dict | None = None
 
+    # The Scene3D / Approach components a body HOLDS read and write this state, so it is a
+    # cross-object contract: these accessors say so instead of exposing the underscore.
+    @property
+    def last_detection(self) -> dict | None:
+        """The most recent object sensing, or None when nothing valid has been sensed."""
+        return self._last_detection
+
+    @last_detection.setter
+    def last_detection(self, value: dict | None) -> None:
+        self._last_detection = value
+
+    @property
+    def last_surface(self) -> dict | None:
+        """The most recent support-surface sensing, or None."""
+        return self._last_surface
+
+    @last_surface.setter
+    def last_surface(self, value: dict | None) -> None:
+        self._last_surface = value
+
     # ``home`` lives here rather than on a capability mixin because returning to a
     # safe posture is not an optional capability — every body owes one, and
     # ``BaseRobotEnv.home()`` is part of the base hardware contract. A mobile body

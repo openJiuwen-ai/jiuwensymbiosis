@@ -15,13 +15,13 @@ __all__ = [
     "implements",
     "planner_vocabulary",
     "ToolMeta",
-    # Reusable implementations an adapter CALLS. Not a base class: inheriting one
-    # action used to mean inheriting its neighbours too.
+    # Reusable implementations an adapter CALLS. Not a base class: a body takes one
+    # action without taking its neighbours.
     "defaults",
     # For a tool only one body has (bring-up, calibration, vendor demo). Planner-invisible.
     "robot_tool",
-    # Components an adapter HOLDS. Never inherited: taking one action used to mean taking
-    # its neighbours, and holding a component is what ends that (see api/components.py).
+    # Components an adapter HOLDS, never inherits — so a body takes one component's
+    # actions without taking its neighbours' (see api/components.py).
     "Scene3D",
     "Approach",
     "Reachability",

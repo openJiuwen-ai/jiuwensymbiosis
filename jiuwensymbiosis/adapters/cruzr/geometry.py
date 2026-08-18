@@ -50,6 +50,20 @@ class GraspPlan:
     ik: dict[str, IKResult]          # clamp IK
 
 
+ARMS: tuple[str, str] = ("left", "right")
+
+
+def both(*maps):
+    """Yield ``(arm, *values)`` for both arms, reading each mapping once.
+
+    The single place that assumes a two-arm mapping is keyed by exactly left/right: a
+    missing arm raises KeyError HERE, with the mapping in hand, instead of letting a
+    ``.get()`` ``None`` reach IK and become an undefined arm motion.
+    """
+    for arm in ARMS:
+        yield (arm, *(m[arm] for m in maps))
+
+
 ARM_JOINTS = {
     "left": ["L_shoulder_pitch_joint", "L_shoulder_roll_joint", "L_shoulder_yaw_joint",
              "L_elbow_roll_joint", "L_elbow_yaw_joint", "L_wrist_pitch_joint", "L_wrist_roll_joint"],
@@ -127,9 +141,9 @@ def plan_clamp_targets(
 
     wide = {"left": cy + half + pre_clear_mm, "right": cy - half - pre_clear_mm}
     inner = {"left": cy + half - inset_mm, "right": cy - half + inset_mm}
-    approach = {a: _tgt(a, wide[a], z_above) for a in ("left", "right")}
-    descend = {a: _tgt(a, wide[a], z_m) for a in ("left", "right")}
-    clamp = {a: _tgt(a, inner[a], z_m) for a in ("left", "right")}
+    approach = {a: _tgt(a, y_mm, z_above) for a, y_mm in wide.items()}
+    descend = {a: _tgt(a, y_mm, z_m) for a, y_mm in wide.items()}
+    clamp = {a: _tgt(a, y_mm, z_m) for a, y_mm in inner.items()}
     return approach, descend, clamp
 
 
@@ -151,7 +165,7 @@ def solve_arm_ik(
         try:
             return _pik.solve_pose_ik_pin(
                 chain.urdf_path, ARM_JOINTS[arm], chain.leaf_link, chain.limits(),
-                tgt.pos_m, tgt.approach, tgt.paddle,
+                tgt.pos_m, approach_target=tgt.approach, paddle_target=tgt.paddle,
                 tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
                 tcp_offset_local=tgt.tcp_offset_local, q_fixed=q_fixed, q_init=init,
                 pos_tol_m=pos_tol_m, max_iters=min(max_iters, 200), n_restarts=n_restarts,
@@ -161,7 +175,8 @@ def solve_arm_ik(
             logger.warning("[cruzr] pinocchio IK failed (%s); falling back to legacy DLS", exc)
 
     return ik_solve_pose(
-        chain, q_fixed, ARM_JOINTS[arm], tgt.pos_m, tgt.approach, tgt.paddle,
+        chain, q_fixed, ARM_JOINTS[arm], tgt.pos_m,
+        approach_target=tgt.approach, paddle_target=tgt.paddle,
         tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
         tcp_offset_local=tgt.tcp_offset_local, q_init=init, pos_tol_m=pos_tol_m, max_iters=max_iters,
     )
@@ -191,9 +206,9 @@ def solve_grasp(
     approach, descend, clamp = plan_clamp_targets(
         box, inset_mm=inset_mm, pre_clear_mm=pre_clear_mm, tcp_offset_m=tcp_offset_m)
     chains = {"left": left_chain, "right": right_chain}
-    ik = {arm: solve_arm_ik(chains[arm], q_fixed, arm, clamp[arm], pos_tol_m=pos_tol_m,
+    ik = {arm: solve_arm_ik(chain, q_fixed, arm, tgt, pos_tol_m=pos_tol_m,
                             max_iters=ik_max_iters, check_collision=check_collision, package_dir=package_dir)
-          for arm in ("left", "right")}
+          for arm, chain, tgt in both(chains, clamp)}
     ok = all(r.converged for r in ik.values())
     return GraspPlan(ok, "" if ok else "ik_no_converge", box.center_mm[2], approach, descend, clamp, ik)
 
@@ -216,8 +231,9 @@ LIFTER_LIMITS = {
 def level_config(p1: float, p3: float) -> dict[str, float] | None:
     """Level-torso lifter config ``{p1, -(p1+p3), p3}``; None if any joint is out of limit."""
     vals = {_P1: float(p1), _P2: float(-(p1 + p3)), _P3: float(p3)}
-    for j, (lo, hi) in LIFTER_LIMITS.items():
-        if not (lo <= vals[j] <= hi):
+    for j, v in vals.items():
+        lo, hi = LIFTER_LIMITS[j]
+        if not (lo <= v <= hi):
             return None
     return vals
 
@@ -243,7 +259,8 @@ def _arm_base_z(chain: Chain, lifter_cfg: dict[str, float], waist_yaw: float) ->
     """z (m) of the arm leaf with arm joints at 0. On the level manifold the torso
     keeps its orientation, so this point translates exactly with the shoulder
     mount — its change across lifter configs equals how far a rigidly held arm's
-    hand moves vertically when the body leans."""
+    hand moves vertically when the body leans.
+    """
     return float(fk_chain(chain, {**lifter_cfg, "waist_yaw_joint": waist_yaw})[2, 3])
 
 
@@ -331,7 +348,8 @@ def _geo_reach_score(chains: dict, clamp: dict, lc: dict[str, float], waist_yaw:
     For each arm: distance from the shoulder (at this lifter cfg) to the clamp
     target, as a fraction of the arm's max reach. Returns ``None`` if either arm
     is beyond reach; otherwise ``-max_arm penalty`` where penalty rewards a
-    comfortable mid-reach fraction (so higher score = better-centered)."""
+    comfortable mid-reach fraction (so higher score = better-centered).
+    """
     worst = 0.0
     for a in ("left", "right"):
         sh = _shoulder_pos(chains[a], a, lc, waist_yaw)
@@ -398,12 +416,12 @@ def search_lifter_for_box(
     table_z = (box.top_z_mm - box.height_mm) / 1000.0
     floor_z = table_z + table_clearance_m
     ready_z = ready_targets()["left"].pos_m[2]
-    ref_cur = {a: _arm_base_z(chains[a], cur, waist_yaw) for a in ("left", "right")}
+    ref_cur = {a: _arm_base_z(ch, cur, waist_yaw) for a, ch in chains.items()}
 
     def _floor_ok(lc: dict[str, float]) -> bool:
         """True iff both held-ready hands stay above the table after leaning to lc."""
-        for a in ("left", "right"):
-            held_z = ready_z + (_arm_base_z(chains[a], lc, waist_yaw) - ref_cur[a])
+        for _a, chain, ref in both(chains, ref_cur):
+            held_z = ready_z + (_arm_base_z(chain, lc, waist_yaw) - ref)
             if held_z < floor_z:
                 return False
         return True
@@ -475,8 +493,8 @@ def search_lifter_for_place(
         """-max(arm pos_err) if both arms reach the place targets from ``lc``, else None."""
         qf = {**lc, "waist_yaw_joint": waist_yaw}
         worst = 0.0
-        for a in ("left", "right"):
-            r = solve_arm_ik(chains[a], qf, a, clamp[a], max_iters=scan_ik_iters)
+        for a, chain, tgt in both(chains, clamp):
+            r = solve_arm_ik(chain, qf, a, tgt, max_iters=scan_ik_iters)
             if not r.converged:
                 return None
             worst = max(worst, r.pos_err_m)

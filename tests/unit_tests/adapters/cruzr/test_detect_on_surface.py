@@ -16,6 +16,10 @@ from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
 from jiuwensymbiosis.perception import object_geometry as og
 from jiuwensymbiosis.perception import vision
 
+from jiuwensymbiosis.perception.frame import CameraFrame
+
+_EMPTY_FRAME = CameraFrame(rgb=None)   # these tests stub the detector; no pixels are read
+
 
 def _api():
     env = CruzrEnv.__new__(CruzrEnv)
@@ -50,7 +54,7 @@ def test_picks_the_target_on_the_reference(monkeypatch):
     api._scene._sense_surface_plain = lambda name, *a, **k: _REF  # type: ignore[method-assign]
     # cand A on the table (x,y inside footprint, above top); cand B off the table (x too far)
     _patch_geoms(monkeypatch, [_geo((650.0, 50.0, 650.0)), _geo((1500.0, 800.0, 650.0))])
-    r = api._scene._detect_related("white box", "brown table", "on", None, None, None, None)
+    r = api._scene._detect_related("white box", "brown table", "on", _EMPTY_FRAME)
     assert r["ok"] is True
     assert r["center_mm"] == [650.0, 50.0, 650.0]  # the on-surface one
     assert api._last_detection is r  # cached for dual_arm_grasp
@@ -61,14 +65,14 @@ def test_no_candidate_on_reference_fails(monkeypatch):
     api._scene._sense_surface_plain = lambda name, *a, **k: _REF  # type: ignore[method-assign]
     # both candidates are off the table (x beyond back_x + margin)
     _patch_geoms(monkeypatch, [_geo((1500.0, 0.0, 650.0)), _geo((1600.0, 0.0, 650.0))])
-    r = api._scene._detect_related("white box", "brown table", "on", None, None, None, None)
+    r = api._scene._detect_related("white box", "brown table", "on", _EMPTY_FRAME)
     assert r["ok"] is False and r["reason"] == "no_target_matching_reference"
 
 
 def test_reference_not_found_fails():
     api = _api()
     api._scene._sense_surface_plain = lambda name, *a, **k: {"ok": False, "reason": "surface_not_found"}  # type: ignore[method-assign]
-    r = api._scene._detect_related("white box", "brown table", "on", None, None, None, None)
+    r = api._scene._detect_related("white box", "brown table", "on", _EMPTY_FRAME)
     assert r["ok"] is False and r["reason"].startswith("reference_not_found")
 
 
@@ -107,7 +111,7 @@ def test_picks_the_surface_holding_the_reference(monkeypatch):
     # _candidate_geometries returns (geometry, detection) pairs; _sense_surface_related uses the geometry.
     monkeypatch.setattr(api._scene, "_candidate_geometries",
                         lambda name, *a, **k: [(cup, {})] if name == "water cup" else [(table_a, {}), (table_b, {})])
-    r = api._scene._sense_surface_related("table", "water cup", "under", None, None, None, None)
+    r = api._scene._sense_surface_related("table", "water cup", "under", _EMPTY_FRAME)
     assert r["ok"] is True
     assert r["center_mm"][1] == 0.0  # the table that has the cup
     assert api._last_surface is r
@@ -119,7 +123,7 @@ def test_no_surface_has_the_reference_fails(monkeypatch):
     far_table = _surf((650.0, 2000.0, 600.0), 400.0, 900.0, 600.0)  # cup nowhere near it
     monkeypatch.setattr(api._scene, "_candidate_geometries",
                         lambda name, *a, **k: [(cup, {})] if name == "water cup" else [(far_table, {})])
-    r = api._scene._sense_surface_related("table", "water cup", "under", None, None, None, None)
+    r = api._scene._sense_surface_related("table", "water cup", "under", _EMPTY_FRAME)
     assert r["ok"] is False and r["reason"] == "no_surface_matching_reference"
 
 
@@ -127,7 +131,7 @@ def test_reference_object_not_detected_fails(monkeypatch):
     api = _api()
     monkeypatch.setattr(api._scene, "_candidate_geometries",
                         lambda name, *a, **k: [] if name == "water cup" else [(_surf((650.0, 0.0, 600.0), 400.0, 900.0, 600.0), {})])
-    r = api._scene._sense_surface_related("table", "water cup", "under", None, None, None, None)
+    r = api._scene._sense_surface_related("table", "water cup", "under", _EMPTY_FRAME)
     assert r["ok"] is False and r["reason"].startswith("reference_not_found")
 
 
@@ -141,7 +145,7 @@ def test_beside_picks_the_neighbour_not_the_stack(monkeypatch):
         [(hat, {})] if name == "hat"
         else [(_geo((650.0, 350.0, 650.0)), {}), (_geo((650.0, -900.0, 650.0)), {})]
     )
-    r = api._scene._detect_related("box", "hat", "beside", None, None, None, None)
+    r = api._scene._detect_related("box", "hat", "beside", _EMPTY_FRAME)
     assert r["ok"] is True
     assert r["center_mm"] == [650.0, 350.0, 650.0]      # the neighbour, not the far one
     assert (r["reference"], r["relation"]) == ("hat", "beside")
@@ -165,6 +169,6 @@ def test_the_place_side_takes_the_relation_too():
     api._scene._candidate_geometries = lambda name, *a, **k: (  # type: ignore[method-assign]
         [(cup, {})] if name == "water cup" else [(t, {}) for t in tables]
     )
-    r = api._scene._sense_surface_related("table", "water cup", "under", None, None, None, None)
+    r = api._scene._sense_surface_related("table", "water cup", "under", _EMPTY_FRAME)
     assert r["ok"] is True and r["relation"] == "under"
     assert r["center_mm"][1] == 0.0        # the table the cup is actually on

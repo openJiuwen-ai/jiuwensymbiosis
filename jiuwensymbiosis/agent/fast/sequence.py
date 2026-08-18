@@ -792,11 +792,11 @@ def _check_bindings(
         # An unannotated producer (special op / bare-name vocabulary) counts as sensing,
         # mirroring how ``parse_sequence`` marks its bind fresh — never invent leniency
         # for a step whose contract we cannot see.
-        stale = {
-            name
-            for name in referenced - fresh
-            if (meta := metas.get(producer.get(name, ""))) is None or meta.produces_location
-        }
+        stale = set()
+        for name in referenced - fresh:
+            meta = metas.get(producer.get(name, ""))
+            if meta is None or meta.produces_location:
+                stale.add(name)
         if stale:
             raise SequenceError(
                 f"step {index}: param {key!r}={val!r} reads {sorted(stale)}, sensed before the "

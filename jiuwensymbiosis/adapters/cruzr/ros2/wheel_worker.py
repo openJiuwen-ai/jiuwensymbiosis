@@ -92,9 +92,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Arc-length self-bound = radius·|arc_dyaw|·this (a dead parent can't circle forever).")
     p.add_argument("--yaw-tol", type=float, default=0.05)
     p.add_argument("--pos-tol", type=float, default=0.05)
-    p.add_argument("--safe-dist", type=float, default=0.45, help="Stop if a lidar return in the travel sector is closer.")
-    p.add_argument("--self-floor", type=float, default=0.25, help="Ignore lidar returns closer than this (self/noise).")
-    p.add_argument("--sector-deg", type=float, default=25.0, help="Half-sector around travel dir watched for obstacles.")
+    p.add_argument("--safe-dist", type=float, default=0.45,
+                   help="Stop if a lidar return in the travel sector is closer.")
+    p.add_argument("--self-floor", type=float, default=0.25,
+                   help="Ignore lidar returns closer than this (self/noise).")
+    p.add_argument("--sector-deg", type=float, default=25.0,
+                   help="Half-sector around travel dir watched for obstacles.")
     p.add_argument("--timeout", type=float, default=20.0)
     p.add_argument("--serve", action="store_true",
                    help="Resident mode: init rclpy + odom once, then loop reading '<dx> <dyaw>' request "
@@ -104,7 +107,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _emit(d: dict) -> None:
-    print(json.dumps(d), flush=True)
+    # stdout IS this worker's protocol (parsed by ros2/worker.py), not logging.
+    sys.stdout.write(json.dumps(d) + "\n")
+    sys.stdout.flush()
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -126,8 +131,8 @@ def main(argv: Optional[list] = None) -> int:
     q.history = HistoryPolicy.KEEP_LAST
 
     def on_odom(m):
-        o = m.pose.pose.orientation
-        st["yaw"] = math.atan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y * o.y + o.z * o.z))
+        obj = m.pose.pose.orientation
+        st["yaw"] = math.atan2(2 * (obj.w * obj.z + obj.x * obj.y), 1 - 2 * (obj.y * obj.y + obj.z * obj.z))
         st["x"] = m.pose.pose.position.x
         st["y"] = m.pose.pose.position.y
         st["stamp_ns"] = int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec)
@@ -177,7 +182,8 @@ def main(argv: Optional[list] = None) -> int:
         def _do_move(dx: float, dyaw: float, k_rot: float, k_fwd: float, k_rot_slow: float) -> dict:
             """One discrete rotate-then-forward move, closed-loop on odom (rotate by dyaw, then drive
             dx). Shared by the one-shot CLI path and the resident --serve loop; k_rot/k_fwd/k_rot_slow
-            are per-move so --serve can honour navigate_relative's gentle-approach overrides."""
+            are per-move so --serve can honour navigate_relative's gentle-approach overrides.
+            """
             res: dict = {"ok": True}
             # rotate phase (closed loop on yaw)
             if abs(dyaw) > a.yaw_tol:

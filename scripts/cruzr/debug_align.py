@@ -32,28 +32,33 @@ Rendering (:func:`render_alignment`) is pure numpy+cv2 and offline-testable; onl
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from typing import Any, Optional
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 
 def _reshape_flat_cloud(cloud: np.ndarray, rgb_hw: Optional[tuple[int, int]]) -> np.ndarray:
     """Mirror ``head_geometry_from_mask``: recover an organized H×W×3 grid from a flat/unorganized
-    cloud when its point count matches the RGB. Leaves an already-organized cloud untouched."""
+    cloud when its point count matches the RGB. Leaves an already-organized cloud untouched.
+    """
     if rgb_hw is None or cloud.ndim not in (2, 3) or cloud.shape[-1] < 3:
         return cloud
     rh, rw = int(rgb_hw[0]), int(rgb_hw[1])
     n_pts = int(cloud.size // cloud.shape[-1])
     is_flat = cloud.ndim == 2 or cloud.shape[0] == 1
-    if is_flat and rh > 0 and rw > 0 and rh * rw == n_pts:
+    if is_flat and min(rh, rw) > 0 and rh * rw == n_pts:
         return cloud.reshape(rh, rw, cloud.shape[-1])
     return cloud
 
 
 def _range_colormap(cloud: np.ndarray, out_hw: tuple[int, int]) -> tuple[np.ndarray, float]:
     """Colourise an organized cloud (H×W×3, metres) by per-point range; NaN holes → black. Resized
-    (nearest, to preserve holes) to ``out_hw``. Returns ``(bgr_image, valid_fraction)``."""
+    (nearest, to preserve holes) to ``out_hw``. Returns ``(bgr_image, valid_fraction)``.
+    """
     import cv2
 
     xyz = cloud[..., :3].astype(np.float64)
@@ -95,7 +100,8 @@ def render_alignment(rgb: np.ndarray, cloud: Optional[np.ndarray], tf: Optional[
     head cloud in metres, ``tf`` the base←optical 4×4 (mm translation). ``dets`` is a list of
     ``{"role", "name", "mask", "box", "score"}`` (role="target"/"reference"); each mask is bool at
     RGB resolution. ``min_valid`` is the runtime's ``head_cloud_min_valid_points`` gate — reported
-    per mask so it's obvious which detections fall under it. Pure numpy+cv2; no ROS/GUI."""
+    per mask so it's obvious which detections fall under it. Pure numpy+cv2; no ROS/GUI.
+    """
     import cv2
 
     from scripts.cruzr._head_cloud import head_geometry_from_mask
@@ -161,7 +167,8 @@ def grab_and_render(cfg: Any, detector_url: str, object_name: str, on: str, out_
                     show: bool = False) -> Optional[str]:
     """Grab one live head frame (rgb+cloud+tf), detect the target + reference nouns, render the
     alignment triptych, and write it to ``out_path`` (also imshow when ``show`` + a display exist).
-    Returns the written path, or None if the frame/detector was unavailable."""
+    Returns the written path, or None if the frame/detector was unavailable.
+    """
     import cv2
 
     from jiuwensymbiosis.adapters.cruzr.lowlevel import CruzrCamera
@@ -169,15 +176,15 @@ def grab_and_render(cfg: Any, detector_url: str, object_name: str, on: str, out_
 
     frame = CruzrCamera(cfg).grab_head_frame()
     if frame is None:
-        print("[debug_align] grab_head_frame() returned None — no head frame (topics live? warmup?)")
+        logger.error("grab_head_frame() returned None — no head frame (topics live? warmup?)")
         return None
     rgb, cloud, tf = frame
     if rgb is None:
-        print("[debug_align] head frame had no RGB")
+        logger.error("head frame had no RGB")
         return None
     if cloud is None or tf is None:
-        print(f"[debug_align] WARNING cloud={'ok' if cloud is not None else 'None'} "
-              f"tf={'ok' if tf is not None else 'None'} — rendering RGB/mask only")
+        logger.warning("cloud=%s tf=%s — rendering RGB/mask only",
+                       "ok" if cloud is not None else "None", "ok" if tf is not None else "None")
 
     seg = init_detector(detector_url)
     dets: list[dict] = []
@@ -191,7 +198,7 @@ def grab_and_render(cfg: Any, detector_url: str, object_name: str, on: str, out_
             if best is None or r.get("score", 0.0) > best.get("score", 0.0):
                 best = r
         if best is None:
-            print(f"[debug_align] {role} {name!r}: no detection")
+            logger.info("%s %r: no detection", role, name)
             dets.append({"role": role, "name": name, "mask": None})
         else:
             dets.append({"role": role, "name": name, "mask": best.get("mask"),
@@ -200,14 +207,14 @@ def grab_and_render(cfg: Any, detector_url: str, object_name: str, on: str, out_
     min_valid = int(getattr(cfg, "head_cloud_min_valid_points", 30))
     img = render_alignment(rgb, cloud, tf, dets=dets, min_valid=min_valid)
     cv2.imwrite(out_path, img)
-    print(f"[debug_align] wrote {out_path}  ({img.shape[1]}x{img.shape[0]})")
+    logger.info("wrote %s  (%dx%d)", out_path, img.shape[1], img.shape[0])
     if show and os.environ.get("DISPLAY"):
         try:
             cv2.imshow("cruzr head cloud alignment", img)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
         except Exception as exc:  # noqa: BLE001 — headless / GUI-less is fine, PNG already saved
-            print(f"[debug_align] imshow skipped ({exc})")
+            logger.info("imshow skipped (%s)", exc)
     return out_path
 
 

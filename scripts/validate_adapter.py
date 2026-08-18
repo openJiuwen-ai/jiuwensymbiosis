@@ -367,9 +367,8 @@ def run_checks(module_str: str) -> list[CheckResult]:
     # ====================================================================
     # [A-07] Api 暴露了至少一个动作 .................. WARN
     # ====================================================================
-    # Inheriting a mixin is no longer how a body gets actions — it declares each one
-    # with @implements(SPEC). So the question is whether it exposes any, not what it
-    # inherits.
+    # A body declares each action with @implements(SPEC), so the question is whether it
+    # exposes any — not what it inherits.
     if api_cls is not None:
         api_caps = _compute_api_capabilities(api_cls)
         if not api_caps:
@@ -616,11 +615,11 @@ def _check_capability_actions(api_cls: type) -> list[tuple[str, str, str]]:
 
     Returns list of (capability, "", reason).
     """
-    implemented = {
-        meta.name
-        for name in dir(api_cls)
-        if (meta := getattr(getattr(api_cls, name, None), "__robot_tool__", None)) is not None
-    }
+    implemented: set[str] = set()
+    for name in dir(api_cls):
+        meta = getattr(getattr(api_cls, name, None), "__robot_tool__", None)
+        if meta is not None:
+            implemented.add(meta.name)
     results: list[tuple[str, str, str]] = []
     for cap in sorted(_api_declared_capabilities(api_cls)):
         actions = CAPABILITY_ACTIONS.get(cap)

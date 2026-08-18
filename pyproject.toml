@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
-    "openjiuwen>=0.1.13",
+    "openjiuwen>=0.1.13,<0.1.16",
     "numpy>=2",
     "pydantic>=2",
     "PyYAML>=6",
@@ -142,13 +142,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # White-box tests legitimately reach into the internals of objects under test.
 "tests/**" = ["SLF001"]
-# The algorithm half of the `ApproachMixin` ↔ `motion.approach` split. Its
-# `api`-first loops are driven through the host hooks documented in the module
-# docstring (`_approach_tuning` / `_drive_base` / `_redetect` / `_coarse_*` …).
-# Those underscored names ARE the extension contract a second body implements
-# (hardware-porting-guide.md 附录 D.3), not foreign privates — the mixin and the
-# module are two halves of one object.
-"jiuwensymbiosis/motion/approach.py" = ["SLF001"]
 # Package init clears proxy env (os.environ.pop) before the agent/openjiuwen
 # imports, so those imports are not "at top of file" per E402 — by design.
 "jiuwensymbiosis/__init__.py" = ["E402"]

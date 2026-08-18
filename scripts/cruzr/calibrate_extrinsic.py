@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _quat_to_rot(x: float, y: float, z: float, w: float) -> list:
@@ -89,7 +92,7 @@ def main(argv=None) -> int:
             break
 
     if tf is None:
-        print(f"TF lookup {args.base_frame} -> {args.camera_frame} failed: {last_exc}", file=sys.stderr)
+        logger.error("TF lookup %s -> %s failed: %s", args.base_frame, args.camera_frame, last_exc)
         node.destroy_node()
         rclpy.shutdown()
         return 1
@@ -123,9 +126,9 @@ def main(argv=None) -> int:
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
-    print(f"wrote {out}")
-    print(f"  translation (m): {t.x:.4f} {t.y:.4f} {t.z:.4f}")
-    print(f"  intrinsics: {'from camera_info' if intrinsics else 'skipped'}")
+    logger.info("wrote %s", out)
+    logger.info("  translation (m): %.4f %.4f %.4f", t.x, t.y, t.z)
+    logger.info("  intrinsics: %s", "from camera_info" if intrinsics else "skipped")
 
     node.destroy_node()
     rclpy.shutdown()

@@ -84,7 +84,8 @@ def test_ik_pose_two_axis_with_tcp_roundtrip():
     paddle_target = R @ np.asarray(paddle_local)
 
     res = ik_solve_pose(
-        chain, q_fixed, ARM, tcp_pos, approach_target, paddle_target,
+        chain, q_fixed, ARM, tcp_pos,
+        approach_target=approach_target, paddle_target=paddle_target,
         tool_approach_local=approach_local, tool_paddle_local=paddle_local,
         tcp_offset_local=tcp_local,
     )
@@ -109,7 +110,8 @@ def test_ik_pose_tcp_offset_shifts_wrist_target():
     tcp_pos = T[:3, 3] + T[:3, :3] @ np.asarray(tcp_local)
     res = ik_solve_pose(
         chain, q_fixed, ARM, tcp_pos,
-        T[:3, :3] @ np.array([0.0, 0.0, 1.0]), T[:3, :3] @ np.array([1.0, 0.0, 0.0]),
+        approach_target=T[:3, :3] @ np.array([0.0, 0.0, 1.0]),
+        paddle_target=T[:3, :3] @ np.array([1.0, 0.0, 0.0]),
         tool_approach_local=(0, 0, 1), tool_paddle_local=(1, 0, 0), tcp_offset_local=tcp_local,
     )
     assert res.converged

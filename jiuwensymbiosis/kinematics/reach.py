@@ -34,7 +34,8 @@ def reachable_point(
     Position-focused, loose orientation: the tool axis is only asked to point roughly from the target
     back toward the robot (the typical approach direction), so this is a coarse "is the point in the
     arm's workspace" judge for planning — NOT a grasp-pose solve. Returns the IK ``converged`` flag.
-    ``q_current`` supplies the current joint angles (arm joints seed the solve, the rest are held)."""
+    ``q_current`` supplies the current joint angles (arm joints seed the solve, the rest are held).
+    """
     q_current = {str(k): float(v) for k, v in (q_current or {}).items()}
     arm_joints = chain.movable_names()
     q_init = {j: q_current.get(j, 0.0) for j in arm_joints}
@@ -56,12 +57,18 @@ def reach_envelope(
 ) -> dict[str, Any]:
     """Coarse reachable-workspace envelope of one arm chain at the current pose: probe a small grid of
     base-frame points with ``reachable_point`` and report the reachable forward/lateral/height extent
-    (metres). A rough prior for planning when no target is detected — not an exact workspace."""
+    (metres). A rough prior for planning when no target is detected — not an exact workspace.
+    """
     fwd = (0.35, 0.6, 0.85)
     lat = (-0.35, 0.0, 0.35)
     hgt = (0.55, 0.95)
-    reached = [(f, la, h) for f in fwd for la in lat for h in hgt
-               if reachable_point(chain, (f * 1000.0, la * 1000.0, h * 1000.0), q_current, q_fixed=q_fixed)]
+    reached = []
+    for f in fwd:
+        for la in lat:
+            for h in hgt:
+                if reachable_point(chain, (f * 1000.0, la * 1000.0, h * 1000.0),
+                                   q_current, q_fixed=q_fixed):
+                    reached.append((f, la, h))
     if not reached:
         return {"reachable": False}
     fs = [p[0] for p in reached]

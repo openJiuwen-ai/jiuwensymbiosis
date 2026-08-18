@@ -472,5 +472,6 @@ class SafetyRail(AgentRail):
     @staticmethod
     def _joint_label(names: list[str], i: int) -> str:
         """Best-effort joint name for an error message: ``J2`` if limits are
-        configured with that key, else the positional ``q[1]``."""
+        configured with that key, else the positional ``q[1]``.
+        """
         return names[i] if i < len(names) else f"q[{i}]"

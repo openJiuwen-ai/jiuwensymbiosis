@@ -162,7 +162,7 @@ def test_a_body_with_no_aimable_camera_searches_by_turning_itself():
 
     assert s.api.locate_for_grasp("crate")["ok"] is False   # nothing in the current view
 
-    out = s.api._nav._sweep_for_bearing("crate")
+    out = s.api._nav.sweep_for_bearing("crate")
 
     assert out["found"] is True
     assert out["exhaustive"] is True                        # the whole circle was covered
@@ -174,7 +174,7 @@ def test_a_sweep_that_covered_the_circle_is_not_asked_to_turn_round_again():
     """``face_by_sweep`` adds a 180° re-scan for bodies whose look-around only covers their
     own facing. A body that already swept the full circle must not pay for it twice."""
     s = MockDualArmSession([WorldBox("crate", (1400.0, 0.0, 300.0), (400.0, 500.0, 600.0))])
-    out = s.api._nav._sweep_for_bearing("nothing_like_this")
+    out = s.api._nav.sweep_for_bearing("nothing_like_this")
 
     assert out["found"] is False
     assert out["exhaustive"] is True

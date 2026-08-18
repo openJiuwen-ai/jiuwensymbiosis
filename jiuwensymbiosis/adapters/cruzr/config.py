@@ -101,11 +101,11 @@ class CruzrConfig:
     arm_transit_ramp_duration_s: float = 0.6
     # 夹取/放置里【和箱子接触】那几下(夹紧 clamp、放置下压到位)专用 ramp。这两步涉及夹变形/掉箱/
     # 接触力核验,故与空载 transit 分开、单独一个旋钮:想快就压小(接触峰值速度随之升高——压太狠会夹
-    # 变形/掉箱),想稳就调大。默认 0.6(比原来的 1.0 快)。不影响腰/举升/回家(那些仍走 ramp_duration_s)。
+    # 变形/掉箱),想稳就调大。不影响腰/举升/回家(那些仍走 ramp_duration_s)。
     arm_contact_ramp_duration_s: float = 0.6
     # 放置【下压把箱子放到桌面】那一下专用 ramp,从夹紧 clamp 拆出来(两者原本共用 arm_contact_ramp_duration_s)。
     # 放置下压带着箱子往桌面落,太快会磕桌/顿一下;单独一个旋钮 → 只把放置放慢,夹紧 clamp 不受影响仍走
-    # arm_contact_ramp_duration_s。想更轻柔就调大。默认 1.2(比夹紧的 0.6 慢一倍,箱子落得更稳)。
+    # arm_contact_ramp_duration_s。想更轻柔就调大;须慢于夹紧 ramp,箱子才落得稳。
     place_contact_ramp_duration_s: float = 1.2
     # 放置下压的【保夹距分段路点数】。下压那一步不再一次性关节直线插值(端点保夹距、中途夹距会鼓开→掉箱),
     # 而是把夹板 TCP 在笛卡尔空间从当前持有位到落点直线分成 N 段、逐段解 IK,再作为一条连续轨迹流式下发
@@ -156,7 +156,9 @@ class CruzrConfig:
     base_frame: str = "base_link"
     camera_optical_frame: str = "waist_front_rgbd_color_optical_frame"
     # Path to the Cruzr URDF used by the FK checker and future motion planning.
-    urdf_path: str = "/home/riemann/Robot/Cruzr_ws/cruzr_s2_description/cruzr_s2_description/urdf/cruzr_s2_v1/cruzr_s2_v1.urdf"
+    urdf_path: str = (
+        "/home/riemann/Robot/Cruzr_ws/cruzr_s2_description/cruzr_s2_description/urdf/cruzr_s2_v1/cruzr_s2_v1.urdf"
+    )
     # Mesh package root so pinocchio+coal can resolve package:// collision meshes for self-collision checks.
     urdf_package_dir: str = "/home/riemann/Robot/Cruzr_ws/cruzr_s2_description"
     # End-effector link names for FK validation and grasp-frame construction.
@@ -276,8 +278,13 @@ class CruzrConfig:
     # 空放。默认=真机验证过的稳值(与 base_k_* 一致);approach_for_grasp/approach_for_place 用它们覆盖全局。
     approach_k_rot: float = 1.5                 # 精定位转向轮速(rad/s)
     approach_k_rot_slow_rad: float = 0.5        # 精定位减速尾段(rad):越大减速越早、过冲越小
-    approach_k_fwd: float = 1.0                 # 精定位前进轮速(rad/s):提速(0.8→1.0)缩短精定位耗时;远段有 _forward_step 预留、末段按 base_k_fwd_slow_m 减速到 k_fwd_min 落位,提速不改变落地的柔和/防撞
-    base_yaw_tol_rad: float = 0.05             # "正对"容差(rad,≈2.9°),三处共用:①离散驶近的转向相位转到此即开始直行——收紧=更接近正对才走直线,直接消除到位后的本体夹角(旧 0.08≈4.6° 就是实测残留夹角)②plan_grasp_pose_goal 判 in_band 的居中门槛 ③approach_for_place 相位1方位门槛。噪声地板≈0.037(cy测量+转向里程计),更小易在转向相位振荡(有超时/max_iters 兜底);0.05 稳,要更正可试 0.04
+    # 精定位前进轮速(rad/s):远段有 _forward_step 预留、末段按 base_k_fwd_slow_m 减速到 k_fwd_min 落位,
+    # 故调高只缩短耗时,不改变落地的柔和/防撞
+    approach_k_fwd: float = 1.0
+    # "正对"容差(rad,≈2.9°),三处共用:①离散驶近的转向相位转到此即开始直行(收紧=更接近正对才走直线,
+    # 到位后本体夹角更小)②plan_grasp_pose_goal 判 in_band 的居中门槛 ③approach_for_place 相位1方位门槛。
+    # 下限受噪声地板≈0.037(cy测量+转向里程计)约束:小于它易在转向相位振荡(有超时/max_iters 兜底)。
+    base_yaw_tol_rad: float = 0.05
     grasp_yaw_align_tol: float = 0.20          # 抓取靠近"正对可见面"的对齐容差(≈11°);大于此则沿面法向绕正
     grasp_face_flatness_max: float = 0.15       # 面法向可信阈值 λmin/λmid：小于此才认为看到平整正面、据其绕正；否则退回径向靠近
     grasp_face_step_m: float = 0.12             # 到位后绕正的每步位移封顶(米)：小步走弧线,避免切近; 每步复检
@@ -323,7 +330,9 @@ class CruzrConfig:
     # --- 头部粗定位驱近：连续前进（--forward worker，匀速开、雷达急停、自设上限；父进程命中即停）
     # 头部看到锚点后不再走一步看一步，而是匀速前进，直到腰部拿到精确坐标接管。安全同自转:stdin停/EOF/
     # SIGTERM/自设上限，前向单线雷达急停。
-    approach_drive_wheel_rs: float = 0.8       # 连续驱近前进轮速(rad/s):提速(0.5→0.8)吃掉大段行程;粗驱近在~1.2-1.5m 远处就交接给腰部(早交接)+前向雷达急停,提速仍安全;过快则腰命中→停车的过冲变大(靠停车后重检 + approach_for_grasp 收敛吸收)
+    # 连续驱近前进轮速(rad/s):粗驱近在~1.2-1.5m 远处就交接给腰部(早交接)+前向雷达急停,
+    # 故此值可较高;过快则腰命中→停车的过冲变大(靠停车后重检 + approach_for_grasp 收敛吸收)
+    approach_drive_wheel_rs: float = 0.8
     # 下面两个是【安全兜底上限】,不是正常停车点:正常由父进程在"腰部接管/头部丢锁/雷达防撞"时停车。
     # 设得宽松,让底盘一直逼近到腰部真能看清为止(别在目标还在前方时就固定 2.5m 放弃);父死时它才靠此自停。
     approach_drive_max_m: float = 5.0          # 驱近前进安全兜底距离(m,tunable):走到此仍没接管才判失败
@@ -347,18 +356,21 @@ class CruzrConfig:
     approach_forward_step_m: float = 0.25
     # approach_for_grasp 正对法线后【直行】的末段减速预留距离(m),对称于 place 侧 place_approach_forward_reserve_m:
     # 远段一次连续开到离抓取待命距此值处(单次 navigate_relative,即便 odom 过冲也停在箱前不顶箱),末段≤此值落在
-    # base_k_fwd_slow_m 减速斜坡内轻柔到位 → 整段≤2 次前进,取代旧的每 0.25m 硬截断(远距离 3-4 次停车+重检=卡顿)。
+    # base_k_fwd_slow_m 减速斜坡内轻柔到位 → 整段≤2 次前进(而非每 0.25m 停车重检)。
     grasp_approach_forward_reserve_m: float = 0.15
     probe_bbox_frac: float = 0.10          # 头部框高/图高 ≥ 此值才去探测腰部(靠得够近)
     grasp_forward_min_m: float = 0.30      # handoff：箱心前向距离可抓带下界
     grasp_forward_max_m: float = 0.50      # handoff：上界
     place_approach_edge_m: float = 0.35    # 放箱前底盘停在桌子近边(front_x)前方此距离，让手臂够到桌面
-    place_approach_forward_reserve_m: float = 0.15  # 放置正对后"直入"的末段预留(m):远段一次开到离桌边此距离(单次驶近,即便odom过冲也停在桌前不顶桌),末段≤此值轻柔落位→整段≤2次前进,取代旧的每0.25m硬截断(用户反馈的"分好几小段/慢")
+    # 放置正对后"直入"的末段预留(m):远段一次开到离桌边此距离(单次驶近,即便 odom 过冲也停在桌前不顶桌),
+    # 末段≤此值轻柔落位 → 整段≤2 次前进(而非每 0.25m 停车重检)。
+    place_approach_forward_reserve_m: float = 0.15
     # approach_for_place 正对桌面:桌面水平→无可信正面法向,改用地面近边法向让底盘垂直正对。优先用桌面
     # 近边直线拟合法向(near_edge_line:对近边最靠机器人的前轮廓拟合直线,取中点+垂线,对大桌/局部可见更稳),
     # 不可信时退回整块 footprint 主轴法向(_grasp_near_face_normal)。
     place_square_tol_rad: float = 0.15     # "已正对近边"阈值(≈9°);大于此则原地旋转对齐(定位到位后)
-    place_max_turn_step_rad: float = 0.7   # 放置驶近每步底盘转角封顶(rad,≈40°) fail-safe:即便某帧近边法向翻转给出~90°+的错误转角,单步也只转此值,复检再修,绝不带着箱子大幅甩身(防甩箱)。真机正常对正<40°不受影响
+    # 放置驶近每步底盘转角封顶(rad,≈40°) fail-safe:即便某帧近边法向翻转给出~90°+的错误转角,单步也只转此值,复检再修,绝不带着箱子大幅甩身(防甩箱)。真机正常对正<40°不受影响
+    place_max_turn_step_rad: float = 0.7
     place_edge_quality_max: float = 0.25   # 近边拟合可信阈值 edge_quality=残差厚度/边长;≤此才用近边法向对正,否则退回 footprint。越小越严
     place_edge_min_len_mm: float = 150.0   # 近边拟合最短边长(mm);短于此认为看到的桌边太少、法向不可信,退回 footprint
     # (legacy) 已不再被 live 放置路径读取——approach_for_place 改用迟滞锁面(_grasp_near_face_normal),
@@ -403,9 +415,13 @@ class CruzrConfig:
     # start/steer/hold/stop_base_drive 连续行驶原语,消除 _approach_single_shot 末段那两次静止重检的
     # 冻结卡顿;顺带获得末段移动目标跟踪。关时 _approach_single_shot 完全走今天的两次重检(天然回归基线)。
     grasp_servo_enabled: bool = False           # 末段连续视觉伺服总开关(关=完全现状)
-    grasp_servo_creep_k_fwd: float = 1.2        # 末段爬行轮速(rad/s,抓取&放置伺服共用):0.6→0.75→1.2 提速逼近;仍<粗驱近 approach_drive_wheel_rs(yaml 1.95)留"边开边检"余量,几何 fwd_max(到点+reserve)自停兜底防冲。冲箱/冲桌/甩箱则调低
-    grasp_servo_fwd_max_m: float = 1.2          # 伺服前进【绝对上限】(m,几何安全兜底):伺服现负责整段前进,实际自停距离=min(到抓取点+reserve, 此值);此值只在种子检测异常偏远时封顶,须 < 到箱心距离
-    grasp_servo_commit_dist_m: float = 0.30     # 提交距离(m):锁定后箱离开视野且剩余前进≤此→开环走完末段(须再重检才抓);否则丢框即 hold。须≤2×grasp_approach_forward_reserve_m 才能让正常 commit 走满
+    # 末段爬行轮速(rad/s,抓取&放置伺服共用):须 < 粗驱近 approach_drive_wheel_rs(yaml 1.95)
+    # 留"边开边检"余量,几何 fwd_max(到点+reserve)自停兜底防冲。冲箱/冲桌/甩箱则调低
+    grasp_servo_creep_k_fwd: float = 1.2
+    # 伺服前进【绝对上限】(m,几何安全兜底):伺服现负责整段前进,实际自停距离=min(到抓取点+reserve, 此值);此值只在种子检测异常偏远时封顶,须 < 到箱心距离
+    grasp_servo_fwd_max_m: float = 1.2
+    # 提交距离(m):锁定后箱离开视野且剩余前进≤此→开环走完末段(须再重检才抓);否则丢框即 hold。须≤2×grasp_approach_forward_reserve_m 才能让正常 commit 走满
+    grasp_servo_commit_dist_m: float = 0.30
     grasp_servo_max_polls: int = 40             # 伺服循环轮询上限(安全):检测卡死时防死循环
     grasp_servo_lost_hold: bool = True          # 锁定后丢失且未进提交距离时是否 hold(暂停轮子不盲进);False=继续直行到 fwd_max
     # 放置侧连续伺服:approach_for_place 正对近边后的"直入"段并入一次连续直行爬行(消除放置侧逐段硬停卡顿)。
@@ -463,7 +479,9 @@ class CruzrConfig:
         """Return the configured raise target for the selected arm."""
         arm_name = (arm or self.default_arm).lower()
         if arm_name in {"left", "l"}:
-            return float(self.raise_position_rad if self.left_raise_position_rad is None else self.left_raise_position_rad)
+            return float(
+                self.raise_position_rad if self.left_raise_position_rad is None else self.left_raise_position_rad
+            )
         if arm_name in {"right", "r"}:
             return float(
                 self.raise_position_rad if self.right_raise_position_rad is None else self.right_raise_position_rad
