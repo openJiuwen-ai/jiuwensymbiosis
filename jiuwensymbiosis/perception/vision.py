@@ -134,8 +134,83 @@ def _run_detect_pick_best(
             [round(float(b), 1) for b in r["box"][:4]],
         )
     if not results:
-        return {"ok": False, "reason": "no_detection", "object": object_name}
+        # Carry the below-threshold candidates out with the failure. "Nothing at all" and "an
+        # 0.28 hit against a 0.35 gate" call for different next moves — retry closer vs. go look
+        # elsewhere — and only the score distinguishes them. Logging it wasn't enough: the caller
+        # (and the diagnosis handed to the next LLM turn) got a bare string.
+        near = sorted(
+            ({"label": str(r.get("label", "")), "score": round(float(r.get("score", 0.0)), 3)}
+             for r in results_raw),
+            key=lambda c: -c["score"],
+        )[:5]
+        return {"ok": False, "reason": "no_detection", "object": object_name, "candidates": near}
     return max(results, key=lambda r: r["score"])
+
+
+_COLOR_WORDS = ("white", "black", "gray", "grey", "silver",
+                "red", "orange", "yellow", "green", "blue", "purple", "pink", "brown")
+
+
+def extract_color_word(text: str) -> str | None:
+    """First color word appearing as a whole token in ``text`` (lowercased), else ``None``.
+
+    Lets a caller color-verify a text-grounded detection so a false positive whose pixels
+    contradict the prompt's color (e.g. ``"white table"`` grounded on a brown box) can be
+    rejected. ``grey``/``silver`` normalise to ``gray``.
+    """
+    toks = text.lower().replace("-", " ").split()
+    for w in _COLOR_WORDS:
+        if w in toks:
+            return "gray" if w in ("grey", "silver") else w
+    return None
+
+
+def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str,
+                         *, min_pixels: int = 200) -> bool:
+    """True if the masked region's mean color is consistent with ``color_word``.
+
+    Rejects open-vocab detector false positives whose pixels contradict the requested
+    color. Neutral words (white/black/gray) are judged by brightness + saturation;
+    chromatic words by hue. Returns ``True`` (i.e. don't reject) for an unknown color word
+    or a region too small to judge, so it can only ever *remove* a clear color contradiction.
+
+    Debug bypass: set ``JIUWEN_SKIP_COLOR_VERIFY`` to disable the gate entirely (always match) —
+    e.g. to test a grasp or confirm the face normal on a detection the color gate keeps rejecting.
+    """
+    if os.environ.get("JIUWEN_SKIP_COLOR_VERIFY"):
+        return True
+    import colorsys
+
+    m = np.asarray(mask).astype(bool)
+    if m.shape[:2] != rgb.shape[:2]:
+        ys = (np.arange(rgb.shape[0]) * (m.shape[0] / rgb.shape[0])).astype(int).clip(0, m.shape[0] - 1)
+        xs = (np.arange(rgb.shape[1]) * (m.shape[1] / rgb.shape[1])).astype(int).clip(0, m.shape[1] - 1)
+        m = m[np.ix_(ys, xs)]
+    px = rgb[m].astype(np.float64)
+    if px.shape[0] < min_pixels:
+        return True
+    mean = px.mean(0)
+    brightness = float(mean.mean()) / 255.0
+    mx = px.max(1)
+    mn = px.min(1)
+    saturation = float(((mx - mn) / (mx + 1e-6)).mean())  # mean per-pixel saturation
+    cw = color_word.lower()
+    if cw == "white":
+        return saturation < 0.25 and brightness > 0.35
+    if cw == "black":
+        return brightness < 0.22
+    if cw == "gray":
+        return saturation < 0.22 and 0.18 <= brightness <= 0.85
+    if saturation < 0.20:  # a chromatic color was asked for but the region is neutral
+        return False
+    r, g, b = mean / 255.0
+    hue = colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
+    if cw == "brown":  # dark, low-brightness orange/red
+        return (hue < 60.0 or hue >= 342.0) and brightness < 0.55
+    hue_ranges = {"red": [(0, 18), (342, 360)], "orange": [(18, 42)], "yellow": [(42, 70)],
+            "green": [(70, 170)], "blue": [(170, 262)], "purple": [(262, 315)], "pink": [(315, 342)]}
+    rng = hue_ranges.get(cw)
+    return True if rng is None else any(lo <= hue < hi for lo, hi in rng)
 
 
 def _mask_centroid(
@@ -211,6 +286,66 @@ def _median_depth_window(
     if valid.size == 0:
         return None
     return float(np.median(valid))
+
+
+def detect_all_object_geometry(
+    rgb: np.ndarray,
+    depth_m: np.ndarray,
+    intrinsics: np.ndarray,
+    tf_base_cam: np.ndarray,
+    *,
+    seg_fn: Callable[..., list[dict]] | None,
+    object_name: str,
+    score_threshold: float = 0.05,
+    q_lo: float = 0.05,
+    q_hi: float = 0.95,
+    min_points: int = 50,
+) -> list[dict]:
+    """Detect EVERY instance of ``object_name`` and project each to base-frame 3D geometry.
+
+    Generic, robot-agnostic, object-agnostic (open-vocab): reuses
+    ``object_geometry_from_mask`` per instance. Adapters add a thin hook (grab a
+    frame → call this). Returns per-instance dicts sorted **nearest-first** by
+    forward-x distance (spec §8 Q1 default), or ``[]`` when nothing is detected.
+    Each dict: ``{object, center_mm:[x,y,z], distance_mm, forward_mm, width_mm, height_mm,
+    front_x_mm, back_x_mm, top_z_mm, score}`` — the bounds included so the result can be
+    judged by ``scene3d.relation_holds`` without re-measuring.
+    """
+    from jiuwensymbiosis.perception.object_geometry import object_geometry_from_mask
+
+    if seg_fn is None:
+        return []
+    raw = seg_fn(rgb, text_prompt=object_name) or []
+    results = [r for r in raw if r.get("score", 0.0) >= score_threshold]
+    objs: list[dict] = []
+    for r in results:
+        mask = r.get("mask")
+        if mask is None:
+            continue
+        g = object_geometry_from_mask(
+            np.asarray(mask), depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam),
+            q_lo=q_lo, q_hi=q_hi, min_points=min_points,
+        )
+        if not g.ok:
+            continue
+        objs.append({
+            "object": object_name,
+            "center_mm": list(g.center_mm),
+            "distance_mm": float(np.linalg.norm(g.center_mm)),  # Euclidean from base origin (always ≥ 0)
+            "forward_mm": float(g.center_mm[0]),  # forward-x, for planners that need "how far in front"
+            "width_mm": g.width_mm,
+            "height_mm": g.height_mm,
+            # The box a spatial relation is judged on (scene3d.extent_of). Emitted because
+            # extent_of defaults absent bounds to 0.0, which would place every object at the
+            # base origin and make "in"/"on" answer yes to things nowhere near each other.
+            "front_x_mm": g.front_x_mm,
+            "back_x_mm": g.back_x_mm,
+            "top_z_mm": g.top_z_mm,
+            "score": float(r.get("score", 0.0)),
+        })
+    objs.sort(key=lambda obj: obj["distance_mm"])  # nearest-first
+    logger.info("[scene] detect_all %r: %d raw → %d instances", object_name, len(raw), len(objs))
+    return objs
 
 
 def detect_and_centroid(
@@ -345,45 +480,130 @@ def apply_xy_correction(
 
 
 # ---------------------------------------------------------------------------
-# Shared grasp/place geometry.
+# Default eye-in-hand implementations.
 #
-# The grab → detect → project → correct → grasp/place pipeline is identical for
-# every camera robot; only the "pixel + depth → base XYZ" projection differs
-# (eye-in-hand reads the live flange, eye-to-hand uses a constant T_base_cam).
-# ``VisionMixin`` owns the pipeline and delegates that one step to a per-adapter
-# ``_project_pixel_to_base_raw`` seam that returns a RAW (uncorrected) base XYZ.
-# This function turns that raw projection into the final result, so xy/z
-# correction and grasp/place heights are computed in exactly one place.
+# ``get_grasp_info_simple`` / ``pixel_to_base_xyz`` cannot have a *generic*
+# default on the mixin because they depend on the adapter's hand-eye
+# calibration — but the ~130-line pipeline (grab → detect → centroid → depth
+# → project → xy-correct → grasp/place geometry) is identical for every
+# eye-in-hand camera robot. These helpers factor it out; an adapter only
+# supplies:
+#   * its detector ``seg_fn`` (lazy-bound like PiperApi._ensure_detector),
+#   * a ``pose_to_tf(flange_pose) -> 4x4`` callback (the one truly vendor-
+#     specific piece: how the vendor's flange pose becomes a base-frame
+#     transform; Piper uses FlangePose(...).to_tf_base_flange()).
+# and reads calibration (``tf_flange_cam`` / ``intrinsics`` / ``calibration`` /
+# ``grab_frames``) straight off ``api.env.low_level`` — already a VisionDriver
+# Protocol surface.
 # ---------------------------------------------------------------------------
 
 
-def build_grasp_result(
-    *,
-    object_name: str,
-    best: dict,
-    u: float,
-    v: float,
-    depth_m: float,
-    xyz_raw: np.ndarray,
-    calib: dict | None,
-    z_correction_mm: float,
-    grasp_z_offset_mm: float,
-    place_z_offset_mm: float,
-    z_floor: float | None,
-    floor_margin_mm: float = 0.0,
-) -> tuple[dict[str, Any], np.ndarray]:
-    """Turn a raw base-frame projection into the deterministic grasp/place result.
+def _resolve_intrinsics(ll: Any) -> np.ndarray | None:
+    """Intrinsics from calibration (preferred) else live camera."""
+    calib = getattr(ll, "calibration", None)
+    intrinsics = calib.get("intrinsics") if calib is not None else None
+    if intrinsics is None:
+        intrinsics = getattr(ll, "intrinsics", None)
+    return intrinsics
 
-    Applies xy correction (multi-point ``xy_transform`` preferred over legacy
-    ``xy_correction_mm``) then the constant ``z_correction_mm``, and computes the
-    ready-to-execute heights so the agent never does z math:
-      * ``grasp_z = max(top + grasp_z_offset_mm, z_floor + floor_margin_mm)``
-      * ``place_z = top + place_z_offset_mm``
 
-    Returns ``(result, xyz_final)`` — ``result`` is a ``GraspResult``-shaped dict;
-    ``xyz_final`` lets the caller dump debug / tracking data against both the raw
-    and corrected XYZ.
+def default_pixel_to_base_xyz(
+    api: Any, u: float, v: float, depth_m: float, *, pose_to_tf: Callable[[Any], np.ndarray]
+) -> dict:
+    """Back-project (u, v, depth_m) → base-frame XYZ (mm) via eye-in-hand math.
+
+    Reads ``tf_flange_cam`` / ``intrinsics`` from ``api.env.low_level``; applies
+    the calibration's ``xy_transform``/``xy_correction_mm`` when present.
+    ``pose_to_tf`` converts the env's vendor flange pose to a 4x4 base←flange
+    transform (the one vendor-specific step).
     """
+    from jiuwensymbiosis.utils.geometry import (
+        apply_transform,
+        pixel_and_depth_to_camera_xyz,
+    )
+
+    ll = api.env.low_level
+    if ll.tf_flange_cam is None:
+        raise RuntimeError("pixel_to_base_xyz needs a loaded calibration (set calib_path in YAML).")
+    intrinsics = _resolve_intrinsics(ll)
+    if intrinsics is None:
+        raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
+    tf_base_flange = pose_to_tf(api.env.get_flange_pose())
+    tf_base_cam = tf_base_flange @ ll.tf_flange_cam
+    xyz = apply_transform(tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics))
+    calib = getattr(ll, "calibration", None)
+    if calib is not None:
+        xyz, _desc = apply_xy_correction(
+            np.asarray(xyz, dtype=np.float64),
+            xy_transform=calib.get("xy_transform"),
+            xy_correction_mm=calib.get("xy_correction_mm"),
+        )
+    return {"x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2])}
+
+
+def default_get_grasp_info_simple(
+    api: Any,
+    object_name: str,
+    *,
+    seg_fn: Callable[..., list[dict]] | None,
+    pose_to_tf: Callable[[Any], np.ndarray],
+    z_correction_mm: float = 0.0,
+    grasp_z_offset_mm: float = -25.0,
+    chip_thickness_mm: float = 75.0,
+    score_threshold: float = 0.05,
+) -> dict:
+    """Default ``get_grasp_info_simple`` for an eye-in-hand camera robot.
+
+    Runs the standard detect → centroid → depth → back-project → xy-correct →
+    grasp/place-geometry pipeline, returning the same shape Piper does:
+    ``{ok, object, position, grasp_z, grasp_position, place_z, place_position,
+    score, pixel_uv, depth_m}``. On failure returns a ``GraspFailure`` whose
+    ``reason`` is drawn from ``DETECTION_REASONS``.
+
+    Args:
+      api: an Api-like object exposing ``env`` (with ``low_level`` a
+        VisionDriver and ``get_flange_pose``/``z_min_safe``).
+      seg_fn: the detector segmentation callable (``None`` → detector_unavailable).
+      pose_to_tf: vendor flange-pose → 4x4 base←flange transform.
+      z_correction_mm / grasp_z_offset_mm / chip_thickness_mm: grasp geometry
+        constants (see PiperConfig for semantics).
+    """
+    from types import SimpleNamespace
+
+    from jiuwensymbiosis.utils.geometry import (
+        apply_transform,
+        pixel_and_depth_to_camera_xyz,
+    )
+
+    ll = api.env.low_level
+    frames = ll.grab_frames()
+    if frames is None:
+        return {"ok": False, "reason": "no_camera", "object": object_name}
+    rgb, depth_img_m = frames
+
+    det = detect_and_centroid(
+        rgb=rgb,
+        depth_img_m=depth_img_m,
+        seg_fn=seg_fn,
+        object_name=object_name,
+        tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
+        score_threshold=score_threshold,
+    )
+    if not det.get("ok"):
+        return det
+
+    if ll.tf_flange_cam is None:
+        raise RuntimeError("get_grasp_info_simple needs a loaded calibration (set calib_path in YAML).")
+    intrinsics = _resolve_intrinsics(ll)
+    if intrinsics is None:
+        raise RuntimeError("camera intrinsics unavailable (no calibration, no live camera)")
+
+    u, v, depth_m = det["u"], det["v"], det["depth_m"]
+    tf_base_flange = pose_to_tf(api.env.get_flange_pose())
+    tf_base_cam = tf_base_flange @ ll.tf_flange_cam
+    xyz_raw = apply_transform(tf_base_cam, pixel_and_depth_to_camera_xyz((u, v), depth_m, intrinsics))
+
+    calib = getattr(ll, "calibration", None)
     xy_transform = calib.get("xy_transform") if calib is not None else None
     xy_corr = calib.get("xy_correction_mm") if (calib is not None and xy_transform is None) else None
     xyz_final, _corr_desc = apply_xy_correction(xyz_raw, xy_transform=xy_transform, xy_correction_mm=xy_corr)
@@ -392,12 +612,14 @@ def build_grasp_result(
         xyz_final[2] += z_correction_mm
 
     top_z = float(xyz_final[2])
+    z_floor = api.env.z_min_safe
     grasp_z = top_z + grasp_z_offset_mm
     if z_floor is not None:
-        grasp_z = max(grasp_z, float(z_floor) + float(floor_margin_mm))
-    place_z = top_z + place_z_offset_mm
+        grasp_z = max(grasp_z, float(z_floor))
+    place_z = top_z + chip_thickness_mm
     x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
-    result: dict[str, Any] = {
+    best = det["best"]
+    return {
         "ok": True,
         "object": object_name,
         "position": [x_f, y_f, top_z],
@@ -409,7 +631,6 @@ def build_grasp_result(
         "pixel_uv": [u, v],
         "depth_m": depth_m,
     }
-    return result, np.asarray(xyz_final, dtype=np.float64)
 
 
 def _default_debug_dir() -> Path:

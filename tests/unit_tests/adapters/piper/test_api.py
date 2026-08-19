@@ -42,6 +42,15 @@ class TestPiperApiStructure:
                 "motion.joint",
                 "grasp.parallel",
                 "vision.detection",
+                # Derived from the actions this api implements: get_image /
+                # pixel_to_base_xyz are gated on vision.camera, not on the detector.
+                "vision.camera",
+                # Marker capabilities the api claims explicitly, because no ACTION carries
+                # them and the agent gates on api ∩ env: an ability the hardware has and
+                # the api omits is switched off in silence. motion.servo is what allows
+                # the fast path to FOLLOW a moving target.
+                "motion.servo",
+                "vision.depth",
             }
         )
 
@@ -94,12 +103,21 @@ class TestPiperApiDelegatesThroughEnv:
         api.move_joint([0, 1, 2, 3, 4, 5])
         assert ("joint", [0, 1, 2, 3, 4, 5]) in driver.log
 
-    def test_goto_pose_reaches_driver_through_env(self):
+    def test_goto_flange_pose_reaches_driver_through_env(self):
+        """The FLANGE entry still drives the arm — it just does not enter the shared vocabulary,
+        because where the flange sits depends on this robot's tool length."""
         from jiuwensymbiosis.adapters.piper.geometry import FlangePose
 
         api, _env, driver = self._build()
-        api.goto_pose(FlangePose(1, 2, 3, 180, 0, 0))
+        api.goto_flange_pose(FlangePose(1, 2, 3, 180, 0, 0))
         assert any(c[0] == "move" for c in driver.log)
+
+    def test_the_flange_entry_is_not_a_planner_action(self):
+        from jiuwensymbiosis.adapters.piper.api import PiperApi
+        from jiuwensymbiosis.api.actions import ACTIONS
+
+        assert "goto_flange_pose" not in ACTIONS
+        assert PiperApi.goto_flange_pose.__robot_tool__.planner_visible is False
 
     def test_goto_xyzr_reaches_driver_through_env(self):
         api, _env, driver = self._build()

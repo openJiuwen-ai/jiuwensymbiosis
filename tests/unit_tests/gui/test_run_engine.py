@@ -76,7 +76,7 @@ def test_run_emits_ordered_event_stream(tmp_path, monkeypatch):
         "env": {"cfg": {"prompt": "把黑盒放到白盒上"}},
         "agent": {
             "mode": "tool",
-            "exec_mode": "agent",
+            "exec_mode": "stepagent",
             "max_iterations": 20,
             "enable_visual_feedback": False,
             "enable_tracing": False,
@@ -111,7 +111,7 @@ def test_run_frames_are_encoded_data_uris(tmp_path, monkeypatch):
     config = {
         "agent": {
             "mode": "tool",
-            "exec_mode": "agent",
+            "exec_mode": "stepagent",
             "max_iterations": 20,
             "enable_visual_feedback": False,
             "enable_tracing": False,

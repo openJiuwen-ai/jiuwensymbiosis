@@ -1,9 +1,15 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""``RobotDriver`` Protocol — the contract a new vendor implements.
+"""Driver Protocols — the contract a new vendor implements, split by capability.
 
-This is the smallest surface a per-vendor ``XxxLowLevel`` must expose for the
-cross-vendor scaffolding (Env wrappers, ``perception.vision``) to bind onto it.
+These are the surfaces a per-vendor ``XxxLowLevel`` exposes so the cross-vendor
+scaffolding (Env wrappers, ``perception.vision``) can bind onto it. There is one
+protocol per capability rather than one god-protocol: a mobile dual-arm body has
+no flange pose, and a bench arm has no wheels, so a single contract would force
+one of them into ``NotImplementedError`` stubs. ``RobotDriver`` therefore holds
+only what every driver has — ``close()`` — and each capability adds its own
+sibling protocol, mirroring ``CAPABILITY_DRIVER_MEMBERS`` in
+``adapters/_common/capability_spec.py`` row for row.
 
 Structural typing (``typing.Protocol``, not a base class) is intentional:
 
@@ -13,10 +19,8 @@ Structural typing (``typing.Protocol``, not a base class) is intentional:
 * Pose / joint dataclasses are vendor-specific (4-DoF vs 6-DoF).
   A Protocol expresses "has these methods" without enforcing identical
   dataclass shapes.
-* Most properties (camera, suction) are *optional* capabilities. Forcing
-  every driver to implement them as ``raise NotImplementedError`` stubs
-  bloats adapters. Instead, ``Env.capabilities`` advertises what's available
-  and the consumer checks before calling.
+* Capabilities are *optional*. ``Env.capabilities`` advertises what's
+  available and the consumer checks before calling.
 
 Implementer contract:
 
@@ -31,8 +35,8 @@ Implementer contract:
   4. ``close()`` must be idempotent — it's called from ``Env.disconnect``
      which itself may be invoked twice on error paths.
 
-Optional sibling protocol (``JointDriver``) covers joint-space access for
-adapters that support it.
+Mobile-body protocols name the verb the way ``BaseRobotEnv`` does, because an
+Env without its own implementation forwards to the driver under the same name.
 """
 
 from __future__ import annotations
@@ -44,7 +48,15 @@ import numpy as np
 
 @runtime_checkable
 class RobotDriver(Protocol):
-    """The minimum surface a per-vendor low-level driver exposes.
+    """What every driver has, whatever it drives: a releasable connection."""
+
+    def close(self) -> None:
+        """Release SDK resources / disable the robot. Must be idempotent."""
+
+
+@runtime_checkable
+class CartesianDriver(RobotDriver, Protocol):
+    """Flange-frame Cartesian motion — ``motion.cartesian``.
 
     Vendor Pose dataclasses are returned by ``get_pose`` / ``home_pose``.
     ``move_to_pose_blocking`` takes the structured ``pose`` object first
@@ -68,9 +80,6 @@ class RobotDriver(Protocol):
     @property
     def tool_offset_mm(self) -> float:
         """Tool-tip offset from the flange along Z (mm), for tip↔flange conversion."""
-
-    def close(self) -> None:
-        """Release SDK resources / disable the robot. Must be idempotent."""
 
     def home(self) -> None:
         """Move the robot to its home pose (blocking)."""
@@ -123,6 +132,75 @@ class ServoDriver(Protocol):
         plan (for example, a rate-gate skip or tracking catch-up hold). ``True``
         or legacy ``None`` means the command was accepted.
         """
+
+
+@runtime_checkable
+class BaseDriver(Protocol):
+    """Planar mobile-base motion — ``motion.base`` / ``motion.goal``.
+
+    Both verbs are blocking and return ``{ok, reason, ...}``. Distances are
+    METRES here (detections are millimetres) — the framework's convention.
+    """
+
+    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
+        """Turn by ``dyaw_rad`` then translate (dx forward, dy left), REP-103."""
+
+    def navigate_arc(self, radius_m: float, dyaw_rad: float) -> dict:
+        """Drive ONE constant-curvature arc, turning while advancing."""
+
+
+@runtime_checkable
+class ContinuousBaseDriver(Protocol):
+    """Non-blocking streaming base motion — ``motion.base_servo``.
+
+    The base keeps rolling while the caller senses, so a moving target can be
+    steered toward mid-drive. Pair every ``start`` with a ``stop``: an abandoned
+    handle leaves the wheels turning.
+    """
+
+    def start_base_drive(self, **kwargs: Any) -> Any:
+        """Start a forward drive and return an opaque handle."""
+
+    def base_drive_running(self, handle: Any) -> bool:
+        """Whether the drive behind ``handle`` is still moving."""
+
+    def steer_base_drive(self, handle: Any, bearing_rad: float) -> None:
+        """Aim a running drive at ``bearing_rad`` (+ = left of heading)."""
+
+    def hold_base_drive(self, handle: Any) -> None:
+        """Pause the wheels without ending the drive (target lost → do not creep blind)."""
+
+    def stop_base_drive(self, handle: Any) -> dict:
+        """Stop the drive and reap its result. Idempotent."""
+
+
+@runtime_checkable
+class LifterDriver(Protocol):
+    """Vertical torso/lifter position control — ``motion.lift``."""
+
+    def set_lifter(self, q_lifter: dict[str, float]) -> Any:
+        """Command the lifter joints to absolute positions (rad per joint name)."""
+
+
+@runtime_checkable
+class WaistDriver(Protocol):
+    """Torso yaw rotation — ``motion.waist``."""
+
+    def turn_waist(self, delta_rad: float) -> Any:
+        """Rotate the torso waist by ``delta_rad`` (+ = left)."""
+
+
+@runtime_checkable
+class DualArmDriver(Protocol):
+    """Two-arm end effector — ``grasp.dual_arm``.
+
+    Only ``home`` is contractual: clamping geometry, IK and force confirmation
+    have no cross-vendor default, so ``dual_arm_grasp`` / ``dual_arm_place`` have no
+    entry in ``api/defaults.py`` — each body implements them against its own driver.
+    """
+
+    def home(self) -> None:
+        """Return both arms to their home configuration (blocking)."""
 
 
 @runtime_checkable
@@ -188,7 +266,7 @@ class VisionDriver(Protocol):
 
 
 @runtime_checkable
-class PiperFullDriver(RobotDriver, JointDriver, CameraDriver, GripperDriver, VisionDriver, Protocol):
+class PiperFullDriver(CartesianDriver, JointDriver, CameraDriver, GripperDriver, VisionDriver, Protocol):
     """Composite driver surface — union of all five vendor protocols.
 
     ``PiperLowLevel`` implements all five; ``PiperApi._ll()`` returns this

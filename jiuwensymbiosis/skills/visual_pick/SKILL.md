@@ -1,79 +1,85 @@
 ---
 name: visual_pick
-description: 视觉引导抓取技能 —— 用相机识别目标物体并抓起（平行夹爪或吸盘按机器人能力自动选择），结束时物体已被抓住、机械臂悬于搬运高度，等待与 visual_place 衔接。
+description: 视觉引导抓取技能 —— 用相机识别目标物体并抓起（平行夹爪 / 吸盘 / 双臂按机器人能力自动选择），结束时物体已被抓住、悬于搬运高度，等待与 visual_place 衔接。
+requires: [payload.clear]
+provides: [payload.held]
+invalidates: [body.home]
+invalidates_locations: true
 ---
 
-# visual_pick — 视觉引导抓取（夹爪 / 吸盘通用）
+# visual_pick — 视觉引导抓取
 
 ## 何时启用
 
-满足以下**全部**条件时启用本 skill：
+同时满足：
 
-1. 用户指令含"把 X 抓起来 / 夹住 / 吸住 / 拿起来"等抓取意图，目标可由一段文本描述（颜色、形状或品类）。
-2. 机器人 `api.capabilities` 同时包含 `motion.cartesian`、`vision.detection`，且包含**至少一种抓取能力**：`grasp.parallel`（平行夹爪）**或** `grasp.suction`（吸盘）。
-3. 已注册 `robot_control` 工具。
-4. 当前**夹具空载**（夹爪张开 / 吸盘未吸住任何物体；如果上一步刚做过 visual_place 或 release，可放心启用）。
+1. 用户指令含"把 X 抓起来 / 夹住 / 吸住 / 拿起来"等抓取意图，X 可由一段文本（颜色 / 形状 / 品类…）描述。
+2. `api.capabilities` 含 `vision.detection`，且含**至少一种抓取能力**：`grasp.parallel` / `grasp.suction` / `grasp.dual_arm`。
+3. 已注册 `robot_control`；当前末端**空载**。
 
-任务里若还需要把物体放到指定位置，**先用本 skill 抓起来，再 chain 调用 visual_place**——两者解耦，互不重复职责。
+任务若还要把物体放到某处：**先用本 skill 抓起，再 chain 调用 `visual_place`**，两者解耦。
 
-## 抓取 / 释放动作（按机器人能力选择）
+## 检测目标来自用户任务
 
-本 skill 的"抓取"与"释放"是抽象动作。请从你的 `api_capabilities` 选对应的 `robot_control` action 名，**不要**调用不在能力内的动作：
+要抓的物体名从用户这句任务里识别（颜色 / 形状 / 大小 / 类别 / 材质 / 位置等特征的自然语言组合，也可能只有类别），作为检测动作的 `object_name`。用户只说任务、不另传参数；**不要**套用本文示例里出现过的任何物体名。
 
-| 你的能力 | 抓取 action | 释放 action |
+## 动作映射表（按你的能力选行，占位符照此替换）
+
+下文用 `<检测目标>` / `<抓取>` / `<释放>` 这类占位符指代动作。**按【机器人能力】选你那一行**，替换成【可用动作】清单里真正存在的那个名字；清单里没有的变体一律不能输出。
+
+| 你的能力 | `<检测目标>` | `<抓取>` | `<释放>` |
+|---|---|---|---|
+| `grasp.parallel` | `get_grasp_info_simple` | `close_gripper` | `open_gripper` |
+| `grasp.suction` | `get_grasp_info_simple` | `activate_suction` | `deactivate_suction` |
+| `grasp.dual_arm` | `locate_for_grasp` | `dual_arm_grasp` | `dual_arm_place` |
+
+会移动的本体（`motion.base`）另有一个占位符：
+
+- `<搜索并驱近目标>`（`motion.goal`）→ `approach_for_grasp`：**一步完成**"看不到就原地扫掠搜索 → 按感知方位转正 → 驶入作业带边驶边复检对中"。收敛后缓存最新检测，供 `<抓取>` 直接使用。
+
+> **`_for_grasp` 是按「接下来要抓」选的，不是按「那东西是不是物体」选的。**
+> 要判的是**抓取点**（近面在哪、面法向朝哪、贴多近夹得住）。同一个盒子，
+> 要搬走它时用 `_for_grasp`，要往它上面放东西时用 `_for_place`（见 visual_place）。
+
+### 用参照物锁定「哪一个」（`reference` + `relation`）
+
+任务里常带一个**空间关系**来指认目标：「棕盒**上**的白箱」「帽子**旁边**的盒子」。这时给检测 / 搜索类动作加两个参数：
+
+- `reference`：参照物的英文名（**只在任务真的点了参照物时才加**——写一个现场没有的参照物会让检测直接失败，不会退回普通搜索）。
+- `relation`：`object_name` 相对 `reference` 的关系，取值**只能**是 `on` / `under` / `beside` / `near`，默认 `on`。
+
+| 任务里的说法 | relation | 例子 |
 |---|---|---|
-| `grasp.parallel` | `close_gripper` | `open_gripper` |
-| `grasp.suction` | `activate_suction` | `deactivate_suction` |
+| 在…上面、放在…上 | `on` | 「棕盒上的白箱」→ `object_name="white box", reference="brown box", relation="on"` |
+| 在…下面；**有…在上面的那个** | `under` | 「放着杯子的那张桌子」= 杯子下面的桌子 → `object_name="table", reference="water cup", relation="under"` |
+| 旁边、挨着、紧邻 | `beside` | 「帽子旁边的盒子」→ `object_name="box", reference="hat", relation="beside"` |
+| 附近、周围、那一带 | `near` | 「门口附近的箱子」→ `object_name="box", reference="door", relation="near"` |
 
-下文用 **`<抓取>`** / **`<释放>`** 指代上表里你机器人对应的那一个。
+- `beside` 要求两者**高度相当**（挨在同一张台面上）；只是水平方向离得近、高度差很大时用 `near`。
+- 关系一律读作「`object_name` <relation> `reference`」——方向别写反。
+- 只有这四个值合法，`left_of` / `in_front_of` 这类**依赖观察视角**的说法不在其中（机器人一移动就不成立了）；遇到时改用最接近的合法值或干脆不加参照物。
 
-## 检测目标来自用户任务（不要用户传参数）
+## 抓取方式（按你的抓取能力选一支，选定后只看你这一支）
 
-要抓的物体名（下文的 `<目标语义>`）**由用户的自然语言任务决定**：从用户这句话里识别"要抓的东西"，
-用它的自然语言描述（颜色/形状/大小/类别/材质/位置等任意特征的组合，也可能只有类别）作为
-`get_grasp_info_simple` 的 `object_name`。用户只说任务、不会再单独传物体参数；**物体一律以用户任务为准，
-不要套用本文出现过的任何示例物体名**。
+### 支 A — 夹爪 / 吸盘臂（`motion.cartesian` + `grasp.parallel` 或 `grasp.suction`）
 
-**腕部相机(eye-in-hand)注意**：相机装在机械臂腕部，一旦移动就可能被遮挡或视角改变。如果任务
-**接着还要放置**（chain visual_place），请在 **home 处一次性**把"要抓的物体"和"放置目标"两个
-坐标都 `get_grasp_info_simple` 读好存下来，再开始移动——否则抓取后相机就拍不到放置目标了。标准 Workflow 可以因这条规则发生一点点变化，即把 visual_place 中的 get_grasp_info_simple 挪动到前面来和本 skill 中的 get_grasp_info_simple 一起执行。
+用 `get_grasp_info_simple(object_name)` 一站式拿抓取点，**不要**用 `analyze_scene` + `pixel_to_base_xyz` 手算。返回的 `grasp_z` 是**已算好**的夹取高度（顶面下方合适深度、且不低于桌面）——**下降一律降到 `grasp_z`，别自己拿 `position.z` 加减**。
 
-## 抓取高度直接用检测给的 `grasp_z`，不要自己算
+| # | action | params | 目的 |
+|---|---|---|---|
+| 1 | `home` | `{}` | 回拍照位姿，给视觉稳定的深度基线。 |
+| 2 | `<释放>` | `{}` | 先把末端置空载。 |
+| 3 | `<检测目标>` | `{"object_name": "<目标>"}` | 拿 `x,y` 与 `grasp_z`。 |
+| 4 | `goto_xyzr` | `{"x":x,"y":y,"z":"grasp_z + 40"}` | 到目标正上方（approach ≈ +30~50mm）。 |
+| 5 | `goto_xyzr` | `{"x":x,"y":y,"z":grasp_z}` | 降到 `grasp_z`（检测给的，别改）。 |
+| 6 | `<抓取>` | `{}` | 到位后闭合 / 开吸。 |
+| 7 | `goto_xyzr` | `{"x":x,"y":y,"z":"grasp_z + 60"}` | 提到搬运高度（lift ≈ +50~80mm）。 |
 
-`get_grasp_info_simple` 返回里已经有**确定化算好**的抓取点，**你不要自己拿 `position` 的 z 去加减**：
+**腕部相机(eye-in-hand)**：若接着要 `visual_place`，请在 home 处**一次性**把"要抓物"和"放置目标"两个坐标都 `get_grasp_info_simple` 读好再移动——移动后腕部相机就拍不到放置目标了。
 
-```
-{
-  "ok": true,
-  "position":       [x, y, top_z],     # 物体顶面（俯视看到的那一面）——只用来取 x,y，别拿它当夹取高度
-  "grasp_z":        <数>,              # ★夹取高度：下降就降到这（已按抓取深度+桌面安全算好）
-  "grasp_position": [x, y, grasp_z],   # = 直接 goto 到这里就是夹取位
-  "bottom_z":       <数>,              # 物体底面（放置时若需堆叠，供 visual_place 用）
-  "height_mm":      <数>, "score": <数>
-}
-```
+#### 支 A 的 Fast 闭环特殊动作（仅在【特殊动作】清单中出现时使用）
 
-平行夹爪要夹**物体主体/侧壁**（夹顶面夹不住），`grasp_z` 已经是"顶面下方合适深度、且不低于桌面"的安全夹取高度。**下降一律降到 `grasp_z`**。
-
-## 标准 Workflow
-
-按顺序调 `robot_control(action=..., params=...)`。每一步如果返回 `success=False`，立即跳到"失败处理"。
-
-| # | action            | params                                       | 目的                                              |
-|---|-------------------|----------------------------------------------|---------------------------------------------------|
-| 1 | `home`            | `{}`                                         | 回到拍照位姿，给视觉一个稳定的深度基线。          |
-| 2 | `<释放>`          | `{}`                                         | 先把夹具置于空载状态（夹爪张开 / 确认未吸）。      |
-| 3 | `get_grasp_info_simple` | `{"object_name": "<目标语义>"}`        | 检测目标，拿到 `x,y` 与 **`grasp_z`**（见上）。   |
-| 4 | `goto_xyzr`       | `{"x": x, "y": y, "z": grasp_z + approach}` | 移到目标正上方（approach ≈ +30~50mm，相对 `grasp_z`）。 |
-| 5 | `goto_xyzr`       | `{"x": x, "y": y, "z": grasp_z}`            | **下降到 `grasp_z`**（检测给的夹取高度，别改）。SafetyRail 会拦越界 z。 |
-| 6 | `<抓取>`          | `{}`                                         | 到位后闭合夹爪 / 开吸。                            |
-| 7 | `goto_xyzr`       | `{"x": x, "y": y, "z": grasp_z + lift}`     | 提起到搬运高度（lift ≈ +50~80mm）。              |
-
-> `get_grasp_info_simple` 是检测+投影+确定化抓取高度的一站式封装，常态首选；**不要**用 `analyze_scene`+`pixel_to_base_xyz` 手算（那样拿不到 `grasp_z`）。
-
-### Fast 闭环特殊动作（仅在【特殊动作】清单中出现时使用）
-
-fast 编译器会另外给出本次机器人可用的【特殊动作】。这些动作不是所有机器人都有；**只有名字明确出现在清单中时**才能使用，并按以下优先级改写上面的标准 Workflow：
+fast 编译器会另外给出本次机器人可用的【特殊动作】。这些动作不是所有机器人都有；**只有名字明确出现在清单中时**才能使用，并按以下优先级改写上面支 A 的标准流程：
 
 1. 若有 `track_grasp`，优先用它把步骤 3～5 合并成一个持续视觉闭环步骤：
 
@@ -84,50 +90,75 @@ fast 编译器会另外给出本次机器人可用的【特殊动作】。这些
    - `track_grasp` 持续检测目标，以绝对 base-frame 抓取点完成 approach 和下降到 `grasp_z`。
    - `approach_mm` 必须是 30～100 mm 的数字字面量；通常取 40。
    - 必须带 `bind`，供后续 lift 步骤读取 `<bind>.x`、`<bind>.y`、`<bind>.grasp_z`。
-   - 使用后**不要**再生成步骤 3 的 `get_grasp_info_simple` 或步骤 4～5 的两个 `goto_xyzr`；步骤 1～2、6～7仍保留。
+   - 使用后**不要**再生成步骤 3 的 `<检测目标>` 或步骤 4～5 的两个 `goto_xyzr`；步骤 1～2、6～7 仍保留。
 
-2. 否则，若有 `track_detect`，用它替换步骤 3 的 `get_grasp_info_simple`：
+2. 否则，若有 `track_detect`，用它替换步骤 3 的 `<检测目标>`：
 
    ```json
    {"op": "track_detect", "params": {"object_name": "<目标语义>"}, "bind": "<目标变量名>"}
    ```
 
-   `track_detect` 持续跟踪目标并绑定最新检测结果；之后仍按步骤 4～7执行 approach、下降、抓取和 lift。
+   `track_detect` 持续跟踪目标并绑定最新检测结果；之后仍按步骤 4～7 执行 approach、下降、抓取和 lift。
 
-3. 若两者都没有，完整使用标准 Workflow，不要臆造任何特殊动作。
+3. 若两者都没有，完整使用支 A 标准流程，不要臆造任何特殊动作。
 
 以上选择规则属于本 skill 的抓取策略；其它 skill 是否使用这些特殊动作，只能以各自 SKILL.md 为准。
 
-完成后**结束状态**：夹具抓住目标，TCP 位于 `(x, y, grasp_z + lift)`。**不要**再 home，把后续动线交给 visual_place 或上层 agent。
+### 支 B — 双臂（`grasp.dual_arm`）
+
+`<抓取>` 是复合动作（对位 → 夹紧 → 力确认打包成一步），**自动使用最近一次成功检测的结果**——检测步跑完直接调它，几何字段不必回传，参数省略即可。`<释放>` 属于 visual_place，不在本 skill 出现。
+
+目标的获取按【有无底盘】走对应的**一条完整流程**：
+
+#### 有底盘（`motion.base`）
+
+目标常**不在正前方、或较远够不到**，所以**必做**下面这串（`<搜索并驱近目标>` 打头就是"看不到就搜索"；**不是可选步、不能跳过**）。
+**`<搜索并驱近目标>` 是目标获取的唯一入口**：它内部完成搜索（原地扫掠）、转正、边驶边复检，并把收敛的检测留给后续 `<抓取>` 自动使用。**绝不要在它前面再加一个 `<检测目标>`/bind 去"先检测目标"**——那是下面「无底盘」分支的做法；有底盘时目标常在远处、起点根本核验不了，`<检测目标>` 会当场失败并让整条序列退出，搜索永远等不到。
+
+| # | action | params | 目的 |
+|---|---|---|---|
+| 1 | `<搜索并驱近目标>` | `{"object_name": "<目标>"}`（**若任务用参照物指认了目标**，如"棕盒上的白箱""帽子旁边的盒子"，按上面的表加 `"reference"` + `"relation"`；参照关系**只并入这一步**，不要另开检测步） | 搜索→对准→驶入抓取带，一步到位。失败 `object_not_found` / `too_close` 等则**不抓**、转「失败处理」。 |
+| 2 | `<抓取>` | `{}` | 双臂夹取（用上面收敛的检测）。 |
+| 3 | `lift_to_clearance` | `{}` | （若含 `motion.lift`）抓住后抬到搬运净空高度。 |
+
+#### 无底盘 / 固定本体
+
+本体不能移动、无法转身搜索或驶近，只用当前视野：
+
+| # | action | params | 目的 |
+|---|---|---|---|
+| 1 | `<检测目标>` | `{"object_name": "<目标>"}` | 检测当前视野内目标；不在视野则失败、**不硬抓**、转「失败处理」。 |
+| 2 | `<抓取>` | `{}` | 双臂夹取。 |
+| 3 | `lift_to_clearance` | `{}` | （若含 `motion.lift`）抬到搬运净空高度。 |
+
+## 结束状态
+
+末端抓住目标、悬于搬运高度。**不要**在本 skill 末尾释放，也**不要**再 `home`——把后续动线交给 `visual_place` 或上层。
 
 ## 失败处理
 
-- 任一步返回 `success=False`，先简要记录错误，再按载荷状态处理：
-  - **已持物**（`<抓取>` 已成功或 `holding_payload=true`）：**禁止 `<释放>`**。保持夹持，由 RecoveryRail 安全回 home；若恢复失败，立即上报并等待人工处理。
-  - **未确认持物**（`holding_payload=false` 或状态不可用）：恢复流程仍会先尝试 `<释放>` 再回 home，避免接触检测假阴性时闭爪拖件。
-  - **载荷未知**（例如 `<抓取>` 本身失败）：保守执行一次 `<释放>`，再回 home。
-  - **运动下发前被拒绝**（参数、IK 或安全检查失败，未发生实际运动）：不释放、不回 home；修正参数或换路径。
+任一步返回失败，先记一句错因（不念堆栈），再**按载荷状态**处理（"释放"= 你这支自己的释放 / 回位动作）：
+
+- **已持物**（抓取动作已成功 / `holding_payload=true`）：**禁止释放**。保持夹持，由 RecoveryRail 安全回 home；若恢复失败，立即上报并等待人工处理。
+- **未确认持物**（`holding_payload=false` 或状态不可用）：恢复流程会先尝试**释放**再回 home，避免接触检测假阴性时闭爪拖件。
+- **载荷未知**（例如抓取动作本身失败）：保守执行一次**释放**，再回 home。
+- **运动下发前被拒绝**（参数 / IK / 安全检查失败，未发生实际运动）：不释放、不回 home；修正参数或换路径。
 - RecoveryRail 已完成的释放或 home **不要重复执行**。
-- 最后报告"在第 N 步（动作名）失败：<原因>"；不要用相同参数重试。
-- `get_grasp_info_simple` / `analyze_scene` 置信度 `score < 0.4` 视为识别失败：把物体描述换得更具体一次（补上颜色/形状/大小/位置等特征），仍失败则放弃并报告。
+- 最后报"第 N 步（动作）失败：<原因>"，不要原样重试。
+
+检测 `score < 0.4` 视为识别失败：把目标描述换得更具体一次（补颜色 / 形状 / 大小 / 位置），仍失败则放弃并报告。
 
 ## 与 Rails 的协作
 
-- **SafetyRail**：监视 `goto_xyzr` 是否越出工作空间 / 越过 z_min_safe。它会在运动下发前拒绝非法目标；不要吞掉错误，也不要为此释放或回 home。
-- **VisualFeedbackRail**：在 `motion` tag 工具调用后自动注入观测；**不要**重复 `get_image`，会浪费带宽。
-- **RecoveryRail**：按载荷三态恢复——持物运动失败时保持夹持并回 home，明确空载时不重复释放，载荷未知时才保守释放；预派发拒绝不触发恢复。不要重复它已经完成的动作。
+- **SafetyRail**：在运动下发前拒绝越界 / 越过 `z_min_safe` 的目标；其 `ValueError` 按「失败处理」，**不要**吞，也不要为此释放或回 home。
+- **VisualFeedbackRail**：`motion` 工具后自动注入观测，**不要**重复 `get_image`。
+- **RecoveryRail**：按载荷三态恢复——持物运动失败时保持夹持并回 home，明确空载时不重复释放，载荷未知时才保守释放；预派发拒绝不触发恢复。**不要**重复它已完成的动作。
 
-## 参数取值约定
+## Anti-patterns
 
-- `approach`（接近高度偏移）= 30 ~ 50 mm（默认 40）。物体偏高用上限。
-- `lift`（搬运高度偏移）= 50 ~ 80 mm。横移距离大时用上限。
-- 所有坐标走 mm / deg，**不要**用 m。`depth_m` 是个例外（视觉返回米），仅作为 `pixel_to_base_xyz` 的输入。
-
-## Anti-patterns（不要做）
-
-- ❌ 跳过 `home` 直接检测：相机基线不稳，深度噪声大。
-- ❌ 在本 skill 末尾 `<释放>`（夹爪 open / 吸盘 deactivate）：会让物体掉在原位，让 visual_place 拿到空夹具。
-- ❌ 把放置点的 goto 写进本 skill：放置职责在 visual_place，本 skill 只负责"拿起来"。
-- ❌ 调用不在 `api_capabilities` 内的抓取动作（如吸盘机器人去调 `close_gripper`）：会返回 unknown action。
-- ❌ 用 `run_python`/`robot_control` 之外的工具实现本 workflow：会绕过 SafetyRail 与 VisualFeedbackRail。
-- ❌ 失败后不判断载荷就 `<释放>` 或重复 home：可能丢件，也会制造多余动作。
+- ❌ 跳过 `home` 直接检测（支 A）：相机基线不稳、深度噪声大。
+- ❌ 在本 skill 末尾释放：物体会掉回原位，visual_place 拿到空末端。
+- ❌ 把放置点动作写进本 skill：放置是 visual_place 的职责。
+- ❌ 双臂（`grasp.dual_arm`）有底盘时在 `<搜索并驱近目标>` 前面加 `<检测目标>`/bind"先检测目标"：目标常在远处、grounded 核验必失败即退出，搜索永不执行。有底盘只靠 `<搜索并驱近目标>`，`<抓取>` 自动用其检测。
+- ❌ 失败后不判断载荷就释放或重复 home：已持物时释放会丢件，也会制造与 RecoveryRail 重复的多余动作。
+- ❌ 输出不在你能力/动作清单内的动作（含未列入【特殊动作】清单的 `track_grasp`/`track_detect`）。

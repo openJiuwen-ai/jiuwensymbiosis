@@ -1,20 +1,26 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""C1 fast path: one LLM call compiles SKILL.md → an action sequence; a generic
-runner executes it with no per-step LLM + real-time tracking.
+"""Fast path: plan a task into an action sequence, then run it with no per-step LLM.
 
-Single source of truth = each skill's ``SKILL.md`` (the same file the agent
-reads). Pipeline:
-
-    compile_sequence(query, skills_md, action_vocab, special_ops=...)  # 1 LLM call
+    plan_task(query, skills_md=..., action_index=..., world_tokens=...)
         → parse_sequence(raw, allowed_ops, special_ops=...) → run_sequence(session, steps)
+
+``plan_task`` composes registered skills when the library covers the task and
+derives a sequence from the action contracts when it does not — one LLM call for
+the first, a second only when it declines; see ``planner`` for the three
+conditions that route between them.
 
 Add a skill = add a ``SKILL.md`` directory (auto-discovered by the registry) or
 ``register_skill_dir(path)``. No Python executor per skill.
 """
 
-from jiuwensymbiosis.agent.fast.planner import compile_sequence, plan_skills
+from jiuwensymbiosis.agent.fast.planner import (
+    PlanResult,
+    compile_sequence,
+    compose_actions,
+    plan_task,
+)
 from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTrackingConfig
 from jiuwensymbiosis.agent.fast.registry import (
     DEFAULT_REGISTRY,
@@ -41,7 +47,8 @@ __all__ = [
     "servo_config_from_session",
     "MaskTrackingConfig",
     # pipeline
-    "compile_sequence",
+    "plan_task",
+    "PlanResult",
     "parse_sequence",
     "run_sequence",
     "ActionStep",
@@ -49,8 +56,9 @@ __all__ = [
     "TRACK_DETECT",
     "TRACK_GRASP",
     "KNOWN_SPECIAL_OPS",
-    # legacy skill planner (skill-name selection only)
-    "plan_skills",
+    # planning tiers (plan_task drives both; exposed for tests and distillation)
+    "compile_sequence",
+    "compose_actions",
     # registry
     "SkillSpec",
     "SkillRegistry",

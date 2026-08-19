@@ -110,12 +110,23 @@ class _RailRegistry:
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.safety.SafetyRail",
             required_flags=["enable_safety"],
-            any_capabilities=["motion.cartesian", "motion.joint"],
+            # Every capability the rail has a policy for (see _CAPABILITY_WATCH_TOOLS):
+            # a body that can only drive or only raise its torso still gets pre-flight checks.
+            any_capabilities=[
+                "motion.cartesian", "motion.joint", "motion.base",
+                "motion.lift", "motion.waist",
+            ],
         ),
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.recovery.RecoveryRail",
             required_flags=["enable_recovery"],
-            any_capabilities=["motion.cartesian", "grasp.suction", "grasp.parallel"],
+            # Any actuated robot benefits from post-failure recovery, not just
+            # Cartesian/gripper arms: mobile-base / joint / dual-arm bodies too.
+            # The rail retreats via the robot's own (always-safe) ``home()``.
+            any_capabilities=[
+                "motion.cartesian", "motion.joint", "motion.base",
+                "grasp.suction", "grasp.parallel", "grasp.dual_arm",
+            ],
         ),
     ]
 
@@ -357,7 +368,10 @@ def _build_tools(
 
     tools: list[Any] = []
     if mode in ("tool", "hybrid"):
-        tools.extend(build_robot_tools(session.api, env=session.env))
+        # planner_only: the LLM's tool list is the shared vocabulary, not every
+        # dispatchable method. Bring-up / calibration tools stay reachable through
+        # RobotControlTool and scripts; they just don't compete for attention here.
+        tools.extend(build_robot_tools(session.api, env=session.env, planner_only=True))
     if mode in ("code", "hybrid"):
         tools.append(make_inproc_code_tool(session.globals_provider))
     if enable_skill:

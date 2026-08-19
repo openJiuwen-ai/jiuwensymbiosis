@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
-    "openjiuwen>=0.1.13",
+    "openjiuwen>=0.1.13,<0.1.16",
     "numpy>=2",
     "pydantic>=2",
     "PyYAML>=6",
@@ -45,6 +45,13 @@ full = [
     "httpx>=0.28",
 ]
 piper = ["piper_sdk>=0.6.1"]
+cruzr = [
+    # Cruzr 双臂机器人：pinocchio(pip 包名 `pin`)提供臂 IK(GN+restarts)与自碰撞检测
+    # (coal/hppfcl 由 pinocchio 打包)。全部惰性 import + fail-open(无 pin 时臂 IK 退回
+    # 传统 DLS)——不装本组仍可 import 适配器并跑 mock 单测；真机运行才需安装。
+    # rclpy(ROS2 Jazzy)由 source 机器人工作区提供，非 pip 依赖，故不列于此。
+    "pin>=4.1",
+]
 so101 = [
     # SO101 适配器仅支持 Python>=3.12。feetech 提供 STS3215 串口总线驱动，
     # kinematics 提供 RobotKinematics/placo，用于基于 URDF 的 IK/FK。
@@ -77,9 +84,14 @@ calib = [
 ]
 
 [project.scripts]
-piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"
+jiuwensymbiosis-run = "jiuwensymbiosis.cli:run_task"
+piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"  # 向后兼容别名 → run_task
 jiuwensymbiosis-replay = "jiuwensymbiosis.cli:replay_main"
 jiuwensymbiosis-gui = "jiuwensymbiosis.gui.__main__:main"
+# Introspection — what a planner / coding agent reads to author a workflow.
+jiuwensymbiosis-actions = "jiuwensymbiosis.cli:actions_main"
+jiuwensymbiosis-skills = "jiuwensymbiosis.cli:skills_main"
+jiuwensymbiosis-state = "jiuwensymbiosis.cli:state_main"
 
 [tool.setuptools.packages.find]
 include = ["jiuwensymbiosis*"]

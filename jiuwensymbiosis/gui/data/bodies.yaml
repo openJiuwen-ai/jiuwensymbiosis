@@ -11,3 +11,7 @@ bodies:
     display_name: "SO-101 五轴机械臂"
     adapter: so101
     default_config_relpath: "so101/so101.yaml"
+  - key: cruzr
+    display_name: "Cruzr 双臂移动机器人"
+    adapter: cruzr
+    default_config_relpath: "cruzr/cruzr.yaml"

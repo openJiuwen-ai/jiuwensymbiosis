@@ -162,7 +162,8 @@ _LOGO_PNG_LOCAL = Path(__file__).resolve().parents[2] / "docs" / "images" / "jiu
 def _load_logo_src() -> str:
     """Return the logo image src as a base64 data URI read from the local PNG,
     or ``""`` if the file is unavailable (the caller's onerror falls back to the
-    inline SVG glyph). Rendering never raises on a missing logo."""
+    inline SVG glyph). Rendering never raises on a missing logo.
+    """
     try:
         data = _LOGO_PNG_LOCAL.read_bytes()
     except (OSError, ValueError):
