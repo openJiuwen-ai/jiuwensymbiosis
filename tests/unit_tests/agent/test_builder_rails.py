@@ -22,10 +22,16 @@ class TestRailRegistry:
         assert visual_feedback.required_flags == ["enable_visual_feedback"]
         assert visual_feedback.required_capabilities == ["vision.camera"]
         assert safety.required_flags == ["enable_safety"]
-        assert safety.any_capabilities == ["motion.cartesian", "motion.joint"]
+        assert safety.any_capabilities == [
+            "motion.cartesian", "motion.joint", "motion.base",
+            "motion.lift", "motion.waist",
+        ]
         assert safety.required_capabilities is None
         assert recovery.required_flags == ["enable_recovery"]
-        assert recovery.any_capabilities == ["motion.cartesian", "grasp.suction", "grasp.parallel"]
+        assert recovery.any_capabilities == [
+            "motion.cartesian", "motion.joint", "motion.base",
+            "grasp.suction", "grasp.parallel", "grasp.dual_arm",
+        ]
 
     @pytest.mark.parametrize(
         ("rail_index", "flags", "caps", "expected"),
@@ -34,6 +40,7 @@ class TestRailRegistry:
             (0, {"enable_visual_feedback": True, "enable_safety": True}, {"motion.cartesian"}, False),
             (1, {"enable_safety": True}, {"motion.cartesian"}, True),
             (1, {"enable_safety": True}, {"motion.joint"}, True),
+            (1, {"enable_safety": True}, {"motion.base"}, True),
             (1, {"enable_safety": True}, {"grasp.parallel"}, False),
             (2, {"enable_recovery": True, "enable_safety": True}, {"grasp.parallel"}, True),
         ],
@@ -42,6 +49,7 @@ class TestRailRegistry:
             "visual-feedback-missing-camera",
             "safety-cartesian",
             "safety-joint-only",
+            "safety-mobile-base-only",
             "safety-no-motion-cap",
             "recovery-any-cap",
         ],

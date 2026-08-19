@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""``KinematicArmDriver`` — a reusable ``RobotDriver`` for joint-level arms.
+"""``KinematicArmDriver`` — a reusable ``CartesianDriver`` for joint-level arms.
 
 For an arm whose SDK only takes joint targets, this driver supplies the entire
 Cartesian layer the framework expects of a driver (``move_to_pose_blocking`` /

@@ -7,18 +7,32 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
+from jiuwensymbiosis.adapters._common.capability_spec import CAPABILITY_DRIVER_MEMBERS
 from jiuwensymbiosis.env.protocol import (
+    BaseDriver,
     CameraDriver,
+    CartesianDriver,
+    ContinuousBaseDriver,
+    DualArmDriver,
     GripperDriver,
     JointDriver,
+    LifterDriver,
     RobotDriver,
     SuctionDriver,
     VisionDriver,
+    WaistDriver,
 )
 from tests.mocks.mock_driver import MockPiperDriver
 
 
 class _MinimalRobotDriver:
+    def close(self):
+        pass
+
+
+class _MinimalCartesianDriver:
     @property
     def home_pose(self):
         return None
@@ -97,13 +111,53 @@ class _MinimalVisionDriver:
         return None
 
 
+class _MinimalBaseDriver:
+    def navigate_relative(self, dx_m, dy_m=0.0, dyaw_rad=0.0):
+        return {"ok": True}
+
+    def navigate_arc(self, radius_m, dyaw_rad):
+        return {"ok": True}
+
+
+class _MinimalContinuousBaseDriver:
+    def start_base_drive(self, **kwargs):
+        return object()
+
+    def base_drive_running(self, handle):
+        return False
+
+    def steer_base_drive(self, handle, bearing_rad):
+        pass
+
+    def hold_base_drive(self, handle):
+        pass
+
+    def stop_base_drive(self, handle):
+        return {"ok": True}
+
+
+class _MinimalLifterDriver:
+    def set_lifter(self, q_lifter):
+        return {"ok": True}
+
+
+class _MinimalWaistDriver:
+    def turn_waist(self, delta_rad):
+        return {"ok": True}
+
+
+class _MinimalDualArmDriver:
+    def home(self):
+        pass
+
+
 class TestMoveToPoseBlockingSignature:
     """The Protocol used to type move_to_pose_blocking as ``*args, **kwargs``,
     hiding a forgotten ``pose`` argument until runtime. The first positional
     parameter must be the structured ``pose`` object."""
 
     def test_first_param_is_pose(self):
-        sig = inspect.signature(RobotDriver.move_to_pose_blocking)
+        sig = inspect.signature(CartesianDriver.move_to_pose_blocking)
         params = list(sig.parameters)
         assert params[0] == "self"
         assert params[1] == "pose", (
@@ -114,7 +168,7 @@ class TestMoveToPoseBlockingSignature:
     def test_vendor_kwargs_still_accepted(self):
         # Vendor extensions (sync_timeout_s, joint=...) ride in *args/**kwargs
         # after pose — changing the signature must not break Piper's override.
-        sig = inspect.signature(RobotDriver.move_to_pose_blocking)
+        sig = inspect.signature(CartesianDriver.move_to_pose_blocking)
         params = sig.parameters
         assert any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values())
         assert any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
@@ -123,6 +177,9 @@ class TestMoveToPoseBlockingSignature:
 class TestProtocols:
     def test_robot_driver_protocol(self):
         assert isinstance(_MinimalRobotDriver(), RobotDriver)
+
+    def test_cartesian_driver_protocol(self):
+        assert isinstance(_MinimalCartesianDriver(), CartesianDriver)
 
     def test_joint_driver_protocol(self):
         assert isinstance(_MinimalJointDriver(), JointDriver)
@@ -139,17 +196,60 @@ class TestProtocols:
     def test_vision_driver_protocol(self):
         assert isinstance(_MinimalVisionDriver(), VisionDriver)
 
+    def test_base_driver_protocol(self):
+        assert isinstance(_MinimalBaseDriver(), BaseDriver)
+
+    def test_continuous_base_driver_protocol(self):
+        assert isinstance(_MinimalContinuousBaseDriver(), ContinuousBaseDriver)
+
+    def test_lifter_driver_protocol(self):
+        assert isinstance(_MinimalLifterDriver(), LifterDriver)
+
+    def test_waist_driver_protocol(self):
+        assert isinstance(_MinimalWaistDriver(), WaistDriver)
+
+    def test_dual_arm_driver_protocol(self):
+        assert isinstance(_MinimalDualArmDriver(), DualArmDriver)
+
     def test_gripper_and_suction_are_distinct(self):
         # A suction-only driver must NOT structurally satisfy GripperDriver.
         assert not isinstance(_MinimalSuctionDriver(), GripperDriver)
         assert not isinstance(_MinimalGripperDriver(), SuctionDriver)
 
-    def test_mock_piper_driver_satisfies_robot_driver(self):
-        assert isinstance(MockPiperDriver(), RobotDriver)
+    def test_wheels_only_driver_is_not_a_cartesian_arm(self):
+        # The point of the split: a mobile base must not have to stub out a flange pose.
+        assert not isinstance(_MinimalBaseDriver(), CartesianDriver)
+
+    def test_mock_piper_driver_satisfies_cartesian_driver(self):
+        assert isinstance(MockPiperDriver(), CartesianDriver)
+
+
+class TestProtocolsMirrorCapabilitySpec:
+    """``CAPABILITY_DRIVER_MEMBERS`` is what ``validate_adapter.py`` checks a driver
+    against; these Protocols are what an adapter author reads. A member added to one
+    and not the other silently splits the contract in two."""
+
+    @pytest.mark.parametrize(
+        ("capability", "protocol"),
+        [
+            ("motion.cartesian", CartesianDriver),
+            ("motion.joint", JointDriver),
+            ("grasp.parallel", GripperDriver),
+            ("grasp.suction", SuctionDriver),
+            ("motion.base", BaseDriver),
+            ("motion.base_servo", ContinuousBaseDriver),
+            ("motion.lift", LifterDriver),
+            ("motion.waist", WaistDriver),
+            ("grasp.dual_arm", DualArmDriver),
+        ],
+    )
+    def test_every_spec_member_is_declared(self, capability, protocol):
+        missing = [m for m in CAPABILITY_DRIVER_MEMBERS[capability] if not hasattr(protocol, m)]
+        assert not missing, f"{protocol.__name__} is missing {missing} required by '{capability}'"
 
 
 class _FullMockDriver(
-    _MinimalRobotDriver,
+    _MinimalCartesianDriver,
     _MinimalJointDriver,
     _MinimalCameraDriver,
     _MinimalGripperDriver,
@@ -168,8 +268,8 @@ class TestPiperFullDriver:
 
         assert isinstance(_FullMockDriver(), PiperFullDriver)
 
-    def test_robot_only_does_not_satisfy_composite(self):
+    def test_cartesian_only_does_not_satisfy_composite(self):
         from jiuwensymbiosis.env.protocol import PiperFullDriver
 
-        # A driver implementing only RobotDriver must NOT satisfy the composite.
-        assert not isinstance(_MinimalRobotDriver(), PiperFullDriver)
+        # A driver implementing only CartesianDriver must NOT satisfy the composite.
+        assert not isinstance(_MinimalCartesianDriver(), PiperFullDriver)

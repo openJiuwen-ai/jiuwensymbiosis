@@ -602,7 +602,7 @@ def _print_next_steps(args, res: HandEyeResult) -> None:
     logger.info("")
     logger.info("👉 下一步：")
     logger.info("   - 真机反投影复验：重跑本脚本加 --verify（或 --verify-touch 靠近悬停目视）。")
-    logger.info("   - 跑演示验证：piper-pick-demo --config configs/piper/piper.yaml")
+    logger.info("   - 跑演示验证：jiuwensymbiosis-run --config configs/piper/piper.yaml")
     logger.info("   - 标定正确后，可逐步把 piper.yaml 的 z_correction_mm 调向 0。")
 
 

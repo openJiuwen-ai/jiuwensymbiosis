@@ -10,6 +10,9 @@
 # 真机就位前务必校核：calib(piper_calib.json 的 T_flange_cam / object 锚点)、
 # tool_offset_mm、工具朝下姿态(adapters/piper/api.py _TOOL_DOWN_RX/RY)。
 
+# 适配器身份：通用 runner（jiuwensymbiosis-run）据此从注册表建 session；--robot 可覆盖。
+adapter: piper
+
 env:
   cfg:
     low_level:
@@ -74,6 +77,8 @@ agent:
   # log_dir 默认 "./logs"，框架日志落 logs/jiuwensymbiosis.log；
   log_level: INFO
   log_dir: ./logs
+  exec_mode: fastagent   # 默认快路径；单步调试用 --stepagent，--mock 自动切 stepagent
+  enable_skill: true
   # enable_tracing: true        # 开启 TraceRail，记录每轮工具调用到 traces/{run_token}.json
   # trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/step_NNN.jpg
   # trace_console: true         # 运行时实时打印逐轮缩略图到 stderr

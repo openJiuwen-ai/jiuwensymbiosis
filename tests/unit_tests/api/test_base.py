@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import GET_IMAGE, GET_POSE, GOTO_XYZR, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.decorators import robot_tool
-from jiuwensymbiosis.api.mixins import MotionMixin, VisionMixin
 from jiuwensymbiosis.env.mock import MockArmEnv
 
 
@@ -17,40 +18,20 @@ class SimpleApi(BaseRobotApi):
         return {"ok": True}
 
 
-class MotionVisionApi(MotionMixin, VisionMixin, BaseRobotApi):
-    capability = {"motion.cartesian"}  # will be overridden by MRO
+class MotionVisionApi(BaseRobotApi):
+    capability = {"planning.reachability"}  # a marker capability: no action of its own
 
-    @robot_tool(desc="home", tags=["motion"])
-    def home(self) -> None:
-        self.env.home()
-
-    @robot_tool
+    @implements(GET_POSE)
     def get_pose(self) -> dict:
-        return self.env.get_observation().pose or {}
+        return defaults.get_pose(self)
 
-    @robot_tool
-    def get_home_pose(self) -> dict:
-        return self.env.home_pose()
-
-    @robot_tool(tags=["motion"])
+    @implements(GOTO_XYZR)
     def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None) -> None:
         self.env.move(x, y, z, r)
 
-    @robot_tool
-    def get_grasp_info_simple(self, object_name: str) -> dict:
-        return {"ok": True}
-
-    @robot_tool
-    def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
-        return {"x": 0, "y": 0, "z": 0}
-
-    @robot_tool
+    @implements(GET_IMAGE)
     def get_image(self):
         return None
-
-    @robot_tool
-    def analyze_scene(self, object_name: str | None = None) -> dict:
-        return {"ok": True}
 
 
 class TestBaseRobotApiCapabilities:
@@ -59,12 +40,17 @@ class TestBaseRobotApiCapabilities:
         api = SimpleApi(env)
         assert api.capabilities == frozenset()
 
-    def test_mixin_capabilities_union(self):
+    def test_capabilities_come_from_the_actions_implemented(self):
         env = MockArmEnv()
         api = MotionVisionApi(env)
         caps = api.capabilities
         assert "motion.cartesian" in caps
-        assert "vision.detection" in caps
+        assert "vision.camera" in caps
+
+    def test_a_marker_capability_still_counts(self):
+        # planning.reachability has no action to be inferred from, so the class attr
+        # is the only way to advertise it.
+        assert "planning.reachability" in MotionVisionApi(MockArmEnv()).capabilities
 
     def test_describe(self):
         env = MockArmEnv()

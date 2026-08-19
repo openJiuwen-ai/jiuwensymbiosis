@@ -21,10 +21,11 @@ from jiuwensymbiosis.agent.abstractions import (
 Mode = Literal["tool", "code", "hybrid"]
 
 # Execution mechanism (the speed switch):
-#   "agent" — per-step LLM orchestration (current default; many LLM round-trips).
-#   "fast"  — plan once (one LLM inference selecting skills), then run an
-#             in-process Perceive+Act real-time loop with NO LLM in the loop.
-ExecMode = Literal["agent", "fast"]
+#   "fastagent" — plan once (one LLM inference selecting skills), then run the
+#                 action sequence with NO per-step LLM. The task-running default.
+#   "stepagent" — per-step LLM orchestration (many round-trips); for single-step
+#                 debugging / verification.
+ExecMode = Literal["fastagent", "stepagent"]
 
 __all__ = [
     "Mode",
@@ -224,10 +225,9 @@ class RobotAgentConfig:
     log_dir: str | None = "./logs"
     parallel_tool_calls: bool = False
 
-    # --- speed switch (fast path) ---
-    # exec_mode: "agent" (per-step LLM, current) or "fast" agent (plan-once + real-time
-    #   Perceive+Act loop with no LLM in the loop). See ExecMode.
-    exec_mode: ExecMode = "agent"
+    # --- speed switch --- see ExecMode. Default is fastagent (compile once, then run
+    # with no per-step LLM); --mock / --stepagent force stepagent for offline/debug.
+    exec_mode: ExecMode = "fastagent"
     exec_config: Any = None
 
     @classmethod

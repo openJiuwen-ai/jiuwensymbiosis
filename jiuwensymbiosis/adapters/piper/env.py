@@ -19,7 +19,7 @@ from jiuwensymbiosis.adapters.piper.config import PiperConfig
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 if TYPE_CHECKING:
-    from jiuwensymbiosis.env.protocol import RobotDriver
+    from jiuwensymbiosis.env.protocol import CartesianDriver
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +43,16 @@ class PiperEnv(BaseRobotEnv):
     def __init__(self, cfg: PiperConfig) -> None:
         """Store config; driver is None until connect()."""
         self.cfg = cfg
-        self._inner: RobotDriver | None = None  # PiperLowLevel
+        self._inner: CartesianDriver | None = None  # PiperLowLevel
         self._connected = False
 
     @property
-    def low_level(self) -> RobotDriver | None:
+    def low_level(self) -> CartesianDriver | None:
         """The underlying low-level driver (PiperLowLevel), or None before connect()."""
         return self._inner
 
     @low_level.setter
-    def low_level(self, _: RobotDriver | None) -> None:
+    def low_level(self, _: CartesianDriver | None) -> None:
         raise AttributeError("PiperEnv.low_level is read-only (binds to self._inner via connect/disconnect)")
 
     @property

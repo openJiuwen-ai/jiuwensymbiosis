@@ -28,7 +28,7 @@ _MM_PER_M = 1000.0
 class CartesianPose:
     """End-effector pose in the tool convention: mm + Euler degrees.
 
-    Field names (``x/y/z/rx/ry/rz``) match what ``api/mixins.py:_pose_to_dict``
+    Field names (``x/y/z/rx/ry/rz``) match what ``api/components.py:_pose_to_dict``
     reads, so a driver may return this object straight from ``get_pose()``.
     """
 

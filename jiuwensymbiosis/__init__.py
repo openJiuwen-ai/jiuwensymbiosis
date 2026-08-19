@@ -46,15 +46,10 @@ from jiuwensymbiosis.agent import (
 )
 from jiuwensymbiosis.agent.builder import build_robot_agent
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import ACTIONS, ActionSpec, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.decorators import robot_tool
-from jiuwensymbiosis.api.mixins import (
-    JointMotionMixin,
-    MotionMixin,
-    ParallelGripperMixin,
-    SuctionMixin,
-    VisionMixin,
-)
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.tools.builder import build_robot_tools
 from jiuwensymbiosis.tools.inproc_code import InProcessCodeTool
@@ -64,11 +59,10 @@ __all__ = [
     "RobotObservation",
     "BaseRobotApi",
     "robot_tool",
-    "MotionMixin",
-    "JointMotionMixin",
-    "SuctionMixin",
-    "ParallelGripperMixin",
-    "VisionMixin",
+    "implements",
+    "ActionSpec",
+    "ACTIONS",
+    "defaults",
     "build_robot_tools",
     "InProcessCodeTool",
     "RobotSession",

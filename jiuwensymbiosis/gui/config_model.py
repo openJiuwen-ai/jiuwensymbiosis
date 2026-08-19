@@ -52,7 +52,7 @@ class FieldSpec:
             ``min`` / ``max`` —— 上下箭头步进不会越界(如温度限 [0, 2])。
         step: 数字类字段每次步进的增量(缺省走控件默认 1;如温度用 0.1)。
         on_value / off_value: ``kind="bool"`` 时若给出,复选框存的不是 True/False
-            而是这两个值(如 exec_mode 的 ``"fast"`` / ``"agent"``)。
+            而是这两个值(如 exec_mode 的 ``"fastagent"`` / ``"stepagent"``)。
     """
 
     path: str

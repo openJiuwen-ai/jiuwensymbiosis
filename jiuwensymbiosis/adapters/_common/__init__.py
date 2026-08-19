@@ -7,11 +7,11 @@ builder (``builder``), cartesian workspace bounds (``safety``), and the reusable
 motion core for joint-level arms — ``geometry`` (pose/unit/SE(3) conversions),
 ``joint_transport`` (the vendor SDK seam), ``kinematics`` (FK/IK backend seam +
 waypoint planning/rejection), and ``kinematic_driver`` (``KinematicArmDriver``,
-a ``RobotDriver`` built from a transport + an FK/IK backend). Adapters import
+a ``CartesianDriver`` built from a transport + an FK/IK backend). Adapters import
 these submodules directly, so importing this package stays side-effect free.
 
 Things consumed outside ``adapters/`` moved to where their consumer lives:
-* the ``RobotDriver`` Protocol → ``jiuwensymbiosis.env.protocol`` (Env delegates
+* the driver Protocols → ``jiuwensymbiosis.env.protocol`` (Env delegates
   to the driver, so the contract lives with the env layer — no more TYPE_CHECKING
   dance in ``env/base.py``);
 * sensing (camera, detector client/sidecar, vision, calibration) →

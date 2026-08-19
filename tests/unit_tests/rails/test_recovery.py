@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from jiuwensymbiosis.rails.recovery import RecoveryRail
+from jiuwensymbiosis.rails.recovery import RecoveryRail, recover_session
 from tests.helpers import FakeCtx, RecordingRailSink, make_mock_session
 
 
@@ -149,6 +151,48 @@ class TestRecoveryRail:
 
         assert any(call in {"deactivate_suction", "open_gripper"} for call in mock_session.api._call_log)
         assert not any(call == "home" for call in mock_session.api._call_log)
+
+
+class TestReleaseEffectorHook:
+    """A body whose end effector is neither suction nor a parallel gripper."""
+
+    @staticmethod
+    def _session(calls, *, release_effector):
+        class _Api:
+            def home(self):
+                calls.append("home")
+
+        class _Env:
+            def set_end_effector(self, closed):
+                calls.append(f"set_end_effector({closed})")
+
+        api = _Api()
+        if release_effector is not None:
+            api.release_effector = release_effector
+        return SimpleNamespace(api=api, env=_Env())
+
+    def test_release_effector_is_tried_before_the_env_fallback(self):
+        calls = []
+        session = self._session(calls, release_effector=lambda: calls.append("release_effector"))
+
+        released_ok, home_ok = recover_session(session, release=True, home=True, log_prefix="test")
+
+        assert (released_ok, home_ok) == (True, True)
+        assert calls == ["release_effector", "home"]
+
+    def test_env_fallback_still_runs_when_release_effector_fails(self):
+        calls = []
+
+        def _boom():
+            calls.append("release_effector")
+            raise RuntimeError("paddle servo offline")
+
+        session = self._session(calls, release_effector=_boom)
+
+        released_ok, _ = recover_session(session, release=True, home=True, log_prefix="test")
+
+        assert released_ok is True
+        assert calls == ["release_effector", "set_end_effector(False)", "home"]
 
 
 class TestRecoveryRailTraceSink:

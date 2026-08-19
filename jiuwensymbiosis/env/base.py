@@ -25,14 +25,14 @@ from typing import Any, cast
 
 import numpy as np
 
-from jiuwensymbiosis.env.protocol import RobotDriver
+from jiuwensymbiosis.env.protocol import CartesianDriver, RobotDriver
 
 logger = logging.getLogger(__name__)
 
 # Closed vocabulary for capability strings.
 # Adding a new capability:
 #   1. Append it here.
-#   2. (Optionally) add a Mixin in api/mixins.py that declares it.
+#   2. (Optionally) add a Mixin in api/components.py that declares it.
 #   3. (Optionally) write a Rail that activates only when this string is present.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset(
     {
@@ -45,8 +45,20 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         "vision.depth",  # depth stream available
         "vision.detection",  # high-level object detection
         "vision.eye_to_hand",  # camera is fixed in the robot base/world frame
+        # The body can turn/move whatever carries a camera (head, waist or the base
+        # itself), so it can look around for a target instead of only seeing what
+        # happens to be in front of it. Says nothing about the camera: RGB or RGBD,
+        # wide or narrow — searching only ever reports a BEARING.
+        "vision.search",
         "sorting.command",  # opaque sorting protocol (no Cartesian motion)
         "speech.tts",  # text-to-speech available
+        "motion.base",  # planar mobile-base relative motion (differential; no strafe)
+        "motion.base_servo",  # non-blocking streaming base drive (steer-while-moving)
+        "motion.lift",  # vertical torso/lifter position control
+        "motion.waist",  # torso yaw (waist) rotation
+        "motion.goal",  # autonomous drive to a goal/grasp-band via a nav stack
+        "grasp.dual_arm",  # coordinated two-arm (paddle) grasp/release
+        "planning.reachability",  # URDF-based reachability / workspace prior for planning
     }
 )
 
@@ -162,8 +174,22 @@ class BaseRobotEnv(ABC):
     # key order = q index order. ``None`` → SafetyRail skips the range check
     # (only q-presence / type / finite checks run).
     _joint_limits: dict[str, tuple[float, float]] | None = None
+    # Mobile-base / torso envelope, same ``None`` → "SafetyRail skips the range check"
+    # contract as ``joint_limits``. Relative verbs (``navigate_relative`` / ``rotate_base`` /
+    # ``drive_arc`` / ``turn_waist``) get a PER-COMMAND cap — there is no absolute frame to
+    # bound them in; the absolute one (``set_lifter``) gets a real range.
+    # ``_base_step_limits`` = (max |translation| per command in m, max |turn| in rad).
+    _base_step_limits: tuple[float, float] | None = None
+    # {lifter_joint: (low, high)}; unit MUST match the env's ``set_lifter`` convention.
+    _lift_limits: dict[str, tuple[float, float]] | None = None
+    _waist_step_limit_rad: float | None = None
     _home_pose: Any = None
     _tool_offset_mm: float = 0.0
+    # URDF model + arm kinematic chains for planning-time reachability (capability
+    # ``planning.reachability``). ``None`` → the body has no URDF model → the reachability
+    # mixin degrades to a no-op (piper and other URDF-less bodies are unaffected).
+    _urdf_path: str | None = None
+    _arm_chains: dict[str, tuple[str, str]] | None = None
 
     @property
     def low_level(self) -> RobotDriver | None:
@@ -197,6 +223,33 @@ class BaseRobotEnv(ABC):
     def joint_limits(self, value: dict[str, tuple[float, float]] | None) -> None:
         self._joint_limits = value
 
+    @property
+    def base_step_limits(self) -> tuple[float, float] | None:
+        """Per-command mobile-base cap: (max |translation| m, max |turn| rad). None = no cap."""
+        return self._base_step_limits
+
+    @base_step_limits.setter
+    def base_step_limits(self, value: tuple[float, float] | None) -> None:
+        self._base_step_limits = value
+
+    @property
+    def lift_limits(self) -> dict[str, tuple[float, float]] | None:
+        """Lifter joint soft limits, ``set_lifter``'s unit and key names. None = no range check."""
+        return self._lift_limits
+
+    @lift_limits.setter
+    def lift_limits(self, value: dict[str, tuple[float, float]] | None) -> None:
+        self._lift_limits = value
+
+    @property
+    def waist_step_limit_rad(self) -> float | None:
+        """Max |delta_rad| a single ``turn_waist`` command may request. None = no cap."""
+        return self._waist_step_limit_rad
+
+    @waist_step_limit_rad.setter
+    def waist_step_limit_rad(self, value: float | None) -> None:
+        self._waist_step_limit_rad = value
+
     # Robot body constants. Adapters override as @property or set in connect().
     @property
     def home_pose(self) -> Any:
@@ -214,6 +267,25 @@ class BaseRobotEnv(ABC):
     def tool_offset_mm(self, value: float) -> None:
         self._tool_offset_mm = value
 
+    # URDF-based reachability contract (planning.reachability). Adapters that ship a URDF set these
+    # (in connect() or as a read-only @property); the base default None means "no URDF → skip".
+    @property
+    def urdf_path(self) -> str | None:
+        return self._urdf_path
+
+    @urdf_path.setter
+    def urdf_path(self, value: str | None) -> None:
+        self._urdf_path = value
+
+    @property
+    def arm_chains(self) -> dict[str, tuple[str, str]] | None:
+        """Arm kinematic chains for reachability: name → (root_link, leaf_link). None = no URDF model."""
+        return self._arm_chains
+
+    @arm_chains.setter
+    def arm_chains(self, value: dict[str, tuple[str, str]] | None) -> None:
+        self._arm_chains = value
+
     # --- motion / end-effector verbs (default: delegate to low_level) ---
 
     def _require_driver(self) -> RobotDriver:
@@ -223,17 +295,21 @@ class BaseRobotEnv(ABC):
             raise RuntimeError(f"{self.name}: env not connected (no low_level driver).")
         return ll
 
+    def _require_cartesian(self) -> CartesianDriver:
+        """Return the driver typed as its Cartesian surface (``motion.cartesian``-gated)."""
+        return cast(CartesianDriver, self._require_driver())
+
     def home(self) -> None:
         """Move to the home pose (blocking)."""
-        self._require_driver().home()
+        self._require_cartesian().home()
 
     def get_flange_pose(self) -> Any:
         """Return the current flange-frame pose (vendor Pose object)."""
-        return self._require_driver().get_pose()
+        return self._require_cartesian().get_pose()
 
     def move_to_flange(self, pose: Any) -> None:
         """Move to a FLANGE-frame target pose (blocking)."""
-        self._require_driver().move_to_pose_blocking(pose)
+        self._require_cartesian().move_to_pose_blocking(pose)
 
     def move_joint(self, q: list[float]) -> None:
         """Move to a joint-space configuration (blocking)."""
@@ -277,6 +353,80 @@ class BaseRobotEnv(ABC):
                 f"{self.name}: no grasp capability declared (need 'grasp.parallel' or 'grasp.suction')"
             )
 
+    # --- mobile-base / torso verbs (default: raise; implement when the capability is declared) ---
+
+    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
+        """Turn by ``dyaw_rad``, then translate ``dx_m`` forward / ``dy_m`` left (REP-103).
+
+        Blocking; returns ``{ok, reason, ...}``. Metres here, millimetres in detections —
+        the framework's convention. Envs declaring ``motion.base`` implement it.
+        """
+        raise NotImplementedError(f"{self.name}: navigate_relative not implemented (declare/implement 'motion.base').")
+
+    def navigate_arc(self, radius_m: float, dyaw_rad: float) -> dict:
+        """Drive ONE constant-curvature arc: ``radius_m`` radius, signed ``dyaw_rad`` (+ = left).
+
+        Turning while advancing, so the base lands off its original heading line — the
+        primitive an approach planner needs to reach a target's face normal. Blocking;
+        returns ``{ok, reason, ...}``. Envs declaring ``motion.base`` may implement it.
+        """
+        raise NotImplementedError(f"{self.name}: navigate_arc not implemented (declare/implement 'motion.base').")
+
+    def start_base_drive(self, **kwargs: Any) -> Any:
+        """Start a NON-BLOCKING forward drive and return an opaque handle.
+
+        The streaming counterpart of ``navigate_relative``: the wheels keep rolling while
+        the caller senses, so a moving target can be steered toward mid-drive (there is no
+        stop-look-go dead time). Required by ``motion.base_servo``; pair every start with
+        ``stop_base_drive`` — an abandoned handle leaves the base rolling.
+        """
+        raise NotImplementedError(
+            f"{self.name}: start_base_drive not implemented (declare/implement 'motion.base_servo')."
+        )
+
+    def base_drive_running(self, handle: Any) -> bool:
+        """Whether the drive behind ``handle`` is still moving (False once it self-stopped)."""
+        raise NotImplementedError(
+            f"{self.name}: base_drive_running not implemented (declare/implement 'motion.base_servo')."
+        )
+
+    def steer_base_drive(self, handle: Any, bearing_rad: float) -> None:
+        """Aim a running drive at ``bearing_rad`` (+ = left of the body's heading). Best-effort."""
+        raise NotImplementedError(
+            f"{self.name}: steer_base_drive not implemented (declare/implement 'motion.base_servo')."
+        )
+
+    def hold_base_drive(self, handle: Any) -> None:
+        """Pause the wheels of a running drive WITHOUT ending it (target lost → do not creep blind).
+
+        The next ``steer_base_drive`` resumes it, so a perception dropout costs latency, not a
+        restart. Best-effort.
+        """
+        raise NotImplementedError(
+            f"{self.name}: hold_base_drive not implemented (declare/implement 'motion.base_servo')."
+        )
+
+    def stop_base_drive(self, handle: Any) -> dict:
+        """Stop the drive behind ``handle`` and reap its result ``{ok, reason, ...}``. Idempotent."""
+        raise NotImplementedError(
+            f"{self.name}: stop_base_drive not implemented (declare/implement 'motion.base_servo')."
+        )
+
+    def set_lifter(self, q_lifter: dict[str, float]) -> Any:
+        """Command the torso lifter joints to absolute positions (rad, keyed by joint name).
+
+        Envs declaring ``motion.lift`` implement it.
+        """
+        raise NotImplementedError(f"{self.name}: set_lifter not implemented (declare/implement 'motion.lift').")
+
+    def turn_waist(self, delta_rad: float) -> Any:
+        """Rotate the torso waist by ``delta_rad`` (+ = left).
+
+        A waist yaw leaves the base frame fixed, so base-frame detections stay valid.
+        Envs declaring ``motion.waist`` implement it.
+        """
+        raise NotImplementedError(f"{self.name}: turn_waist not implemented (declare/implement 'motion.waist').")
+
     # --- sensor convenience ---
 
     def grab_rgb(self) -> np.ndarray | None:
@@ -286,3 +436,29 @@ class BaseRobotEnv(ABC):
         that can fetch RGB more cheaply than a full observation snapshot.
         """
         return self.get_observation().rgb
+
+    @property
+    def cameras(self) -> tuple[str | None, ...]:
+        """Cameras this body can perceive with, best-first. Default: the one unnamed camera.
+
+        Perception looks through ALL of them and lets the answers decide what to do next:
+        a frame that carries depth yields a face normal (so the base can square up to the
+        target), a frame without one yields only a bearing (so the base can close in until
+        something with depth acquires it). That is a property of the FRAME, readable from
+        ``CameraFrame.depth_m``, not a class of hardware — so this list deliberately says
+        nothing about what kind each camera is, and a body with a single RGBD camera is a
+        perfectly ordinary case rather than a missing sensor.
+        """
+        return (None,)
+
+    def grab_calibrated_frame(self, camera: str | None = None) -> Any:
+        """Grab rgb + depth + intrinsics + base←camera extrinsics as one ``CameraFrame``, or None.
+
+        3-D perception needs all four from the SAME instant — a pixel projected with a stale
+        extrinsic lands somewhere the object never was — which is why this is one verb rather
+        than four getters. ``camera`` names one of ``cameras`` (None = default).
+        Envs declaring ``vision.depth`` implement it.
+        """
+        raise NotImplementedError(
+            f"{self.name}: grab_calibrated_frame not implemented (declare/implement 'vision.depth')."
+        )

@@ -57,9 +57,9 @@ class AppState:
         # 默认开启轨迹记录,让「历史」页开箱即用。
         if model.get("agent.enable_tracing") is None:
             model.set("agent.enable_tracing", True)
-        # 默认用快速模式(fast):真机运行更快、可重复。
+        # 默认用快速模式(fastagent):真机运行更快、可重复。
         if model.get("agent.exec_mode") is None:
-            model.set("agent.exec_mode", "fast")
+            model.set("agent.exec_mode", "fastagent")
         # 任务指令:本体配置不含 prompt(与任务无关),用任务默认指令预填「配置 → 任务指令」框
         # (用户可改;不改就用它)。
         if not model.get("env.cfg.prompt"):

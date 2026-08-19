@@ -146,7 +146,7 @@ def main() -> int:
         agent_cfg.enable_skill = not args.no_skill
         agent_cfg.enable_visual_feedback = not args.no_visual_feedback
         agent_cfg.max_iterations = args.max_iter
-        agent_cfg.exec_mode = "fast" if args.fast else "agent"
+        agent_cfg.exec_mode = "fastagent" if args.fast else "stepagent"
         agent_cfg.exec_config = exec_config
         if args.debug:
             agent_cfg.log_level = "DEBUG"

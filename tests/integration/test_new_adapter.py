@@ -369,8 +369,10 @@ def test_joint_ik_composes_orthogonal_capabilities(cleanup):
     suc_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / suction.name
     suc_api = (suc_dir / "api.py").read_text(encoding="utf-8")
     suc_env = (suc_dir / "env.py").read_text(encoding="utf-8")
-    # Suction reuses SuctionMixin (no bespoke gripper override) + the effector seam.
-    assert "SuctionMixin" in suc_api
+    # Suction binds the two suction specs and forwards to the generic defaults (no
+    # bespoke gripper override), plus the effector seam.
+    assert "@implements(ACTIVATE_SUCTION)" in suc_api
+    assert "defaults.deactivate_suction(self)" in suc_api
     assert "open_gripper" not in suc_api
     assert '"grasp.suction"' in suc_env
     assert "send_effector" in (suc_dir / "lowlevel.py").read_text(encoding="utf-8")
@@ -378,8 +380,9 @@ def test_joint_ik_composes_orthogonal_capabilities(cleanup):
     vis_dir = REPO_ROOT / "jiuwensymbiosis" / "adapters" / vision.name
     vis_api = (vis_dir / "api.py").read_text(encoding="utf-8")
     vis_env = (vis_dir / "env.py").read_text(encoding="utf-8")
-    # Vision reuses VisionMixin + honest stubs; servo just declares the capability.
-    assert "VisionMixin" in vis_api
+    # Vision binds the detection specs as honest stubs — no default can guess a
+    # body's calibration; servo just declares the capability.
+    assert "@implements(GET_GRASP_INFO_SIMPLE)" in vis_api
     assert "not_implemented" in vis_api
     for cap in ('"vision.camera"', '"vision.detection"', '"motion.servo"'):
         assert cap in vis_env
