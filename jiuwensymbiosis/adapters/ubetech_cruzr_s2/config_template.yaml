@@ -45,6 +45,23 @@ ros2_camera_info_topic: /cruzr/camera/color/camera_info
 ros2_odom_topic: /odom
 ros2_odom_msg_kind: odometry        # 或 pose_stamped / pose_with_covariance_stamped
 
+# ==================== ROS2 激光雷达 (复用 Ros2Scan) [选填-仅 NEUPAN 导航] ====================
+# NEUPAN 做避障必须有 LaserScan。scan 由机器人端雷达 driver 发布,框架只消费。
+# 留空则不订阅 scan;若同时启用了 NEUPAN 导航,循环会因拿不到 scan 而空转。
+ros2_scan_topic: /scan
+
+# ==================== NEUPAN 导航 [选填-仅 motion.cartesian 导航] ====================
+# 底盘导航走 NEUPAN 规划器(避障 + 路径跟踪)。它是纯库,返回 (vx, omega) 速度,
+# 由本驱动通过 ros2_cmd_vel 发出。用户自行安装 neupan(本地仓库 `pip install -e .`,
+# 依赖 torch/cvxpy/scipy 等重栈);框架 lazy import,缺包 → 运动指令 raise 带指引。
+# neupan_config_path 指向 NEUPAN 自己的 planner.yaml;相对路径按本 config 所在目录
+# 解析。仓库内置默认模板 configs/ubetech_cruzr_s2/planner.yaml(diff 差速模型)。
+# 安装/调参详见 README "NEUPAN navigation"。
+neupan_config_path: planner.yaml   # 相对本文件;或写绝对路径
+neupan_arrive_threshold_m: 0.1     # 到位距离阈值 (m);driver 额外做纯距离检查
+neupan_max_collision_count: 100    # 连续碰撞帧上限,超此值 raise
+neupan_control_hz: 10.0            # 导航控制循环频率 (Hz)
+
 # ==================== 安全边界 [选填] ====================
 # 底盘是 2D 平面运动,不上下移动。z_min_safe 保持 0.0(SafetyRail 契约要求,
 # 底盘形态下永不触发)。x/y 边界限制底盘活动范围(米,字段名 _m 反映真实单位;

@@ -34,6 +34,13 @@ class _MockLowLevel:
     def get_odom_pose(self):
         return self._odom_pose
 
+    # Default laser scan (mirrors the real driver's self._scan-driven return);
+    # tests override this attribute to simulate "no message yet".
+    _scan = {"ranges": [1.0, 2.0], "angle_min": -3.14, "angle_max": 3.14, "range_min": 0.1, "range_max": 10.0}
+
+    def get_scan(self):
+        return self._scan
+
 
 class TestUbetechCruzrS2EnvConstruction:
     def test_default_config(self):
@@ -151,6 +158,30 @@ class TestUbetechCruzrS2EnvObservation:
         assert obs.extra["odom"] is None
         # Pose still falls back to the home pose (nominal origin).
         assert obs.pose is not None
+
+    def test_get_observation_surfaces_scan(self):
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
+
+        cfg = UbetechCruzrS2Config(ros2_scan_topic="/scan")
+        env = UbetechCruzrS2Env(cfg)
+        env.low_level = _MockLowLevel()
+        obs = env.get_observation()
+        assert obs.extra["scan"] == {
+            "ranges": [1.0, 2.0],
+            "angle_min": -3.14,
+            "angle_max": 3.14,
+            "range_min": 0.1,
+            "range_max": 10.0,
+        }
+
+    def test_get_observation_scan_none_when_no_scan_topic(self):
+        from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env
+
+        # No ros2_scan_topic configured → extra["scan"] is None even with a driver.
+        env = UbetechCruzrS2Env(UbetechCruzrS2Config())
+        env.low_level = _MockLowLevel()
+        obs = env.get_observation()
+        assert obs.extra["scan"] is None
 
     def test_home_pose_prop(self):
         from jiuwensymbiosis.adapters.ubetech_cruzr_s2.env import UbetechCruzrS2Env

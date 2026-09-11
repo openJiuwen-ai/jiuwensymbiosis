@@ -1,9 +1,10 @@
-# Unitree Go2 默认配置(移动底盘 + ROS2 相机 + 里程计)
-# 形态: 纯移动底盘(无机械臂/夹爪)。底盘运动走 unitree_sdk2py,图像/里程计走 ROS2。
+# Unitree Go2 默认配置(移动底盘 + ROS2 相机 + 里程计 + NEUPAN 导航)
+# 形态: 纯移动底盘(无机械臂/夹爪)。导航走 NEUPAN + ROS2 cmd_vel(mecanum 麦轮),
+# 图像/里程计/scan 走 ROS2。SDK 已软化(缺 SDK 不报错,NEUPAN/cmd_vel 路径仍工作)。
 
 name: "unitree_go2"
 
-# --- 底盘运动 (官方 SDK) ---
+# --- 底盘运动 (SDK 已软化;导航走 NEUPAN+cmd_vel,不需 SDK) ---
 # network_interface: "eth0"            # 主机网卡(Go2 子网);留空用 SDK 默认
 max_linear_speed_mps: 1.0
 max_angular_speed_radps: 1.5
@@ -21,6 +22,20 @@ ros2_camera_info_topic: /go2/camera/color/camera_info
 # 框架只消费 odom topic,不跑 SLAM。确保机器人端的 SLAM/里程计栈已启动并收敛。
 ros2_odom_topic: /odom
 ros2_odom_msg_kind: odometry
+
+# --- ROS2 速度命令 + scan (NEUPAN 导航必需) ---
+# 导航走路线 A:NEUPAN 算速度 → cmd_vel topic → Go2 端 cmd_vel_bridge 转 SDK。
+# 前置:Go2 端需跑 cmd_vel_bridge。scan 由雷达 driver 发布。
+ros2_cmd_vel_topic: /cmd_vel
+ros2_cmd_vel_msg_kind: twist
+ros2_scan_topic: /scan
+
+# --- NEUPAN 导航 ---
+# 用户自装 neupan(本地仓库 `pip install -e .`)。planner.yaml 用仓库内置默认模板(mecanum)。
+neupan_config_path: planner.yaml
+neupan_arrive_threshold_m: 0.1
+neupan_max_collision_count: 100
+neupan_control_hz: 10.0
 
 # --- 安全边界 (底盘 2D 平面;z_min_safe 恒 0.0) ---
 z_min_safe_mm: 0.0

@@ -1,0 +1,55 @@
+# NEUPAN 规划器配置 — UBTECH Cruzr S2(差速驱动移动底盘)
+# 这是默认起点,真机部署时务必按场地/雷达/底盘实际调参。
+# 字段含义见 NEUPAN 源码 neupan/neupan.py 与 example/pf/diff/planner.yaml。
+# 本文件由 UbetechCruzrS2Config.neupan_config_path 加载(默认就指向本文件)。
+
+# ==================== MPC ====================
+receding: 10            # 预测时域步数
+step_time: 0.1          # 离散步长 (s)
+ref_speed: 0.8          # 参考速度 (m/s) — Cruzr S2 室内服务机器人,低于上限
+device: 'cpu'           # CPU 即可;有 GPU 可改 'cuda'
+time_print: False
+collision_threshold: 0.1  # min_distance 低于此值判定为碰撞 (info['stop'])
+
+# ==================== 机器人 ====================
+# 差速驱动(differential):两轮差速,只能前进+转向,无侧移。
+# NEUPAN 对 diff 模型输出 2 维 action [vx, omega],vy 恒 0。
+# max_speed/max_acce: [线速度 m/s, 角速度 rad/s]
+robot:
+  kinematics: 'diff'
+  max_speed: [1.0, 1.5]   # 对齐 config 的 max_linear_speed_mps / max_angular_speed_radps
+  max_acce: [2.0, 3.0]
+  length: 0.5
+  width: 0.5
+
+# ==================== 初始路径 ====================
+# 运行时由 driver 调 update_initial_path_from_goal(start, goal) 覆盖,
+# 这里只给占位 waypoint(NEUPAN 要求初始化时有路径)。
+ipath:
+  waypoints: [[0, 0, 0], [1, 0, 0]]
+  curve_style: 'line'    # 'line' / 'dubins' / 'reeds'
+  min_radius: 0.5
+  loop: False
+  arrive_threshold: 0.1  # 到位距离阈值 (m);driver 也会做纯距离补充检查
+  close_threshold: 0.1
+  ind_range: 10
+  arrive_index_threshold: 1
+
+# ==================== PAN 网络 ====================
+# proximal alternating minimization network
+pan:
+  iter_num: 2
+  dune_max_num: 100     # DUNE 层考虑的最大障碍点数
+  nrmp_max_num: 0
+  dune_checkpoint: None
+  iter_threshold: 0.1
+  train:
+
+# ==================== 调参 ====================
+# 避障/代价权重
+adjust:
+  eta: 10.0             # 碰撞避免 slack 增益
+  d_max: 1.0            # 开始施加避障的安全距离 (m)
+  d_min: 0.1            # 硬安全距离 (m)
+  q_s: 1.0              # 状态代价权重
+  p_u: 1.0              # 控制代价权重

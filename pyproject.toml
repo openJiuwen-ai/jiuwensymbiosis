@@ -59,6 +59,12 @@ unitree = [
     # eclipse-cyclonedds 0.10.x 并设 CYCLONEDDS_HOME（见 README "Unitree Go2 chassis SDK"）。
     "unitree_sdk2py>=1.0.1",
 ]
+nav = [
+    # 移动底盘导航(避障 + 路径跟踪)依赖 NEUPAN 规划器。当前仅 ubetech_cruzr_s2 用。
+    # NEUPAN 不在 PyPI —— 从本地 NeuPAN 仓库 `pip install -e .` 安装(拉 torch/cvxpy/scipy 等重栈)。
+    # 缺包时驱动 connect() 抛 RuntimeError 带指引;详见 README "NEUPAN navigation"。
+    # 此 extra 留作占位:neupan 本地安装后,`pip install -e ".[nav]"` 不会重复装它。
+]
 
 [project.scripts]
 piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"

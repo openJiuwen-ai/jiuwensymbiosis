@@ -8,19 +8,20 @@
 # ==================== 基本信息 [必填] ====================
 name: "unitree_go2"
 
-# ==================== 底盘运动 (官方 SDK) [必填-仅 motion.cartesian] ====================
-# 底盘运动走 unitree_sdk2py 官方 SDK(Cyclone DDS)。安装(两层):
-#   # 1. 编译安装 Cyclone DDS 0.10.x(unitree_sdk2py 依赖 cyclonedds==0.10.2,Linux 上常需先装)
+# ==================== 底盘运动 (官方 SDK,已软化) [选填] ====================
+# SDK 路径(unitree_sdk2py, Cyclone DDS)现已**软化**:装了就初始化,没装只 warning,
+# 不再 raise —— 因为导航走的是 NEUPAN + ROS2 cmd_vel 路线(见下面 NEUPAN 段),不需要 SDK。
+# SDK 代码保留以备将来 SDK-direct 运动路径。装 SDK(两层,可选):
+#   # 1. 编译安装 Cyclone DDS 0.10.x(unitree_sdk2py 依赖 cyclonedds==0.10.2)
 #   git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
 #   cd cyclonedds && mkdir build install && cd build && cmake -DCMAKE_INSTALL_PREFIX=../install .. && cmake --build . --target install
 #   export CYCLONEDDS_HOME="$(pwd)/../install"
 #   # 2. 装框架 [unitree] extra(拉 unitree_sdk2py + cyclonedds)
 #   pip install -e ".[unitree]"
-# 详见 README "Unitree Go2 chassis SDK"。未装 SDK 时 connect() 会 raise RuntimeError。
 # network_interface 是主机上处于 Go2 子网的网卡名(如 "eth0");留空用 SDK 默认。
 # network_interface: "eth0"        # [选填] 主机网卡名
-max_linear_speed_mps: 1.0          # [选填] 线速度上限 m/s
-max_angular_speed_radps: 1.5      # [选填] 角速度上限 rad/s
+max_linear_speed_mps: 1.0          # [选填] 线速度上限 m/s (vx/vy clamp)
+max_angular_speed_radps: 1.5      # [选填] 角速度上限 rad/s (omega clamp)
 # home_xy_yaw_m_deg: [0.0, 0.0, 0.0]  # [选填] Home 位姿 (x_m, y_m, yaw_deg) — 2D 平面
 
 # ==================== ROS2 相机 (复用 Ros2Camera) [选填-仅 vision.*] ====================
@@ -43,6 +44,29 @@ ros2_camera_info_topic: /go2/camera/color/camera_info
 # 但 get_pose 退化为 home 位姿,get_observation().extra["odom"] 为 None)。
 ros2_odom_topic: /odom
 ros2_odom_msg_kind: odometry        # 或 pose_stamped / pose_with_covariance_stamped
+
+# ==================== ROS2 速度命令 (复用 Ros2CmdVel) [选填-仅 NEUPAN 导航] ====================
+# 导航走路线 A:NEUPAN 算出 (vx, vy, omega) 速度,由本驱动通过 Ros2CmdVel 发布到
+# cmd_vel topic。机器人端**必须**跑一个 cmd_vel_bridge,把该 Twist 转成 unitree SDK
+# SportClient 调用(框架不管 bridge)。topic 名/消息类型按你 bridge 暴露的接口改。
+ros2_cmd_vel_topic: /cmd_vel
+ros2_cmd_vel_msg_kind: twist        # 或 twist_stamped
+
+# ==================== ROS2 激光雷达 (复用 Ros2Scan) [选填-仅 NEUPAN 导航] ====================
+# NEUPAN 做避障必须有 LaserScan。scan 由机器人端雷达 driver 发布,框架只消费。
+# 留空则不订阅 scan;若同时启用了 NEUPAN 导航,循环会因拿不到 scan 而空转。
+ros2_scan_topic: /scan
+
+# ==================== NEUPAN 导航 [选填-仅 motion.cartesian 导航] ====================
+# 用户自装 neupan(本地仓库 `pip install -e .`,依赖 torch/cvxpy/scipy)。框架 lazy import,
+# 缺 neupan / 缺 neupan_config_path → 运动指令 raise RuntimeError 带安装指引。
+# neupan_config_path 指向 NEUPAN 自己的 planner.yaml;相对路径按本 config 所在目录解析。
+# 仓库内置默认模板 configs/unitree_go2/planner.yaml(mecanum 麦轮模型,3 维速度)。
+# 安装/调参详见 README "NEUPAN navigation"。
+neupan_config_path: planner.yaml   # 相对本文件;或写绝对路径
+neupan_arrive_threshold_m: 0.1     # 到位距离阈值 (m);driver 额外做纯距离检查
+neupan_max_collision_count: 100     # 连续碰撞帧数上限,超过则 raise
+neupan_control_hz: 10.0             # 导航控制循环频率 (Hz)
 
 # ==================== 安全边界 [选填] ====================
 # 底盘是 2D 平面运动,不上下移动。z_min_safe 保持 0.0(SafetyRail 契约要求,
