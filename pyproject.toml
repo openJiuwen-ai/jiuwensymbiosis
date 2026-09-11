@@ -12,7 +12,8 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
-    "openjiuwen>=0.1.13,<0.1.16",
+    "openjiuwen>=0.1.13,<=0.1.17",
+    "opentelemetry-sdk>=1.44.0",
     "numpy>=2",
     "pydantic>=2",
     "PyYAML>=6",
