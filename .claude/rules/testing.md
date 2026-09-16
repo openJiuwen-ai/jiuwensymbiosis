@@ -1,84 +1,40 @@
 ---
-description: Test location, style, async patterns, mocking, and running conventions for jiuwensymbiosis.
-language: chinese
 paths:
   - "tests/**/*.py"
-alwaysApply: false
 ---
 
 # Testing Rules
 
-## Test Location
-
-- Prefer targeted unit tests that mirror the source path.
-  Example: `jiuwensymbiosis/tools/build_robot_tools.py`
-  -> `tests/unit_tests/tools/test_build_robot_tools.py`.
-- `tests/unit_tests/`: fast deterministic coverage, no hardware/GPU, run in
-  CI. Subdirectories already mirror `jiuwensymbiosis/` subsystems
-  (`agent/`, `api/`, `tools/`, `adapters/`, `rails/`, `skills/`, `env/`,
-  `serving/`, `utils/`).
-- `tests/integration/`: requires real hardware, GPU, or external services;
-  commonly skipped in CI.
-- `tests/mocks/`: shared `MockApi`, `MockEnv`, `MockDriver`, `MockScene`
-  fixtures — use these to keep unit tests hardware-free.
-
-## Choosing Test Patterns
-
-| Pattern | When to Use | Characteristics |
-|---------|-------------|----------------|
-| **Unit test** (`@pytest.mark.unit`) | Isolated logic, no I/O, fast feedback | Mock all hardware via `tests/mocks/` |
-| **Integration test** (`@pytest.mark.integration`) | Real arm / camera / detector | Skipped in CI; run on the bench |
-
-**Decision rules**:
-- If it touches serial/CAN/socket, a real camera, or the detection
-  subprocess -> integration test.
-- If it tests a single function/mixin/rail in isolation -> unit test, using
-  `MockEnv` / `MockApi`.
-- If you change capability gating or tool emission -> add unit tests under
-  `tests/unit_tests/api/` and `tests/unit_tests/tools/`.
-
-## Test Style
-
-- This repo uses `pytest` with `asyncio_mode = "auto"` (see `pyproject.toml`).
-- `pytest-mock` is available; prefer the `mocker` fixture for patches.
-- Test class naming: `Test<Feature>` or `Test<FeatureName>`.
-
-## Credentials and Mocks
-
-- jiuwensymbiosis has no real-credential surface in library code (no API
-  keys / tokens in source). Keep it that way.
-- For LLM calls in tests, use `MockModel` (the `--mock` path) instead of
-  real model credentials. `build_robot_agent(..., model=MockModel())`.
-- Never hard-code real hardware endpoints or device paths in test files;
-  use `MockDriver` / `MockArmEnv`.
-
-## Async Tests
-
-- `pytest-asyncio` is configured with `asyncio_mode = "auto"` and function
-  loop scope — no `@pytest.mark.asyncio` boilerplate needed.
-- Example:
-
-```python
-async def test_tool_emits_for_capability():
-    api = build_test_api()
-    tools = build_robot_tools(api, env=MockEnv())
-    assert "goto_xyzr" in {t.name for t in tools}
-```
-
-## Assertions and Coverage
-
-- Use descriptive assertion messages for non-obvious conditions.
-- New public API changes (new `ActionSpec`, new `@implements` binding, new env
-  property) require corresponding test updates.
-- When behavior changes are user-visible, update `examples/` and `docs/`
-  alongside tests.
-
-## Running Tests
-
-- Run all unit tests: `pytest tests/unit_tests/`
-- Run a single file: `pytest tests/unit_tests/tools/test_build_robot_tools.py`
-- Filter by name: `pytest -k "test_capabilities"`
-- Run the full suite (incl. integration, usually skipped): `pytest`
-- Adapter smoke test (runtime, every action):
-  `python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper`
-- Adapter static check: `python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot`
+- Put deterministic, hardware-free tests in `tests/unit_tests/`, normally
+  mirroring the source subsystem. Real serial/CAN/device access, cameras, GPU
+  inference, and external services belong in explicitly marked integration
+  tests. Do not assume selecting all tests automatically skips those paths.
+- Read pytest settings and dependencies from
+  [pyproject.toml](../../pyproject.toml). Select all unit tests with
+  `python -m pytest tests/unit_tests/`; `-m unit` is not equivalent because
+  existing unit tests are not uniformly marked.
+- Reuse the fixtures in `tests/conftest.py`, test doubles exported by
+  `tests/mocks/__init__.py`, and lifecycle helpers in `tests/helpers.py`.
+  Inspect their interfaces before adding a new fake. A focused local fake is
+  appropriate when the existing doubles do not express the needed contract.
+- For LLM tests, use `build_mock_model()` via `RobotAgentConfig(model=...)`.
+  Do not require real credentials or hardware configuration.
+- Async tests run under the configured asyncio auto mode. Await async hooks;
+  use `FakeCtx` for rail callbacks and `make_mock_session()` when a rail
+  requires a session.
+- Patch dependencies where the code under test looks them up. Assert
+  observable results, failure behavior, and side effects; use `caplog` for
+  logging behavior rather than patching a hypothetical logger factory.
+- Isolate files with `tmp_path`. For code that writes `os.environ` directly,
+  arrange fixture teardown to restore each variable's original presence and
+  value, even when an assertion fails. A monkeypatch operation after mutation
+  records the modified state; deleting an already absent key before the call
+  does not register an undo either. Snapshot/restore explicitly when needed.
+- Cover changed public contracts, capability gates, failure propagation, and
+  resource cleanup. Prefer boundary assertions over tests coupled to private
+  implementation details. Adapter logic that can use stub drivers remains
+  eligible for unit tests; do not exclude all adapters from coverage.
+- Use [python-testing](../skills/python-testing/SKILL.md) for the workflow and
+  the [change-validation map](../references/change-validation.md) to select
+  existing architecture checks. Extend the relevant check when a new
+  invariant can be tested; do not add a parallel assertion framework.

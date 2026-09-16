@@ -1,267 +1,98 @@
 ---
 name: python-testing
-description: Deep pytest guide for jiuwensymbiosis — fixtures, mocking, async tests, and the mock-hardware pattern.
+description: Select and implement hardware-free tests for JiuwenSymbiosis action contracts, capability gates, rails, adapters, planning, and lifecycle changes. Use for project-specific test work and verification planning; basic Python syntax and generic pytest tutorials are outside scope.
 ---
 
-# Python Testing
+# Project Testing Workflow
 
-Comprehensive pytest patterns for jiuwensymbiosis. This skill extends
-`.claude/rules/python/testing.md` and `.claude/rules/testing.md`.
+Use [testing rules](../../rules/testing.md) for conventions and
+[the change-validation map](../../references/change-validation.md) to choose
+existing checks. Test configuration and dependencies live in
+`pyproject.toml`; do not copy that configuration into this skill.
 
-## The Mock-Hardware Pattern (core convention)
+## Start from the changed behavior
 
-jiuwensymbiosis's defining test convention: **unit tests never touch real
-hardware**. The `tests/mocks/` package exports `MockApi`, `MockArmEnvWrapper`,
-`MockPiperDriver`, `MockDualArm*`, `MockScene` (and `make_mock_seg_fn`); the
-related `tests/helpers.py` provides `make_mock_session`, `FakeCtx`, and
-`RecordingRailSink`. Use them instead of hand-rolled fakes.
+1. Identify the public behavior, invariant, or failure mode being changed.
+   Read its callers and nearby tests before choosing fixtures or patches.
+2. Select relevant rows from the validation map. Extend existing assertions
+   where possible; a new test should distinguish correct behavior from a
+   plausible regression, not restate the implementation.
+3. Reproduce a reported bug before fixing it where practical. For a refactor,
+   preserve behavior at the public interface and add checks only for gaps.
+4. Run focused tests, inspect failures and collection counts, then broaden
+   verification when shared behavior or unresolved concerns warrant it.
+   Do not expand a documentation-only change into hardware or integration runs.
 
-`jiuwensymbiosis.env.mock.MockArmEnv` is the in-memory 4-DoF arm (capabilities:
-`motion.cartesian`, `motion.servo`, `grasp.parallel`, `vision.camera`,
-`vision.detection`). It does NOT take a `capabilities` argument — to test
-capability gating, subclass `BaseRobotEnv` with the frozenset you want (see
-`tests/unit_tests/tools/test_builder.py::TestEnvIntersectionGating`).
+## Choose a test double at the correct interface
 
-```python
-from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.tools.builder import build_robot_tools
-from tests.mocks.mock_api import MockApi
+| Need | Existing source |
+|---|---|
+| In-memory arm and common fixtures | `jiuwensymbiosis/env/mock.py`, `tests/conftest.py` |
+| API, Piper driver, dual-arm and detector doubles | `tests/mocks/__init__.py` and the implementation modules it exports |
+| Session, callback context, trace sink | `tests/helpers.py`: `make_mock_session`, `FakeCtx`, `RecordingRailSink` |
+| LLM replacement | `jiuwensymbiosis/agent/mock_model.py`: `build_mock_model`, configured through `RobotAgentConfig(model=build_mock_model())` |
+| Calibration workflow dependencies | `tests/unit_tests/calibration/conftest.py` and nearby workflow tests |
 
-def test_motion_tools_emit_when_capable():
-    env = MockArmEnv()  # declares motion.cartesian + grasp.parallel + vision.*
-    api = MockApi(env)
-    tools = {t.card.name for t in build_robot_tools(api, env=env)}
-    assert "goto_xyzr" in tools
-    assert "close_gripper" in tools
-```
+Inspect exports and signatures rather than guessing names such as
+`MockEnv` or `MockDriver`. `MockArmEnv` has fixed capabilities and does not
+accept a `capabilities` constructor argument. For capability subsets, follow
+`TestEnvIntersectionGating` in `tests/unit_tests/tools/test_builder.py`:
+use a small `BaseRobotEnv` subclass that expresses the needed contract.
+Model both admitted and excluded actions.
 
-`build_mock_model()` (in `jiuwensymbiosis.agent.mock_model`, alongside
-`MockModelClient`) replaces the LLM in `--mock` runs and in agent-level tests —
-pass it as `RobotAgentConfig(model=build_mock_model())`.
+Use real deterministic logic behind the interface under test; replace hardware,
+LLM, network, and time dependencies at their existing seams. A focused local
+fake is appropriate when shared doubles would hide the condition being tested.
 
-## TDD Workflow
+## Test safety and execution separately
 
-Write tests before implementation. Follow the red-green-refactor cycle:
-
-1. **RED** — Write a failing test that describes the desired behavior
-2. **GREEN** — Write the minimal implementation to make the test pass
-3. **REFACTOR** — Improve code quality while keeping tests green
-
-`SafetyRail` takes a *session* (not an env) plus keyword bounds, and rails
-receive an openjiuwen callback context (`ctx`) — `tests/helpers.py:FakeCtx` is
-the stand-in:
+`SafetyRail` takes a session; its async callback takes a context. This complete
+example checks the same rejection for a direct tool name and wrapped dispatch:
 
 ```python
 import pytest
+
 from jiuwensymbiosis.rails.safety import SafetyRail
 from tests.helpers import FakeCtx, make_mock_session
 
-class TestSafetyRail:
-    @pytest.mark.asyncio
-    async def test_rejects_z_below_floor(self):
-        session = make_mock_session()
-        rail = SafetyRail(session, z_floor_mm=50.0)
-        ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 30, "r": 0})
-        with pytest.raises(ValueError, match="below z_floor"):
-            await rail.before_tool_call(ctx)
 
-    @pytest.mark.asyncio
-    async def test_accepts_z_above_floor(self):
-        session = make_mock_session()
-        rail = SafetyRail(session, z_floor_mm=50.0)
-        ctx = FakeCtx(tool_name="goto_xyzr", tool_args={"x": 100, "y": 0, "z": 100, "r": 0})
-        await rail.before_tool_call(ctx)  # does not raise
-```
-
-There is also a synchronous `rail.validate_motion(tool_name, tool_args)` for
-pure policy checks without a ctx.
-
-## Fixtures
-
-### conftest.py Organization
-
-Define fixtures in `tests/conftest.py` for project-wide fixtures, or in
-`tests/unit_tests/<subsystem>/conftest.py` for subsystem-specific fixtures.
-
-```python
-# tests/unit_tests/<subsystem>/conftest.py
-import pytest
-from jiuwensymbiosis.env.mock import MockArmEnv
-from tests.helpers import make_mock_session
-from tests.mocks.mock_api import MockApi
-
-@pytest.fixture
-def mock_env():
-    return MockArmEnv()
-
-@pytest.fixture
-def mock_api(mock_env):
-    return MockApi(mock_env)
-
-@pytest.fixture
-def mock_session():
-    return make_mock_session()
-```
-
-### Factory Fixtures
-
-Useful when tests need slightly different configurations:
-
-```python
-@pytest.fixture
-def make_motion_only_env():
-    """Factory: an env whose capabilities are exactly what the test wants."""
-    from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
-
-    def _make(capabilities):
-        class Env(BaseRobotEnv):
-            capabilities = frozenset(capabilities)
-            name = "custom"
-
-            def connect(self): pass
-            def disconnect(self): pass
-            def home(self): pass
-            def get_observation(self):
-                return RobotObservation()
-
-        return Env()
-
-    return _make
-
-def test_gripper_tool_only_when_capable(make_motion_only_env):
-    from jiuwensymbiosis.tools.builder import build_robot_tools
-    env = make_motion_only_env({"motion.cartesian", "grasp.suction"})
-    api = MockApi(env)
-    tools = {t.card.name for t in build_robot_tools(api, env=env)}
-    assert "activate_suction" not in tools  # MockApi implements no suction action
-    assert "close_gripper" not in tools     # grasp.parallel gated out
-```
-
-### autouse Fixtures
-
-Use sparingly — only for global setup that must happen for every test.
-
-## Pytest Marks
-
-### Selective Execution
-
-```bash
-# Run only fast unit tests (CI default)
-pytest -m unit
-
-# Run integration tests on the bench
-pytest -m integration
-
-# Run everything
-pytest
-
-# Filter by name
-pytest -k "test_capabilities"
-```
-
-## Mocking
-
-### pytest-mock `mocker` fixture (preferred)
-
-Patch the symbol where it is *used*, by its real module path
-(`rails/safety.py`, not a hypothetical `rails/safety_rail.py`):
-
-```python
-def test_rail_logs_rejection(mocker, mock_session):
-    from jiuwensymbiosis.rails import safety as safety_mod
-    log_spy = mocker.patch.object(safety_mod, "get_logger")
-    rail = SafetyRail(mock_session, z_floor_mm=50.0)
-    # ... exercise a rejection path
-    log_spy.return_value.warning.assert_called_once()
-```
-
-### Patching module-level symbols
-
-```python
-def test_uses_detector_sidecar(mocker):
-    mock_init = mocker.patch(
-        "jiuwensymbiosis.perception.detector_client.init_detector"
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_policy_rejects_both_tool_shapes(wrapped):
+    session = make_mock_session()
+    rail = SafetyRail(session, z_floor_mm=50.0)
+    motion = {"x": 100, "y": 0, "z": 30, "r": 0}
+    ctx = FakeCtx(
+        tool_name="robot_control" if wrapped else "goto_xyzr",
+        tool_args={"action": "goto_xyzr", "params": motion} if wrapped else motion,
     )
-    # ... exercise the path that calls init_detector
-    mock_init.assert_called_once()
+    with pytest.raises(ValueError, match="below z_floor"):
+        await rail.before_tool_call(ctx)
 ```
 
-### AsyncMock for async methods
+A callback test establishes policy behavior, not that every caller invokes it.
+When changing dispatch, also test the affected wiring: rejection occurs before
+the motion side effect, inner business failures remain failures, and recovery
+is performed by the intended owner. Do not infer callback coverage from a
+successful direct API call or from a mocked ability manager.
 
-Sidecars are stored on the session as `RobotSession.sidecar_starters` (a list
-of zero-arg callables), started in `connect()`:
+For logging behavior, use `caplog` and exercise a path that actually logs.
+For async dependencies, preserve the awaited interface when replacing them.
 
-```python
-def test_session_starts_sidecar(mocker, mock_session):
-    starter = mocker.Mock()
-    mock_session.sidecar_starters.append(starter)
-    mock_session.connect()
-    starter.assert_called_once()
-```
+## Validate adapters and architecture
 
-## Async Testing
+Follow the validation map for adapter static/smoke scripts and the affected
+body tests. Stub-driver success does not validate real-device timing, physical
+reachability, or collision safety. Keep geometry, protocol conversion, unit
+conventions, and failure behavior under hardware-free tests where possible.
 
-`pytest-asyncio` is configured with `asyncio_mode = "auto"` in
-`pyproject.toml` — async test functions need no `@pytest.mark.asyncio`
-decorator (existing tests may still carry it explicitly; both work):
+Check architecture tests alongside the changed behavior when modifying action
+contracts, capability gates, state freshness, or dependency direction. Review
+known forks and xfails explicitly; passing the remaining cases does not retire
+an accepted debt.
 
-```python
-async def test_agent_invoke_with_mock_model(mock_session):
-    from jiuwensymbiosis.agent import build_robot_agent
-    from jiuwensymbiosis.agent.config import RobotAgentConfig
-    from jiuwensymbiosis.agent.mock_model import build_mock_model
+## Report evidence
 
-    config = RobotAgentConfig(model=build_mock_model())
-    agent = build_robot_agent(mock_session, config=config)
-    result = await agent.invoke("pick up the box")
-    assert result is not None
-```
-
-## Test Organization
-
-Mirror the source path in test paths:
-
-| Source | Test |
-|--------|------|
-| `jiuwensymbiosis/tools/builder.py` | `tests/unit_tests/tools/test_builder.py` |
-| `jiuwensymbiosis/rails/safety.py` | `tests/unit_tests/rails/test_safety.py` |
-| `jiuwensymbiosis/api/defaults.py` | `tests/unit_tests/api/test_defaults.py` |
-| `jiuwensymbiosis/adapters/piper/api.py` | `tests/unit_tests/adapters/piper/test_api.py` |
-| `jiuwensymbiosis/agent/trace.py` | `tests/unit_tests/rails/test_trace.py` |
-
-## Adapter Smoke Tests
-
-Two scripts complement unit tests when working on adapters:
-
-```bash
-# Static: the adapter package exposes the expected files + symbols
-python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.piper
-
-# Runtime: every @implements action is callable + JSON-serializable, on a stub driver
-python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper
-```
-
-Run both before claiming an adapter change is done.
-
-## pyproject.toml Configuration
-
-Already in place:
-
-```toml
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "unit: no hardware or GPU required",
-    "integration: requires real hardware, GPU, or external services",
-]
-asyncio_mode = "auto"
-filterwarnings = [
-    "ignore::DeprecationWarning:pymilvus",
-    "ignore::DeprecationWarning:openjiuwen",
-    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
-]
-```
-
-> No coverage gate is configured yet. If you add one, target 80% for
-> `jiuwensymbiosis/` core (skip `adapters/` vendor-specific code from the
-> gate — it's hard to cover without hardware).
+Give the exact commands and their outcomes, including skips and missing
+dependencies. Separate static inspection, executed unit tests, and any
+authorized integration evidence. Name residual gaps without inventing a
+coverage percentage or declaring unexecuted checks passed.
