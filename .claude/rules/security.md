@@ -1,79 +1,69 @@
 ---
-description: Credentials, hardware safety, dependency review, and proxy hygiene rules for jiuwensymbiosis.
-language: chinese
 paths:
   - "jiuwensymbiosis/**/*.py"
+  - "jiuwensymbiosis/skills/**/SKILL.md"
+  - "scripts/**/*.py"
+  - "examples/**/*.py"
+  - "templates/**/*.py"
+  - "templates/**/*.yaml"
   - "configs/**/*.yaml"
-alwaysApply: false
+  - "pyproject.toml"
 ---
 
-# Security Rules
+# Security and Physical Safety
 
-> jiuwensymbiosis is a robotics framework with no sandbox / sys_operation /
-> prompt-injection surface like agent-core. These rules cover the security
-> concerns that *do* apply here: credentials, **physical safety**, dependency
-> review, and proxy hygiene.
+## Motion and recovery
 
-## Credential Handling
+- Preserve the policy checks on each changed execution path. Calling
+  `api.goto_xyzr()`, an `@implements` method, or a tool object directly does
+  not itself run `SafetyRail`. Agent callbacks and explicitly invoked
+  synchronous policy checks are separate from action implementations.
+- Check the applicable capability, envelope, units, and coordinate frame.
+  An Env limit of `None` means no range check, not a validated safe range.
+  Never invent or relax a hardware limit to make an operation pass.
+- Servo paths must validate each target before dispatch using the existing
+  synchronous policy entry; drivers retain their hardware-boundary limits.
+  Calibration and manual-control paths need their own explicit validation
+  and recovery responsibilities, even when they do not use agent callbacks.
+- Preserve payload-aware recovery in `jiuwensymbiosis/rails/recovery.py`.
+  Do not replace it with unconditional home/release or recover twice after
+  another layer has already handled the failure.
+- Preserve hand-guiding target resynchronization before torque restoration
+  and the end-effector release choice. Calibration publication must retain
+  acceptance gates and adapter reload validation; never promote a candidate
+  report into a runtime artifact by hand.
 
-- Never hard-code model API keys, tokens, or real hardware endpoints in
-  source files or YAML configs.
-- All credentials must come from environment variables or config loaded at
-  runtime.
-- In tests and the `--mock` demo path, use `MockModel` / `MockDriver` /
-  `MockArmEnv` — never real credentials.
+## Executable inputs and subprocesses
 
-## Physical Safety (robotics-specific)
+- `jiuwensymbiosis/tools/inproc_code.py` executes Python in the agent process
+  with live objects and no sandbox. Treat changes to its inputs, globals, and
+  reachability as trust-boundary changes. Do not assume outer tool callbacks
+  inspect or gate every motion performed inside generated code.
+- Distinguish task instructions from external tool, document, and perception
+  content. Do not treat prompt wording as an enforced execution restriction.
+- Build subprocess commands as argument lists with `shell=False`. Check the
+  source of executable paths, arguments, and environment. `shutil.which()`
+  resolves a path; it does not establish that an executable is trusted.
+- Keep detector sidecar startup, failure cleanup, and shutdown owned by
+  `RobotSession`; see `jiuwensymbiosis/perception/detector_sidecar.py`.
 
-This is jiuwensymbiosis's most important "security" surface — code that
-can move real hardware.
+## Credentials, networking, and persistence
 
-- **Never bypass `SafetyRail` policy**: the Z-floor (`z_min_safe`) and XY
-  workspace bounds checks in `jiuwensymbiosis/rails/safety.py` run before
-  every `goto_xyzr` / `goto_pose`. High-frequency `motion.servo` is the only
-  callback exception: each tick must call a synchronous `SafetyRail` policy
-  entry point before dispatch — `SafetyRail.validate_motion()` for the tool
-  path or `SafetyRail.validate_pose()` for the flat-key servo fast path (both
-  reuse the same `_apply_xyz_policy()` core), and the driver must
-  independently enforce Cartesian, IK/FK, joint, step, and velocity limits at
-  the hardware boundary. Ordinary motion must not call driver methods directly.
-- **`z_min_safe` is a hard floor**: adapter envs must expose it as a
-  property reflecting the real arm's collision limit. Do not set it to a
-  permissive value to "make tests pass" on real hardware.
-- **`RecoveryRail` homes + releases on failure**: preserve this fallback;
-  do not swallow motion exceptions in a way that skips recovery.
-- **Velocity / force limits** belong in the driver (`lowlevel.py`), enforced
-  at the hardware boundary — not in Python-level "best effort" checks.
+- Load credentials at runtime; do not commit them in source, configs, or
+  `.env` files. Device addresses are configuration, not credentials: keep
+  deployment-specific values configurable and real devices out of unit tests.
+- Preserve `clear_proxy_env()` before importing `openjiuwen`; follow the
+  existing entry-point pattern and `tests/conftest.py`.
+- Check actual bind addresses and transport requirements for network changes.
+  Local loopback HTTP and remote exposure have different trust assumptions.
+  Moving a URL literal to evade a checker does not improve transport security.
+- Keep credentials out of logs, exception text, tool output, and traces.
+  Review persisted frames and observation `extra` fields when adding data.
+  A logger or summary field does not automatically redact its contents.
+- Review new dependencies and their transitive impact using `pyproject.toml`.
+  Run `pip-audit` against the relevant installed environment before merging
+  dependency changes; identify scan scope and report unavailable checks.
 
-## .env and Proxy Hygiene
-
-- `.env` and `.env.*` must not be committed (already gitignored).
-- `clear_proxy_env()` **must** be called before `import openjiuwen` in any
-  entry point or test. Proxy env vars break local vLLM / detection calls
-  by routing localhost through the proxy. The root `conftest.py` does this
-  for tests; entry points must do it themselves.
-
-## Dependency Review
-
-- Do not add dependencies without reviewing `pyproject.toml` and the
-  security implications.
-- New network-facing dependencies (model clients, detector backends)
-  require review.
-- Run `pip-audit` on the new dependency before merging:
-
-```bash
-pip install pip-audit
-pip-audit
-```
-
-## Security-Sensitive Areas
-
-- `jiuwensymbiosis/rails/` — safety / recovery / visual-feedback rails
-  (motion boundary checks, physical safety)
-- `jiuwensymbiosis/adapters/*/lowlevel.py` — direct hardware I/O
-  (serial/CAN/socket), velocity and force enforcement
-- `jiuwensymbiosis/serving/` — detection subprocess (external model
-  invocation)
-
-Changes to these areas require extra review and testing. For the full
-checklist see `skills/security-review`.
+For an explicit security/safety review, use
+[security-review](../skills/security-review/SKILL.md). Its invocation policy is
+manual; these rules apply independently of whether that skill is invoked.
