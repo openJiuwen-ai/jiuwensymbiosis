@@ -1,130 +1,123 @@
 # JiuwenSymbiosis 架构指南
 
-> JiuwenSymbiosis 是基于 `openjiuwen` 构建的具身智能体（embodied agent）框架，设计目标是让**同一份代码库适配不同机器人形态**——6-DoF、移动双臂、夹爪、吸盘等。其核心是**共享动作词表（ActionSpec）+ 能力门控**机制：新增一种硬件只需 1 份 YAML 配置和 6 个适配器文件，框架核心层无需修改。
-
----
+JiuwenSymbiosis 是基于 `openjiuwen` 的具身智能体框架。它用**共享动作契约（ActionSpec）与能力过滤**，让规划和执行逻辑复用于不同机器人。适配器负责硬件协议、坐标变换和设备配置；在已有动作词表能覆盖新硬件需求时，上层任务逻辑通常无需修改。
 
 ## 一、架构总览
 
-运行时形成「**感知 → 规划 → 执行 → 观测 → 反馈**」闭环：命令沿 Agent → Rails → Tool → API → Env → Hardware 六层主链向下，观测、失败与轨迹证据向上回流。框架由 **九个架构域** 组成——**六层执行主链**，加上从侧面接入的**两个指导面**（感知、执行记忆）与**技能库**：
+先区分三个问题：**谁负责什么、哪些动作可用、任务如何执行**。下面的职责图不表示调用顺序；本节的[模块归属与跨层关系](#module-map)进一步定位代码与关键联系。第二节的[完整任务主线](#task-lifecycle)串联执行过程，后续章节展开具体机制。
 
-![JiuwenSymbiosis 架构总览](../../images/architecture-layers.zh.svg)
+![模块职责：任务编排、会话、动作工具、动作实现、硬件接口和规划输入](../../images/architecture-layers.zh.svg)
 
-| 架构域 | 组成 | 作用 |
+| 职责 | 主要实现 | 输入与输出 |
 |---|---|---|
-| 六层执行主链 | Agent · Rails · Tool · API · Env · Hardware | 承载运行时的每一次工具调用：命令向下、观测与失败向上 |
-| 指导面 ①：感知 | `perception`（环境感知：相机 / 深度 / 检测）+ `kinematics`（本体感知：URDF / 正逆运动学 / 可达性） | 把环境与本体的当前事实交给规划器 |
-| 指导面 ②：执行记忆 | `WorldState` + `ExecutionMemory`（`api/memory.py`） | 感知即入账、移动即作废，保证规划器读到的位置始终新鲜 |
-| 技能库（Skill Library） | `skills/` 的 SKILL.md：`visual_pick` / `visual_place` / `transport` | 提供**预先编排好的动作序列**，经 SkillUseRail 加载，供 Agent 选择组合成长程任务流 |
+| 任务编排 | `run_robot_task`、`plan_task`、`run_sequence`、Agent | 任务与配置 → 计划、工具调用及执行结果 |
+| 生命周期 | `RobotSession` | Env、API、辅助服务进程（sidecar）启动器 → 连接与资源清理 |
+| 动作工具 | `build_robot_tools`、`RobotControlTool` | 动作名与参数 → 调用已绑定的适配器方法 |
+| 动作实现 | `BaseRobotApi`、适配器 API、`api/defaults.py` | 动作契约 → 通用算法与硬件操作 |
+| 硬件接口 | `BaseRobotEnv`、适配器 Driver | 统一操作 → 厂商协议；设备读数 → `RobotObservation` |
+| 规划输入 | 技能库、`WorldState`、`ExecutionMemory`、`Reachability` | 技能流程、观测、执行记录、机器人模型 → 规划所需信息 |
 
-两个指导面共同指引 Agent **动态编排**——既编排技能（Skill），也编排原子动作（`ActionSpec`）：同一条任务在不同环境下展开出的序列并不相同。
+`perception/` 和 `motion/` 提供可复用的感知、几何与运动算法，由动作实现调用。`kinematics/` 提供 URDF、正逆运动学等模型计算；它与相机检测、实时设备观测的职责不同。
 
-下面的模块关系图与概览使用同一结构：左侧六条泳道对应执行主链，右侧集中放技能库与「环境感知 · 本体感知 · 记忆」两个指导面。
+Rails 在工具调用、异常和模型调用等事件处执行检查、恢复或信息采集，并不是所有操作都必须逐层穿过的一串函数。`InProcessCodeTool` 和实时伺服有各自的执行路径，见[工具策略](#tool-strategies)和[实时追踪伺服](#realtime-servo)。
 
-![JiuwenSymbiosis 模块依赖图](../../images/architecture-dependencies.zh.svg)
+<a id="module-map"></a>
 
-一次任务的先后关系单独用时序图表示。六层主链逐一对应为 Agent → Rails → Tool → API → Env → Hardware；技能库与「感知 · 执行记忆」指导面作为侧面参与者接入：
+### 模块归属与跨层关系
 
-![JiuwenSymbiosis 单次任务调用时序](../../images/architecture-task-sequence.zh.svg)
+下图将职责落实到代码模块：沿用六个职责泳道，右侧分别展示技能库、状态与执行记忆、共享算法与模型，底部单列会话装配和共享结果类型。实线只画关键调用，虚线表示规划输入或成功动作结果；它不是完整的导入依赖图，也不展开每个事件回调。
 
-关键调用路径：
+![模块归属与跨层关系：六个职责泳道及技能、状态记忆、共享算法、会话与结果类型](../../images/architecture-modules.zh.svg)
 
-| 场景 | 调用关系 |
-|---|---|
-| 启动 | YAML → Adapter Config → `make_builder()` → Session(Env/Api/sidecars)；RobotAgentConfig + Session → `run_robot_task()` |
-| 普通工具调用 | Agent → Rail 前置检查 → Tool → `@implements` 方法 → `defaults`/共享算法 → Env 动词 → Driver → 硬件 |
-| 视觉工具调用 | `defaults` → `perception/scene3d` → 适配器标定帧（RGB/depth/内参/外参）→ 检测 sidecar → 共享三维几何 |
-| 动态编排 | 每步前重测 `WorldState`，与下一步前置条件矛盾时自动重规划 |
-| 实时伺服 | `BackgroundTracker` 感知线程持续刷新最新目标 → `ServoController` 高频限斜率步进 → env 非阻塞伺服动词 |
-| 观测与诊断 | Driver/相机 → `RobotObservation`/工具结果 → VisualFeedback/Trace/Diagnosis → 下一轮模型或离线分析 |
-| 关闭 | `RobotSession.disconnect()` → Trace 收尾 → `Env.disconnect()` → `Driver.close()` → sidecar 退出 |
+API、Env 和 Driver 是职责分组，具体本体的 `api.py`、`env.py`、`lowlevel.py` 位于 `adapters/<本体>/`。`TraceRail` 位于 `agent/trace.py`，`SkillUseRail` 由 `openjiuwen` 提供。`WorldState` 汇总 Env 观测、执行记忆和可达性信息，`ExecutionMemory` 由 API 持有并记录成功动作的效果；模型计算与实时观测分别承担不同职责。
 
-当前框架与各内置适配器具体支持哪些能力，见[特性矩阵](../reference/feature-matrix.md)。
+动作工具的能力过滤见[第五节](#capability-gating)，进程内 Python 的直接调用边界见[第六节](#tool-strategies)。当前各适配器支持的能力见[特性矩阵](../reference/feature-matrix.md)。
 
-README「核心特性」每一项都能落回具体的架构机制与对应章节：
+<a id="task-lifecycle"></a>
 
-| README 核心特性 | 架构机制 | 章节 |
+## 二、完整任务主线
+
+下面把各模块放回一次任务的执行过程中：调用方建立会话，准备规划输入，调度动作，再根据结果决定后续步骤，最后退出会话。主图以默认 `fastagent` 的普通动作路径展开；`stepagent` 的差异在规划与反馈处标明，具体编排方式见第七节的[《任务执行时序：两种编排方式》图](#execution-modes)。
+
+![完整任务主线：建立会话、准备规划、执行动作、更新记忆、处理反馈并退出会话](../../images/architecture-task-lifecycle.zh.svg)
+
+图中的“编排与执行”汇总任务入口、规划器和执行器；“工具与 Rails”表示工具调度及其前后事件，不表示 Rails 是独立的串行调用层；“Env / Driver”合并展示硬件接入。Session 负责资源生命周期，动作顺序由编排与执行逻辑决定。
+
+**执行反馈通过两种方式影响后续行为**：动作工具把成功结果按契约记入 `ExecutionMemory`，`fastagent` 在后续步骤前读取当前状态并检查冲突；`stepagent` 则将工具结果用于后续模型调用。状态检查不等于每步重新感知整个环境，重新规划和异常恢复也有各自的触发条件。
+
+| 主图位置 | 需要把握的关系 | 局部展开 |
 |---|---|---|
-| 构型无关 | 共享 `ActionSpec` 词表 + 能力门控 + 6 文件适配器 | 二、三、四、十二      |
-| 任务组合 | 两级规划：技能组合 `compile_sequence` / 动作组合 `compose_actions` | 六                    |
-| 环境 + 本体感知的动态编排 | 同一个任务**不是写死的序列**：规划器以当前本体状态 + 环境感知结果为输入，**不同环境编排出的动作序列不同**；执行中现实状态与前置条件矛盾时触发重规划 | 六、九                |
-| 执行记忆 | `ExecutionMemory`（`api/memory.py`），感知即入账、移动即作废 | 三                    |
-| 实时追踪伺服 | `agent/fast/realtime` 双速环：`BackgroundTracker` + `ServoController` | 六                    |
-| 主动搜索 | `search_target` 当前朝向报方位 → `rotate_base`/`approach_*` 转向并逐步逼近 | 三、十                |
-| 可达性推理 | 本体无关的 `kinematics`（URDF/FK/IK）+ 规划期判官 `Reachability` + `WorldState` 的 `reachable` 标注 | 四、六                |
-| 动作契约 | `ActionSpec` 的 `requires`/`provides`/`invalidates` + 位置新鲜度 | 三                    |
-| 安全闭环 | SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail | 七                    |
-| 通用视觉感知 | `perception/` 共享管线 + 适配器一个投影函数 | 三、十                |
-| 技能工作流 | SKILL.md + SkillUseRail（工具路径）/ `compile_sequence`（快路径） | 五、六                |
-| 可审计执行 | TraceRail 结构化轨迹 + `jiuwensymbiosis-replay` 回放 | 八                    |
+| A：建立会话 | 配置装配 Env/API；Session 启动辅助服务并连接设备 | [Session 生命周期](#session-lifecycle)、[Session 构建](#session-builder) |
+| B：准备规划与执行 | 可用动作、技能与状态进入编排；按模式准备执行器 | [能力过滤](#capability-gating)、[两种编排方式](#execution-modes)、[两级规划](#two-tier-planning) |
+| C：执行动作 | 工具分派到 API，API 调用共享算法及硬件接口 | [工具策略](#tool-strategies)、[视觉管线](#perception-pipeline)、[实时伺服](#realtime-servo) |
+| C：结果与反馈 | 结果更新记忆；状态冲突和动作失败按不同条件处理 | [执行记忆](#execution-memory)、[状态检查与重规划](#runtime-replanning)、[安全 Rails](#safety-rails) |
+| D：任务与会话结束 | 返回结果、记录轨迹；退出会话时断开设备并停止辅助服务 | [执行轨迹](#execution-trace)、[Session 生命周期](#session-lifecycle) |
 
-下面自底向上逐层拆解，重点看**动作契约如何被声明、被门控、最终成为 LLM 工具**。
+主图按一次任务展示。同一个 Session 可以运行多个任务；设备在调用方退出会话时断开，不是每个任务完成后立即断开。
 
----
+## 三、Env 层：唯一的硬件契约
 
-## 二、Env 层：唯一的硬件契约
-
-`jiuwensymbiosis/env/base.py` 定义了所有机器人 env 必须实现的接口。它**不直接驱动硬件**——它持有一个 `low_level` 驱动并委托。每个 env 必须声明自己硬件支持的能力：
+`jiuwensymbiosis/env/base.py` 定义硬件接入接口。适配器实现连接、断开和观测，并通过 `low_level` 驱动访问设备。硬件能力由 Env 显式声明，例如当前 `MockArmEnv`：
 
 ```python
-# env/mock.py —— 一个 4-DoF + 夹爪 + 相机的仿真臂
 capabilities = frozenset({
-    "motion.cartesian", "grasp.parallel",
+    "motion.cartesian", "motion.servo", "grasp.parallel",
     "vision.camera", "vision.detection",
 })
 ```
 
-`BaseRobotEnv` 提供一组默认动词（`home`、`get_flange_pose`、`move_to_flange`、`move_joint`、`set_end_effector`、`grab_rgb`），并暴露安全边界属性（`z_min_safe`、`workspace_bounds`、`joint_limits`、`base_step_limits`、`lift_limits`、`waist_step_limit_rad`）和本体常量（`home_pose`、`tool_offset_mm`），每个默认为 `None` = **不做范围检查**（类型/有限数检查仍执行）。这些属性是 SafetyRail 读取的**数据**，适配作者只需填值，无需写检查逻辑。
+`BaseRobotEnv` 提供运动、末端控制和图像读取等接口；部分接口有委托驱动的默认实现，`home()` 等接口由适配器实现。Driver 按硬件能力实现 `env/protocol.py` 中对应的协议，如 `CartesianDriver`、`JointDriver`、`BaseDriver`、`CameraDriver`；移动底盘不需要实现机械臂的笛卡尔运动接口。
 
-env 还需暴露本体常量供上层几何与可达性使用：
+安全边界属性包括 `z_min_safe`、`workspace_bounds`、`joint_limits`、`base_step_limits`、`lift_limits`、`waist_step_limit_rad`。这些边界默认 `None`，表示不执行对应的范围检查；相关参数的类型和有限数检查仍由 SafetyRail 执行。适配器提供边界数据，SafetyRail 统一应用检查逻辑。
 
-- `joint_units` —— `"deg"`/`"rad"`/`None`，`move_joint` 与观测关节的单位（**未声明视为未知**，规划器不会猜测）
-- `default_orientation_policy` —— `goto_xyzr` 省略 `orientation_policy` 时的默认倾角
-- `urdf_path` / `arm_chains` —— 本体有 URDF 时提供，`planning.reachability` 据此**派生**（从不声明）；`arm_joints` 声明双臂各自驱动的关节
-- `cameras` —— 本体可感知的相机列表（`("waist", "head")` 等，最佳优先）
+几何与模型属性单独提供，不能把它们的默认值解释为安全策略：
+
+- `home_pose`、`tool_offset_mm`：归位姿态与工具偏移；基类默认分别为 `None` 和 `0.0`。
+- `joint_units`：关节命令及观测使用的 `"deg"`、`"rad"` 或 `None`；未声明时不推断单位。
+- `default_orientation_policy`：`goto_xyzr` 未指定姿态策略时使用的默认策略。
+- `urdf_path`、`arm_chains`：机器人模型与运动链；用于派生 Env 侧的 `planning.reachability`。
+- `arm_joints`：各机械臂对应的关节名；`cameras`：可选择的相机列表。
 
 ### 已知能力（`KNOWN_CAPABILITIES`）
 
-定义在 `env/base.py`，是全框架共享的能力词汇表：
+能力词表定义在 `env/base.py`：
 
 | 能力字符串 | 含义 |
 |---|---|
-| `motion.cartesian` | base 坐标系下的 XYZ(R) 末端命令 |
-| `motion.joint` | 关节空间命令 |
-| `motion.servo` | 非阻塞实时伺服位姿命令 |
-| `motion.base` | 平面移动底盘相对运动（差分，无横移） |
-| `motion.base_servo` | 非阻塞连续底盘驱动（边走边转向） |
-| `motion.lift` | 升降/躯干垂直位置控制 |
-| `motion.waist` | 躯干偏航（腰部）旋转 |
-| `motion.goal` | 经由导航栈自主驶向目标/抓取带 |
-| `motion.dual_arm` | 双臂协同——**拓扑轴**，决定调用哪个动作；双臂夹持的是什么由 `grasp.*` 单独声明 |
-| `grasp.suction` | 吸盘开/关 |
-| `grasp.parallel` | 平行夹爪开/合 |
-| `grasp.paddle` | 两块平板各夹目标一面——**末端能力**，与 `motion.dual_arm` 是两条独立轴 |
-| `vision.camera` | 原始图像流可用 |
-| `vision.depth` | 深度流可用 |
-| `vision.detection` | 高层目标检测 |
-| `vision.eye_to_hand` | 相机固定在机器人基座/世界坐标系 |
-| `vision.search` | 本体可转动载着相机的东西（头/腰/底盘）找目标——只报告**方位（bearing）** |
-| `planning.reachability` | 基于 URDF 的可达性/工作空间先验（**派生**，从不声明） |
-| `sorting.command` | 不透明分拣协议（无笛卡尔运动） |
-| `speech.tts` | 文本转语音可用 |
+| `motion.cartesian` | 基座坐标系下的末端位姿运动 |
+| `motion.joint` | 关节空间运动 |
+| `motion.servo` | 非阻塞伺服位姿命令 |
+| `motion.base` | 平面底盘相对运动；当前共享动作支持差分运动，不支持横移 |
+| `motion.base_servo` | 非阻塞连续底盘驱动 |
+| `motion.lift` | 升降位置控制 |
+| `motion.waist` | 腰部偏航旋转 |
+| `motion.goal` | 通过导航接口驶向目标区域 |
+| `motion.dual_arm` | 双臂协同运动；末端类型另由 `grasp.*` 声明 |
+| `grasp.suction` | 吸盘控制 |
+| `grasp.parallel` | 平行夹爪控制 |
+| `grasp.paddle` | 双夹板夹持 |
+| `vision.camera` | 图像读取 |
+| `vision.depth` | 深度读取 |
+| `vision.detection` | 目标检测 |
+| `vision.eye_to_hand` | 使用固定相机的手眼几何关系 |
+| `vision.search` | 目标方位搜索；是否移动机器人由具体动作决定 |
+| `planning.reachability` | 基于机器人模型的可达性检查；由实现和模型派生 |
+| `sorting.command` | 设备专用分拣协议 |
+| `speech.tts` | 文本转语音 |
 
-能力轴相互**正交、可自由组合**：双臂能否协同（`motion.dual_arm`）、能否升降/转腰（`motion.lift`/`motion.waist`）、能否转头找目标（`vision.search`）、夹持靠夹爪还是夹板（`grasp.parallel`/`grasp.paddle`）彼此独立。一个动作只属于一条能力，本体按需声明，能力组合成一条任务时按前提条件编排。
+这些能力描述不同维度，适配器按实际支持情况组合。能力名称本身不保证某个任务可执行：任务还需要对应动作、满足前置条件，并提供必要的传感器和模型数据。
 
-框架内置 `MockArmEnv`（`jiuwensymbiosis/env/mock.py`），**无需任何硬件即可跑通整条链路**；配套 `MockModelClient`（工厂函数 `build_mock_model`，`--mock` 时注入，`invoke` 返回固定文本、跳过 `api_key` 校验）在 LLM 侧对应，两者一起让"无硬件 + 无 LLM"的纯逻辑干跑真正闭环。
+`MockArmEnv` 和 `build_mock_model` 可用于无硬件、无真实 LLM 的逻辑验证。当前 `examples/run_task.py --mock` 的硬件替身仅针对 Piper 路径，并强制使用 `stepagent`；新适配器需提供自己的测试替身。
 
----
+## 四、API 层：动作契约与 `@implements`
 
-## 三、API 层：动作契约与 `@implements`
+动作契约、实现绑定和通用实现分别由以下对象承担：
 
-这一层是整个框架设计的核心，由三个符号组成：
+- **`ActionSpec`**：类定义在 `api/decorators.py`，共享动作实例集中在 `api/actions.py`。声明动作名称、能力要求、参数、结果类型、前置条件和效果。
+- **`@implements(SPEC)`**：在方法定义时附加 `ToolMeta`，关联共享契约和方法的参数 schema。工具构建器随后读取这些元数据；运行时调用的是绑定后的方法，不会重新执行装饰器。
+- **`api.defaults`**：可由多个适配器复用的函数。适配器显式选择转发到哪个函数，不通过动作 mixin 继承整组能力。
 
-- **`ActionSpec`** —— 动作的契约，类定义在 `api/decorators.py`，共享词表的各条 spec 实例集中在 `api/actions.py`。它说一个动作「是什么」：名字、描述、能力门、参数名、结果形状、前置条件与效果、位置新鲜度与是否对规划器可见。
-- **`@implements(SPEC)`** —— 把一个方法绑定为某条契约在本体上的实现。契约**完全来自 spec**，实现方没有渠道对规划器说词表之外的话。它把 `ToolMeta`（spec + 由这个本体签名推导的 `input_params`）挂到方法上，`build_robot_tools` 据此把它们包装成 openjiuwen `LocalFunction` 工具。
-- **`api.defaults`** —— 一类动作的实现委托 Env 就能完成（`goto_xyzr` 就是 `env.move_to_flange(...)`），这些**自由函数**由适配器显式转发：`@implements(GOTO_XYZR)` 然后 `return defaults.goto_xyzr(self, ...)`。**不是基类**——继承会把不相关的动作捆绑进来，而函数只取所需的那一个。
-
-适配器示例（以 Cruzr 的 `search_target` 为例——无几何差异，一行转发 defaults）：
+例如 Cruzr 的 `search_target` 复用共享实现：
 
 ```python
 class CruzrApi(BaseRobotApi):
@@ -134,183 +127,214 @@ class CruzrApi(BaseRobotApi):
         return defaults.search_target(self, object_name, reference, relation)
 ```
 
-注意 Piper 的 `goto_xyzr` 恰是**反例**：Piper 是倾斜工具（tip ≠ flange），它必须重写 `goto_xyzr` 做 tip→flange 换算而不是转发 defaults（见第十二节）。
+当几何或设备语义不同时，适配器提供方法实现。例如 Piper 的 `goto_xyzr` 需要处理工具尖端到法兰的坐标变换，不能直接套用通用实现。`@implements` 保持契约元数据一致，具体实现是否遵守契约仍需测试验证。
 
-`BaseRobotApi.capabilities` 属性**自动反推**自本体实现的动作（每个 `@implements` 的 spec 贡献自己的能力），再加上声明的 marker 能力类属性（`motion.servo`、`planning.reachability` 等没有对应动作、只能靠属性声明）。**适配作者无需手动维护能力列表**——实现哪个动作就自动具备哪个能力，且不会广告本体没有的能力。
+`BaseRobotApi.capabilities` 从已绑定动作的 spec 推导能力，也接纳类属性 `capability` 中的标记能力。`planning.reachability` 由可调用的 `check_reachable` 派生，不应作为普通硬件能力手动声明。API 的能力描述实现支持什么，仍需与 Env 的硬件能力核对。
 
-`home` 是唯一无条件动作（`capability=None`），归属到 `BaseRobotApi`（所有本体都欠一个安全归位），它的实现委托 `env.home()`。没有第二个 "home_safely"——安全归位是**一件事**，归位需要多少动作是实现细节。
+`home` 的契约没有能力要求（`capability=None`），由 `BaseRobotApi` 提供并委托 `env.home()`。每种机器人必须定义适合自身的归位行为；持物状态下的恢复另见[安全 Rails](#safety-rails)。
 
 ### 规划契约：除了可调用，还要可规划
 
-除了调用 schema，每条动作还携带：
+| 契约字段 | 含义 |
+|---|---|
+| `result` / `ToolMeta.returns` | spec 的 `result` 保存结果类型或 schema；`returns` 提供推导出的 JSON Schema，供校验器检查 `<bind>.field` |
+| `requires` / `provides` / `invalidates` | 动作需要、建立或清除的机器人状态，使用 `api/state.py` 的封闭词表 |
+| `produces_location` | 结果提供后续步骤可使用的位置 |
+| `consumes_location` | 动作隐式读取已有位置缓存；显式 `<bind>.field` 引用另行检查 |
+| `invalidates_locations` | 动作使先前位置失效，例如改变测量坐标关系的底盘运动 |
+| `opens_access` / `closes_access` | 描述打开或关闭通路的效果；校验机制已存在，当前内置动作尚未声明这些效果 |
 
-- `result` —— 结果字段的 JSON Schema，自动派生自 `TypedDict` 返回注解（失败/成功形状通常取并集，`contracts.py` 是这些结果类型的**唯一权威源**，不归属任何层、不依赖包内其它模块——`api/` 承诺它们，`perception/`+`motion/` 构建它们）
-- `requires` / `provides` / `invalidates` —— 本体自身状态，基于 `api/state.py:KNOWN_STATE_TOKENS` 的封闭词表
-- `opens_access` / `closes_access` —— 屏障开/闭语义（先拉开抽屉才能拿里面的东西；当前内置词表暂无动作声明，机制已就绪并被 `parse_sequence` 消费）
-- `produces_location` / `consumes_location` / `invalidates_locations` —— 位置新鲜度（一个感知到目标在哪的动作**产生**；一个移动底盘的动作**作废**所有从旧视角测得的位置，因为它们是从旧位置测量的）
+共享结果类型位于 `contracts.py`，供 API、感知和运动模块共同使用。`api/` 可以调用 `perception/` 和 `motion/`；后两者不反向导入 API 层。
 
-契约**从不编码顺序**——它只陈述前置条件和效果，让规划器**推导**一个合法顺序；`parse_sequence` 接受任何前置条件成立的排列。`WorldState.snapshot(session)` 在运行时用同样的词表汇报当前状态（观测覆盖推想；一个缺失的 token 表示**未知**，从不表示**false**）。
+契约陈述前置条件和效果，规划器据此组织动作顺序。`parse_sequence` 检查动作、参数、状态条件、结果引用与位置有效性。运行时状态汇总遵循“观测优先于执行记录推断”；没有报告的状态表示未知，不能直接当作假。
 
-### 执行记忆：感知即入账、移动即作废
+<a id="execution-memory"></a>
 
-`BaseRobotApi` 持有一个 `ExecutionMemory`（`api/memory.py`），它是规划器「现在已知什么」的**唯一账本**：每次动作执行后，`record_action` 把结果折叠进记忆——声明了 `produces_location` 的动作按 referent 记一条带时间戳的位置（感知即入账）；声明了 `invalidates_locations` 的动作（移动底盘、转腰等）经 `invalidate_sensing_cache` 这一**唯一失效入口**把旧位置与感知缓存一并清空（移动即作废）。
+### 执行记忆：记录结果并清除失效位置
 
-这个账本完全由动作契约自动驱动，**不需要任何手写缓存**——适配作者不维护、规划器也不猜测。记账走 best-effort 路径，记失败绝不把一个成功的机器人动作变成工具失败。`WorldState.snapshot` 的位置清单正是从这份账本的 `describe()` 读出来的，所以规划器与执行器看到的是同一份「已知信息」，已执行动作沉淀下来的状态会被后续步骤自动继承引用（`<bind>.field` 绑定）。
+`BaseRobotApi.memory` 持有 `ExecutionMemory`。经过动作工具分派的调用由 `record_action` 记账；成功结果按契约更新状态，产生的位置按目标记录时间戳，声明失效的位置被清除。需要失效且没有生成新位置时，同时调用 `invalidate_sensing_cache()` 清除 API 的感知缓存。
+
+记账失败会记录日志，不把已成功的硬件动作改判为失败。直接调用 API/Env 的代码不能假定自动经过这条记账路径。位置有效性依赖动作声明，也不能自动发现外部物体自行移动；需要重新感知的场景仍应安排感知动作。
+
+`WorldState.snapshot(session)` 汇总 Env 观测、执行记忆和可达性信息，形成规划快照。它不负责持久保存执行记录。序列执行器的 `<bind>.field` 则引用已执行步骤的结果，与 `ExecutionMemory` 的位置记录是不同机制。
 
 ### 视觉：共享管线 + 显式投影动作
 
-`perception/` 提供两类本体无关的共享能力。低层 `pixel_to_base_xyz` 由适配器显式绑定 `@implements(PIXEL_TO_BASE_XYZ)`：eye-in-hand 可转发 `perception/vision.default_pixel_to_base_xyz`（提供 `pose_to_tf` 回调，组合实时 `T_base_flange @ T_flange_cam`，并按标定应用 XY 校正），eye-to-hand 用 `T_base_cam` 实现。高层 `scene3d` 的 `locate_for_grasp`/`locate_for_place`/`analyze_scene` 则直接消费适配器提供的标定 `CameraFrame` 和检测器钩子，完成检测→三维点云→物体/表面几何；`api/defaults` 负责动作转发。`motion/approach` 的 `search_target`/`approach_for_grasp`/`approach_for_place` 复用这些感知结果完成寻靶、对准和逼近。适配器不复制这些共享检测与几何流程，只提供相机、标定变换和必要的本体钩子。
+`perception/scene3d.py` 接收适配器提供的标定帧和检测器，计算物体或表面的三维几何。`api/defaults.py` 提供动作转发，`motion/approach.py` 复用感知结果完成搜索与逼近。处理流程见[视觉管线](#perception-pipeline)。
 
-**主动搜索**由能力 `vision.search` 单独门控，分两层：动作 `search_target` 在**当前朝向**对各相机各看一眼、只报**方位（bearing）**——它刻意**不产生坐标**（不 `produces_location`），也不移动本体，因为一份没有世界坐标的读数不该污染位置新鲜度；它的典型消费者是 `rotate_base`（拿到 `bearing_rad` 先转头对准）。找不到目标时真正的**原地扫视**（逐步转动本体找目标）发生在 `approach_for_grasp`/`approach_for_place` 内部——正因为转动会作废所有已测位置，它绝不能是一个不带 `invalidates_locations` 的动作。逼近循环每轮重测、逐步收敛到可抓/可放的工作位姿。
+`pixel_to_base_xyz` 是独立的显式动作：适配器通过 `@implements(PIXEL_TO_BASE_XYZ)` 绑定实现。随臂相机需要结合当前法兰姿态和手眼标定；固定相机使用相应的相机到基座变换。
 
----
+`search_target` 在当前朝向检查可用相机，报告目标方位 `bearing_rad`，不移动机器人，也不声明产生三维位置。逐步转动寻找目标、重新测量并逼近的过程由 `approach_for_grasp` / `approach_for_place` 承担。
 
-## 四、能力门控（Capability Gating）：工具与硬件自动对齐
+<a id="capability-gating"></a>
 
-这是"一份代码适配所有形态"的核心机制，三步走：
+## 五、能力门控（Capability Gating）：工具与硬件自动对齐
 
-1. **Env 声明**硬件能做什么（手动 `frozenset`）
-2. **Api 推导**自己的能力（反推自它实现的动作的 spec）
-3. **`build_robot_tools(api, env=env)` 取交集**——只有 `api.capabilities ∩ env.capabilities` 里的动作才变成 LLM 工具
+下图展开[完整任务主线 B 阶段](#task-lifecycle)的动作工具构建：先读取实现，再按能力过滤。输入是动作契约、适配器方法和 Env 能力，输出是可用工具；箭头只表示**构建过程中的输入与输出**。
 
-关键区别：能力来自**动作自身的 `ActionSpec`**，从不来自哪个类声明了方法——这消除了旧设计中"沿 MRO 找 `capability` 属性、把适配器声明的所有工具一起门控"的失败模式。
+![动作工具构建：共享契约绑定适配器方法，再按硬件能力过滤](../../images/architecture-dependencies.zh.svg)
 
-**效果**：给一个只吸盘的机器人装上一个夹爪实现，夹爪工具根本不会出现在 LLM 面前。硬件不支持的能力对 agent 完全不可见，从源头杜绝"LLM 让吸盘机器人去开夹爪"这类问题。
+`build_robot_tools(api, env=env)` 使用 `api.capabilities ∩ env.effective_capabilities` 过滤带能力要求的动作；不提供 `effective_capabilities` 的 Env 则使用其 `capabilities`。`home` 等没有能力要求的动作不受该过滤限制。Agent 构建独立动作工具时还设置 `planner_only=True`，仅向规划器暴露允许规划的动作。
 
-门控集合用 `env.effective_capabilities`（声明的能力 | + 由 URDF **派生**的 `planning.reachability`）。**`planning.reachability` 是派生的**：Api 侧是"本体持有一个可达性判断器"（`check_reachable`/`describe_reach`），Env 侧是"本体带着判官读的 URDF"——只有交集为真才算数，这阻止一个本体声称可达却没有任何模型。判官背后是本体无关的 `kinematics/`（URDF 解析 + FK + 数值 IK + 可达/自碰撞，numpy 为主、可选 pinocchio 加速，URDF 路径与关节名皆入参），也就是架构图里「本体感知」那一格。
+例如硬件未声明 `grasp.parallel`，独立工具列表就不包含要求该能力的夹爪动作。Session 的严格能力检查还可能在启动时先报配置错误。这里控制的是动作工具的暴露范围，不限制进程内 Python 对对象的直接访问。
 
-规划器有**两个入口**消费可达性，都是规划期判定而非运行时才被弹回：
+`planning.reachability` 是派生能力：API 侧提供 `check_reachable`，Env 侧提供 `urdf_path` 和 `arm_chains`。模型计算由 `kinematics/` 支持，包括 URDF 解析、正运动学（FK）、逆运动学（IK）及相关几何检查。计算结论受模型、关节状态和算法假设约束，不等同于运动已经安全完成。
 
-- **`WorldState` 逐位置标注**：`snapshot` 会对每个已知位置调 `check_reachable`，给出一条 `reachable` 判定——判不了（没有 URDF/判官失败）就**省略 key**，绝不给一个假的不达。规划期就能看出「目标在可达范围内」直接编排抓取，或「当前够不着」→ 先编排底盘/接近动作把它变可达。
-- **空间关系接地**：任务把目标描述成「在抽屉里」「箱子下」时，`contracts.py:SPATIAL_RELATIONS` 的封闭小集合（`on`/`under`/`in`/`beside`/`near`）先把目标**接**到参照物上，再对参照物量取位置；被遮挡/包裹的目标由此需要一步「先让目标变得可达」的编排。这条封闭集合**刻意与视点无关**，让目标描述和检测接地、可达性推理共享同一套关系词。
+`WorldState` 可为已记录位置添加 `reachable` 判断；无法判断时省略该字段。规划器也使用空间关系 `on` / `under` / `in` / `beside` / `near`，将目标与参照物关联。这些关系描述目标位置关系，本身不意味着机器人已经具备开门、移开障碍等动作。
 
----
+<a id="tool-strategies"></a>
 
-## 五、Tool 层：三种工具策略可共存
+## 六、Tool 层：三种工具策略可共存
 
-`agent/builder.py` 的 `_build_tools` 组装工具列表，三种策略可以并存：
+`agent/builder.py` 根据 `mode` 构建工具，再按 `enable_skill` 添加技能入口：
 
-| 策略 | 适用场景 | 特点 |
-|---|---|---|
-| `build_robot_tools(api)` | 工具少 | 每个 `@implements` 方法 → 一个独立 LLM 工具 |
-| `RobotControlTool(api)` | SKILL.md 工作流 | 单一 `robot_control` 入口，`action`/`params` 分派 |
-| `InProcessCodeTool` | `mode="code"/"hybrid"` | **进程内** Python 执行，能访问到内存中的 live `env` |
+| 配置或工具 | 行为 |
+|---|---|
+| `mode="tool"` | 使用 `build_robot_tools`，每条可用动作对应一个独立工具 |
+| `mode="code"` | 使用 `InProcessCodeTool`，执行进程内 Python |
+| `mode="hybrid"`（默认） | 同时提供独立动作工具和进程内 Python 工具 |
+| `enable_skill=True` | 额外添加 `RobotControlTool` 和 `SkillUseRail`；与上述 `mode` 分开配置 |
 
-`mode` 取值：`"tool"`（仅 `build_robot_tools`）、`"code"`（仅 `InProcessCodeTool`）、`"hybrid"`（默认，两者并存）。
+`RobotControlTool` 通过 `action` / `params` 分派动作。SafetyRail 先读取这两个字段，再检查实际动作及参数，因此独立动作工具和该统一入口可以使用同一套运动检查。
 
-`InProcessCodeTool` 的设计动机：openjiuwen 内置的 `CodeTool` 在**沙盒子进程**里跑代码，看不到 agent 进程里的 live 对象——机器人控制恰恰需要拿到"已连接的 `env`、已预热相机、检测客户端"这些热对象。框架因此提供**进程内 executor**，每次 `exec()` 注入 `{env, api, np, ...}` 全局变量。
+当前 `fastagent` 的普通动作执行器固定调用 `robot_control`。使用内置构建器时，需要设置 `enable_skill=True` 来注册该入口；只设置 `exec_mode="fastagent"` 不会自动注册它。`plan_task` 直接读取技能库，与 `SkillUseRail` 加载说明是不同机制。
 
-### 安全 Rails 的透明解包
+`InProcessCodeTool` 通过 `exec()` 访问注入的 `env`、`api`、`np` 等对象，没有沙盒隔离。其内部直接调用 API/Env 不会逐条经过动作工具的能力过滤、SafetyRail 和记账包装。需要这些检查的操作应使用动作工具路径。
 
-当用 `RobotControlTool` 时，所有动作都走 `robot_control` 一个入口，`action`/`params` 藏在参数里。SafetyRail 会**透明解包**后再做安全检查，因此无论用哪种工具策略，安全检查都生效。
+`mode` 决定工具配置；`exec_mode` 决定任务由模型逐步编排还是先编译序列，二者含义不同。
 
----
+<a id="六-两级自主规划"></a>
 
-## 六、两级自主规划（`exec_mode: fastagent`）
+<a id="execution-modes"></a>
 
-`agent/fast/planner.py:plan_task` 把任务变成一条平坦动作序列，然后 `run_sequence` 执行它且**没有逐 step 的 LLM 调用**：
+## 七、两级自主规划（`exec_mode: fastagent`）
 
-- **Tier 1 — 技能组合**（`compile_sequence`）：给世界状态和能力过滤后的技能库，挑技能 + 把它们的流程展开成扁平序列，**一次推理**。happy path 因此正好一次 LLM 往返。
-- **Tier 2 — 动作组合**（`compose_actions`）：没有 SKILL.md，仅凭动作契约（`requires`/`provides`/位置新鲜度）推导序列。它在三个**可判定**的条件上接管，从不因模型自己说"我觉得"：① 技能库被能力门过滤空；② Tier 1 返回显式空数组；③ Tier 1 耗尽了修正重试（这包含了"所选技能的前置条件从当前状态无法满足"，因为 `parse_sequence` 拒掉该展开并回喂原因）。
-- **`parse_sequence`**（`agent/fast/sequence.py`）：两者之间的安全网——往前模拟状态，检查 `requires ⊆ state`，验证每个 `<bind>.field` 对产生它的那个 op 的 `returns`，并**点名**哪个动作会产生缺失的前置条件，好让编译器的重试循环自我修正。它拒绝**前置条件不满足**，不拒绝**顺序**——任何类型检查通过的排列都被接受。
-- **运行时重规划**（`runner.py`）：每步前重测 `WorldState`，在世界**反驳**下一步前置条件时重新规划（上限 `max_replans`）。是"反驳"不是"缺失"——本体报告不出一个 token 是**无知**，不是**被证伪**，把无知当假会永远重规划下去。
+调用者先用 `with session:` 建立连接，再调用 `run_robot_task(session, query, config)`。Session 管理资源，任务入口根据 `exec_mode` 选择执行方式。下图展开[完整任务主线 B/C 阶段](#task-lifecycle)中两种编排方式的差异：
 
-特别地，`WorldState` 每次都汇报"**观测优先于推想、缺失即未知**"（`payload.held` 之类 token 由 env 可测则观测盖过推想；位置带可达性标注——够得着才够得着，判据没说就省略 key）。它的位置清单直接来自 `ExecutionMemory`（见第三节「执行记忆」）。这使一条任务在移动后、感知失效或本体够不着时真正**动态**恢复，而不是照本宣科。
+![任务执行：fastagent 先规划后执行，stepagent 由模型逐步选择工具](../../images/architecture-task-sequence.zh.svg)
+
+- **`fastagent`（默认）**：`plan_task` 生成动作序列；`run_sequence` 通过 Agent 的能力执行器调用 `robot_control`，执行普通动作。它不调用 `agent.invoke()`，也不为每个普通步骤调用 LLM；初始规划、修正重试和重新规划仍可能调用模型。
+- **`stepagent`**：构建 Agent 后调用 `agent.invoke()`，由模型根据工具结果继续选择后续调用。
+
+两条路径通过同一套 Agent 装配获得 Rails。`fastagent` 显式初始化相应生命周期；实时追踪复合步骤使用本节后面的伺服路径。
+
+<a id="two-tier-planning"></a>
+
+### 两级规划：先尝试技能，再组合动作
+
+技能库包含可供规划器选择和展开的流程说明及契约，不是直接执行的固定脚本。`fastagent` 直接读取技能库进行编译；`stepagent` 的技能说明则由 `enable_skill=True` 时附加的 `SkillUseRail` 加载。
+
+下图展开[完整任务主线 B 阶段](#task-lifecycle)的 `fastagent` 规划：输入是任务、状态、技能和动作契约，输出是交给执行器的有效序列。
+
+![两级规划：技能组合通过校验后执行，否则按条件转入动作组合](../../images/architecture-planning.zh.svg)
+
+1. **技能组合（Tier 1，`compile_sequence`）**：对能力过滤后的技能，选择并展开为平坦动作序列。首次生成即通过校验时，这个编译阶段只需一次 LLM 请求。
+2. **动作组合（Tier 2，`compose_actions`）**：直接根据可用动作及契约生成序列。在三个条件下接管：没有可用技能；Tier 1 返回显式空序列；Tier 1 在修正重试后仍未生成有效序列。
+3. **序列校验（`parse_sequence`）**：两级生成过程都使用校验器。校验失败会反馈给模型修正；Tier 2 仍无法得到有效序列时报告规划失败。
+
+任务解析、规划重试和运行时重规划可能带来额外模型调用，因此不能将编译阶段的一次请求理解为整个任务只调用一次模型。自动把成功序列保存成新 SKILL.md 尚未实现。
+
+<a id="runtime-replanning"></a>
+
+### 状态检查与重新规划
+
+执行器在步骤前检查可观测状态是否与动作要求冲突，以及隐式读取的位置缓存是否已失效。它读取轻量的 `current_tokens` 和执行记忆，不会在每步重新感知整个场景。
+
+触发重新规划时才生成新的 `WorldState.snapshot`，并受 `max_replans` 限制。未报告的状态视为未知，不据此判定冲突。当前实现中，重规划抛错或返回空序列时保留原计划；因此这是一种计划修正机制，不能替代动作安全检查。
+
+<a id="realtime-servo"></a>
 
 ### 实时追踪伺服：边感知边执行
 
-抓放不必是「拍一张 → 算一次 → 盲走一段」的单次流程。快路径把**逼近/下压编译成追踪复合步**（`TRACK_DETECT`/`TRACK_GRASP`），交给一个**双速环**执行：
+`fastagent` 支持 `TRACK_DETECT` / `TRACK_GRASP` 追踪复合步骤，将检测和控制分开运行。这是[完整任务主线 C 阶段](#task-lifecycle)的专用执行分支：检测产生目标，控制器经位姿检查下发伺服命令。图中只画数据交接，不展开线程内部的循环。
 
-- **感知半边**（`BackgroundTracker`，`agent/fast/realtime/tracking.py`）：在 daemon 线程里以检测模型能支撑的速率连续跑 `detect_fn`，只保留**最新**一个目标位姿；`staleness_s` 必填——目标超龄就读成 `None`（丢失），不存在"从未设过期所以用任意旧的帧驱动运动"。
-- **控制半边**（`ServoController`，`realtime/servo.py`）：以固定 `control_hz`（约 30 Hz）每 tick 读当前位姿、取最新目标、**限斜率步进**一个步长（防止远处/跳变检测造成猛冲），然后发**非阻塞** `servo_to`。位姿是纯 `dict`，同一个控制器驱动 4-DoF SCARA（`x,y,z,r`）与 6-DoF 臂（`x,y,z,rx,ry,rz`）。
-- **`ServoBinding`**（`realtime/binding.py`）是唯一知道"怎么从 session 抽出通用伺服 IO"的地方：`read_pose`→`api.get_pose`、`servo_to`→`api.servo_to_tip`（缺省 `env.servo_to_flange`）、`grip`、`frames`。它要求 env 显式声明 `motion.servo`——本体不会伺服是**配置错误**，不是一个神秘的挂死。`MaskTargetFilter`（`realtime/mask_tracking.py`）再用 mask 过滤跳变。
+![追踪伺服：后台检测更新目标，控制循环读取目标并经检查下发命令](../../images/architecture-realtime.zh.svg)
 
-这个「慢检测 / 快控制」的双速率分离，让秒级的 GroundingDINO+SAM2 也能驱动平滑的高频伺服——循环始终朝最新已知目标滑步，而不是等下一帧检测；丢失超过 `lost_target_grace_s` 才放弃。它对应 README 的「实时追踪伺服」：跟踪目标、高频发令，可跟随移动物体实时抓取。
+- **`BackgroundTracker`**：后台线程持续检测，保存最近一次目标和时间信息。正值 `staleness_s` 使过期目标返回 `None`；显式传 `None` 会关闭该项过期过滤。当前 runner 的追踪入口配置了正值阈值。
+- **`ServoController`**：按 `control_hz` 读取当前位姿和目标，每次限制位姿变化步长，再发非阻塞命令。默认配置为 30 Hz，实际频率和效果取决于硬件、检测延迟及参数。
+- **`ServoBinding`**：适配控制器与设备。每个下发位姿先经过 `SafetyRail.validate_pose`，再调用 `api.servo_to_tip` 或 `env.servo_to_flange`；要求 Env 声明 `motion.servo`。
 
-把成功的 Tier2 序列回炼成 SKILL.md **尚未实现**——今天新技能仍是手写。
+目标丢失超过 `lost_target_grace_s` 时控制器终止追踪；目标过滤还可拒绝检测跳变。检测速率与控制速率可以不同，但高频发令本身不保证对快速移动目标的跟踪精度。
 
----
+<a id="safety-rails"></a>
 
-## 七、安全 Rails：三道防线 + 平行观测
+## 八、安全 Rails：检查、恢复与反馈
 
-`jiuwensymbiosis/rails/` 提供 `before_tool_call` 钩子，在工具执行前拦截/兜底，由 `RobotAgentConfig` 开关启用、session 能力门控：
+Rails 由配置和适用能力决定是否启用，各自在不同事件上工作：
 
-### 1. SafetyRail —— 动作前的"软件预检"
+| Rail | 主要触发点 | 作用 |
+|---|---|---|
+| `SafetyRail` | `before_tool_call` | 检查受监控动作的参数及已声明安全边界 |
+| `RecoveryRail` | `on_tool_exception` | 对受监控的运动或抓取异常尝试恢复 |
+| `VisualFeedbackRail` | `after_tool_call`、`before_model_call` | 暂存动作后图像，在后续模型调用前注入 |
+| `DiagnosisRail` | 异常或工具结果事件、`before_model_call` | 收集失败证据，在后续模型调用前注入诊断 |
+| `TraceRail` | 调用与任务生命周期事件 | 记录轨迹、日志和可选图像 |
+| `SkillUseRail` | 技能上下文加载 | 提供技能说明；不属于运动安全检查 |
 
-拦截 `goto_xyzr`/`goto_pose`/`move_joint`/`move_named_joint` 及底盘/腰/升降命令，按声明能力派生检查：笛卡尔 → Z 下限 + XY 工作区；关节 → 关节软限位（`joint_limits`，单位与 env 的 `move_joint` 一致）；底盘 → 单命令位移/转角上限；腰 → `waist_step_limit_rad`；升降 → `lift_limits`。每个边界默认 `None` = **不检查**（类型/有限数仍查）。越限 `raise ValueError`（每类失败独立 message），被 openjiuwen 转成 tool-exception 回灌给 LLM **自行纠错**。它是硬件急停的**补充而非替代**。
+`SafetyRail` 根据运动能力检查 Z 下限、XY 工作区、关节软限位、底盘单步位移/转角、升降范围和腰部转角。超限时抛出 `ValueError`。`stepagent` 可将工具异常反馈给模型；`fastagent` 按执行器的失败策略处理，不保证发生逐步模型纠错。
 
-### 2. RecoveryRail —— 失败后自动归零
+检查范围还取决于动作名和参数格式。例如 Piper 的 `goto_pose` 使用法兰坐标 `x_mm` / `y_mm` / `z_mm`，当前由驱动执行对应的 Z 下限检查，不直接套用 SafetyRail 的工具尖端 Z/XY 检查。
 
-动作/抓取失败时，自动 `home()` + 释放末端执行器。`home` 前先查 `env.holding_payload`——一个还抱着东西的本体不能盲目归位（会掉）。释放走通用 `release_effector()` 钩子。
+`RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位。恢复属于尽力执行，不能保证设备最终处于安全状态。
 
-### 3. VisualFeedbackRail —— 动作后拍照回灌
+`VisualFeedbackRail` 需要相机能力，图像在下一次模型调用前注入；没有逐步模型调用的 `fastagent` 不会因此自动获得逐步 VLM 核验。`DiagnosisRail` 依赖启用 Trace，详见 [Trace Feedback Loop](../how-to/use-trace-feedback.md)。
 
-每次运动/抓取后抓一帧图像注入上下文，供 VLM 核验结果。需 `vision.camera` 能力。两阶段注入（`after_tool_call` 只暂存帧，`before_model_call` 才 flush），保证消息顺序合法（tool result 必须紧跟 tool call）。
+`parallel_tool_calls` 默认关闭。当前构建器在 Env 声明 `motion.cartesian`、`motion.joint`、`grasp.suction`、`grasp.parallel` 中任一能力时拒绝开启；同时启用 Trace 也会被拒绝。这项检查尚未覆盖全部运动与抓取能力，不能据此认定其他能力可以安全并行。软件边界检查不替代设备急停与硬件保护。
 
-**另有**：
-> `SkillUseRail` 来自 openjiuwen（经 `agent/abstractions.py` 重导出），非安全 rail——在 `agent/builder.py` 中仅于 `enable_skill=True` 时附加，加载内置 `SKILL.md` 并附 `RobotControlTool`。
-> `TraceRail`（`agent/trace.py`），平行观测 rail，前面架构总览已述。
-> `DiagnosisRail`（`rails/diagnosis.py`），依赖 `TraceRail`，失败后把诊断证据注入下一轮模型调用——见[Trace Feedback Loop](../how-to/use-trace-feedback.md)。
+<a id="execution-trace"></a>
 
-> **并行工具调用默认关 + 运动硬校验**：`parallel_tool_calls` 默认 `False`，且 env 含 `motion.*`/`grasp.*` 时直接 `raise ValueError`；非运动（`vision.*`/`speech.tts`）允许并行。**TraceRail 与并行互斥**。
+## 九、执行轨迹与回放（TraceRail）
 
----
+`TraceRail` 位于 `agent/trace.py`，由 `enable_tracing` 启用，默认不挂载。它采集执行证据，不承担动作拦截或恢复。
 
-## 八、执行轨迹与回放（TraceRail）
+轨迹按配置记录工具调用的动作名、参数、结果摘要、成功或错误、耗时、观测快照以及可选 JPEG 帧，并受条目与帧数上限约束。观测不直接序列化原始 RGB/depth 数组。`TraceEventSink` 收集 Rail 事件；`TraceLogHandler` 收集配置日志源的 `WARNING` 及以上日志。
 
-`TraceRail`（`jiuwensymbiosis/agent/trace.py`）是**平行观测 rail**——不拦截/兜底动作，只采集与持久化。通过 `enable_tracing` 启用，**默认关**（零开销）。它挂在 openjiuwen 生命周期钩子上，不改任何 `@implements`、env 或其它 rail。
+任务结束时写 JSON 到 `<workspace>/traces/{run_token}.json`；可选帧保存到 `traces/frames/{run_token}/step_NNN.jpg`。`fastagent` 通过显式生命周期事件完成记录与收尾，Session 断开时还会尝试补充收尾。
 
-每步工具调用记一条 `TraceEntry`：动作名（解包 `robot_control` 后的实际名）、参数、成功/错误、耗时、pose 快照（**不含**原始 rgb/depth）、可选 JPEG 帧。rail 事件用两套互补机制采集：`TraceEventSink` 通知钩子（三个安全 rail 在真实触发点推结构化结果），`TraceLogHandler` 把 `trace_capture_loggers`（默认 `jiuwensymbiosis`）的 `WARNING`+ 日志记进来——无需改业务代码。
+`jiuwensymbiosis-replay <trace.json>` 默认生成自包含 HTML 回放，`--text` 输出文本时间线。这是执行证据回放，不会重新驱动机器人执行动作。
 
-invoke 结束写一次 JSON 到 `<workspace>/traces/{run_token}.json`；帧（可选）存 `traces/frames/{run_token}/step_NNN.jpg`。`jiuwensymbiosis-replay <trace.json>` 默认生成自包含 HTML 回放，`--text` 回退纯文本时间线。
+字段、配置与序列化规则见[执行轨迹参考](../reference/tracing.md)，样例位于 `examples/sample_trace/`。
 
-字段语义、配置项全表、序列化规则见[执行轨迹参考](../reference/tracing.md)。仓库内置样例见 `examples/sample_trace/`。
+<a id="session-lifecycle"></a>
 
----
+## 十、RobotSession：生命周期聚合器
 
-## 九、RobotSession：生命周期聚合器
+`RobotSession` 是上下文管理器，持有 Env 实例、API 实例、sidecar 启动器，以及提供代码工具全局对象的 `globals_provider`。Env 持有底层驱动；Session 不负责决定动作顺序。
 
-`jiuwensymbiosis/agent/session.py` 是上下文管理器，`with session:` 即完成连接/断开，两者**幂等**。它聚合：
+| 时机 | 顺序 |
+|---|---|
+| 进入 `with session:` | 启动已配置的 sidecar → 连接 Env → 检查能力一致性 |
+| 会话内运行任务 | 调用者执行 `run_robot_task`，由它构建 Agent 并选择执行模式 |
+| 退出 `with session:` | Trace 补充收尾 → Env 断开并释放驱动 → 退出 sidecar 上下文 |
 
-- `env`（硬件驱动实例）
-- `api`（动作实现对象）
-- `sidecar_starters`（如检测子进程，自动随 connect 启动、disconnect 停止）
-- `globals_provider`（给 `InProcessCodeTool` 注入的全局变量）
+连接和断开支持重复调用。API 声明而 Env 不支持的普通能力，在 `strict_capabilities=True` 时导致启动失败；Env 独有能力产生警告。派生能力允许两侧不对称，不按普通能力差异报错。`describe()` 的有效能力汇总使用两侧交集。
 
-`connect()` 有一道**能力一致性检查**：api 声明了但 env 不支持的能力在 `strict_capabilities=True` 下**硬失败**（抛带修复指引的 `ValueError`）；env-only 的能力始终只 warning（那是"少了个工具"而非配置错误）。`describe()` 的 `effective_capabilities` 就是 `env ∩ api` 交集。
+`globals_provider` 返回 `env`、`api`、`np` 及适配器额外对象；Agent 构建时会把可用对象说明加入代码工具相关的提示上下文。
 
-`globals_provider` 返回的 `{env, api, np, **extra_globals}` 会被 `build_robot_agent` 渲染 system prompt 时自动反射成「可用全局变量」声明——适配作者加 `extra_globals["my_helper"] = ...` 后无需手改 prompt。
+<a id="perception-pipeline"></a>
 
----
+## 十一、视觉感知：检测器作为子进程
 
-## 十、视觉感知：检测器作为子进程
+检测服务运行 GroundingDINO 和 SAM2。客户端通过 HTTP 发送图像和目标文本，接收掩膜、框和分数；深度与标定变换用于主进程内的三维计算。
 
-检测（GroundingDINO + SAM2）跑在**独立子进程**里，通过 HTTP 通信（`perception/detector_client.py`），`RobotSession` 用 `sidecar_starters` 管理其生命周期，**适配作者无需关心启停**。
+下图展开[完整任务主线 C 阶段](#task-lifecycle)中视觉动作的内部处理。输入是标定帧与目标文本，输出按动作契约返回到工具调用方，再进入记账和后续编排。
 
-数据流：
+![视觉管线：主进程采集标定帧，通过 HTTP 检测，再在主进程计算三维几何](../../images/architecture-perception.zh.svg)
 
-```
-相机帧 (RGB + depth)
-   │
-   ▼
-适配器 grab_calibrated_frame → CameraFrame（RGB/depth/内参/T_base_cam）
-   │
-   ▼
-scene3d.locate_for_grasp / locate_for_place / analyze_scene
-   │   检测 → 掩膜点云 → 物体/表面三维几何
-   ▼
-{center_mm, surface_z_mm, face_normal, ...}
-```
+1. **采集**：适配器提供 `CameraFrame`，包括 RGB、深度、相机内参以及相机到基座的变换。
+2. **检测**：`detector_client` 将 RGB 与目标文本发送到 `/segment`，解码返回的 mask 等结果。
+3. **三维计算**：`scene3d` 使用 mask、深度、内参和坐标变换调用共享几何算法，得到基座坐标系下的位置及物体/表面几何。
+4. **动作返回**：`locate_for_grasp`、`locate_for_place`、`analyze_scene` 按各自契约返回结果或失败原因；不存在所有动作都相同的一组结果字段。
 
-低层 `pixel_to_base_xyz` 是另一条显式动作：它把单个 `(u, v, depth_m)` 投影为 base-frame XYZ，不是 `scene3d` 内部的隐式接缝。
+使用本地检测 sidecar 时，Session 管理其生命周期；也可以配置已有检测服务，是否启动本地进程由 `spawn` 决定。适配器仍需提供正确的相机、标定和检测配置。
 
-`api/defaults` 的 `locate_for_grasp`/`locate_for_place`/`analyze_scene` 转发到 `perception/scene3d`，`search_target`/`approach_for_grasp`/`approach_for_place` 转发到 `motion/approach`——**与其他动作同一条实现路径**（无第二个通道）。
+`pixel_to_base_xyz` 是单点投影动作，不是这条共享管线内部必经的动作调用。`api/defaults.py` 转发到共享函数；视觉和逼近逻辑仍由显式动作绑定进入工具列表。
 
----
+<a id="session-builder"></a>
 
-## 十一、`make_builder`：消除样板代码
+## 十二、`make_builder`：消除样板代码
 
-每个适配器提供 `build_xxx_session`，支持三种调用方式（传 config / 传 YAML / 传 dict）。`adapters/_common/builder.py` 的 `make_builder` 封装了构造 env → 构造 api → 收集 sidecar → 装配 `RobotSession` → 可选 `decorate`：
+`adapters/_common/builder.py` 的 `make_builder` 封装配置解析、Env/API 构造、sidecar 启动器收集和 Session 装配，可追加 `decorate` 回调：
 
 ```python
 build_xxx_session = make_builder(
@@ -319,95 +343,67 @@ build_xxx_session = make_builder(
     sidecar_builders=[make_detector_sidecar()],
     decorate=_set_extra_globals,
 )
-# 之后：build_xxx_session(cfg) / .from_yaml("path.yaml") / .from_dict({...})
+# build_xxx_session(cfg)
+# build_xxx_session.from_yaml("path.yaml")
+# build_xxx_session.from_dict({...})
 ```
 
-`api_kwargs_from_cfg` 是**声明式**字段映射（同名透传 / `cfg:api` 重命名 / 点路径取嵌套），不支持时用回调（向后兼容）。`make_detector_sidecar()` 封装从 `cfg.detector` 读取 GroundingDINO+SAM2 sidecar 参数并按 `spawn` 决定是否启动——带视觉的适配器 `session.py` 真正接近一行。
+`api_kwargs_from_cfg` 支持同名字段、`cfg:api` 重命名和嵌套点路径；复杂转换可使用回调。`make_detector_sidecar()` 读取检测配置并按 `spawn` 决定是否启动本地服务。构造 Session 与连接硬件是不同阶段。
 
----
+## 十三、接入新硬件的文件职责
 
-## 十二、接入新硬件的成本有多低
+`templates/xxx_adapter/` 提供六个 Python 文件及一份 YAML 模板，另有可选标定模板。模板减少重复配置和装配代码，实际工作量取决于驱动、几何、传感器及行为差异。
 
-答案是 **6 个必写 Python 文件 + 1 份 YAML**（外加 1 个可选标定 wrapper），其中大部分从模板拷贝后填空：
-
-| 你要写的文件 | 你实际做什么 | 是否可纯靠模板生成 |
-|---|---|---|
-| `__init__.py` | 重命名并导出 `build_<本体>_session` 包入口 | ✅ 替换占位符 |
-| `config_template.yaml` | 填写硬件参数（CAN 口、夹爪行程、安全 Z 下限等） | ✅ 中文注释逐项引导 |
-| `config.py` | `@dataclass` + `from_yaml()`/`from_dict()` | ✅ 模板已给 |
-| `lowlevel.py` | 驱动：串口/CAN/Socket 翻译成 `move_to_pose_blocking(pose, ...)` 等动词 | ⚠️ 唯一需要写真实硬件逻辑的地方 |
-| `env.py` | `BaseRobotEnv` 子类：声明 `capabilities` + 暴露安全/几何属性与本体常量 | ✅ 模板已给 |
-| `api.py` | `@implements(SPEC)` 绑定每一条动作；无差异的转发 `defaults`，有几何差异的写方法体 | ✅ 多数方法无需手写 |
-| `session.py` | `make_builder(...)` 一行 | ✅ 一行代码 |
-| `calibration.py`（可选） | 手眼标定 wrapper，暴露 `CALIBRATION_ADAPTER_SPEC`；实际拷到 `jiuwensymbiosis/calibration/adapters/<本体>.py` | ✅ 需要标定的本体才拷 |
-
-关键点在于：**`api.py` 里绝大多数方法无需自己实现**——`defaults` 的通用实现会把 `goto_xyzr` 这类高层动作委托给 `self.env.<动词>()`。只有当本体几何与标准假设不一致时才需重写（例如 Piper 是倾斜工具，tip ≠ flange，需重写 `goto_xyzr` 做 tip→flange 换算）。
-
-写完后两行命令验证：
-
-```bash
-python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot       # 静态结构
-python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot    # 运行时冒烟
-```
-
----
-
-## 十三、接入新硬件的完整流程
-
-1. **拷贝模板** `templates/xxx_adapter/` → `jiuwensymbiosis/adapters/acme/`
-2. **填 YAML** `config_template.yaml`（CAN 口、夹爪行程、Z 安全下限、工作区边界……）
-3. **写 `lowlevel.py`** —— 唯一的硬件逻辑：把厂商 SDK 翻译成 `move_to_pose_blocking(pose, ...)` / `set_gripper` / `grab_frames` 等动词
-4. **写 `env.py`** —— 声明 `capabilities` frozenset，暴露安全/几何属性与本体常量
-5. **写 `api.py`** —— `@implements(SPEC)` 绑定每条动作；**只有几何差异时**才写方法体；视觉显式绑定 `pixel_to_base_xyz`，并提供 `scene3d`/`approach` 需要的相机、标定和检测钩子
-6. **写 `session.py`** —— `make_builder(...)` 一行
-7. **更新 `__init__.py`** —— 重命名并导出 `build_acme_session`
-8. （可选）需要手眼标定时，拷 `calibration.py` 模板到 `jiuwensymbiosis/calibration/adapters/` 并暴露 `CALIBRATION_ADAPTER_SPEC`
-9. **静态校验** `python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.acme`
-10. **运行时冒烟** `python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.acme`
-11. **跑 mock** `python examples/run_task.py --config ... --mock` —— 无需真机先验证逻辑
-
-**整个流程里，框架核心层（agent/api/env/tools/rails）无需改动。** 这是共享动作词表架构的杠杆点：把"形态差异"完全收敛进适配器目录，把"共性能力"沉淀为可组合的动作契约。
-
-更详细的硬件移植步骤见[移植机器人硬件适配器](../how-to/port-hardware-adapter.md)。
-
----
-
-## 十四、关键设计原则小结
-
-| 设计 | 收益 |
+| 文件 | 适配器负责的内容 |
 |---|---|
-| `ActionSpec` 是动作的唯一契约 | 重构前 20 个动作曾携带 2–4 份漂移过的拷贝；一份契约不可能漂移 |
-| `ToolMeta` 持有 spec 而非复制 | 契约字段存在一处，规划器读到的与词表承诺的一致 |
-| `@implements` 绑定每条动作 | 适配器文件就是本体的能力清单，取代基类元组 |
-| `defaults` 是自由函数而非基类 | 取一个动作不捆走它的邻居；MRO 保持平坦 |
-| 能力从 spec 推导 | 实现哪个动作就具备哪个能力，不会广告没有的能力 |
-| `api ∩ env` 交集门控工具 | 硬件不支持的能力对 LLM 不可见，防幻觉 |
-| env 是唯一硬件契约 | 换硬件只换 env + driver，上层零改动 |
-| `contracts.py` 不归属任何层 | 结果形状唯一权威源，`api/` 与 `perception/`+`motion/` 互不依赖 |
-| `Reachability` 是规划期判官 | 规划器直接读"当前够不够得着"，而非运行时才被 SafetyRail 弹回 |
-| 两级规划 + 运行时重规划 | 一次 LLM 往返编译出序列，世界反驳前置条件时才重规划 |
-| `ExecutionMemory` 契约驱动记账 | 感知即入账、移动即作废——规划器读到的一直是新鲜位置，无需手写缓存 |
-| 追踪/伺服双速环 | 秒级检测也能驱动 30 Hz 平滑伺服，抓放可跟随移动目标 |
-| `SPATIAL_RELATIONS` 视点无关闭集 | 「在抽屉里」等目标描述、检测接地与可达性推理共享同一套关系词 |
-| `make_builder` 工厂 | 一行代码拿到支持 cfg/YAML/dict 三入口的 session 构造器 |
-| 检测器独立子进程 | 重模型隔离，生命周期自动随 session 管理 |
-| Rails 透明解包 `robot_control` | 安全检查对工具策略无关 |
-| SafetyRail 抛 `ValueError` 而非硬终止 | LLM 可自行纠错，不中断整轮 |
-| TraceRail 平行采集，默认关 | 一次 invoke 一个 JSON + 可选帧，可回放可复盘，关闭时零开销 |
+| `__init__.py` | 导出适配器公共入口 |
+| `config.py` | 配置结构及 YAML/dict 解析 |
+| `config_template.yaml` | 硬件、感知和安全参数示例 |
+| `lowlevel.py` | 厂商 SDK 或通信协议；实现设备支持的 Driver 协议 |
+| `env.py` | 生命周期、观测、能力声明、单位、几何与安全属性 |
+| `api.py` | 动作绑定；复用通用函数或实现设备特有语义 |
+| `session.py` | 用 `make_builder` 装配配置、Env、API 和 sidecar |
+| `calibration.py`（可选模板） | 标定适配包装；按模板说明放入 `calibration/adapters/<本体>.py` 并暴露 `CALIBRATION_ADAPTER_SPEC` |
 
----
+能满足共享实现假设的动作直接转发 `defaults`。坐标、传感器、末端控制或恢复语义不同的动作，需要适配器实现与验证。若已有动作词表不能表达新需求，应先设计共享契约，再增加实现。
 
-**总结**：JiuwenSymbiosis 把"机器人形态的多样性"这个本质复杂度，用**共享动作契约 + 能力门控 + 单一硬件契约 + 可规划的前置/效果**几个机制收敛到了适配器目录里。对开发者而言，接入新硬件的成本被压缩到了 **1 份 YAML + 1 个驱动文件 + 5 个填空文件（外加 1 个可选标定 wrapper）**，而 agent 层、安全层、工具层、感知层的能力是开箱即用的——只要 env 声明了对应能力，工具和安全策略就会自动就位；对不同本体，一条任务跨形态复用，同一本体上任务也能动态组合。运行时是一条「**感知 → 规划 → 执行 → 观测 → 反馈**」闭环：`ExecutionMemory` 保证世界状态始终新鲜，追踪/伺服双速环让抓放这类关键动作边感知边执行，结构化轨迹与回放让每次运行可复现、可复盘。
+## 十四、接入新硬件的完整流程
 
----
+1. 拷贝 `templates/xxx_adapter/`，填写配置并重命名公共入口。
+2. 按硬件能力实现 Driver 协议、Env 生命周期与观测；明确单位和安全边界。
+3. 绑定已有动作，检查参数及结果契约；提供感知、坐标变换和恢复所需的实现。
+4. 使用 `make_builder` 装配 Session；需要标定时增加标定适配包装。
+5. 运行结构校验与使用替身驱动的冒烟测试：
 
-## 十五、相关内部设计
+   ```bash
+   python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.acme
+   python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.acme
+   ```
 
-本页描述面向使用者的稳定架构认知。具体功能的设计目的、内部取舍、核心数据结构和接口约束归档在仓根 `design/`：
+6. 增加适配器测试，验证单位、几何转换、失败处理和持物恢复。通用冒烟通过不代表真实硬件行为已验证。
+7. 按适配器使用说明验证设备行为；不要把 Piper 专用的 `--mock` 当作任意新硬件的模拟器。
+
+复用已有动作时，改动主要集中在适配器。新增共享动作、驱动协议或通用算法时，需要相应调整核心契约及测试。详细步骤见[移植机器人硬件适配器](../how-to/port-hardware-adapter.md)。
+
+## 十五、关键设计原则小结
+
+| 设计 | 维护上的作用 |
+|---|---|
+| 共享 `ActionSpec`，`ToolMeta` 引用 spec | 减少契约副本；跨硬件实现仍需一致性测试 |
+| 显式动作绑定与能力过滤 | 分开描述实现能力和硬件能力，控制工具暴露范围 |
+| 共享函数与适配器分工 | 共用算法集中维护，设备差异由适配器承担 |
+| Env 与能力分片 Driver 协议 | 上层使用统一硬件接口，驱动只实现对应能力 |
+| `contracts.py` 保存共享结果类型 | 感知、运动和 API 使用同一结果定义，避免反向依赖 |
+| 前置条件、效果与位置有效性 | 为序列校验和运行时状态检查提供依据 |
+| 观测与执行记忆分工 | 区分当前实测、历史执行推断和未知状态 |
+| 检测与伺服分开运行 | 控制循环不必阻塞等待每次检测；效果仍受数据时效约束 |
+| Session 管理资源，Rails 处理事件 | 明确连接、检查、恢复与证据采集的职责 |
+
+## 十六、相关内部设计
+
+本页说明主要职责与执行机制。更详细的接口和取舍记录位于仓根 `design/`：
 
 - [执行轨迹模块设计](../../../design/tracing.md)：Trace 生命周期、事件归属、持久化与资源边界。
-- [Trace Feedback Loop 模块设计](../../../design/trace-feedback-loop.md)：在线诊断和离线失败聚类闭环。
+- [Trace Feedback Loop 模块设计](../../../design/trace-feedback-loop.md)：在线诊断与离线失败聚类。
 - [日志模块设计](../../../design/logging.md)：handler 所有权、输出隔离与 Trace 日志转发。
-- [语音控制集成模块设计](../../../design/voice-control-integration.md)：语音前端与文本任务执行器的接缝。
-
-这些内部设计记录面向维护者，不替代 Tutorial、How-to 或 Reference 文档。
+- [语音控制集成模块设计](../../../design/voice-control-integration.md)：语音前端与文本任务执行器的连接。

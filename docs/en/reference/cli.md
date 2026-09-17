@@ -77,4 +77,4 @@ jiuwensymbiosis-skills  [--json]                                    # skill libr
 jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # live world state (connects!)
 ```
 
-These three are the machine-readable views a planner / coding agent reads (see [Architecture: two-tier planning](../explanation/architecture.md#6-two-tier-autonomous-planning)): what an action is, what a skill's pre-conditions are, and where the current world stands.
+These three are the machine-readable views a planner / coding agent reads (see [Architecture: two-tier planning](../explanation/architecture.md#two-tier-planning)): what an action is, what a skill's pre-conditions are, and where the current world stands.
