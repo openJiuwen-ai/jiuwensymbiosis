@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="934" viewBox="0 0 1200 934" role="img" aria-labelledby="title desc">
+  <title id="title">实时追踪伺服：感知与控制分开运行</title>
+  <desc id="desc">BackgroundTracker 检测目标并更新最近目标和时间信息，ServoController 读取目标与当前位姿并限制位姿步长。ServoBinding 检查每个位姿后调用 API 或 Env 的非阻塞伺服接口。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
+    <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#19324d" flood-opacity="0.12"/></filter>
+    <style>text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; } path, line { stroke-linejoin: round; stroke-linecap: round; }</style>
+  </defs>
+  <rect x="0" y="0" width="1200" height="934" rx="24" fill="#f4f7fc"/>
+  <text id="text-1" x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1120">实时追踪伺服：感知与控制分开运行</text>
+  <text id="text-2" x="40" y="91" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1120">感知线程和控制循环按各自速率运行；图中只画数据交接，不展开循环回路线。</text>
+  <rect x="40" y="132" width="1120" height="184" rx="16" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="40" y="132" width="168" height="184" rx="16" fill="#047857"/>
+  <rect x="192" y="132" width="16" height="184" rx="0" fill="#047857"/>
+  <text id="text-3" x="124.0" y="217.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">感知线程</text>
+  <text id="text-4" x="124.0" y="247.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">检测速率</text>
+  <rect x="244" y="158" width="404" height="132" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-5" x="446.0" y="192" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="372">BackgroundTracker</text>
+  <text id="text-6" x="446.0" y="224" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">图像 → 检测与目标过滤</text>
+  <text id="text-7" x="446.0" y="253" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">速率取决于采集和检测耗时</text>
+  <rect x="738" y="158" width="394" height="132" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-8" x="935.0" y="192" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="362">最新目标</text>
+  <text id="text-9" x="935.0" y="224" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">目标位姿 + 时间信息</text>
+  <text id="text-10" x="935.0" y="253" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">更新后覆盖旧目标</text>
+  <path d="M648 224 L738 224" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="40" y="380" width="1120" height="176" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="40" y="380" width="168" height="176" rx="16" fill="#2563eb"/>
+  <rect x="192" y="380" width="16" height="176" rx="0" fill="#2563eb"/>
+  <text id="text-11" x="124.0" y="461.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">控制循环</text>
+  <text id="text-12" x="124.0" y="491.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">可配置频率</text>
+  <rect x="244" y="405" width="404" height="126" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-13" x="446.0" y="439" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="372">读取控制输入</text>
+  <text id="text-14" x="446.0" y="471" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">当前位姿 + 最新有效目标</text>
+  <text id="text-15" x="446.0" y="500" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">control_hz 默认 30 Hz</text>
+  <rect x="738" y="405" width="394" height="126" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-16" x="935.0" y="439" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="362">ServoController</text>
+  <text id="text-17" x="935.0" y="471" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">计算下一步位姿</text>
+  <text id="text-18" x="935.0" y="500" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">限制单次位置与角度变化</text>
+  <path d="M935 290 V350 H446 V405" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-19" x="642" y="340" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="228">最新目标</text>
+  <path d="M648 468 L738 468" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="40" y="620" width="1120" height="172" rx="16" fill="#fff7e8" stroke="#efc36f" stroke-width="1.5"/>
+  <rect x="40" y="620" width="168" height="172" rx="16" fill="#b45309"/>
+  <rect x="192" y="620" width="16" height="172" rx="0" fill="#b45309"/>
+  <text id="text-20" x="124.0" y="699.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">伺服下发</text>
+  <text id="text-21" x="124.0" y="729.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">每个目标</text>
+  <rect x="244" y="644" width="404" height="124" rx="11" fill="#ffffff" stroke="#efc36f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-22" x="446.0" y="678" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="372">ServoBinding</text>
+  <text id="text-23" x="446.0" y="710" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">SafetyRail.validate_pose</text>
+  <text id="text-24" x="446.0" y="739" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="372">按已声明边界检查位姿</text>
+  <rect x="738" y="644" width="394" height="124" rx="11" fill="#ffffff" stroke="#9ed2bd" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-25" x="935.0" y="678" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="362">API / Env → Driver</text>
+  <text id="text-26" x="935.0" y="710" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">非阻塞伺服命令</text>
+  <text id="text-27" x="935.0" y="739" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="362">要求 motion.servo 能力</text>
+  <path d="M935 531 V590 H446 V644" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-28" x="642" y="580" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="228">下一步位姿</text>
+  <path d="M648 706 L738 706" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="40" y="824" width="1120" height="84" rx="10" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
+  <text id="text-29" x="60" y="854" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1080">正值 staleness_s 启用过期过滤；目标持续丢失超过 lost_target_grace_s 时终止追踪。</text>
+  <text id="text-30" x="60" y="884" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1080">高频控制不提高检测速率；跟踪效果仍取决于数据时效、硬件与参数。</text>
+</svg>

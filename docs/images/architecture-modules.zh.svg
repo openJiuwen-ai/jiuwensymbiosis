@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="1600" viewBox="0 0 1360 1600" role="img" aria-labelledby="title desc">
+  <title id="title">模块归属与跨层关系</title>
+  <desc id="desc">沿用原图的六层泳道与侧栏。任务编排、Rails、工具、API、Env 和驱动列出对应模块；技能库提供流程，WorldState 汇总状态，ExecutionMemory 记录成功结果，共享感知、运动与运动学算法由 API 使用。底部独立展示 Session 装配和共享结果类型。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
+    <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#19324d" flood-opacity="0.12"/></filter>
+    <style>text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; } path, line { stroke-linejoin: round; stroke-linecap: round; }</style>
+  </defs>
+  <rect x="0" y="0" width="1360" height="1600" rx="24" fill="#f4f7fc"/>
+  <text id="text-1" x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1280">模块归属与跨层关系</text>
+  <text id="text-2" x="40" y="91" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1280">按职责定位代码；实线表示关键调用，虚线表示规划输入或动作结果，不表示固定的逐层执行顺序。</text>
+  <rect x="40" y="132" width="888" height="204" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="40" y="132" width="144" height="204" rx="16" fill="#2563eb"/>
+  <rect x="168" y="132" width="16" height="204" rx="0" fill="#2563eb"/>
+  <text id="text-3" x="112.0" y="227.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">任务编排</text>
+  <text id="text-4" x="112.0" y="257.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">agent/</text>
+  <rect x="208" y="152" width="334" height="110" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-5" x="375.0" y="184" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">run_robot_task</text>
+  <text id="text-6" x="375.0" y="214" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">agent/run.py</text>
+  <text id="text-7" x="375.0" y="242" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">CLI / GUI / Python / Voice</text>
+  <rect x="562" y="152" width="342" height="110" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-8" x="733.0" y="184" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">build_robot_agent</text>
+  <text id="text-9" x="733.0" y="214" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">agent/builder.py</text>
+  <text id="text-10" x="733.0" y="242" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">装配 Agent、工具与 Rails</text>
+  <text id="text-11" x="208" y="293" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="696">fastagent: agent/fast/ — plan_task → run_sequence</text>
+  <text id="text-12" x="208" y="321" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="696">stepagent: agent.invoke()</text>
+  <rect x="40" y="368" width="888" height="166" rx="16" fill="#fff7e8" stroke="#efc36f" stroke-width="1.5"/>
+  <rect x="40" y="368" width="144" height="166" rx="16" fill="#b45309"/>
+  <rect x="168" y="368" width="16" height="166" rx="0" fill="#b45309"/>
+  <text id="text-13" x="112.0" y="444.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">事件处理</text>
+  <text id="text-14" x="112.0" y="474.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">Rails</text>
+  <rect x="208" y="390" width="334" height="116" rx="11" fill="#ffffff" stroke="#efc36f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-15" x="375.0" y="422" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">Safety · Recovery</text>
+  <text id="text-16" x="375.0" y="452" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">rails/safety.py · recovery.py</text>
+  <text id="text-17" x="375.0" y="480" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">工具检查 / 异常恢复</text>
+  <rect x="562" y="390" width="342" height="116" rx="11" fill="#ffffff" stroke="#efc36f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-18" x="733.0" y="422" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">反馈 · 诊断 · Trace</text>
+  <text id="text-19" x="733.0" y="452" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">rails/ + agent/trace.py</text>
+  <text id="text-20" x="733.0" y="480" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">工具、模型与任务生命周期事件</text>
+  <rect x="40" y="566" width="888" height="154" rx="16" fill="#edf5ff" stroke="#b7d2f7" stroke-width="1.5"/>
+  <rect x="40" y="566" width="144" height="154" rx="16" fill="#2563eb"/>
+  <rect x="168" y="566" width="16" height="154" rx="0" fill="#2563eb"/>
+  <text id="text-21" x="112.0" y="636.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">工具入口</text>
+  <text id="text-22" x="112.0" y="666.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">tools/</text>
+  <rect x="208" y="584" width="334" height="118" rx="11" fill="#ffffff" stroke="#b7d2f7" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-23" x="375.0" y="616" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">InProcessCodeTool</text>
+  <text id="text-24" x="375.0" y="646" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">tools/inproc_code.py</text>
+  <text id="text-25" x="375.0" y="674" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">进程内 Python 可直接调用 API / Env</text>
+  <rect x="562" y="584" width="342" height="118" rx="11" fill="#ffffff" stroke="#b7d2f7" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-26" x="733.0" y="616" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">动作工具</text>
+  <text id="text-27" x="733.0" y="646" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">build_robot_tools</text>
+  <text id="text-28" x="733.0" y="674" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">RobotControlTool</text>
+  <rect x="40" y="754" width="888" height="162" rx="16" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="40" y="754" width="144" height="162" rx="16" fill="#7c3aed"/>
+  <rect x="168" y="754" width="16" height="162" rx="0" fill="#7c3aed"/>
+  <text id="text-29" x="112.0" y="828.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">动作契约</text>
+  <text id="text-30" x="112.0" y="858.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">API</text>
+  <rect x="208" y="774" width="334" height="116" rx="11" fill="#ffffff" stroke="#c9bbf3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-31" x="375.0" y="806" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">ActionSpec · ToolMeta</text>
+  <text id="text-32" x="375.0" y="836" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">api/actions.py · decorators.py</text>
+  <text id="text-33" x="375.0" y="864" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">共享契约与方法参数 schema</text>
+  <rect x="562" y="774" width="342" height="116" rx="11" fill="#ffffff" stroke="#c9bbf3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-34" x="733.0" y="806" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">适配器 API · defaults</text>
+  <text id="text-35" x="733.0" y="836" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">@implements(SPEC)</text>
+  <text id="text-36" x="733.0" y="864" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">显式绑定；复用或实现动作</text>
+  <rect x="40" y="952" width="888" height="150" rx="16" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="40" y="952" width="144" height="150" rx="16" fill="#047857"/>
+  <rect x="168" y="952" width="16" height="150" rx="0" fill="#047857"/>
+  <text id="text-37" x="112.0" y="1020.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">硬件接口</text>
+  <text id="text-38" x="112.0" y="1050.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">Env</text>
+  <rect x="208" y="970" width="334" height="110" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-39" x="375.0" y="1002" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">BaseRobotEnv</text>
+  <text id="text-40" x="375.0" y="1032" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">env/base.py</text>
+  <text id="text-41" x="375.0" y="1060" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">操作、观测、有效能力与边界</text>
+  <rect x="562" y="970" width="342" height="110" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-42" x="733.0" y="1002" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">RobotObservation</text>
+  <text id="text-43" x="733.0" y="1032" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">env/base.py</text>
+  <text id="text-44" x="733.0" y="1060" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">设备位姿、关节与状态</text>
+  <rect x="40" y="1134" width="888" height="154" rx="16" fill="#e8f7f1" stroke="#9ed2bd" stroke-width="1.5"/>
+  <rect x="40" y="1134" width="144" height="154" rx="16" fill="#047857"/>
+  <rect x="168" y="1134" width="16" height="154" rx="0" fill="#047857"/>
+  <text id="text-45" x="112.0" y="1204.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">设备驱动</text>
+  <text id="text-46" x="112.0" y="1234.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="120">与硬件</text>
+  <rect x="208" y="1152" width="334" height="116" rx="11" fill="#ffffff" stroke="#9ed2bd" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-47" x="375.0" y="1184" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="306">Driver 协议</text>
+  <text id="text-48" x="375.0" y="1214" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">env/protocol.py</text>
+  <text id="text-49" x="375.0" y="1242" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="306">按设备能力分片实现</text>
+  <rect x="562" y="1152" width="342" height="116" rx="11" fill="#ffffff" stroke="#9ed2bd" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-50" x="733.0" y="1184" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="314">适配器 Driver</text>
+  <text id="text-51" x="733.0" y="1214" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">adapters/*/lowlevel.py</text>
+  <text id="text-52" x="733.0" y="1242" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="314">SDK / CAN / 串口 → 硬件</text>
+  <rect x="1000" y="132" width="320" height="204" rx="18" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="1000" y="132" width="320" height="54" rx="18" fill="#7c3aed"/>
+  <rect x="1000" y="168" width="320" height="18" rx="0" fill="#7c3aed"/>
+  <text id="text-53" x="1160.0" y="167" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="296">技能库</text>
+  <text id="text-54" x="1160.0" y="220" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="292">skills/*/SKILL.md</text>
+  <text id="text-55" x="1160.0" y="251" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="292">fastagent：读取并编译</text>
+  <text id="text-56" x="1160.0" y="282" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="292">stepagent：按配置加载</text>
+  <text id="text-57" x="1160.0" y="313" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="292">由 SkillUseRail 提供说明</text>
+  <rect x="1000" y="390" width="320" height="330" rx="18" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="1000" y="390" width="320" height="54" rx="18" fill="#047857"/>
+  <rect x="1000" y="426" width="320" height="18" rx="0" fill="#047857"/>
+  <text id="text-58" x="1160.0" y="425" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="296">状态与执行记忆</text>
+  <rect x="1016" y="462" width="288" height="118" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-59" x="1160.0" y="494" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="260">WorldState</text>
+  <text id="text-60" x="1160.0" y="524" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">api/world_state.py</text>
+  <text id="text-61" x="1160.0" y="552" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">观测 + 记忆 + 可达性</text>
+  <rect x="1016" y="594" width="288" height="110" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-62" x="1160.0" y="626" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="260">ExecutionMemory</text>
+  <text id="text-63" x="1160.0" y="656" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">api/memory.py</text>
+  <text id="text-64" x="1160.0" y="684" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">API 持有；按成功结果记账</text>
+  <rect x="1000" y="754" width="320" height="348" rx="18" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="1000" y="754" width="320" height="54" rx="18" fill="#047857"/>
+  <rect x="1000" y="790" width="320" height="18" rx="0" fill="#047857"/>
+  <text id="text-65" x="1160.0" y="789" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="296">共享算法与模型</text>
+  <rect x="1016" y="826" width="288" height="76" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-66" x="1160" y="854" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="260">perception/</text>
+  <text id="text-67" x="1160" y="883" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">检测与三维几何</text>
+  <rect x="1016" y="918" width="288" height="76" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-68" x="1160" y="946" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="260">motion/</text>
+  <text id="text-69" x="1160" y="975" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">搜索、逼近与运动计算</text>
+  <rect x="1016" y="1010" width="288" height="76" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-70" x="1160" y="1038" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="260">kinematics/</text>
+  <text id="text-71" x="1160" y="1067" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="260">URDF · FK / IK · 可达性</text>
+  <path d="M1000 212 L928 212" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <path d="M1000 500 H964 V310 H928" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <path d="M904 650 L1016 650" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <text id="text-72" x="960" y="637" font-size="18" font-weight="400" fill="#b45309" text-anchor="middle" data-max-width="104">成功结果</text>
+  <path d="M733 702 L733 774" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-73" x="750" y="746" font-size="18" font-weight="400" fill="#526174" text-anchor="start" data-max-width="228">调用动作实现</text>
+  <path d="M904 840 L1000 840" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-74" x="952" y="826" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="90">共享计算</text>
+  <path d="M733 890 V934 H375 V970" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <path d="M375 1080 V1118 H733 V1152" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="40" y="1320" width="1280" height="108" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="40" y="1320" width="190" height="108" rx="16" fill="#2563eb"/>
+  <rect x="214" y="1320" width="16" height="108" rx="0" fill="#2563eb"/>
+  <text id="text-75" x="135.0" y="1367.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">装配与生命周期</text>
+  <text id="text-76" x="135.0" y="1397.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">Session</text>
+  <text id="text-77" x="256" y="1355" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1038">adapters/_common/builder.py → agent/session.py</text>
+  <text id="text-78" x="256" y="1386" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1038">配置 → make_builder → RobotSession；Session 连接 Env、管理 sidecar，并在退出时清理。</text>
+  <rect x="40" y="1450" width="1280" height="82" rx="16" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="40" y="1450" width="190" height="82" rx="16" fill="#7c3aed"/>
+  <rect x="214" y="1450" width="16" height="82" rx="0" fill="#7c3aed"/>
+  <text id="text-79" x="135.0" y="1499.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">共享类型</text>
+  <text id="text-80" x="256" y="1482" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1038">contracts.py</text>
+  <text id="text-81" x="256" y="1511" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1038">API、perception、motion 共用结果定义；算法模块不反向导入 API 层。</text>
+  <path d="M430 1566 L476 1566" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-82" x="492" y="1573" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="250">关键调用</text>
+  <path d="M816 1566 L862 1566" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <text id="text-83" x="878" y="1573" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="442">规划输入 / 动作结果</text>
+</svg>

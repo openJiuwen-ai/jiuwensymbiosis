@@ -76,4 +76,4 @@ jiuwensymbiosis-skills  [--json]                                    # 技能库 
 jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # 实时世界状态（可连接）
 ```
 
-这三者是规划器 / 编码智能体读取的机器可读视图（见[架构指南：两级自主规划](../explanation/architecture.md#六-两级自主规划)）：一个动作是什么、一条技能有什么前置条件、当前世界都在哪个位置。
+这三者是规划器 / 编码智能体读取的机器可读视图（见[架构指南：两级自主规划](../explanation/architecture.md#two-tier-planning)）：一个动作是什么、一条技能有什么前置条件、当前世界都在哪个位置。

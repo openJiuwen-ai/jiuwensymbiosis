@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="940" viewBox="0 0 1200 940" role="img" aria-labelledby="title desc">
+  <title id="title">Visual perception: from camera frames to 3D geometry</title>
+  <desc id="desc">The main process acquires a CameraFrame and sends RGB and target text to the detection service over HTTP. After masks and other results return, it uses depth and calibration to compute base-frame 3D geometry and returns results according to each action contract.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
+    <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#19324d" flood-opacity="0.12"/></filter>
+    <style>text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; } path, line { stroke-linejoin: round; stroke-linecap: round; }</style>
+  </defs>
+  <rect x="0" y="0" width="1200" height="940" rx="24" fill="#f4f7fc"/>
+  <text id="text-1" x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1120">Visual perception: from camera frames to 3D geometry</text>
+  <text id="text-2" x="40" y="91" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1120">Only detection requests and results cross processes; depth and calibration feed 3D computation in the main process.</text>
+  <rect x="40" y="132" width="526" height="596" rx="18" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="40" y="132" width="526" height="54" rx="18" fill="#2563eb"/>
+  <rect x="40" y="168" width="526" height="18" rx="0" fill="#2563eb"/>
+  <text id="text-3" x="303.0" y="167" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="502">Main process · Camera and 3D geometry</text>
+  <rect x="652" y="132" width="508" height="596" rx="18" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="652" y="132" width="508" height="54" rx="18" fill="#047857"/>
+  <rect x="652" y="168" width="508" height="18" rx="0" fill="#047857"/>
+  <text id="text-4" x="906.0" y="167" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="484">Detection service · Separate process</text>
+  <rect x="66" y="222" width="474" height="138" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-5" x="303.0" y="256" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="442">Calibrated CameraFrame</text>
+  <text id="text-6" x="303.0" y="288" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">RGB · Depth · Camera intrinsics</text>
+  <text id="text-7" x="303.0" y="317" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">Camera-to-base transform</text>
+  <rect x="678" y="222" width="456" height="138" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-8" x="906.0" y="256" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="424">GroundingDINO + SAM2</text>
+  <text id="text-9" x="906.0" y="288" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="424">Receive RGB and target text</text>
+  <text id="text-10" x="906.0" y="317" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="424">POST /segment</text>
+  <rect x="66" y="524" width="474" height="150" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-11" x="303.0" y="558" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="442">3D geometry computation</text>
+  <text id="text-12" x="303.0" y="590" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">scene3d + shared geometry functions</text>
+  <text id="text-13" x="303.0" y="619" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">Mask + depth + intrinsics + transform</text>
+  <text id="text-14" x="303.0" y="648" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">Geometry in the base frame</text>
+  <rect x="678" y="524" width="456" height="150" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-15" x="906.0" y="558" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="424">2D detection results</text>
+  <text id="text-16" x="906.0" y="590" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="424">mask · box · score</text>
+  <text id="text-17" x="906.0" y="619" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="424">Return over HTTP to the main process</text>
+  <path d="M540 291 L678 291" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-18" x="609" y="272" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="128">HTTP request</text>
+  <path d="M303 360 L303 524" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-19" x="323" y="448" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="208">Depth + calibration</text>
+  <path d="M906 360 L906 524" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-20" x="926" y="448" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="210">Detect + segment</text>
+  <path d="M678 592 L540 592" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-21" x="609" y="573" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="128">HTTP reply</text>
+  <rect x="40" y="782" width="1120" height="116" rx="16" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="40" y="782" width="168" height="116" rx="16" fill="#7c3aed"/>
+  <rect x="192" y="782" width="16" height="116" rx="0" fill="#7c3aed"/>
+  <text id="text-22" x="124.0" y="848.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">Results</text>
+  <text id="text-23" x="236" y="822" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="898">locate_for_grasp / locate_for_place / analyze_scene</text>
+  <text id="text-24" x="236" y="859" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="898">Return positions, object / surface geometry, or failure reasons per action contract.</text>
+  <path d="M303 674 L303 782" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+</svg>
