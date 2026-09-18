@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="880" viewBox="0 0 1200 880" role="img" aria-labelledby="title desc">
+  <title id="title">两级规划：技能组合与动作组合</title>
+  <desc id="desc">规划输入包含任务、世界状态、动作契约与技能库。Tier 1 和 Tier 2 均进行序列校验，成功后交给执行器，Tier 2 无有效序列则报告规划失败。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
+    <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#19324d" flood-opacity="0.12"/></filter>
+    <style>text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; } path, line { stroke-linejoin: round; stroke-linecap: round; }</style>
+  </defs>
+  <rect x="0" y="0" width="1200" height="880" rx="24" fill="#f4f7fc"/>
+  <text id="text-1" x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1120">两级规划：技能组合与动作组合</text>
+  <text id="text-2" x="40" y="91" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1120">优先尝试技能组合；无可用技能或技能组合失败时，转入动作组合。</text>
+  <rect x="40" y="132" width="1120" height="112" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="40" y="132" width="168" height="112" rx="16" fill="#2563eb"/>
+  <rect x="192" y="132" width="16" height="112" rx="0" fill="#2563eb"/>
+  <text id="text-3" x="124.0" y="196.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">规划输入</text>
+  <text id="text-4" x="236" y="175" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="898">任务 · 世界状态快照 · 可用动作契约</text>
+  <text id="text-5" x="236" y="211" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="898">技能库先按当前机器人的能力过滤。</text>
+  <rect x="40" y="310" width="520" height="256" rx="18" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="40" y="310" width="520" height="54" rx="18" fill="#7c3aed"/>
+  <rect x="40" y="346" width="520" height="18" rx="0" fill="#7c3aed"/>
+  <text id="text-6" x="300.0" y="345" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="496">Tier 1 · 技能组合</text>
+  <rect x="640" y="310" width="520" height="256" rx="18" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="640" y="310" width="520" height="54" rx="18" fill="#2563eb"/>
+  <rect x="640" y="346" width="520" height="18" rx="0" fill="#2563eb"/>
+  <text id="text-7" x="900.0" y="345" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="496">Tier 2 · 动作组合</text>
+  <rect x="66" y="386" width="468" height="116" rx="11" fill="#ffffff" stroke="#c9bbf3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-8" x="300.0" y="420" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="436">compile_sequence</text>
+  <text id="text-9" x="300.0" y="452" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="436">选择技能并展开为动作序列</text>
+  <text id="text-10" x="300.0" y="481" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="436">生成后校验，失败可修正重试</text>
+  <rect x="666" y="386" width="468" height="116" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-11" x="900.0" y="420" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="436">compose_actions</text>
+  <text id="text-12" x="900.0" y="452" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="436">根据可用动作契约生成序列</text>
+  <text id="text-13" x="900.0" y="481" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="436">生成后校验，失败可修正重试</text>
+  <text id="text-14" x="300" y="542" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="472">空序列 / 重试耗尽时回退</text>
+  <text id="text-15" x="900" y="542" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="472">仍无有效序列：报告规划失败</text>
+  <path d="M300 244 L300 310" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-16" x="316" y="283" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="212">有可用技能</text>
+  <path d="M900 244 L900 310" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-17" x="916" y="283" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="212">无可用技能</text>
+  <path d="M560 442 L640 442" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-18" x="600" y="425" font-size="19" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="70">回退</text>
+  <rect x="40" y="650" width="1120" height="124" rx="16" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="40" y="650" width="168" height="124" rx="16" fill="#047857"/>
+  <rect x="192" y="650" width="16" height="124" rx="0" fill="#047857"/>
+  <text id="text-19" x="124.0" y="720.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="144">执行序列</text>
+  <rect x="244" y="668" width="888" height="88" rx="11" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text id="text-20" x="688.0" y="702" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="856">run_sequence</text>
+  <text id="text-21" x="688.0" y="734" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="856">接收通过校验的非空序列，执行其中的动作。</text>
+  <path d="M300 566 L300 650" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-22" x="316" y="613" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="212">有效序列</text>
+  <path d="M900 566 L900 650" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-23" x="916" y="613" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="212">有效序列</text>
+  <rect x="40" y="808" width="1120" height="54" rx="10" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
+  <text id="text-24" x="60" y="838" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1080">两级都使用 parse_sequence；首次编译成功的一次请求不代表整个任务只调用一次模型。</text>
+</svg>

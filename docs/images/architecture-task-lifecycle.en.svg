@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="2078" viewBox="0 0 1360 2078" role="img" aria-labelledby="title desc">
+  <title id="title">Complete task lifecycle: from session setup to feedback</title>
+  <desc id="desc">The caller creates a RobotSession, which starts sidecars and connects Env. The task entry prepares actions, skills, and state; fastagent generates a sequence and builds its executor. Each step checks state conflicts, dispatches tools and Rails, and executes through adapter API, Env, and Driver. Successful results update ExecutionMemory by contract; later steps read the updated state. Failures are handled by execution mode. The task returns, and the caller exits the session to clean up resources.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
+    <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#19324d" flood-opacity="0.12"/></filter>
+    <style>text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; } path, line { stroke-linejoin: round; stroke-linecap: round; }</style>
+  </defs>
+  <rect x="0" y="0" width="1360" height="2078" rx="24" fill="#f4f7fc"/>
+  <text id="text-1" x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1280">Complete task lifecycle: from session setup to feedback</text>
+  <text id="text-2" x="40" y="91" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1280">Follow the default fastagent path for ordinary actions; stepagent differences appear at the relevant stages.</text>
+  <rect x="32" y="210" width="1296" height="196" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="32" y="430" width="1296" height="350" rx="16" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="32" y="804" width="1296" height="884" rx="16" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <rect x="404" y="856" width="908" height="810" rx="10" fill="none" stroke="#acd9c6" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <rect x="32" y="1712" width="1296" height="298" rx="16" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <line x1="116" y1="190" x2="116" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="30" y="120" width="172" height="70" rx="18" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
+  <rect x="30" y="120" width="172" height="54" rx="18" fill="#526174"/>
+  <rect x="30" y="156" width="172" height="18" rx="0" fill="#526174"/>
+  <text id="text-3" x="116" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Caller</text>
+  <rect x="30" y="162" width="172" height="28" rx="0" fill="#f0f4f9"/>
+  <text id="text-4" x="116" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">CLI / GUI</text>
+  <line x1="304" y1="190" x2="304" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="218" y="120" width="172" height="70" rx="18" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="218" y="120" width="172" height="54" rx="18" fill="#2563eb"/>
+  <rect x="218" y="156" width="172" height="18" rx="0" fill="#2563eb"/>
+  <text id="text-5" x="304" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Session</text>
+  <rect x="218" y="162" width="172" height="28" rx="0" fill="#eaf3ff"/>
+  <text id="text-6" x="304" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">RobotSession</text>
+  <line x1="492" y1="190" x2="492" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="406" y="120" width="172" height="70" rx="18" fill="#eaf3ff" stroke="#aac9f3" stroke-width="1.5"/>
+  <rect x="406" y="120" width="172" height="54" rx="18" fill="#2563eb"/>
+  <rect x="406" y="156" width="172" height="18" rx="0" fill="#2563eb"/>
+  <text id="text-7" x="492" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Orchestration</text>
+  <rect x="406" y="162" width="172" height="28" rx="0" fill="#eaf3ff"/>
+  <text id="text-8" x="492" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">Agent / Runner</text>
+  <line x1="680" y1="190" x2="680" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="594" y="120" width="172" height="70" rx="18" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="594" y="120" width="172" height="54" rx="18" fill="#7c3aed"/>
+  <rect x="594" y="156" width="172" height="18" rx="0" fill="#7c3aed"/>
+  <text id="text-9" x="680" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">State &amp; memory</text>
+  <rect x="594" y="162" width="172" height="28" rx="0" fill="#f3efff"/>
+  <text id="text-10" x="680" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">WorldState</text>
+  <line x1="868" y1="190" x2="868" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="782" y="120" width="172" height="70" rx="18" fill="#fff7e8" stroke="#efc36f" stroke-width="1.5"/>
+  <rect x="782" y="120" width="172" height="54" rx="18" fill="#b45309"/>
+  <rect x="782" y="156" width="172" height="18" rx="0" fill="#b45309"/>
+  <text id="text-11" x="868" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Tools &amp; Rails</text>
+  <rect x="782" y="162" width="172" height="28" rx="0" fill="#fff7e8"/>
+  <text id="text-12" x="868" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">Check · Dispatch</text>
+  <line x1="1056" y1="190" x2="1056" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="970" y="120" width="172" height="70" rx="18" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="970" y="120" width="172" height="54" rx="18" fill="#7c3aed"/>
+  <rect x="970" y="156" width="172" height="18" rx="0" fill="#7c3aed"/>
+  <text id="text-13" x="1056" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Adapter API</text>
+  <rect x="970" y="162" width="172" height="28" rx="0" fill="#f3efff"/>
+  <text id="text-14" x="1056" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">Action methods</text>
+  <line x1="1244" y1="190" x2="1244" y2="2002" stroke="#9aabc0" stroke-width="1.4" stroke-dasharray="5 5"/>
+  <rect x="1158" y="120" width="172" height="70" rx="18" fill="#e8f7f1" stroke="#9ed2bd" stroke-width="1.5"/>
+  <rect x="1158" y="120" width="172" height="54" rx="18" fill="#047857"/>
+  <rect x="1158" y="156" width="172" height="18" rx="0" fill="#047857"/>
+  <text id="text-15" x="1244" y="155" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="160">Env / Driver</text>
+  <rect x="1158" y="162" width="172" height="28" rx="0" fill="#e8f7f1"/>
+  <text id="text-16" x="1244" y="183" font-size="18" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="160">Hardware I/O</text>
+  <rect x="48" y="217" width="1050" height="34" rx="3" fill="#eaf3ff"/>
+  <text id="text-17" x="52" y="244" font-size="24" font-weight="700" fill="#2563eb" text-anchor="start" data-max-width="1256">A. Open a session: configuration → Session (Env / API / sidecar launchers)</text>
+  <path d="M116 300 L304 300" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="138" y="271" width="144" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-18" x="210" y="291" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Enter session</text>
+  <path d="M304 348 L1244 348" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="478" y="319" width="592" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-19" x="774" y="339" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="928">Session starts configured sidecars, then calls Env.connect()</text>
+  <path d="M1244 394 L304 394" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="523.5" y="365" width="501" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-20" x="774" y="385" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="928">Connected; Session checks capability consistency</text>
+  <rect x="48" y="437" width="670" height="34" rx="3" fill="#f3efff"/>
+  <text id="text-21" x="52" y="464" font-size="24" font-weight="700" fill="#7c3aed" text-anchor="start" data-max-width="1256">B. Prepare planning inputs and select execution mode</text>
+  <path d="M116 512 L492 512" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="184.5" y="483" width="239" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-22" x="304" y="503" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="364">run_robot_task(query)</text>
+  <path d="M492 562 L680 562" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="494" y="533" width="184" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-23" x="586" y="553" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Get plan snapshot</text>
+  <path d="M680 612 L492 612" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="497.5" y="583" width="177" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-24" x="586" y="603" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">State + locations</text>
+  <rect x="402" y="624" width="908" height="68" rx="10" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <text id="text-25" x="422" y="654" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="868">fastagent: actions / skills + scene / WorldState → plan_task → validate sequence</text>
+  <text id="text-26" x="422" y="684" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="868">Then build Agent, tools, Rails, and executor [§5 Capability gating; §7 Two-tier planning]</text>
+  <rect x="402" y="700" width="908" height="68" rx="10" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <text id="text-27" x="422" y="730" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="868">stepagent: build Agent → agent.invoke() → model selects tools step by step</text>
+  <text id="text-28" x="422" y="760" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="868">See §7, “Task execution sequence: two orchestration modes”, for the differences.</text>
+  <rect x="48" y="811" width="1234" height="34" rx="3" fill="#ecf9f4"/>
+  <text id="text-29" x="52" y="838" font-size="24" font-weight="700" fill="#047857" text-anchor="start" data-max-width="1256">C. Each ordinary action: read state → check → execute → update memory</text>
+  <rect x="416" y="864" width="528" height="28" rx="3" fill="#ecf9f4"/>
+  <text id="text-30" x="426" y="886" font-size="20" font-weight="700" fill="#047857" text-anchor="start" data-max-width="850">loop  Repeat until the task completes or stops</text>
+  <path d="M492 932 L680 932" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="505" y="903" width="162" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-31" x="586" y="923" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Check conflicts</text>
+  <path d="M680 976 L492 976" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="496" y="947" width="180" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-32" x="586" y="967" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Known conflicts?</text>
+  <rect x="424" y="998" width="866" height="76" rx="10" fill="#fff7e8" stroke="#efc36f" stroke-width="1.5"/>
+  <text id="text-33" x="444" y="1028" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">fastagent only: on a state conflict, snapshot and replan within max_replans.</text>
+  <text id="text-34" x="444" y="1058" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">Keep the old plan if replanning fails or is empty; unknown state is not a conflict.</text>
+  <path d="M492 1128 L868 1128" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="513" y="1099" width="334" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-35" x="680" y="1119" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="364">Dispatch action (with prechecks)</text>
+  <path d="M868 1176 L1056 1176" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="884" y="1147" width="156" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-36" x="962" y="1167" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Call bound API</text>
+  <path d="M1056 1224 L1244 1224" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="1078" y="1195" width="144" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-37" x="1150" y="1215" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Hardware I/O</text>
+  <path d="M1244 1272 L1056 1272" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="1112" y="1243" width="76" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-38" x="1150" y="1263" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Result</text>
+  <path d="M1056 1320 L868 1320" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="891.5" y="1291" width="141" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-39" x="962" y="1311" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Action result</text>
+  <path d="M868 1368 L680 1368" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="697.5" y="1339" width="153" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-40" x="774" y="1359" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Record effects</text>
+  <path d="M868 1420 L492 1420" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="511.5" y="1391" width="337" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-41" x="680" y="1411" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="364">Return results and handle events</text>
+  <rect x="424" y="1436" width="866" height="68" rx="10" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+  <text id="text-42" x="444" y="1466" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">Successful results update state and locations in ExecutionMemory.</text>
+  <text id="text-43" x="444" y="1496" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">Read current state in the next iteration to check whether later actions need to change.</text>
+  <rect x="424" y="1520" width="866" height="130" rx="10" fill="#fff7e8" stroke="#efc36f" stroke-width="1.5"/>
+  <text id="text-44" x="444" y="1550" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">Per-step feedback and failure handling (when enabled):</text>
+  <text id="text-45" x="444" y="1580" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">Recovery uses action, payload, and failure type; Trace / Diagnosis collect evidence.</text>
+  <text id="text-46" x="444" y="1610" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">fastagent continues or stops; stepagent passes results to subsequent model calls.</text>
+  <text id="text-47" x="444" y="1640" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="826">See detail diagrams for vision actions and compound tracking steps.</text>
+  <rect x="52" y="916" width="318" height="292" rx="18" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
+  <rect x="52" y="916" width="318" height="54" rx="18" fill="#526174"/>
+  <rect x="52" y="952" width="318" height="18" rx="0" fill="#526174"/>
+  <text id="text-48" x="211.0" y="951" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="294">Participants and scope</text>
+  <text id="text-49" x="72" y="1000" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">“Tools &amp; Rails” combines</text>
+  <text id="text-50" x="72" y="1031" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">dispatch and tool-call events.</text>
+  <text id="text-51" x="72" y="1062" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">State checks and replanning</text>
+  <text id="text-52" x="72" y="1093" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">apply only to fastagent.</text>
+  <text id="text-53" x="72" y="1124" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">Direct calls within Python skip</text>
+  <text id="text-54" x="72" y="1155" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">individual action-tool checks.</text>
+  <rect x="52" y="1244" width="318" height="212" rx="18" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
+  <rect x="52" y="1244" width="318" height="54" rx="18" fill="#7c3aed"/>
+  <rect x="52" y="1280" width="318" height="18" rx="0" fill="#7c3aed"/>
+  <text id="text-55" x="211.0" y="1279" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="294">Details of the main flow</text>
+  <text id="text-56" x="72" y="1328" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">Tools → Capability gating</text>
+  <text id="text-57" x="72" y="1359" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">Plans → Two-tier planning</text>
+  <text id="text-58" x="72" y="1390" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">Vision → Vision pipeline</text>
+  <text id="text-59" x="72" y="1421" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="278">Tracking → Real-time servo</text>
+  <rect x="48" y="1719" width="590" height="34" rx="3" fill="#eaf3ff"/>
+  <text id="text-60" x="52" y="1746" font-size="24" font-weight="700" fill="#2563eb" text-anchor="start" data-max-width="1256">D. Return results and exit the session</text>
+  <path d="M492 1796 L116 1796" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <rect x="167.5" y="1767" width="273" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-61" x="304" y="1787" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="364">Task result / failure reason</text>
+  <path d="M116 1848 L304 1848" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="146.5" y="1819" width="127" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-62" x="210" y="1839" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="176">Exit session</text>
+  <path d="M304 1900 L1244 1900" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <rect x="411.5" y="1871" width="725" height="24" rx="3" fill="#f4f7fc"/>
+  <text id="text-63" x="774" y="1891" font-size="20" font-weight="600" fill="#172033" text-anchor="middle" data-max-width="928">Trace finalization fallback (if enabled) → Env.disconnect() / Driver.close()</text>
+  <rect x="52" y="1930" width="1256" height="66" rx="10" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
+  <text id="text-64" x="72" y="1960" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1216">After Env disconnects, Session exits sidecar contexts; with session handles normal and exceptional exits.</text>
+  <text id="text-65" x="72" y="1990" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1216">Trace finalizes at task end, with a fallback on disconnect; recovery after execution failure is not guaranteed.</text>
+  <path d="M908 2040 L954 2040" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
+  <text id="text-66" x="968" y="2047" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="100">Call</text>
+  <path d="M1100 2040 L1146 2040" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>
+  <text id="text-67" x="1160" y="2047" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="160">Return</text>
+</svg>
