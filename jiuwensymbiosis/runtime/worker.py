@@ -6,13 +6,20 @@ import logging
 import math
 import traceback
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig, run_robot_task
-from jiuwensymbiosis.agent.cancel import RunCancelled
+from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
 from jiuwensymbiosis.agent.lifecycle import CleanupReport, HardwareCleanupError
 from jiuwensymbiosis.errors import error_code
 from jiuwensymbiosis.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from jiuwensymbiosis.runtime.bindings import BindingSnapshot
+    from jiuwensymbiosis.runtime.jobs import Runtime
+    from jiuwensymbiosis.runtime.resources import ResourceLease
 
 logger = get_logger(__name__)
 _PRIVATE_KEYS = {"api_key", "password", "secret", "token", "access_token", "authorization"}
@@ -147,7 +154,29 @@ def _apply_fast_config(session, config):
             config.exec_config = SkillExecConfig(servo=servo)
 
 
-def run_job(runtime, job_id, binding, query, options, lease, token):
+@dataclass(frozen=True)
+class JobRequest:
+    """Everything one background task owns: identity, binding, lease and cancel."""
+
+    runtime: Runtime
+    job_id: str
+    binding: BindingSnapshot
+    query: str
+    options: dict
+    lease: ResourceLease
+    token: CancelToken
+
+
+def run_job(request: JobRequest) -> None:
+    runtime, job_id, binding, query, options, lease, token = (
+        request.runtime,
+        request.job_id,
+        request.binding,
+        request.query,
+        request.options,
+        request.lease,
+        request.token,
+    )
     from jiuwensymbiosis.runtime.events import TaskEventRail
     from jiuwensymbiosis.runtime.results import normalize_result
 
@@ -162,7 +191,7 @@ def run_job(runtime, job_id, binding, query, options, lease, token):
 
     session = None
     config = None
-    unrecoverable_cleanup = ()
+    unrecoverable_cleanup: tuple[str, ...] = ()
     outcome = {"ok": False, "error": "execution did not start"}
     log.addHandler(handler)
     try:

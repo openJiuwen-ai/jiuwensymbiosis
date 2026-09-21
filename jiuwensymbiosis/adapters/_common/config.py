@@ -24,7 +24,10 @@ ConfigT = TypeVar("ConfigT", covariant=True)
 
 
 class _ConfigParser(Protocol[ConfigT]):
-    def from_dict(self, data: dict[str, Any]) -> ConfigT: ...
+    # fmt: off
+    def from_dict(self, data: dict[str, Any]) -> ConfigT:
+        ...
+    # fmt: on
 
 
 def parse_config(

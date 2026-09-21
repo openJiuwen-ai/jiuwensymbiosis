@@ -73,8 +73,11 @@ def main(options: LaunchOptions) -> int:
         raise StartupError("serving tasks requires --config with a robot runtime YAML")
 
     from jiuwensymbiosis.runtime import Runtime
+    from jiuwensymbiosis.utils.logging import configure_logging
     from jiuwensymbiosis_example_gui.webapp import serve
 
+    # Reuse the handler that agent startup will configure again for task logging.
+    configure_logging()
     runtime = Runtime(workspace=options.workspace)
     try:
         binding = runtime.prepare_binding(options.config_path)

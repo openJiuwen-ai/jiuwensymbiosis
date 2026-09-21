@@ -127,11 +127,15 @@ class RunEngine:
     def subscribe(self):
         """Another page gets its own cursor for the same accepted job."""
         subscriber: RunEngine = copy.copy(self)
-        subscriber._cursor = 0
-        subscriber._local_events = queue.Queue()
-        if self._start_failure is not None:
-            subscriber._local_events.put(("run_finished", self._start_failure))
+        subscriber.reset_subscription()
         return subscriber
+
+    def reset_subscription(self):
+        """Give this (copied) engine a fresh cursor and queue for a new page."""
+        self._cursor = 0
+        self._local_events = queue.Queue()
+        if self._start_failure is not None:
+            self._local_events.put(("run_finished", self._start_failure))
 
     def rerun_with(self, config_data: dict[str, Any], *, config_source: str | Path) -> RunEngine:
         """重跑时一起替换配置及其来源，保持相对路径的解析基准一致。"""
@@ -226,23 +230,21 @@ class RunEngine:
                 if kind == "step_started":
                     output.append(("narration", humanize.narration(data.get("tool", ""), data.get("params", {}))))
             elif kind in {"frame", "step_frame"}:
-                reference = data if kind == "frame" else data["artifact"]
+                reference = data if kind == "frame" else data.get("artifact")
                 try:
                     uri = imaging.to_data_uri(decode_frame(self._runtime.read_artifact(reference)))
                 except (OSError, ValueError) as exc:
                     logger.debug("preview unavailable: %s", exc)
                     continue
-                data = uri if kind == "frame" else {"index": data["index"], "uri": uri}
+                data = uri if kind == "frame" else {"index": data.get("index"), "uri": uri}
             elif kind == "start_pose":
                 data = {**data, "body": self._body_key}
             elif kind == "blocked":
                 output.append(("narration", "硬件收尾尚未确认；资源继续占用，请检查原始日志。"))
-            elif (
-                kind == "run_finished"
-                and isinstance(data.get("result"), dict)
-                and data["result"].get("result_type") == "stopped"
-            ):
-                data = {**data, "result": {**data["result"], "output": "用户已停止运行"}}
+            elif kind == "run_finished":
+                result = data.get("result")
+                if isinstance(result, dict) and result.get("result_type") == "stopped":
+                    data = {**data, "result": {**result, "output": "用户已停止运行"}}
             output.append((kind, data))
         if snapshot is not None:
             if snapshot.get("cleanup", {}).get("released") and snapshot.get("result") is not None:

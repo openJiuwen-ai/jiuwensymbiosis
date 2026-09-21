@@ -165,8 +165,8 @@ def stop_and_collect(
             try:
                 proc.kill()
                 proc.communicate(timeout=kill_timeout_s)
-            except Exception as exc:
-                errors.append(exc)
+            except Exception as reap_exc:
+                errors.append(reap_exc)
             raise HardwareCleanupError(f"{label} {kind} stop", cleanup_errors=errors) from kill_exc
     result = _last_json_line(out or "")
     if proc.returncode != 0 or result is None:

@@ -44,6 +44,7 @@ class ResourceLease:
     released: bool = False
     report: CleanupReport = field(default_factory=lambda: CleanupReport(connected=True))
     handles: list[IO[str]] = field(default_factory=list, repr=False)
+    released_resources: set[str] = field(default_factory=set, init=False, repr=False)
 
 
 class ResourceManager:
@@ -127,27 +128,45 @@ class ResourceManager:
                         },
                     )
                     written.append(key)
-            except BaseException:
+            except BaseException as error:
                 # This acquisition boundary has not connected hardware. Roll back even
-                # for an interrupt, then preserve the original exception.
+                # for an interrupt. A cleanup failure must not skip other resources
+                # or replace the original exception (including cancellation).
                 for key in written:
-                    self._path(key, ".json").unlink(missing_ok=True)
+                    try:
+                        self._path(key, ".json").unlink(missing_ok=True)
+                    except BaseException as cleanup_error:
+                        error.add_note(
+                            f"Resource rollback could not remove record for {key!r}: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
                 for held_handle in lease.handles:
-                    held_handle.close()
+                    try:
+                        held_handle.close()
+                    except BaseException as cleanup_error:
+                        error.add_note(
+                            f"Resource rollback could not close lock {held_handle.name!r}: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
                 raise
             _PROCESS_OWNER = lease.operation_id
             self._leases[lease.operation_id] = lease
             return lease
 
     def finish(self, lease: ResourceLease, report: CleanupReport) -> bool:
-        """Keep uncertain leases held; only the matching owner can release them."""
+        """Release confirmed resources; retry unfinished cleanup without touching new owners."""
         global _PROCESS_OWNER, _PROCESS_BLOCKED
         with _PROCESS_LOCK:
             if lease.released:
                 return True
             if self._leases.get(lease.operation_id) is not lease or lease.pid != os.getpid():
                 raise ValueError("lease does not belong to this manager/process")
-            for key in lease.resources:
+            remaining = [
+                (key, handle)
+                for key, handle in zip(lease.resources, lease.handles, strict=True)
+                if key not in lease.released_resources
+            ]
+            for key, _handle in remaining:
                 record = self._record(key)
                 if (
                     not record
@@ -158,15 +177,36 @@ class ResourceManager:
             lease.report = report
             if not report.released:
                 _PROCESS_BLOCKED = True
-                for key in lease.resources:
+                for key, _handle in remaining:
                     record = self._record(key)
-                    assert record is not None  # validated while holding the same owner lock
+                    # Validated moments ago while holding the same owner lock; a
+                    # vanished record still fails closed rather than silently
+                    # writing a blocked state for an unknown generation.
+                    if record is None:
+                        raise ResourceBlockedError(f"占用记录在标记阻断前消失: {key}")
                     self._write(key, {**record, "state": "blocked", "cleanup": asdict(report)})
                 return False
-            for key in lease.resources:
-                self._path(key, ".json").unlink(missing_ok=True)
-            for handle in lease.handles:
-                handle.close()
+            failures: list[tuple[str, BaseException]] = []
+            for key, handle in remaining:
+                try:
+                    # Keep the record until close succeeds. If record deletion
+                    # fails, it still blocks admission and can be validated on retry.
+                    if not handle.closed:
+                        handle.close()
+                    self._path(key, ".json").unlink(missing_ok=True)
+                except BaseException as exc:
+                    # Complete the other resources even during an interrupt, then
+                    # propagate the first failure with all cleanup diagnostics.
+                    failures.append((key, exc))
+                else:
+                    # A later finish must not inspect or delete a new owner's record.
+                    lease.released_resources.add(key)
+            if failures:
+                _PROCESS_BLOCKED = True
+                error = failures[0][1]
+                for key, failure in failures:
+                    error.add_note(f"Resource release failed for {key!r}: {type(failure).__name__}: {failure}")
+                raise error
             lease.released = True
             self._leases.pop(lease.operation_id)
             if _PROCESS_OWNER == lease.operation_id:

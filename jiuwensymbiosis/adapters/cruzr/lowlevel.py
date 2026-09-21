@@ -346,7 +346,8 @@ class CruzrLowLevel:
                 logger.warning("[Cruzr] %s", exc)
 
         ros_stopped = executor_shutdown and thread_stopped
-        if ros_stopped and executor is not None and self._node_added and not self._node_removed:
+        node_pending = self._node_added and not self._node_removed
+        if ros_stopped and executor is not None and node_pending:
             try:
                 removed = executor.remove_node(self._node)
                 if removed is False:

@@ -148,3 +148,38 @@ def test_runtime_public_task_flow_uses_mock_session_without_private_registry(
     finally:
         runtime.close(timeout=10)
         runtime.store.close()
+
+
+def test_example_server_and_task_share_one_console_handler(monkeypatch, tmp_path, capsys):
+    import logging
+    from unittest.mock import Mock
+
+    import jiuwensymbiosis.runtime as runtime_module
+    from jiuwensymbiosis.utils.logging import configure_logging
+    from jiuwensymbiosis_gui.plugin import LaunchOptions
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "examples" / "gui_plugin"))
+    from jiuwensymbiosis_example_gui import plugin, webapp
+
+    runtime = Mock()
+    runtime.close.return_value = {"closed": True}
+
+    def serve(*_args, **_kwargs):
+        # Agent startup repeats framework logging configuration after GUI startup.
+        configure_logging()
+        logging.getLogger("jiuwensymbiosis.task").warning("single-console-message")
+
+    root = logging.getLogger()
+    original_level = root.level
+    with monkeypatch.context() as patcher:
+        patcher.setattr(root, "handlers", [])
+        patcher.setattr(runtime_module, "Runtime", Mock(return_value=runtime))
+        patcher.setattr(webapp, "serve", serve)
+        try:
+            assert plugin.main(LaunchOptions(config_path=tmp_path / "robot.yaml")) == 0
+            # Capture the actual stream: caplog counts records, not duplicate emits.
+            assert capsys.readouterr().err.count("single-console-message") == 1
+        finally:
+            for handler in root.handlers:
+                handler.close()
+            root.setLevel(original_level)

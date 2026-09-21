@@ -140,7 +140,8 @@ class ReturnToStart:
                 outcome = {"ok": False, "error": "硬件释放未确认，请检查占用记录。"}
             self.emit("pose_return_finished", outcome)
 
-    def stop(self):
+    @staticmethod
+    def stop():
         # This existing driver call has no safe interrupt contract. Keep its
         # lease until it returns and disconnect is confirmed.
         return None

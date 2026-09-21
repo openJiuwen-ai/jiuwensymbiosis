@@ -272,8 +272,6 @@ def run(
         path = _resolve_trace(stem, _active_workspace)
         if path is None:
             return HTMLResponse("轨迹不存在或不可访问。", status_code=404)
-        import json
-
         from jiuwensymbiosis.agent.trace_html import render_trace_html
 
         try:

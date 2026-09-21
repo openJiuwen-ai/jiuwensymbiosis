@@ -229,8 +229,8 @@ def create_server(runtime, binding, *, host: str, port: int, title: str) -> Thre
                 return
             self._send_json(200, result)
 
-        def log_message(self, format: str, *args) -> None:
-            logger.info("example GUI HTTP %s", format % args)
+        def log_message(self, fmt: str, *args) -> None:
+            logger.info("example GUI HTTP %s", fmt % args)
 
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
@@ -241,7 +241,7 @@ def serve(runtime, binding, *, host: str, port: int, title: str, open_browser: b
     """Serve the local task page until shutdown; always close the listening socket."""
     server = create_server(runtime, binding, host=host, port=port, title=title)
     url = f"http://127.0.0.1:{server.server_port}/"
-    print(f"Example GUI listening at {url}")
+    logger.info("Example GUI listening at %s", url)
     if open_browser:
         webbrowser.open(url)
     try:

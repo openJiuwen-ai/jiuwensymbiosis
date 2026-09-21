@@ -103,7 +103,7 @@ class Runtime:
         *,
         agent_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        from jiuwensymbiosis.runtime.worker import build_agent_config, run_job
+        from jiuwensymbiosis.runtime.worker import JobRequest, build_agent_config, run_job
 
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be non-empty")
@@ -150,7 +150,7 @@ class Runtime:
                 return snapshot
             thread = threading.Thread(
                 target=run_job,
-                args=(self, job_id, binding, query, options, lease, token),
+                args=(JobRequest(self, job_id, binding, query, options, lease, token),),
                 name=f"jiuwen-task-{job_id[:8]}",
                 daemon=True,
             )

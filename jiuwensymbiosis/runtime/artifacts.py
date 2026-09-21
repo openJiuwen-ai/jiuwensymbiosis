@@ -16,6 +16,20 @@ _TOKEN = re.compile(r"[a-f0-9]{32}")
 MAX_BYTES = 32 * 1024 * 1024
 
 
+def _valid_slot(slot: object) -> bool:
+    """A frame slot is ``latest`` or a 1..128 step index."""
+    if not isinstance(slot, str):
+        return False
+    return slot == "latest" or (slot.isdigit() and 1 <= int(slot) <= 128)
+
+
+def _valid_frame_array(array: np.ndarray) -> bool:
+    """A storable frame is an RGB/RGBA array within the byte budget."""
+    if array.ndim != 3 or array.shape[2] not in (3, 4):
+        return False
+    return not array.dtype.hasobject and array.nbytes <= MAX_BYTES
+
+
 class ArtifactStore:
     def __init__(self, directory: Path) -> None:
         self.directory = directory.resolve()
@@ -26,10 +40,10 @@ class ArtifactStore:
         """Store one latest preview or at most 128 step previews per job."""
         if not _TOKEN.fullmatch(job_id):
             raise ValueError("invalid job ID")
-        if slot != "latest" and (not slot.isdigit() or not 1 <= int(slot) <= 128):
+        if not _valid_slot(slot):
             return None
         array = np.asarray(rgb)
-        if array.ndim != 3 or array.shape[2] not in (3, 4) or array.nbytes > MAX_BYTES or array.dtype.hasobject:
+        if not _valid_frame_array(array):
             return None
         directory = self.directory / job_id
         directory.mkdir(exist_ok=True)
@@ -63,7 +77,7 @@ class ArtifactStore:
             if len(content) > MAX_BYTES:
                 raise ValueError("trace exceeds read limit")
             return content
-        if not isinstance(slot, str) or (slot != "latest" and (not slot.isdigit() or not 1 <= int(slot) <= 128)):
+        if not _valid_slot(slot):
             raise ValueError("invalid artifact slot")
         target = (self.directory / job_id / f"{slot}.npy").resolve()
         if not target.is_relative_to(self.directory):

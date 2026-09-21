@@ -18,7 +18,9 @@ __all__ = ["discover_guis", "main"]
 
 def _load_target(target: str) -> Any:
     module, separator, name = target.partition(":")
-    if not separator or not module or not name or "." in name:
+    if not separator:
+        raise StartupError(f"无效的插件入口: {target}")
+    if not module or not name or "." in name:
         raise StartupError(f"无效的插件入口: {target}")
     value = getattr(importlib.import_module(module), name)
     if not callable(value):
