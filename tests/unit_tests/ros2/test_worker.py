@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.ros2 import worker as W
 
 
@@ -30,43 +31,33 @@ class TestRunOnce:
     def test_returns_last_json_line(self):
         # 前面几行是日志，最后一行才是结果——worker 允许边跑边打日志。
         out = W.run_once(
-            _script('print("booting"); print(\'{"ok": true, "yaw_turned": 1.5}\')'),
-            timeout_s=10.0, label="[t]")
+            _script('print("booting"); print(\'{"ok": true, "yaw_turned": 1.5}\')'), timeout_s=10.0, label="[t]"
+        )
         assert out == {"ok": True, "yaw_turned": 1.5}
 
-    def test_nonzero_returncode_is_worker_failed(self):
-        out = W.run_once(_script("import sys; sys.exit(3)"), timeout_s=10.0, label="[t]", reason_prefix="wheel_")
-        assert out == {"ok": False, "reason": "wheel_worker_failed"}
-
-    def test_empty_stdout_is_no_output(self):
-        out = W.run_once(_script("pass"), timeout_s=10.0, label="[t]", reason_prefix="wheel_")
-        assert out == {"ok": False, "reason": "wheel_no_output"}
-
-    def test_non_json_stdout_is_bad_output(self):
-        out = W.run_once(_script('print("not json")'), timeout_s=10.0, label="[t]", reason_prefix="wheel_")
-        assert out == {"ok": False, "reason": "wheel_bad_output"}
-
-    def test_timeout_is_worker_error(self):
-        out = W.run_once(_script("import time; time.sleep(30)"), timeout_s=0.5,
-                         label="[t]", reason_prefix="wheel_")
-        assert out == {"ok": False, "reason": "wheel_worker_error"}
+    @pytest.mark.parametrize(
+        "body",
+        ["import sys; sys.exit(3)", "pass", 'print("not json")', 'print("[1, 2]")', "import time; time.sleep(30)"],
+    )
+    def test_missing_completion_evidence_is_cleanup_failure(self, body):
+        with pytest.raises(HardwareCleanupError):
+            W.run_once(_script(body), timeout_s=0.5, label="[t]")
 
     def test_unlaunchable_command_is_worker_error(self):
         out = W.run_once(["/nonexistent/interpreter"], timeout_s=5.0, label="[t]")
         assert out == {"ok": False, "reason": "worker_error"}
 
-    def test_json_array_is_bad_output(self):
-        # 结果契约是一个 JSON 对象；数组解析得出来但不是契约，必须当坏输出而不是原样透传。
-        out = W.run_once(_script('print("[1, 2]")'), timeout_s=10.0, label="[t]")
-        assert out == {"ok": False, "reason": "bad_output"}
-
 
 class TestStopAndCollect:
     def test_collects_result_of_a_finished_worker(self):
-        proc = subprocess.Popen(_script('print(\'{"ok": true, "dist_traveled": 2.0}\')'),
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            _script('print(\'{"ok": true, "dist_traveled": 2.0}\')'),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
         proc.wait(timeout=10.0)
-        out = W.stop_and_collect(proc, label="[t]", kind="drive", empty_result={"ok": True, "dist_traveled": 0.0})
+        out = W.stop_and_collect(proc, label="[t]", kind="drive")
         assert out == {"ok": True, "dist_traveled": 2.0}
 
     def test_stop_sentinel_halts_a_running_worker(self):
@@ -75,26 +66,30 @@ class TestStopAndCollect:
             "import sys\n"
             "for line in sys.stdin:\n"
             "    if line.strip() == 'stop':\n"
-            "        print('{\"ok\": true, \"yaw_turned\": 0.25}'); break\n"
+            '        print(\'{"ok": true, "yaw_turned": 0.25}\'); break\n'
         )
         proc = subprocess.Popen(_script(body), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        out = W.stop_and_collect(proc, label="[t]", kind="spin", empty_result={"ok": True, "yaw_turned": 0.0})
+        out = W.stop_and_collect(proc, label="[t]", kind="spin")
         assert out == {"ok": True, "yaw_turned": 0.25}
         assert proc.poll() is not None
 
-    def test_silent_worker_yields_the_empty_result(self):
+    def test_silent_worker_has_no_stop_confirmation(self):
         proc = subprocess.Popen(_script("pass"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         proc.wait(timeout=10.0)
-        out = W.stop_and_collect(proc, label="[t]", kind="spin", empty_result={"ok": True, "yaw_turned": 0.0})
-        assert out == {"ok": True, "yaw_turned": 0.0}
+        with pytest.raises(HardwareCleanupError):
+            W.stop_and_collect(proc, label="[t]", kind="spin")
 
-    def test_wedged_worker_is_terminated_not_left_running(self):
-        # 忽略 stdin 且不退出 → communicate 超时 → SIGTERM 兜底。底盘绝不能被留在运动状态。
-        proc = subprocess.Popen(_script("import time; time.sleep(60)"),
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        out = W.stop_and_collect(proc, label="[t]", kind="drive",
-                                 empty_result={"ok": True, "dist_traveled": 0.0}, timeout_s=0.5)
-        assert out["ok"] is True and out["dist_traveled"] == 0.0
+    @pytest.mark.parametrize("ignore_sigterm", [False, True])
+    def test_wedged_worker_is_reaped_but_stop_remains_unconfirmed(self, ignore_sigterm):
+        # SIGTERM/SIGKILL can reap a process without confirming a physical stop.
+        body = "import signal, time\n"
+        if ignore_sigterm:
+            body += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        body += "print('ready', flush=True)\ntime.sleep(60)"
+        proc = subprocess.Popen(_script(body), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert proc.stdout.readline().strip() == "ready"
+        with pytest.raises(HardwareCleanupError):
+            W.stop_and_collect(proc, label="[t]", kind="drive", timeout_s=0.05, kill_timeout_s=0.05)
         assert proc.poll() is not None
 
 
@@ -108,7 +103,7 @@ class TestResidentWorker:
             "    s = line.strip()\n"
             "    if s == 'stop':\n"
             "        break\n"
-            "    print('{\"ok\": true, \"echo\": \"%s\"}' % s, flush=True)\n"
+            '    print(\'{"ok": true, "echo": "%s"}\' % s, flush=True)\n'
         )
         return W.ResidentWorker(lambda: _script(body), label="[t]")
 
@@ -134,11 +129,116 @@ class TestResidentWorker:
         assert worker.request_json("a", 5.0, bad_output_reason="bad") is None
         assert worker.proc is None
 
-    def test_dead_worker_reports_none_and_drops_the_handle(self):
-        # worker 立刻退出：请求读不到回复 → None（调用方据此回退到一次性路径），句柄被丢弃。
+    def test_dead_worker_cleanup_uncertainty_propagates_and_blocks_restart(self):
+        # worker 立刻退出：句柄已死，但它没有确认 stop；不能把此情况当成
+        # 普通无回复并回退到另一路硬件命令。
         worker = W.ResidentWorker(lambda: _script("pass"), label="[t]")
-        assert worker.request_json("a", 2.0, bad_output_reason="bad") is None
+        with pytest.raises(RuntimeError, match="exited before a stop was confirmed"):
+            worker.request_json("a", 2.0, bad_output_reason="bad")
         assert worker.proc is None
+        with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+            worker.request_json("b", 2.0, bad_output_reason="bad")
+
+    def test_empty_reply_with_confirmed_stop_remains_a_soft_failure(self):
+        body = "import sys\nfor line in sys.stdin:\n    if line.strip() == 'stop':\n        break\n"
+        worker = W.ResidentWorker(lambda: _script(body), label="[t]")
+        assert worker.request_json("a", 0.1, bad_output_reason="bad") is None
+        assert worker.proc is None
+        worker.stop()
+
+    def test_worker_that_dies_between_requests_is_not_silently_replaced(self):
+        from unittest.mock import Mock
+
+        launch = Mock()
+        worker = W.ResidentWorker(launch, label="[t]")
+        dead_proc = Mock()
+        dead_proc.poll.return_value = -9
+        worker._proc = dead_proc
+        with pytest.raises(RuntimeError, match="exited before a stop was confirmed"):
+            worker.request("next", 0.01)
+        launch.assert_not_called()
+        with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+            worker.stop()
+
+    def test_live_process_handle_is_kept_retryable_when_forced_stop_does_not_finish(self):
+        from unittest.mock import Mock
+
+        class _StubbornProc:
+            stdin = Mock()
+
+            def __init__(self):
+                self.alive = True
+                self.returncode = None
+                self.allow_stop = False
+
+            def poll(self):
+                return None if self.alive else self.returncode
+
+            def communicate(self, input=None, timeout=None):
+                if input and self.allow_stop:
+                    self.alive = False
+                    self.returncode = 0
+                    return "", ""
+                raise subprocess.TimeoutExpired("fake-worker", timeout)
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        worker = W.ResidentWorker(lambda: _script("pass"), label="[t]")
+        proc = _StubbornProc()
+        worker._proc = proc
+
+        with pytest.raises(RuntimeError, match="still alive after terminate/kill"):
+            worker.stop()
+        assert worker._proc is proc
+        assert worker.proc is proc
+
+        with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+            worker.request("another motion", 0.01)
+        proc.stdin.write.assert_not_called()
+
+        proc.allow_stop = True
+        worker.stop()
+        assert worker._proc is None
+        assert worker.proc is None
+
+    def test_forced_process_termination_is_latched_as_uncertain(self):
+        class _TerminatedProc:
+            stdin = object()
+
+            def __init__(self):
+                self.alive = True
+                self.returncode = None
+
+            def poll(self):
+                return None if self.alive else self.returncode
+
+            def communicate(self, input=None, timeout=None):
+                if input:
+                    raise subprocess.TimeoutExpired("fake-worker", timeout)
+                return "", ""
+
+            def terminate(self):
+                self.alive = False
+                self.returncode = -15
+
+            def kill(self):
+                self.alive = False
+                self.returncode = -9
+
+        launches = []
+        worker = W.ResidentWorker(lambda: launches.append(True) or _script("pass"), label="[t]")
+        worker._proc = _TerminatedProc()
+
+        with pytest.raises(RuntimeError, match="required forced termination"):
+            worker.stop()
+        assert worker._proc is None
+        with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+            worker._ensure()
+        assert launches == []
 
     def test_live_worker_talking_nonsense_is_not_restarted(self):
         # 活着但输出不是 JSON → 报 bad_output，但【不】杀进程：乱说话不是重启的理由。

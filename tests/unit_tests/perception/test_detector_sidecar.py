@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from jiuwensymbiosis.perception.detector_sidecar import _port_open
+from jiuwensymbiosis.perception.detector_sidecar import _port_open, detector_subprocess
 
 
 class TestPortOpen:
@@ -23,3 +23,15 @@ class TestPortOpen:
         assert result is False
         sock.settimeout.assert_called_once_with(0.5)
         sock.connect_ex.assert_called_once_with(("127.0.0.1", 59999))
+
+
+def test_attached_external_detector_is_never_stopped():
+    with (
+        patch("jiuwensymbiosis.perception.detector_sidecar._port_open", return_value=True),
+        patch("jiuwensymbiosis.perception.detector_sidecar.subprocess.Popen") as spawn,
+    ):
+        owner = detector_subprocess()
+        with owner as child:
+            assert child is None
+        assert owner.cleanup_report().released
+        spawn.assert_not_called()

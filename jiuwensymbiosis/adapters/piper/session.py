@@ -25,10 +25,19 @@ def _attach_piper_cfg(session, cfg: PiperConfig) -> None:
     session.extra_globals["piper_cfg"] = cfg
 
 
+def _piper_resource_keys(cfg: PiperConfig) -> tuple[str, ...]:
+    """Reserve the local host's CAN interface used by this Piper session."""
+    if cfg.can_port is None:
+        return ()
+    port = str(cfg.can_port).strip()
+    return (f"can:{port}",) if port else ()
+
+
 build_piper_session = make_builder(
     PiperConfig,
     PiperEnv,
     PiperApi,
+    resource_keys=_piper_resource_keys,
     # Declarative field mapping: cfg attr → PiperApi __init__ kwarg.
     # "detector.url:detector_service_url" reaches into the nested detector
     # sub-config and renames it for the Api; the rest pass through unchanged.

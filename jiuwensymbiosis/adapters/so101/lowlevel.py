@@ -42,6 +42,7 @@ from jiuwensymbiosis.adapters.so101.geometry import (
     pose_mm_deg_to_matrix_m,
     position_error_mm,
 )
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.protocol import HandGuidingRecoveryError
 from jiuwensymbiosis.errors import JiuwenSymbiosisError, SafetyViolationError, error_code
 from jiuwensymbiosis.utils import get_logger
@@ -315,6 +316,7 @@ class So101Driver:
         self._robot: Any = None
         self._kin: Any = None
         self._connected: bool = False
+        self._settle_cleanup_errors: list[BaseException] = []
 
         # Vision (milestone B): desktop-fixed eye-to-hand RealSense + hand-eye
         # calibration. The camera is NOT wrist-mounted, so ``tf_base_cam`` is a
@@ -388,6 +390,8 @@ class So101Driver:
         Follows the 9-step sequence in §A3. Any failure runs the idempotent
         cleanup so the driver is left disconnected.
         """
+        if self._settle_cleanup_errors:
+            raise HardwareCleanupError("So101Driver.connect", cleanup_errors=self._settle_cleanup_errors)
         if self._connected:
             return
         # Fail-closed: home/limits ship as unverified placeholders; refuse to open
@@ -406,9 +410,9 @@ class So101Driver:
                 "or set `home_use_init_pose: true` to use the startup pose as home."
             )
         # `robot` is the live follower once constructed; if a later validation
-        # step (action_features, kinematics build, FK/home checks) fails BEFORE
-        # the handle is assigned to self._robot, we must still tear down the
-        # already-open serial bus — otherwise the port/torque stay open.
+        # step (action_features, kinematics build, FK/home checks) fails after
+        # the serial bus opens, the outer catch still attempts full teardown.
+        # ``self._robot`` retains any handle whose disconnect does not complete.
         robot: Any = None
         try:
             import_fn = self._lerobot_import or So101Driver._import_lerobot
@@ -425,7 +429,12 @@ class So101Driver:
                 cameras={},
             )
             follower_factory = self._so_follower_factory or SOFollower
-            robot = follower_factory(robot_cfg)
+            try:
+                robot = follower_factory(robot_cfg)
+            except BaseException as exc:
+                unknown = RuntimeError("SOFollower construction failed before a robot handle was returned")
+                raise HardwareCleanupError("So101Driver.connect", exc, (unknown,)) from exc
+            self._robot = robot
 
             # Step 3: calibration file preload (serial not yet open).
             calib_path = getattr(robot, "calibration_fpath", None)
@@ -440,7 +449,6 @@ class So101Driver:
 
             # Step 5: confirm calibration is available.
             if not getattr(robot, "is_calibrated", False):
-                self._teardown(robot)
                 raise RuntimeError(
                     "SO-101 is not calibrated after connect(calibrate=False). "
                     "Run `lerobot-calibrate --robot.id=" + self._cfg.robot_id + "` first."
@@ -451,7 +459,6 @@ class So101Driver:
             actual = set(getattr(robot, "action_features", {}).keys())
             missing = expected - actual
             if missing:
-                self._teardown(robot)
                 raise RuntimeError(f"SOFollower action_features missing: {sorted(missing)}.")
 
             # Step 7: build the FK/IK backend over RobotKinematics (target_frame
@@ -495,14 +502,15 @@ class So101Driver:
             # and fail-closed at vision-call time.
             self._start_camera()
             self._load_calibration()
-        except Exception:
+        except BaseException as original:
             # Tear down the live follower even if it was never assigned to
             # self._robot (e.g. kinematics/FK/home check failed after the bus
             # opened). self._robot may still be None here.
-            self._teardown(robot)
-            self._robot = None
-            self._kin = None
-            self._connected = False
+            cleanup_errors = self._teardown(robot)
+            if cleanup_errors:
+                raise HardwareCleanupError("So101Driver.connect", original, cleanup_errors) from original
+            if isinstance(original, HardwareCleanupError):
+                raise
             raise
 
     # --- vision (milestone B): eye-to-hand camera + calibration --------------
@@ -527,9 +535,9 @@ class So101Driver:
             fps=int(self._cfg.camera_fps),
             log_prefix="[SO-101 vision]",
         )
+        self._camera = cam
         if not cam.start():
             raise RuntimeError(f"SO-101: configured camera {serial!r} failed to start.")
-        self._camera = cam
 
     def _load_calibration(self) -> None:
         """Load the eye-to-hand hand-eye calibration (``T_base_cam``).
@@ -587,43 +595,61 @@ class So101Driver:
 
     def disconnect(self) -> None:
         """Idempotent teardown entry."""
-        self._teardown(self._robot)
-        self._robot = None
-        self._kin = None
-        self._connected = False
-        self._reset_servo_plan()
+        cleanup_errors = self._teardown(self._robot)
+        if cleanup_errors:
+            raise HardwareCleanupError("So101Driver.disconnect", cleanup_errors=cleanup_errors) from cleanup_errors[0]
 
     def close(self) -> None:
         """Alias of :meth:`disconnect` for callers expecting ``close()``."""
         self.disconnect()
 
-    def _teardown(self, robot: Any) -> None:
-        """Best-effort, idempotent cleanup safe for None / partial / repeat."""
+    def _teardown(self, robot: Any) -> list[BaseException]:
+        """Attempt every independent cleanup and retain any failed handle."""
+        errors: list[BaseException] = []
         # Vision: stop the desktop camera (independent of the arm).
         if self._camera is not None:
             try:
                 self._camera.stop()
-            except Exception as exc:  # noqa: BLE001 - best-effort
-                _logger.debug("SO-101 teardown: camera.stop() failed: %s", exc)
-            self._camera = None
-        if robot is None:
-            return
-        try:
-            if not self._cfg.disable_torque_on_disconnect:
+            except BaseException as exc:
+                _logger.warning("SO-101 teardown: camera.stop() failed: %s", exc)
+                errors.append(exc)
+            else:
+                self._camera = None
+        if robot is not None:
+            if not self._cfg.disable_torque_on_disconnect and not self._settle_cleanup_errors:
                 # Leaving with torque on means the servos keep closing the loop
                 # after the port is gone; damp them while we can still talk.
-                self._settle_holding_joints(robot)
-            getattr(robot, "disconnect", lambda: None)()
-        except Exception as exc:
-            # Teardown must never raise; callers rely on idempotent close.
-            _logger.debug("SO-101 teardown: robot.disconnect() failed: %s", exc)
+                # After port close, register restoration cannot be verified.
+                # Keep failures across retries instead of treating a widened
+                # register's current value as its new "original" value.
+                self._settle_cleanup_errors = self._settle_holding_joints(robot)
+            try:
+                disconnect = getattr(robot, "disconnect", None)
+                if not callable(disconnect):
+                    raise AttributeError("SO-101 robot does not expose disconnect()")
+                disconnect()
+            except BaseException as exc:
+                _logger.warning("SO-101 teardown: robot.disconnect() failed: %s", exc)
+                errors.append(exc)
+            else:
+                if self._robot is robot:
+                    self._robot = None
+                    self._kin = None
+                    self._connected = False
+        elif self._robot is None:
+            self._connected = False
+            self._kin = None
+        if self._robot is None and self._camera is None:
+            self._reset_servo_plan()
+        return errors + self._settle_cleanup_errors
 
-    def _settle_holding_joints(self, robot: Any) -> None:
+    def _settle_holding_joints(self, robot: Any) -> list[BaseException]:
         """Pulse the arm dead zone wide enough to damp any servo limit cycle."""
         bus = getattr(robot, "bus", None)
         if bus is None:
-            return
+            return []
         restore: list[tuple[str, str, Any]] = []
+        errors: list[BaseException] = []
         try:
             for motor in ARM_JOINT_ORDER:
                 for register in _SETTLE_DEAD_ZONE_REGISTERS:
@@ -632,6 +658,7 @@ class So101Driver:
             self._sleep(_SETTLE_DWELL_S)
         except Exception as exc:
             _logger.warning("SO-101 teardown: dead-zone settle failed: %s", exc)
+            errors.append(exc)
         finally:
             # Restoring matters more than settling: a widened dead zone left
             # behind would silently degrade positioning on the next run.
@@ -640,6 +667,8 @@ class So101Driver:
                     bus.write(register, motor, value)
                 except Exception as exc:
                     _logger.warning("SO-101 teardown: restoring %s of %s failed: %s", register, motor, exc)
+                    errors.append(exc)
+        return errors
 
     # --- JointDriver / GripperDriver / observation --------------------------
     def get_angles(self) -> list[float]:

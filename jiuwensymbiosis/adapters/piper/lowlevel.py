@@ -23,6 +23,7 @@ import numpy as np
 from jiuwensymbiosis.adapters._common.safety import WorkspaceBounds
 from jiuwensymbiosis.adapters.piper._calibration import load_calibration
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.perception.camera import RealSenseCamera
 
 logger = logging.getLogger(__name__)
@@ -209,8 +210,42 @@ class PiperLowLevel:
                 "(and bring the CAN interface up) to use the real arm."
             ) from exc
 
+        self._camera: RealSenseCamera | None = None
+        self._arm: Any | None = None
+        self._can_may_be_open = False
+        self._closed = False
+        try:
+            self._initialize_connected_driver(locals(), C_PiperInterface_V2)
+        except BaseException as original:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                cleanup_errors = cleanup.cleanup_errors if isinstance(cleanup, HardwareCleanupError) else (cleanup,)
+                raise HardwareCleanupError("PiperLowLevel.__init__", original, cleanup_errors) from original
+            raise
+
+    def _initialize_connected_driver(self, params: dict[str, Any], arm_factory: Any) -> None:
+        """Open CAN and initialize the driver using the already-validated args."""
+        can_port = params["can_port"]
+        tool_offset_mm = params["tool_offset_mm"]
+        calib_path = params["calib_path"]
+        home_lift_mm = params["home_lift_mm"]
+        z_safe_margin_mm = params["z_safe_margin_mm"]
+        home_pose_xyzrxryrz_mm_deg = params["home_pose_xyzrxryrz_mm_deg"]
+        calib_object_xyzrxryrz_mm_deg = params["calib_object_xyzrxryrz_mm_deg"]
+        z_min_safe_mm = params["z_min_safe_mm"]
+        home_use_init_pose = params["home_use_init_pose"]
+        camera_serial = params["camera_serial"]
+        camera_resolution = params["camera_resolution"]
+        camera_fps = params["camera_fps"]
+        enable_timeout_s = params["enable_timeout_s"]
         logger.info("[Piper] Connecting CAN %s ...", can_port)
-        self._arm = C_PiperInterface_V2(can_port)
+        try:
+            self._arm = arm_factory(can_port)
+        except BaseException as original:
+            unknown = RuntimeError("Piper SDK construction failed before returning a CAN handle")
+            raise HardwareCleanupError("PiperLowLevel.__init__", original, (unknown,)) from original
+        self._can_may_be_open = True
         self._arm.ConnectPort()
         t0 = time.time()
         while not self._arm.EnablePiper():
@@ -356,7 +391,6 @@ class PiperLowLevel:
 
         # --- camera (optional)
         self._camera_serial = camera_serial
-        self._camera: RealSenseCamera | None = None
         if camera_serial:
             self._camera = RealSenseCamera(
                 serial=camera_serial,
@@ -365,8 +399,6 @@ class PiperLowLevel:
                 log_prefix="[Piper]",
             )
             self._camera.start()
-
-        self._closed = False
 
     # ============================================================== special methods
     def __del__(self) -> None:
@@ -582,24 +614,35 @@ class PiperLowLevel:
 
     # ============================================================== teardown
     def close(self) -> None:
-        """Stop camera, disconnect CAN; leave arm energized holding pose."""
+        """Stop camera and disconnect CAN, retaining failed resources for retry."""
         if self._closed:
             return
-        try:
-            if self._camera is not None:
+        errors: list[BaseException] = []
+        if self._camera is not None:
+            try:
                 self._camera.stop()
-        except Exception:  # noqa: BLE001 - best-effort camera teardown
-            pass
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._camera = None
         # Leave the arm ENERGIZED and holding its pose: do NOT DisableArm
         # (that makes it go limp and drop whatever it is holding) and do NOT
         # force standby. Just drop the CAN connection — the firmware keeps the
         # last enabled state, so the arm holds position until power-cycled or
         # explicitly disabled.
-        try:
-            self._arm.DisconnectPort()
-        except Exception:  # noqa: BLE001 - best-effort CAN disconnect
-            pass
-        self._closed = True
+        if self._can_may_be_open and self._arm is not None:
+            try:
+                self._arm.DisconnectPort()
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._can_may_be_open = False
+
+        self._closed = self._camera is None and not self._can_may_be_open
+        if self._closed:
+            self._arm = None
+        if errors:
+            raise HardwareCleanupError("PiperLowLevel.close", cleanup_errors=errors) from errors[0]
         logger.info("[Piper] Closed.")
 
     # ============================================================== private helpers

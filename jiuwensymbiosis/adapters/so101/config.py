@@ -18,11 +18,10 @@ import math
 import os
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-import yaml
-
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
 from jiuwensymbiosis.utils import get_logger
 
@@ -177,6 +176,8 @@ class So101Config:
     Required safety fields (no defaults) must come first; the rest are
     overridable per deployment.
     """
+
+    path_fields: ClassVar[tuple[str, ...]] = ("calib_path", "urdf_path", "calibration_dir")
 
     # --- required safety config ---
     port: str
@@ -671,24 +672,10 @@ class So101Config:
         required: LeRobot may legitimately create ``calibration_dir`` during
         ``lerobot-calibrate``, so resolving only-when-exists would leave a relative
         path to be re-resolved against the process cwd (or create the calibration
-        directory in the wrong place). Absolute paths and ``~``-prefixed paths are
-        passed through unchanged.
+        directory in the wrong place). Environment variables and ``~`` expand
+        before declared paths are normalized by the shared config parser.
         """
-        path = Path(path).expanduser().resolve()
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        cfg = cls.from_dict(data)
-        yaml_dir = path.parent
-        if cfg.urdf_path:
-            urdf = Path(cfg.urdf_path).expanduser()
-            cfg.urdf_path = str(urdf if urdf.is_absolute() else (yaml_dir / urdf).resolve())
-        if cfg.calibration_dir:
-            calib = Path(cfg.calibration_dir).expanduser()
-            cfg.calibration_dir = str(calib if calib.is_absolute() else (yaml_dir / calib).resolve())
-        if cfg.calib_path:
-            calib_p = Path(cfg.calib_path).expanduser()
-            cfg.calib_path = str(calib_p if calib_p.is_absolute() else (yaml_dir / calib_p).resolve())
-        return cfg
+        return load_yaml_config(cls, path)
 
     def __post_init__(self, chip_thickness_mm: float | None) -> None:
         """Validate required fields, value finiteness, ordering and ranges."""

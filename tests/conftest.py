@@ -7,10 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwensymbiosis.utils.proxy import clear_proxy_env
-
-clear_proxy_env()
-
 
 @pytest.fixture
 def mock_env():

@@ -447,6 +447,27 @@ def run_checks(module_str: str) -> list[CheckResult]:
                 ("S-12", _SEVERITY_INFO, "Session builder 无 from_yaml / from_dict (make_builder 产物应自动具备)")
             )
 
+    # Structural check only; smoke_test_adapter validates keys with real config.
+    if builder is not None:
+        factory = getattr(builder, "config_factory", None)
+        if not callable(getattr(builder, "resource_keys", None)) or not callable(getattr(factory, "from_dict", None)):
+            results.append(
+                (
+                    "S-17",
+                    _SEVERITY_ERROR,
+                    "Session builder 须公开 config_factory.from_dict 与 resource_keys(cfg)；"
+                    "请用 make_builder(..., resource_keys=...) 声明实际命令端点",
+                )
+            )
+        else:
+            results.append(
+                (
+                    "S-17",
+                    _SEVERITY_INFO,
+                    "[OK] 资源准入接口完整；请运行 smoke_test_adapter.py 验证配置派生的设备键",
+                )
+            )
+
     # ====================================================================
     # [A-13] 动作 capability 标签有效 ........ WARN
     # ====================================================================

@@ -394,10 +394,10 @@ def _encode_jpeg(rgb: Any, quality: int = 80) -> bytes | None:
         return None
 
 
-def _observation_snapshot(env: Any) -> dict | None:
+def _observation_snapshot(env: Any, *, observation: Any = None) -> dict | None:
     """Capture pose/joints/extra from the env, dropping raw rgb/depth arrays."""
     try:
-        obs = env.get_observation()
+        obs = env.get_observation() if observation is None else observation
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
         logger.warning("TraceRail: get_observation failed: %s", exc)
         return None
@@ -628,6 +628,9 @@ class TraceRail(AgentRail):
 
     # -------------------------------------------------------------- tool hooks
     async def before_tool_call(self, ctx: Any) -> None:
+        from jiuwensymbiosis.agent.observation import begin_action_observation
+
+        begin_action_observation(ctx)
         if self._trace is None:
             return
         inputs = getattr(ctx, "inputs", None)
@@ -675,10 +678,18 @@ class TraceRail(AgentRail):
                 if er:
                     entry.error = str(er)
         # Observation snapshot (best-effort).
-        entry.observation = _observation_snapshot(getattr(self.session, "env", None))
+        from jiuwensymbiosis.agent.observation import action_observation
+
+        observation = None
+        try:
+            observation = action_observation(ctx, self.session.env)
+        except (RuntimeError, OSError, AttributeError, ValueError) as exc:
+            logger.warning("TraceRail: get_observation failed: %s", exc)
+        entry.observation = _observation_snapshot(None, observation=observation) if observation is not None else None
         # Frame save (best-effort, capped).
-        if self.save_frames and self._frames_saved < self.max_frames:
-            frame_path = self._maybe_save_frame(entry.step)
+        if self.save_frames and self._frames_saved < self.max_frames and observation is not None:
+            rgb = getattr(observation, "rgb", None)
+            frame_path = self._save_frame(rgb, entry.step) if rgb is not None else None
             if frame_path is not None:
                 entry.frame_path = str(frame_path)
         # Enforce max_entries: drop oldest beyond cap.
