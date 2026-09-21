@@ -8,7 +8,9 @@
 #   make check COMMITS=1 # same, on files changed in last 1 commit
 #   make fix             # ruff format + ruff check --fix (staged files)
 #   make type-check      # mypy only
-#   make test            # pytest tests/unit_tests/
+#   make test-core       # pytest tests/unit_tests/ (no GUI extras)
+#   make test-gui        # pytest tests/gui/ (requires GUI extras)
+#   make test            # core + GUI no-hardware suites
 #   make test-all        # pytest (incl. integration)
 #
 # Tool env: defaults to the conda env "jiuwensymbiosis". Override with:
@@ -21,6 +23,7 @@ NULL := /dev/null
 
 ifeq ($(strip $(CONDA_ENV)),)
 	RUN ?= $(PYTHON) -m
+	PYTEST ?= $(PYTHON) -m pytest
 	MYPY ?= mypy
 	RUFF ?= ruff
 else
@@ -48,7 +51,7 @@ CHANGES_RAW := $(strip $(shell \
 quote-path = "$(1)"
 CHANGED_FILES := $(foreach file,$(CHANGES_RAW),$(call quote-path,$(file)))
 
-.PHONY: help check format lint type-check fix test test-all
+.PHONY: help check format lint type-check fix test test-core test-gui test-all
 
 help:
 	@echo "Usage: make [target] [COMMITS=N] [CONDA_ENV=jiuwensymbiosis]"
@@ -57,7 +60,9 @@ help:
 	@echo "  format       ruff format --check (staged files)"
 	@echo "  lint         ruff check (staged files)"
 	@echo "  type-check   mypy (staged files, advisory — does not abort)"
-	@echo "  test         pytest tests/unit_tests/"
+	@echo "  test-core    pytest tests/unit_tests/ (no GUI extras)"
+	@echo "  test-gui     pytest tests/gui/ (requires GUI extras)"
+	@echo "  test         core + GUI no-hardware suites"
 	@echo "  test-all     pytest (incl. integration)"
 	@echo ""
 	@echo "Options:"
@@ -93,8 +98,13 @@ fix: has-staged-changes
 	@echo "=== ruff check --fix ==="
 	@$(RUFF) check --fix $(CHANGED_FILES)
 
-test:
+test-core:
 	@PYTHONPATH="" $(PYTEST) tests/unit_tests/
+
+test-gui:
+	@PYTHONPATH="" $(PYTEST) tests/gui/
+
+test: test-core test-gui
 
 test-all:
 	@PYTHONPATH="" $(PYTEST)
