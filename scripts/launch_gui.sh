@@ -32,6 +32,6 @@ cd "$REPO_DIR" || exit 1
 # 抑制注释);conda 不可用则回退当前 PATH 上的 python。
 if [ -n "$CONDA_BASE" ] && [ -x "$CONDA_BASE/bin/conda" ]; then
     exec env -u PYTHONPATH "$CONDA_BASE/bin/conda" run --no-capture-output -n "$CONDA_ENV" \
-        python "$REPO_DIR/scripts/gui_launcher.py"
+        python "$REPO_DIR/scripts/gui_launcher.py" "$@"
 fi
-exec env -u PYTHONPATH python "$REPO_DIR/scripts/gui_launcher.py"
+exec env -u PYTHONPATH python "$REPO_DIR/scripts/gui_launcher.py" "$@"

@@ -1,0 +1,28 @@
+# Safe, generic workbench default shipped in the wheel.
+# Copy/edit this file before connecting hardware. Replace the CAN interface,
+# verify limits and tool geometry, and configure a real model endpoint/key.
+adapter: piper
+
+env:
+  cfg:
+    low_level:
+      can_port: "__CONFIGURE_PIPER_CAN_INTERFACE__"
+      home_use_init_pose: false
+      camera_serial: null
+
+model:
+  provider: OpenAI
+  api_base: "https://model-endpoint.invalid/v1"
+  api_key: ""
+  model_name: "REPLACE_WITH_MODEL_NAME"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  mode: hybrid
+  exec_mode: fastagent
+  enable_skill: true
+  enable_safety: true
+  enable_recovery: true
+  enable_visual_feedback: false
+  max_iterations: 15

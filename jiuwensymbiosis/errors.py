@@ -7,7 +7,7 @@ A ``code`` names **what kind of failure happened**, decided at the failure site
 where that is still certain, and travels with the failure (exception attribute →
 step dict → GUI payload) so the presentation layer can look it up in a table
 instead of re-deriving it by grepping error text. Codes carry no user-facing
-wording — the Chinese diagnosis cards live in ``jiuwensymbiosis.gui.diagnostics``.
+wording — the Chinese diagnosis cards live in ``jiuwensymbiosis_gui.workbench.diagnostics``.
 
 This module imports only ``jiuwensymbiosis.contracts`` (itself dependency-free):
 perception / rails / the fast runner / the GUI all depend on it, so it stays a leaf
