@@ -164,6 +164,8 @@ A visual adapter explicitly binds `pixel_to_base_xyz(u, v, depth_m)` with `@impl
 
 ## 6. Config and Session builder
 
+Declare source-relative mapping keys in Config `path_fields: ClassVar[tuple[str, ...]]` (omit for pathless configs). `from_yaml` uses `adapters._common.config.load_yaml_config`, sharing `parse_config` with Runtime and smoke. Flat and legacy nested layouts use the same rules; missing targets never revert to the working directory.
+
 A Config provides at least `from_dict(data)` and `from_yaml(path)`. Common fields by capability:
 
 | Group | Common fields |
@@ -184,6 +186,8 @@ make_builder(
     env_cls,
     api_cls,
     *,
+    config_factory=None,
+    resource_keys=None,
     api_kwargs_from_cfg=None,
     sidecar_builders=None,
     decorate=None,
@@ -193,6 +197,8 @@ make_builder(
 | Parameter | Role |
 |---|---|
 | `cfg_cls` | Config class with `from_yaml`/`from_dict` |
+| `config_factory` | Optional loader replacing cfg_cls loading methods; exposed as builder `.config_factory` |
+| `resource_keys` | Effective cfg → device resource keys; exposed as `.resource_keys(cfg)` for Runtime/official admission |
 | `env_cls` | Env class built from `cfg` |
 | `api_cls` | Api class built from `env` and optional kwargs |
 | `api_kwargs_from_cfg` | `list[str]` declarative mapping or compatible `cfg -> dict` callback |
@@ -207,6 +213,12 @@ Declarative field mapping:
 | `"detector.url:detector_service_url"` | Nested field renamed and passed in |
 
 The returned Builder supports `build(cfg)`, `.from_yaml(path)`, and `.from_dict(data)`. `make_detector_sidecar(cfg_attr="detector")` reads the detector sub-config and, when `spawn` is true, starts/stops the GroundingDINO/SAM2 service with the Session.
+
+Resource keys and actual connections must use the same effective configuration. Cruzr accepts an explicit
+`ros_domain_id` in YAML; otherwise Config captures `ROS_DOMAIN_ID` when constructed (default 0). ROS
+initialization and command workers use that value, and a pre-existing ROS context in another domain is rejected.
+Sidecars must propagate shutdown failures. If startup fails after successful rollback, they may expose
+`cleanup_report() -> CleanupReport` to confirm release; otherwise Session retains an unknown cleanup state.
 
 ## 7. Shared perception and geometry modules
 

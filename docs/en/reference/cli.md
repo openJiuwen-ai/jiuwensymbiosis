@@ -45,12 +45,18 @@ default browser; `--text` outputs a terminal timeline.
 ## jiuwensymbiosis-gui
 
 ```bash
-jiuwensymbiosis-gui
-# equivalent to
-python -m jiuwensymbiosis.gui
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
 ```
 
-Starts the NiceGUI browser UI listening on `127.0.0.1:8770`. When a dependency is missing, the preflight check prompts the user to install `.[gui]`.
+`--gui` selects an installed GUI plugin and defaults to `workbench`; `--list-guis` lists available plugins. `--config`,
+`--workspace`, `--host`, `--port`, and `--no-browser` configure the selected app. `--gui-config` passes plugin-specific
+settings when that plugin supports them. The launcher loads only the selected plugin's application entry point. Install
+that plugin and its documented dependencies in the same Python environment; the `.[gui]` extra supplies the current
+workbench's NiceGUI dependencies.
+
+`python -m jiuwensymbiosis.gui` remains as a temporary compatibility shim and forwards to the unified launcher.
 
 ## Hand-eye calibration
 

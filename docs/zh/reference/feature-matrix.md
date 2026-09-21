@@ -133,12 +133,16 @@
 | SO-101 Adapter | ◐ | Python 3.12；`pip install -e ".[so101]"` |
 | Cruzr Adapter | ◐ | `pip install -e ".[cruzr]"`；运行时需 source ROS 工作区 |
 | 视觉/GPU | ◐ | `pip install -e ".[full]"` 并使用 CUDA 12.8 PyTorch 源 |
-| 浏览器 GUI | ◐ | `pip install -e ".[gui]"`；`jiuwensymbiosis-gui`，默认 `127.0.0.1:8770` |
+| 浏览器 GUI | ◐ | `pip install -e ".[gui]"`；`jiuwensymbiosis-gui --gui workbench`，默认 `127.0.0.1:8770`；`--list-guis` 列出已安装插件 |
 | 语音前端 | ◐ | `pip install -e ".[voice]"`；FunASR/录音可选，默认 `NullTTS` |
 | 手眼标定 | ◐ | `pip install -e ".[calib,piper]"` 或 `.[calib,so101]` |
 | 动作/技能/状态自省 | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace 回放 | ✅ | `jiuwensymbiosis-replay` |
-| 单元测试 | ✅ | `pip install -e ".[dev]"`；`pytest tests/unit_tests/` |
+| 核心测试 | ✅ | `pip install -e ".[dev]"`；`make test-core` |
+| GUI 测试 | ◐ | `pip install -e ".[dev,gui]"`；`make test-gui` |
+
+`make test` 运行这两套无硬件测试；`make test-all` 还会包含集成测试。
+`.[gui]` 提供工作台的界面依赖；其它已安装的 GUI 插件各自提供所需的界面依赖。
 
 矩阵维护时应同时核对以下权威源：
 

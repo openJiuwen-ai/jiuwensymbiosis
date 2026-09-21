@@ -18,6 +18,7 @@ in the middle, and act on the current task with "▶ Run / ⚙ Configure" below 
 - [1. Feature overview](#1-feature-overview)
 - [2. Install](#2-install)
   - [Install GUI dependencies](#install-gui-dependencies)
+  - [Select a GUI plugin](#select-a-gui-plugin)
   - [Install a desktop launcher (recommended)](#install-a-desktop-launcher-recommended)
 - [3. Run examples](#3-run-examples)
   - [Run a task](#run-a-task)
@@ -51,15 +52,34 @@ The interface has six pages (switched by the top tabs):
 
 ### Install GUI dependencies
 
-The GUI is independent of the heavier GPU stack and installs on its own (it only needs `nicegui` + `pillow`). In your
-conda environment (default name `jiuwensymbiosis`):
+The existing workbench is independent of the heavier GPU stack and installs on its own (it needs `nicegui` + `pillow`).
+In your conda environment (default name `jiuwensymbiosis`):
 
 ```bash
 pip install -e ".[gui]"
 ```
 
-> With NiceGUI missing, the program does not throw a raw traceback: the startup preflight pops up a dialog telling you
-> to run `pip install -e ".[gui]"` (visible even when launched from a desktop icon with no terminal).
+> If the selected workbench is missing NiceGUI, startup preflight shows a dialog suggesting
+> `pip install -e ".[gui]"` (visible even from a desktop icon with no terminal).
+
+### Select a GUI plugin
+
+The unified launcher defaults to the existing `workbench`. List the installed GUI plugins, or select one explicitly:
+
+```bash
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+To select another plugin, install its distribution and documented dependencies in the same Python environment, then run
+`jiuwensymbiosis-gui --gui <plugin-key>`. Each plugin owns its UI framework and front-end dependencies; installing a
+plugin does not make its UI framework a dependency of every other GUI. The launcher starts only the selected plugin.
+
+To build another interface, see [Add a GUI Plugin](add-gui.md) for an installable example and testing rules.
+
+`python -m jiuwensymbiosis.gui` remains as a temporary compatibility shim. New launch scripts should use
+`python -m jiuwensymbiosis_gui` or `jiuwensymbiosis-gui`.
 
 ### Install a desktop launcher (recommended)
 
@@ -92,9 +112,9 @@ Start it any of these ways (all open the default browser at `http://127.0.0.1:87
 ```bash
 # 1) Desktop icon: click "Jiuwen Symbiosis" in the application menu
 # 2) Console script
-jiuwensymbiosis-gui
+jiuwensymbiosis-gui --gui workbench
 # 3) Module entry point
-python -m jiuwensymbiosis.gui
+python -m jiuwensymbiosis_gui --gui workbench
 # 4) Launcher script (activates the conda environment, runs repository source)
 bash scripts/launch_gui.sh
 ```
@@ -164,6 +184,6 @@ trying again.
 - **conda environment**: `launch_gui.sh` and the desktop icon default to `jiuwensymbiosis`; override with
   `JIUWEN_CONDA_ENV`.
 - **Language**: the interface is Simplified Chinese.
-- The GUI is an in-process wrapper over library functions (it does not shell out to the CLI); live feedback comes back
-  through a thread-safe event queue, and the logic modules (`run_engine` / `run_status` / `humanize` and friends) do not
-  depend on NiceGUI and can be unit tested on their own.
+- The workbench is an in-process wrapper over library functions (it does not shell out to the CLI); live feedback comes
+  back through a thread-safe event queue. Its Python modules live under `jiuwensymbiosis_gui.workbench`; hardware-free
+  workbench tests live in `tests/gui/workbench/`.
