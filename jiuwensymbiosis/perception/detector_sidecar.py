@@ -19,10 +19,11 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from dataclasses import dataclass, field
+from types import TracebackType
 
 from jiuwensymbiosis.agent.cancel import CancelToken
+from jiuwensymbiosis.agent.lifecycle import CleanupReport, HardwareCleanupError
 from jiuwensymbiosis.errors import DetectorStartError
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,75 @@ def _wait_for_port(host: str, port: int, timeout: float, *, cancel_token: Cancel
     return False
 
 
-@contextmanager
+@dataclass
+class _DetectorSidecar:
+    """Own the child and expose rollback evidence even when entering fails."""
+
+    command: list[str]
+    host: str
+    port: int
+    startup_timeout_s: float
+    log_stdout: bool
+    cancel_token: CancelToken | None
+    _proc: subprocess.Popen | None = field(default=None, init=False)
+    _released: bool = field(default=True, init=False)
+
+    def __enter__(self) -> subprocess.Popen | None:
+        if _port_open(self.host, self.port, timeout=0.5):
+            logger.info("detector already running at %s:%d, attaching", self.host, self.port)
+            return None
+        logger.info("Spawning detector server: %s", " ".join(self.command))
+        self._released = False
+        stdout = None if self.log_stdout else subprocess.DEVNULL
+        stderr = subprocess.STDOUT if self.log_stdout else subprocess.DEVNULL
+        self._proc = subprocess.Popen(self.command, stdout=stdout, stderr=stderr)
+        try:
+            if not _wait_for_port(self.host, self.port, self.startup_timeout_s, cancel_token=self.cancel_token):
+                raise DetectorStartError(
+                    f"detector server did not start on {self.host}:{self.port} within {self.startup_timeout_s}s"
+                )
+        except BaseException as original:
+            try:
+                self.close()
+            except Exception as cleanup:
+                raise HardwareCleanupError("detector startup", original, (cleanup,)) from original
+            raise
+        logger.info("detector ready at %s:%d (pid=%d)", self.host, self.port, self._proc.pid)
+        return self._proc
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        self.close()
+
+    def cleanup_report(self) -> CleanupReport:
+        return CleanupReport(connected=not self._released)
+
+    def close(self) -> None:
+        if self._released:
+            return
+        proc = self._proc
+        if proc is None:
+            raise HardwareCleanupError("detector spawn", cleanup_errors=(RuntimeError("no child handle"),))
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                except Exception:
+                    # A failed terminate/wait is recoverable only if kill + wait
+                    # confirms the detector child has exited.
+                    proc.kill()
+                    proc.wait(timeout=5)
+            if proc.poll() is None:
+                raise RuntimeError("detector process is still running")
+        except Exception as cleanup:
+            raise HardwareCleanupError("detector shutdown", cleanup_errors=(cleanup,)) from cleanup
+        self._released = True
+        self._proc = None
+        logger.info("detector server stopped")
+
+
 def detector_subprocess(
     *,
     host: str = "127.0.0.1",
@@ -63,20 +132,16 @@ def detector_subprocess(
     text_threshold: float = 0.25,
     use_sam2: bool = True,
     cancel_token: CancelToken | None = None,
-) -> Iterator[subprocess.Popen | None]:
+) -> _DetectorSidecar:
     """Start (or attach to) the GroundingDINO(+SAM2) detection server.
 
-    Yields the ``Popen`` we spawned, or ``None`` if we attached to an external
-    instance. Always tears down spawned children on context exit.
+    The context yields the spawned ``Popen``, or ``None`` for an external
+    instance. Its cleanup report confirms successful startup rollback; failed
+    shutdown raises rather than silently declaring the child stopped.
 
     The first spawn downloads the model weights from HuggingFace, so
     ``startup_timeout_s`` defaults high.
     """
-    if _port_open(host, port, timeout=0.5):
-        logger.info("detector already running at %s:%d, attaching", host, port)
-        yield None
-        return
-
     cmd = [
         sys.executable,
         "-m",
@@ -98,26 +163,4 @@ def detector_subprocess(
         cmd += ["--sam2-model-id", sam2_model_id]
     if not use_sam2:
         cmd += ["--no-sam2"]
-    logger.info("Spawning detector server: %s", " ".join(cmd))
-
-    stdout = None if log_stdout else subprocess.DEVNULL
-    stderr = subprocess.STDOUT if log_stdout else subprocess.DEVNULL
-    proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
-
-    try:
-        if not _wait_for_port(host, port, startup_timeout_s, cancel_token=cancel_token):
-            raise DetectorStartError(f"detector server did not start on {host}:{port} within {startup_timeout_s}s")
-        logger.info("detector ready at %s:%d (pid=%d)", host, port, proc.pid)
-        yield proc
-    finally:
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("detector shutdown failed: %s", exc)
-        logger.info("detector server stopped")
+    return _DetectorSidecar(cmd, host, port, startup_timeout_s, log_stdout, cancel_token)

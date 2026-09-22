@@ -14,7 +14,7 @@
 # 编辑式安装（extras 可组合，如 ".[dev,gui]"）
 pip install -e ".[dev]"                                          # 核心 + 测试依赖
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + 视觉/GPU 依赖
-pip install -e ".[gui]"                                          # + 图形界面（NiceGUI，浏览器模式）
+pip install -e ".[gui]"                                          # + 现有工作台（NiceGUI，浏览器模式）
 pip install -e ".[piper]"                                        # + piper 硬件 SDK
 pip install -e ".[so101]"                                        # + SO-101 硬件依赖
 pip install -e ".[cruzr]"                                        # + Cruzr（ROS 2 / 运动学）依赖
@@ -23,6 +23,7 @@ pip install -e ".[cruzr]"                                        # + Cruzr（ROS
 - Python 3.11+（`pyproject.toml` 限定 `requires-python = ">=3.11,<3.14"`）。
 - 默认使用 conda 环境 `jiuwensymbiosis`（Makefile 默认走 `conda run -n jiuwensymbiosis`）。
 - 工具链：`ruff`（唯一格式化 + lint 工具，Black 兼容）、`mypy`（类型检查，结果为建议性、不阻断）、`pytest`。
+- 新 GUI 按独立插件安装；`.[gui]` 只安装现有工作台的 NiceGUI 依赖。接入流程见[接入 GUI 插件](docs/zh/how-to/add-gui.md)。
 
 ### 1.2 关键依赖与代理清理
 
@@ -183,7 +184,7 @@ git push origin feat/<short-description>
 作用范围：`tests/**/*.py`。
 
 - 单测路径镜像源码：`jiuwensymbiosis/tools/builder.py` → `tests/unit_tests/tools/test_builder.py`。
-- `tests/unit_tests/`：快、确定性、无硬件/GPU、CI 跑；`tests/integration/`：需真硬件/GPU/外部服务，CI 常跳过；`tests/mocks/`：共享 `MockApi` / `MockArmEnvWrapper` / `MockPiperDriver` / `MockScene`，单测用它保持无硬件。
+- `tests/unit_tests/`：核心层快、确定性、无硬件/GPU、无 GUI 依赖，运行 `make test-core`；`tests/gui/`：GUI 启动器、插件和界面套件，运行 `make test-gui`；`tests/integration/`：需真硬件/GPU/外部服务，CI 常跳过；`tests/mocks/`：共享 `MockApi` / `MockArmEnvWrapper` / `MockPiperDriver` / `MockScene`，单测用它保持无硬件。
 - 选型：碰 serial/CAN/socket / 真相机 / 检测子进程 → integration；单函数 / 组件（`perception/scene3d.py`、`motion/approach.py`）/ rail 隔离 → unit（用 `MockArmEnvWrapper` / `MockApi`）；改 capability gating 或 tool emission → 在 `tests/unit_tests/api/` 与 `tests/unit_tests/tools/` 补测。
 - `pytest` + `asyncio_mode = "auto"`（无需 `@pytest.mark.asyncio` 模板）；`pytest-mock` 可用，优先 `mocker` fixture；测试类命名 `Test<Feature>`。
 - 凭据：库代码无真实凭据面，保持如此；测试 LLM 用离线 mock 模型（`build_mock_model()`，来自 `jiuwensymbiosis.agent.mock_model`），通过 `RobotAgentConfig(model=build_mock_model())` 传入 `build_robot_agent`，禁硬编码真实硬件端点。
@@ -192,7 +193,9 @@ git push origin feat/<short-description>
 运行（用 Makefile 目标，默认走 conda 环境 `jiuwensymbiosis`）：
 
 ```bash
-make test        # pytest tests/unit_tests/（无硬件/GPU，CI 跑）
+make test-core   # pytest tests/unit_tests/（核心层，不要求 GUI 依赖）
+make test-gui    # pytest tests/gui/（工作台套件要求 .[gui]）
+make test        # test-core + test-gui（无硬件套件）
 make test-all    # 全量 pytest（含 integration，通常跳过）
 
 # Makefile 不提供单文件 / 过滤测试的便捷目标，直接用底层 pytest：
@@ -219,7 +222,9 @@ python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>   # 
 | `make lint` | `ruff check --show-fixes`（仅 lint，提示可修项） |
 | `make type-check` | `mypy`（仅类型检查，advisory，不阻断） |
 | `make check` | `ruff format --check` + `ruff check` + `mypy` 一键自检（mypy advisory） |
-| `make test` | `pytest tests/unit_tests/`（无硬件/GPU） |
+| `make test-core` | `pytest tests/unit_tests/`（核心层，不要求 GUI 依赖） |
+| `make test-gui` | `pytest tests/gui/`（工作台测试需 `.[gui]`） |
+| `make test` | 核心 + GUI 无硬件套件 |
 | `make test-all` | 全量 `pytest`（含 integration，常跳过） |
 
 ```bash
@@ -232,8 +237,9 @@ make fix
 # 2. 一键自检：format check + lint + mypy（mypy 仅建议性，不阻断）
 make check
 
-# 3. 单元测试
+# 3. 核心与 GUI 单元测试
 make test
+# 单独验证一层时可选用 make test-core 或 make test-gui
 
 # 4.（按需）全量测试（含 integration，通常跳过）
 make test-all
@@ -304,7 +310,9 @@ git add <files>                    # make 默认检查 staged .py，先暂存
 make fix                           # ruff format + ruff check --fix（改文件后重新暂存）
 git add <files>
 make check                         # format check + lint + mypy(advisory)
-make test                          # pytest tests/unit_tests/
+make test-core                     # 核心层，不要求 GUI 依赖
+make test-gui                      # GUI 测试；工作台套件需安装 .[gui]
+make test                          # 核心 + GUI 无硬件套件
 # ...按需更新 docs/examples...
 git commit -m "feat: xxx"
 git push origin feat/xxx
@@ -321,5 +329,5 @@ git checkout feat/xxx && git rebase main     # 把主仓更新并进功能分支
 | 行为 | 先思考、简洁、外科式、目标驱动 |
 | 格式 | `ruff`（120 行宽），禁 `print()` 用 `get_logger` |
 | 安全 | 不绕 `SafetyRail`，`z_min_safe` 如实，凭据走 env |
-| 测试 | 单测镜像源码路径，用 `Mock*` 保持无硬件 |
-| 提交 | `make fix` → `make check` → `make test` → 更新文档 → commit |
+| 测试 | 核心在 `tests/unit_tests/`，GUI 在 `tests/gui/`；用 `Mock*` 保持无硬件 |
+| 提交 | `make fix` → `make check` → `make test-core` / `make test-gui` → 更新文档 → commit |

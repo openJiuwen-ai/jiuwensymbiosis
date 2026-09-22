@@ -189,15 +189,14 @@ class PiperEnv(BaseRobotEnv):
         logger.info("PiperEnv connected (can_port=%s)", self.cfg.can_port)
 
     def disconnect(self) -> None:
-        """Close the low-level driver and mark as disconnected."""
-        if not self._connected:
+        """Close the low-level driver and mark as disconnected only on success."""
+        if self._inner is None:
+            self._connected = False
             return
-        try:
-            # `_inner` is non-None here: `_connected` is set True only after
-            # `_inner` is assigned in connect(); mypy can't track the invariant.
-            self._inner.close()  # type: ignore[union-attr]
-        except Exception as exc:  # noqa: BLE001 - disconnect is best-effort
-            logger.warning("PiperEnv disconnect failed: %s", exc)
+        # Retain the driver and connected state if any underlying resource failed
+        # to close. RobotSession can then report the failure and a later call can
+        # retry the driver's idempotent close path.
+        self._inner.close()
         self._inner = None
         self._connected = False
 

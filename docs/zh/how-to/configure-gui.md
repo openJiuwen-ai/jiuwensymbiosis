@@ -18,6 +18,7 @@
 - [1. 功能一览](#1-功能一览)
 - [2. 安装](#2-安装)
   - [安装图形界面依赖](#安装图形界面依赖)
+  - [选择 GUI 插件](#选择-gui-插件)
   - [安装成“点击就能打开”的桌面应用（推荐）](#安装成点击就能打开的桌面应用推荐)
 - [3. 运行示例](#3-运行示例)
   - [运行任务](#运行任务)
@@ -51,15 +52,34 @@
 
 ### 安装图形界面依赖
 
-图形界面独立于其它的重型 GPU 栈，可单独安装（只需 `nicegui` + `pillow`）。在你的
+现有工作台独立于其它的重型 GPU 栈，可单独安装（需要 `nicegui` + `pillow`）。在你的
 conda 环境（默认名 `jiuwensymbiosis`）里：
 
 ```bash
 pip install -e ".[gui]"
 ```
 
-> 缺 NiceGUI 时程序不会抛裸 traceback：启动预检会弹一个中文对话框告诉你
-> `pip install -e ".[gui]"`（即便从桌面图标启动、没有终端也能看到）。
+> 所选工作台缺 NiceGUI 时，启动预检会弹出提示 `pip install -e ".[gui]"` 的对话框
+>（即便从桌面图标启动、没有终端也能看到）。
+
+### 选择 GUI 插件
+
+统一启动器默认启动现有 `workbench`。可以列出已安装的 GUI 插件，或明确选择工作台：
+
+```bash
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+选择其它插件时，先按该插件说明把它及其依赖安装到同一 Python 环境，再运行
+`jiuwensymbiosis-gui --gui <plugin-key>`。每个插件自行管理界面框架和前端依赖；安装某个插件不会让它的
+界面框架变成所有 GUI 的依赖。启动器只启动所选插件。
+
+开发新的界面请参阅 [接入一个 GUI 插件](add-gui.md)，其中包含可安装的最小示例和测试规则。
+
+`python -m jiuwensymbiosis.gui` 暂时保留为兼容转发入口。新脚本请使用
+`python -m jiuwensymbiosis_gui` 或 `jiuwensymbiosis-gui`。
 
 ### 安装成“点击就能打开”的桌面应用（推荐）
 
@@ -90,9 +110,9 @@ bash scripts/install_desktop_entry.sh --uninstall
 ```bash
 # 1) 桌面图标：应用菜单里点 “Jiuwen Symbiosis”
 # 2) 控制台脚本
-jiuwensymbiosis-gui
+jiuwensymbiosis-gui --gui workbench
 # 3) 模块入口
-python -m jiuwensymbiosis.gui
+python -m jiuwensymbiosis_gui --gui workbench
 # 4) 启动脚本（自动激活 conda 环境、跑仓库源码）
 bash scripts/launch_gui.sh
 ```
@@ -145,5 +165,5 @@ bash scripts/launch_gui.sh
 - **conda 环境**：`launch_gui.sh` / 桌面图标默认用 `jiuwensymbiosis`，可用
   `JIUWEN_CONDA_ENV` 覆盖。
 - **语言**：界面为简体中文。
-- 图形界面是对库函数的进程内封装（不 shell 调 CLI）；实时反馈经线程安全事件队列回传，
-  逻辑模块（`run_engine` / `run_status` / `humanize` 等）不依赖 NiceGUI，可独立单测。
+- 工作台是在进程内调用库函数（不 shell 调 CLI）；实时反馈经线程安全事件队列回传。Python 模块位于
+  `jiuwensymbiosis_gui.workbench`，无硬件工作台测试位于 `tests/gui/workbench/`。

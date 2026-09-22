@@ -152,7 +152,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
 @dataclass
@@ -170,8 +170,7 @@ class ScaraConfig:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScaraConfig":
-        with Path(path).open("r") as f:
-            return cls.from_dict(yaml.safe_load(f) or {})
+        return load_yaml_config(cls, path)
 ```
 
 ## 4. 包装 Env
@@ -289,19 +288,29 @@ class ScaraApi(BaseRobotApi):
 ## 6. 组装 Session
 
 ```python
-"""build_scara_session"""
+"""build_my_scara_session"""
+from pathlib import Path
+
 from jiuwensymbiosis.adapters._common.builder import make_builder
 from jiuwensymbiosis.adapters.my_scara.config import ScaraConfig
 from jiuwensymbiosis.adapters.my_scara.env import ScaraEnv
 from jiuwensymbiosis.adapters.my_scara.api import ScaraApi
 
-build_scara_session = make_builder(ScaraConfig, ScaraEnv, ScaraApi)
+build_my_scara_session = make_builder(
+    ScaraConfig, ScaraEnv, ScaraApi,
+    resource_keys=lambda cfg: (f"serial:{Path(cfg.serial_port).expanduser().resolve()}",),
+)
 ```
+
+在 `adapters/my_scara/__init__.py` 导出 `build_my_scara_session`，与包名一致。`resource_keys(cfg)` 声明实际命令端点；同一串口的路径别名应生成相同键。这里的 Mock Driver 不会打开串口，仍声明身份以验证完整的接入契约。builder 只装配 Session，不取得资源锁；Runtime 或官方 CLI 的 `admitted_session` 负责准入。
 
 ## 7. 编写 YAML 配置
 
+将下面配置保存为 `configs/my_scara/default.yaml`，并复制一份到适配器的 `config_template.yaml`。
+
 ```yaml
 # SCARA 吸盘机械臂配置
+adapter: my_scara
 name: "scara"
 serial_port: "/dev/ttyUSB0"     # [必填] 串口路径
 z_min_safe_mm: 30.0             # [选填] 安全Z下限
@@ -313,7 +322,9 @@ home_xyzr: [200.0, 0.0, 250.0, 0.0]  # [选填] Home 位姿 (x,y,z,r)
 
 ```bash
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_scara
-python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_scara
+python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_scara --config configs/my_scara/default.yaml
 ```
 
 静态验证检查目录、签名和能力对齐；冒烟测试向 Env 注入桩驱动（不连接真实硬件）、调用生成工具并检查返回值可序列化。至此本教程目标已经完成。替换为真实驱动前，继续阅读[移植机器人硬件适配器](../how-to/port-hardware-adapter.md)中的厂商 SDK、坐标几何、工作空间、安全和真机验收要求。
+
+资源身份也是完成标准：S-17 检查工厂与资源回调接口，smoke 再用实际配置验证设备键。没有可推导设备键时须显式提供顶层 `physical_device_id`；相机或检测服务的键不能替代机器人的身份。若配置新增标定、URDF 等路径字段，在 Config 上声明 `path_fields: ClassVar[tuple[str, ...]]`，并沿用 `load_yaml_config`；Runtime 和 smoke 会使用同一解析规则，缺失文件也按来源目录定位。

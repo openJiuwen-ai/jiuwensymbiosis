@@ -10,9 +10,9 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,8 @@ class DetectorServerConfig:
 
 @dataclass
 class PiperConfig:
+    path_fields: ClassVar[tuple[str, ...]] = ("calib_path",)
+
     # --- arm (single-arm; LEFT arm only)
     can_port: str = "can_left"
     # MOVE speed percentage (0-100) passed to MotionCtrl_2; start slow on real HW.
@@ -176,15 +178,7 @@ class PiperConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> PiperConfig:
         """Load config from a YAML file, resolving relative calib_path."""
-        path = Path(path).resolve()
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        cfg = cls.from_dict(data)
-        if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
-            candidate = (path.parent / cfg.calib_path).resolve()
-            if candidate.exists():
-                cfg.calib_path = str(candidate)
-        return cfg
+        return load_yaml_config(cls, path)
 
 
 def _server_value(server: dict[str, Any], field_name: str, default: Any) -> Any:

@@ -1,0 +1,30 @@
+# Safe, generic workbench default shipped in the wheel.
+# Configure ROS 2 and Cruzr workspace details, replace both placeholder topic
+# names, verify the motion envelope, and set a real model endpoint/key first.
+adapter: cruzr
+
+env:
+  cfg:
+    low_level:
+      ros_workspace: null
+      command_topic: "/CONFIGURE_ME/sdk/robot_command"
+      state_topic: "/CONFIGURE_ME/sdk/robot_state"
+      urdf_path: null
+      urdf_package_dir: null
+
+model:
+  provider: OpenAI
+  api_base: "https://model-endpoint.invalid/v1"
+  api_key: ""
+  model_name: "REPLACE_WITH_MODEL_NAME"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  mode: hybrid
+  exec_mode: fastagent
+  enable_skill: true
+  enable_safety: true
+  enable_recovery: true
+  enable_visual_feedback: false
+  max_iterations: 15

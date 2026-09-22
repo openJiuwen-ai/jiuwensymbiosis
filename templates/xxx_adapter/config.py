@@ -16,9 +16,9 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
 @dataclass
@@ -28,6 +28,8 @@ class XxxConfig:
     Use ``from_yaml(path)`` to load from a YAML file, or construct directly
     with keyword arguments.
     """
+
+    path_fields: ClassVar[tuple[str, ...]] = ("calib_path",)
 
     # ==================== 基本信息 [必填] ====================
     name: str = "xxx"
@@ -115,13 +117,4 @@ class XxxConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> XxxConfig:
         """Load config from a YAML file."""
-        path = Path(path).resolve()
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        cfg = cls.from_dict(data)
-        # Resolve relative calib_path
-        if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
-            candidate = (path.parent / cfg.calib_path).resolve()
-            if candidate.exists():
-                cfg.calib_path = str(candidate)
-        return cfg
+        return load_yaml_config(cls, path)

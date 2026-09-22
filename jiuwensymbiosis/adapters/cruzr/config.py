@@ -14,9 +14,9 @@ import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
 @dataclass
@@ -70,10 +70,16 @@ class CruzrConfig:
     ``JointCmd.position`` in radians.
     """
 
+    path_fields: ClassVar[tuple[str, ...]] = (
+        "camera_calib_path", "camera_fastdds_profiles_file", "ros_workspace", "urdf_path", "urdf_package_dir",
+    )
+
     # ROS 2 environment. ``ros_workspace`` is informational for examples and
     # diagnostics; Python code expects the caller to source ROS setup files
     # before running when using real hardware.
     ros_workspace: str | None = None
+    # Capture the command domain once; drivers/workers must not re-read it later.
+    ros_domain_id: int = field(default_factory=lambda: int(os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"))
     command_topic: str = "/mc/sdk/robot_command"
     state_topic: str = "/mc/sdk/robot_state"
     developer_mode_service: str = "/sys/task/developer_mode"
@@ -449,6 +455,10 @@ class CruzrConfig:
         absolute location. Expanding here is what lets one config file work on two machines
         instead of hard-coding whoever committed it last.
         """
+        if isinstance(self.ros_domain_id, str) and self.ros_domain_id.strip().isdigit():
+            self.ros_domain_id = int(self.ros_domain_id)
+        if isinstance(self.ros_domain_id, bool) or not isinstance(self.ros_domain_id, int) or self.ros_domain_id < 0:
+            raise ValueError("ros_domain_id must be a non-negative integer")
         for name in ("ros_workspace", "urdf_path", "urdf_package_dir"):
             value = getattr(self, name)
             if value:
@@ -476,10 +486,7 @@ class CruzrConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> "CruzrConfig":
         """Load config from a YAML file."""
-        path = Path(path).resolve()
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        return cls.from_dict(data)
+        return load_yaml_config(cls, path)
 
     def joint_name_for_arm(self, arm: str | None = None) -> str:
         """Resolve ``left`` / ``right`` to the configured shoulder pitch joint."""

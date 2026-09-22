@@ -37,6 +37,7 @@ from jiuwensymbiosis.adapters.so101.lowlevel import (
     So101PoseConvergenceError,
     So101PreDispatchError,
 )
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.protocol import HandGuidingDriver, HandGuidingRecoveryError
 from jiuwensymbiosis.errors import SAFETY_REJECTED, error_code
 
@@ -975,6 +976,81 @@ class TestConnect:
 
         with pytest.raises(RuntimeError, match="configured camera.*failed to start"):
             driver.connect()
+        assert driver._connected is False
+        assert follower.connected is False
+
+    def test_camera_start_rollback_failure_retains_camera_for_disconnect_retry(self, tmp_path, monkeypatch):
+        from jiuwensymbiosis.perception import camera as camera_module
+
+        class FailedRollbackCamera:
+            def __init__(self, **kwargs):
+                self.stop_calls = 0
+
+            def start(self):
+                return False
+
+            def stop(self):
+                self.stop_calls += 1
+                if self.stop_calls == 1:
+                    raise RuntimeError("camera stop failed")
+
+        monkeypatch.setattr(camera_module, "RealSenseCamera", FailedRollbackCamera)
+        driver, follower, _ = _make_driver(_make_cfg(camera_serial="missing-camera"), tmp_path)
+
+        with pytest.raises(HardwareCleanupError, match="So101Driver.connect") as failed:
+            driver.connect()
+
+        camera = driver._camera
+        assert camera is not None
+        assert "configured camera" in str(failed.value.original_error)
+        assert any("camera stop failed" in str(error) for error in failed.value.cleanup_errors)
+        assert driver._connected is False
+        assert driver._robot is None
+        assert follower.connected is False
+
+        driver.disconnect()
+        assert camera.stop_calls == 2
+        assert driver._camera is None
+
+    def test_connect_rollback_disconnect_failure_retains_robot_for_retry(self, tmp_path):
+        cfg = _make_cfg()
+        follower = FakeFollower(config=None)
+        follower.calibration_fpath = make_calib_file(tmp_path)
+        disconnect_calls = 0
+        original_disconnect = follower.disconnect
+
+        def disconnect_once_fails():
+            nonlocal disconnect_calls
+            disconnect_calls += 1
+            if disconnect_calls == 1:
+                raise RuntimeError("serial disconnect uncertain")
+            original_disconnect()
+
+        follower.disconnect = disconnect_once_fails
+
+        class _BadKin:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("kinematics construction failed")
+
+        driver = So101Driver(
+            cfg,
+            so_follower_factory=lambda robot_cfg: follower,
+            kinematics_factory=_BadKin,
+            lerobot_import=fake_lerobot_import,
+        )
+
+        with pytest.raises(HardwareCleanupError, match="So101Driver.connect") as failed:
+            driver.connect()
+
+        assert "kinematics construction failed" in str(failed.value.original_error)
+        assert any("serial disconnect uncertain" in str(error) for error in failed.value.cleanup_errors)
+        assert driver._robot is follower
+        assert driver._connected is False
+        assert follower.connected is True
+
+        driver.disconnect()
+        assert disconnect_calls == 2
+        assert driver._robot is None
         assert driver._connected is False
         assert follower.connected is False
 
@@ -2272,12 +2348,17 @@ class TestTeardownSettle:
         assert ("follower_disconnect",) in events
 
     def test_write_failure_still_disconnects(self, tmp_path):
-        driver, _, events, _ = _make_settle_driver(tmp_path, disable_torque=False, fail_write=True)
+        driver, follower, events, _ = _make_settle_driver(tmp_path, disable_torque=False, fail_write=True)
         driver.connect()
-        driver.disconnect()  # must not raise
+        # A settle/restore error is now visible to the session so resource
+        # admission can fail closed. The independently successful port close
+        # still runs and its handle is dropped.
+        with pytest.raises(HardwareCleanupError, match="So101Driver.disconnect"):
+            driver.disconnect()
 
         assert ("follower_disconnect",) in events
         assert driver._connected is False
+        assert follower.connected is False
 
     def test_follower_without_bus_is_tolerated(self, tmp_path):
         cfg = _make_cfg(disable_torque_on_disconnect=False)
@@ -2286,6 +2367,25 @@ class TestTeardownSettle:
         driver.connect()
         driver.disconnect()  # must not raise
         assert follower.connected is False
+
+    def test_failed_register_restore_stays_blocked_after_port_close(self, tmp_path, monkeypatch):
+        driver, follower, events, _ = _make_settle_driver(tmp_path, disable_torque=False)
+        driver.connect()
+        write = follower.bus.write
+
+        def fail_restore(register, motor, value):
+            if value == 1:
+                raise RuntimeError("dead-zone restore failed")
+            write(register, motor, value)
+
+        monkeypatch.setattr(follower.bus, "write", fail_restore)
+        for _ in range(2):
+            with pytest.raises(HardwareCleanupError, match="dead-zone restore failed"):
+                driver.disconnect()
+        assert events.count(("follower_disconnect",)) == 1
+        assert set(follower.bus.values.values()) == {4}
+        with pytest.raises(HardwareCleanupError, match="dead-zone restore failed"):
+            driver.connect()
 
 
 class TestZFloorEscapeHatch:

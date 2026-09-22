@@ -127,25 +127,29 @@ Env 是 Agent、Tools 和 Rails 唯一依赖的硬件契约。它管理生命周
 
 ### Env 生命周期与观测
 
-连接时先在局部变量中创建并连接 Driver，成功后再发布到 `low_level`；断开时先清空公开引用，再释放资源，避免失败路径留下“看似已连接”的对象。
+连接前保留 Driver 句柄，连接状态独立记录；只有关闭成功后才清空句柄。关闭失败必须传播并保留可重试句柄，不能只记日志后假装释放。构造函数中已经获取设备却无法回滚时，抛出 `HardwareCleanupError`（`agent.lifecycle`），让 Session 和资源准入保留不确定状态。
 
 ```python
 class MyEnv(BaseRobotEnv):
     def __init__(self, cfg):
-        self._cfg = cfg
+        self.cfg = cfg
         self.low_level = None
+        self._connected = False
 
     def connect(self) -> None:
-        if self.low_level is not None:
+        if self._connected:
             return
-        driver = MyDriver(self._cfg.can_port)
-        driver.connect()
-        self.low_level = driver
+        if self.low_level is not None:
+            raise RuntimeError("previous cleanup is not confirmed")
+        self.low_level = MyDriver(self.cfg.can_port)
+        self.low_level.connect()
+        self._connected = True
 
     def disconnect(self) -> None:
-        driver, self.low_level = self.low_level, None
-        if driver is not None:
-            driver.close()
+        if self.low_level is not None:
+            self.low_level.close()
+            self.low_level = None
+        self._connected = False
 
     def get_observation(self) -> RobotObservation:
         if self.low_level is None:
@@ -217,6 +221,7 @@ eye-in-hand 可把该动作转发给 `perception/vision.default_pixel_to_base_xy
 硬件配置只描述机器人、服务、标定和 Agent 开关，不存放用户任务。新适配器优先使用平铺、语义明确的字段；历史嵌套 YAML 兼容只在确有迁移需求时实现。
 
 ```yaml
+adapter: my_robot
 name: my_robot
 can_port: can0
 move_speed: 20
@@ -234,6 +239,8 @@ detector:
 
 必填连接字段、单位和危险默认值必须在 `config_template.yaml` 中标注。相对标定路径应相对于 YAML 文件解析，而不是依赖调用者当前目录。
 
+Config 用 `path_fields: ClassVar[tuple[str, ...]]` 声明本体的路径字段（例如 `("calib_path", "urdf_path")`），`from_yaml` 委托给 `adapters._common.config.load_yaml_config(cls, path)`。Runtime 配置快照和 smoke 复用同一`parse_config(factory, data, source_dir=...)` 入口，返回规范化副本和仅解析一次的有效配置。路径会展开环境变量与 `~`，即使目标尚不存在也相对来源目录解析；无来源的 `from_dict(data)` 保持原语义。新增硬件路径字段只改适配器声明，不要在 Runtime 或验证脚本里加字段名单。
+
 ### 使用公共 Builder 接线
 
 ```python
@@ -250,10 +257,17 @@ build_my_session = make_builder(
         "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    resource_keys=lambda cfg: (f"can:{cfg.can_port}",),
 )
 ```
 
 `api_kwargs_from_cfg` 的裸字段同名传递，`cfg.path:api_name` 支持重命名，配置路径可用点号访问嵌套对象。只有声明式映射无法表达转换时才使用旧式回调。普通适配器不需要 `decorate`；它只用于向 Session 注入无法由 Config、Api 参数或 sidecar 表达的附加对象。
+
+`resource_keys(cfg)` 从实际有效配置声明设备身份；示例为 CAN 接口，串口应规范化到真实设备路径，ROS 应包含域和命令端点。同一设备的配置别名必须产生相同键。公共准入另补相机、自启检测服务和可选 `physical_device_id`，后者不能覆盖派生键。builder 公开 `.config_factory` 与 `.resource_keys` 供 Runtime 使用，不在 builder 内重复加锁；`with session` 本身不负责跨进程准入，应用任务应使用 Runtime，官方维护入口使用 admitted_session。
+
+模板的基础和进阶 wiring 都包含 `resource_keys`。`validate_adapter.py` 的 S-17 检查工厂和设备键回调接口；`smoke_test_adapter.py` 在构建 stub session 前用实际配置验证键，设备键为空且未提供 `physical_device_id` 时直接报错，不连接硬件。接口检查不验证物理身份，仍需确认同一设备的别名生成相同键。
+
+交互式 `new_adapter` 生成器也写入 `adapter:` 和设备键回调。CAN/串口/TCP 使用生成配置中的端点，USB 需要序列号；ROS/custom 仍为待补充的连接模板，必须实现实际资源键或提供顶层 `physical_device_id` 后才能经 Runtime 启动，不自动猜测 ROS 域。
 
 验证三种构造方式，并始终使用上下文管理生命周期：
 

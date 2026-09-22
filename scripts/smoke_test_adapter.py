@@ -473,12 +473,21 @@ def _build_session(builder: Any, module_str: str, config: str | None) -> Any:
     always returns ``build(cfg)``, so calling it with no argument could only ever raise — and
     used to, masking the real config error with a confusing TypeError.
     """
-    if config:
-        return builder.from_yaml(config)
-    shipped = _default_config_for(module_str)
-    if shipped is not None:
-        return builder.from_yaml(str(shipped))
-    return builder.from_dict({})
+    import yaml
+
+    from jiuwensymbiosis.adapters._common.config import parse_config
+    from jiuwensymbiosis.adapters._common.resources import complete_resource_keys
+
+    source = Path(config).expanduser().resolve() if config else _default_config_for(module_str)
+    data = yaml.safe_load(source.read_text(encoding="utf-8")) if source is not None else {}
+    load_config = getattr(getattr(builder, "config_factory", None), "from_dict", None)
+    resource_keys = getattr(builder, "resource_keys", None)
+    if not callable(load_config) or not callable(resource_keys):
+        raise TypeError("session builder must expose config_factory.from_dict and resource_keys(cfg)")
+    data, cfg = parse_config(builder.config_factory, data, source_dir=source.parent if source is not None else None)
+    # Validate admission before installing a stub. No lock or hardware is opened.
+    complete_resource_keys(resource_keys(cfg), cfg, physical_device_id=data.get("physical_device_id"))
+    return builder(cfg)
 
 
 def _configure_logging() -> None:

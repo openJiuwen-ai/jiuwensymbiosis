@@ -133,12 +133,16 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | SO-101 adapter | ◐ | Python 3.12; `pip install -e ".[so101]"` |
 | Cruzr adapter | ◐ | `pip install -e ".[cruzr]"`; source the ROS workspace at runtime |
 | Vision/GPU | ◐ | `pip install -e ".[full]"` with the CUDA 12.8 PyTorch index |
-| Browser GUI | ◐ | `pip install -e ".[gui]"`; `jiuwensymbiosis-gui`, default `127.0.0.1:8770` |
+| Browser GUI | ◐ | `pip install -e ".[gui]"`; `jiuwensymbiosis-gui --gui workbench`, default `127.0.0.1:8770`; `--list-guis` lists installed plugins |
 | Voice front end | ◐ | `pip install -e ".[voice]"`; optional FunASR/capture, default `NullTTS` |
 | Hand-eye calibration | ◐ | `pip install -e ".[calib,piper]"` or `.[calib,so101]` |
 | Actions/skills/state introspection | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace replay | ✅ | `jiuwensymbiosis-replay` |
-| Unit tests | ✅ | `pip install -e ".[dev]"`; `pytest tests/unit_tests/` |
+| Core tests | ✅ | `pip install -e ".[dev]"`; `make test-core` |
+| GUI tests | ◐ | `pip install -e ".[dev,gui]"`; `make test-gui` |
+
+`make test` runs both no-hardware suites. `make test-all` also includes integration tests.
+The `.[gui]` extra supplies the workbench UI dependencies; other installed GUI plugins supply their own UI dependencies.
 
 When maintaining this matrix, check these sources of truth together:
 

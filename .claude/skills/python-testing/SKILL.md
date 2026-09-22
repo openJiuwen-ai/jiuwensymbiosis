@@ -10,6 +10,20 @@ Use [testing rules](../../rules/testing.md) for conventions and
 existing checks. Test configuration and dependencies live in
 `pyproject.toml`; do not copy that configuration into this skill.
 
+## Select the owning suite
+
+- Core and domain behavior belongs in `tests/unit_tests/`; run it with
+  `python -m pytest tests/unit_tests/` or `make test-core`.
+- GUI launcher, plugin, and workbench behavior belongs in `tests/gui/`; run the
+  complete suite with `python -m pytest tests/gui/` or `make test-gui` in an
+  environment with its GUI dependencies installed. Missing GUI dependencies
+  should fail this suite rather than silently omit page tests.
+- `make test` runs both no-hardware suites. Hardware, GPU, and external-service
+  tests remain in `tests/integration/` and are included by `make test-all`.
+- Keep root `tests/conftest.py` free of eager core or GUI imports. Core and
+  workbench suite conftests own proxy cleanup before their test modules import
+  `openjiuwen`; launcher tests should remain usable without workbench extras.
+
 ## Start from the changed behavior
 
 1. Identify the public behavior, invariant, or failure mode being changed.

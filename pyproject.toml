@@ -22,6 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "setuptools>=68",  # offline wheel smoke test uses the declared build backend
+    "wheel",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-mock>=3.14",
@@ -70,8 +72,7 @@ voice = [
     "webrtcvad>=2.0.10",  # 语音活动检测；缺失时自动回退能量阈值
 ]
 gui = [
-    # 图形界面 (jiuwensymbiosis.gui)，浏览器模式运行。刻意独立于 [full] 的重型 GPU
-    # 栈,也独立于 core,使 GUI 能在无硬件的模拟模式下单独安装运行。
+    # GUI launcher 与工作台的本机浏览器界面；不引入 [full] 的重型 GPU 栈。
     "nicegui>=2,<3",
     "pillow>=10",
 ]
@@ -88,7 +89,7 @@ calib = [
 jiuwensymbiosis-run = "jiuwensymbiosis.cli:run_task"
 piper-pick-demo = "jiuwensymbiosis.cli:piper_pick_demo"  # 向后兼容别名 → run_task
 jiuwensymbiosis-replay = "jiuwensymbiosis.cli:replay_main"
-jiuwensymbiosis-gui = "jiuwensymbiosis.gui.__main__:main"
+jiuwensymbiosis-gui = "jiuwensymbiosis_gui.__main__:main"
 # Mount-neutral collect/auto/replay workflow, plus per-mount facades that share
 # the same application flow but refuse the wrong camera mount.
 jiuwensymbiosis-calibrate-hand-eye = "scripts.calibrate.hand_eye_calib:main"
@@ -100,7 +101,15 @@ jiuwensymbiosis-skills = "jiuwensymbiosis.cli:skills_main"
 jiuwensymbiosis-state = "jiuwensymbiosis.cli:state_main"
 
 [tool.setuptools.packages.find]
-include = ["jiuwensymbiosis*", "scripts.calibrate*"]
+include = [
+    "jiuwensymbiosis",
+    "jiuwensymbiosis.*",
+    "jiuwensymbiosis_gui",
+    "jiuwensymbiosis_gui.*",
+    "scripts.calibrate",
+    "scripts.calibrate.*",
+    "examples",  # cli.run_task's installed console wrapper loads run_task.py here
+]
 
 [tool.setuptools.package-data]
 jiuwensymbiosis = [
@@ -108,6 +117,11 @@ jiuwensymbiosis = [
     # SO-101 kinematics-only URDF for RobotKinematics FK/IK.
     "adapters/so101/description/**/*.urdf",
     "adapters/so101/description/**/*.md",
+]
+jiuwensymbiosis_gui = [
+    "workbench/data/*.yaml",
+    "workbench/data/configs/*/*.yaml",
+    "workbench/assets/*",
 ]
 
 [tool.pytest.ini_options]

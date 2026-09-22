@@ -100,6 +100,7 @@ def test_cruzr_yaml_loads():
 
     root = Path(__file__).resolve().parents[4]
     cfg = CruzrConfig.from_yaml(root / "configs" / "cruzr" / "cruzr.yaml")
+    assert cfg.camera_calib_path == str(root / "configs" / "cruzr" / "cruzr_camera_calib.json")
     assert cfg.urdf_path.endswith("cruzr_s2_v1.urdf")
     assert cfg.left_arm_leaf == "L_sixforce_link"
     assert cfg.right_arm_leaf == "R_sixforce_link"

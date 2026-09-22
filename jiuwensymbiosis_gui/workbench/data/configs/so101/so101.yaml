@@ -1,0 +1,39 @@
+# Safe, generic workbench default shipped in the wheel.
+# Fill the serial device, validate the home pose and joint limits on the real
+# arm, then configure the model endpoint/key before running a task.
+adapter: so101
+
+env:
+  cfg:
+    low_level:
+      name: so101
+      port: "/dev/REPLACE_WITH_SO101_SERIAL_DEVICE"
+      robot_id: "REPLACE_WITH_SO101_ROBOT_ID"
+      home_use_init_pose: false
+      safety_validated: false
+      home_joints_deg: [0.0, 0.0, 0.0, 0.0, 0.0]
+      joint_limits:
+        shoulder_pan: [-90.0, 90.0]
+        shoulder_lift: [-90.0, 90.0]
+        elbow_flex: [-90.0, 90.0]
+        wrist_flex: [-90.0, 90.0]
+        wrist_roll: [-150.0, 150.0]
+      camera_serial: null
+      calib_path: null
+
+model:
+  provider: OpenAI
+  api_base: "https://model-endpoint.invalid/v1"
+  api_key: ""
+  model_name: "REPLACE_WITH_MODEL_NAME"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  mode: hybrid
+  exec_mode: fastagent
+  enable_skill: true
+  enable_safety: true
+  enable_recovery: true
+  enable_visual_feedback: false
+  max_iterations: 15

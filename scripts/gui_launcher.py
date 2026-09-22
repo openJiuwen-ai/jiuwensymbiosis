@@ -4,13 +4,13 @@
 
 """GUI 引导器:在能否导入 ``jiuwensymbiosis`` 之前先兜底。
 
-``launch_gui.sh`` 调用本脚本(而非 ``python -m jiuwensymbiosis.gui``),是为了兜住
+``launch_gui.sh`` 调用本脚本(而非 ``python -m jiuwensymbiosis_gui``),是为了兜住
 **更早一层**的失败:若连 ``jiuwensymbiosis`` 包本身都导入不了(装错 conda 环境 /
 没 ``pip install``),``python -m`` 会在 runpy 阶段抛一个只有终端里才看得见的
 traceback——而从 ``.desktop``/桌面图标启动时根本没有终端。这里用**纯标准库 +
 tkinter** 弹一个中文对话框告诉用户怎么办。
 
-包能导入之后,一切交给 ``jiuwensymbiosis.gui.__main__.main()``:后者用它自己那套更
+包能导入之后,一切交给 ``jiuwensymbiosis_gui.__main__.main()``:后者用它自己那套更
 完善的弹窗处理 NiceGUI 缺失、以及启动阶段的其它异常。
 """
 
@@ -42,7 +42,7 @@ def _import_failure_message(exc: BaseException) -> str:
 def _dialog(title: str, message: str) -> None:
     """尽力弹一个自包含的 tkinter 对话框;失败则静默(stderr 已有提示)。
 
-    这里刻意不复用 ``jiuwensymbiosis.gui.__main__`` 里的弹窗——本函数触发的前提正是
+    这里刻意不复用 ``jiuwensymbiosis_gui.__main__`` 里的弹窗——本函数触发的前提正是
     "那个包导不进来"。故只依赖标准库,并显式挑一个自带中文的字体(默认字体在部分
     Linux 上渲染中文会行距塌缩、糊成一团)。
     """
@@ -90,7 +90,7 @@ def _dialog(title: str, message: str) -> None:
 def main() -> int:
     """导入 GUI 主入口并运行;导入失败则弹窗指引并返回 1。"""
     try:
-        from jiuwensymbiosis.gui.__main__ import main as gui_main
+        from jiuwensymbiosis_gui.__main__ import main as gui_main
     except Exception as exc:  # 包/依赖导不进,兜底弹窗而非裸崩
         message = _import_failure_message(exc)
         logging.getLogger(__name__).error(message)  # 无 handler 时经 lastResort 落 stderr

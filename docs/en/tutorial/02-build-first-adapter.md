@@ -163,7 +163,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
 @dataclass
@@ -181,8 +181,7 @@ class ScaraConfig:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScaraConfig":
-        with Path(path).open(encoding="utf-8") as stream:
-            return cls.from_dict(yaml.safe_load(stream) or {})
+        return load_yaml_config(cls, path)
 ```
 
 ## 4. Wrap the Env
@@ -298,18 +297,28 @@ capabilities directly: `BaseRobotApi.capabilities` derives them from the specs i
 ## 6. Assemble the Session
 
 ```python
+from pathlib import Path
+
 from jiuwensymbiosis.adapters._common.builder import make_builder
 from jiuwensymbiosis.adapters.my_scara.api import ScaraApi
 from jiuwensymbiosis.adapters.my_scara.config import ScaraConfig
 from jiuwensymbiosis.adapters.my_scara.env import ScaraEnv
 
-build_scara_session = make_builder(ScaraConfig, ScaraEnv, ScaraApi)
+build_my_scara_session = make_builder(
+    ScaraConfig, ScaraEnv, ScaraApi,
+    resource_keys=lambda cfg: (f"serial:{Path(cfg.serial_port).expanduser().resolve()}",),
+)
 ```
+
+Export `build_my_scara_session` from `adapters/my_scara/__init__.py`, matching the package name. `resource_keys(cfg)` declares the actual command endpoint; aliases for one serial device must yield the same key. The mock driver never opens the port, but declaring its identity exercises the complete admission contract. Builders only assemble sessions; Runtime or the official CLI `admitted_session` owns admission.
 
 ## 7. Write the YAML configuration
 
+Save this configuration as `configs/my_scara/default.yaml` and copy it to the adapter's `config_template.yaml`.
+
 ```yaml
 # SCARA arm with suction configuration
+adapter: my_scara
 name: scara
 serial_port: /dev/ttyUSB0
 z_min_safe_mm: 30.0
@@ -321,10 +330,12 @@ home_xyzr: [200.0, 0.0, 250.0, 0.0]
 
 ```bash
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_scara
-python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_scara
+python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_scara --config configs/my_scara/default.yaml
 ```
 
 The static validator checks structure, capability alignment, and signatures. The smoke test injects a stub driver into
 the Env without connecting real hardware, calls every generated `@implements` action, and verifies serializable output. Before replacing the mock with hardware, read the
 [porting guide](../how-to/port-hardware-adapter.md) for workspace limits, recovery behavior, sidecars, testing, and
 hardware acceptance.
+
+Resource identity is part of completion: S-17 checks the factory and callback interfaces, then smoke validates device keys from the actual config. When no device key can be derived, declare top-level `physical_device_id`; camera or detector keys do not identify the robot. For calibration or URDF path fields, declare `path_fields: ClassVar[tuple[str, ...]]` on Config and keep `load_yaml_config`; Runtime and smoke share the same source-relative resolution even for missing files.
