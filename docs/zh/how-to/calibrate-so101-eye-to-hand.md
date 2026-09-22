@@ -25,7 +25,7 @@
 如果这是你第一次做标定，建议改用图形界面的标定向导，而不是本文的命令行：
 
 ```bash
-python -m jiuwensymbiosis.gui    # 打开后进入「工具 → 手眼标定」
+python -m jiuwensymbiosis_gui --gui workbench    # 打开后进入「工具 → 手眼标定」
 ```
 
 向导把本文的全部步骤串成四步，并补上了命令行没有的三件事：**没有标定板时可直接生成
@@ -59,8 +59,10 @@ LeRobot 电机标定参考官网视频：https://huggingface.co/docs/lerobot/so1
 SO-101 适配器要求 Python 3.12。建议在项目环境中一次安装标定和 SO-101 依赖：
 
 ```bash
-python -m pip install -e ".[calib,so101]"
+python -m pip install -e ".[gui,calib,so101]"
 ```
+
+这里的 `gui` extra 安装现有工作台的 NiceGUI 依赖；只运行下方无界面 CLI 工作流时，可改装 `.[calib,so101]`。
 
 如需运行标定模块测试：
 

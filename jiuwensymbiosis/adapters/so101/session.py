@@ -11,6 +11,8 @@ are all consumed by ``So101Env``/``So101Driver`` from the cfg.
 
 from __future__ import annotations
 
+import os
+
 from jiuwensymbiosis.adapters._common.builder import make_builder, make_detector_sidecar
 from jiuwensymbiosis.adapters.so101.api import So101Api
 from jiuwensymbiosis.adapters.so101.config import So101Config
@@ -22,10 +24,18 @@ def _attach_so101_cfg(session, cfg: So101Config) -> None:
     session.extra_globals["so101_cfg"] = cfg
 
 
+def _so101_resource_keys(cfg: So101Config) -> tuple[str, ...]:
+    """Reserve the canonical serial-device path used by the SO-101 driver."""
+    if not cfg.port or not str(cfg.port).strip():
+        return ()
+    return (f"serial:{os.path.realpath(os.path.expanduser(str(cfg.port).strip()))}",)
+
+
 build_so101_session = make_builder(
     So101Config,
     So101Env,
     So101Api,
+    resource_keys=_so101_resource_keys,
     api_kwargs_from_cfg=[
         "detector.url:detector_service_url",
         "z_correction_mm",

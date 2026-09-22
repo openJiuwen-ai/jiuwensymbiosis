@@ -9,31 +9,10 @@ Wires the detection-server (GroundingDINO+SAM2) sidecar and passes
 
 from __future__ import annotations
 
-from typing import Any
-
-from jiuwensymbiosis.adapters._common.builder import make_builder
-from jiuwensymbiosis.perception.detector_sidecar import detector_subprocess
+from jiuwensymbiosis.adapters._common.builder import make_builder, make_detector_sidecar
 from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
-
-
-def _detector_sidecar_from_cfg(cfg: CruzrConfig):
-    """按 cfg.detector.spawn 返回检测服务 sidecar 的零参工厂；None 表示不拉起。"""
-    if not cfg.detector.spawn:
-        return None
-    kwargs: dict[str, Any] = dict(
-        host=cfg.detector.host,
-        port=cfg.detector.port,
-        device=cfg.detector.device,
-        startup_timeout_s=cfg.detector.startup_timeout_s,
-        gdino_model_id=cfg.detector.gdino_model_id,
-        sam2_model_id=cfg.detector.sam2_model_id,
-        box_threshold=cfg.detector.box_threshold,
-        text_threshold=cfg.detector.text_threshold,
-        use_sam2=cfg.detector.use_sam2,
-    )
-    return lambda: detector_subprocess(**kwargs)
 
 
 def _api_kwargs_from_cfg(cfg: CruzrConfig) -> dict:
@@ -42,6 +21,15 @@ def _api_kwargs_from_cfg(cfg: CruzrConfig) -> dict:
         "detector_service_url": cfg.detector.url,
         "camera_calib_path": cfg.camera_calib_path,
     }
+
+
+def _cruzr_resource_keys(cfg: CruzrConfig) -> tuple[str, ...]:
+    """Reserve Cruzr's command endpoint in the domain captured by its config."""
+    domain_id = cfg.ros_domain_id
+    if cfg.command_topic is None:
+        return ()
+    command_topic = str(cfg.command_topic).strip()
+    return (f"ros:{domain_id}:{command_topic}",) if command_topic else ()
 
 
 def _decorate(session, cfg: CruzrConfig) -> None:
@@ -54,6 +42,7 @@ build_cruzr_session = make_builder(
     CruzrEnv,
     CruzrApi,
     api_kwargs_from_cfg=_api_kwargs_from_cfg,
-    sidecar_builders=[_detector_sidecar_from_cfg],
+    resource_keys=_cruzr_resource_keys,
+    sidecar_builders=[make_detector_sidecar()],
     decorate=_decorate,
 )

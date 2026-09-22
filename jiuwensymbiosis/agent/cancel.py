@@ -40,18 +40,23 @@ class RunCancelled(Exception):
 
 
 class CancelToken:
-    """A settable cancel flag plus a registry of best-effort resource closers.
+    """A cancel flag, best-effort closers, and observable in-flight work.
 
     ``set()`` flips the flag and fires every registered closer (e.g. an httpx
     ``client.close`` or a subprocess ``terminate``) so a call blocked in a C
     read can be interrupted at its source, not merely noticed at the next poll.
     Reading (``is_set`` / ``raise_if_set``) is what framework poll-loops use.
+    Work registrations remain until their owners finish, including when the
+    caller has already abandoned a cancellable helper.
     """
 
     def __init__(self) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._closers: list[Callable[[], None]] = []
+        self._next_work_id = 0
+        self._work: dict[int, str] = {}
 
     def set(self) -> None:
         """Flip the flag and fire all registered closers (idempotent)."""
@@ -69,6 +74,41 @@ class CancelToken:
         """Raise ``RunCancelled`` if cancellation has been requested."""
         if self._event.is_set():
             raise RunCancelled
+
+    @property
+    def pending_work(self) -> tuple[str, ...]:
+        """Labels of work that has registered but not yet completed."""
+        with self._condition:
+            return tuple(self._work.values())
+
+    def register_work(self, label: str = "operation") -> Callable[[], None]:
+        """Register in-flight work and return an idempotent completion callback."""
+        if not isinstance(label, str):
+            raise TypeError("work label must be a string")
+        with self._condition:
+            self._next_work_id += 1
+            work_id = self._next_work_id
+            self._work[work_id] = label
+            self._condition.notify_all()
+
+        finished = False
+
+        def _finish() -> None:
+            nonlocal finished
+            with self._condition:
+                if finished:
+                    return
+                finished = True
+                self._work.pop(work_id, None)
+                if not self._work:
+                    self._condition.notify_all()
+
+        return _finish
+
+    def wait_for_idle(self, timeout: float | None = None) -> bool:
+        """Wait until every registered operation has completed."""
+        with self._condition:
+            return self._condition.wait_for(lambda: not self._work, timeout=timeout)
 
     def on_cancel(self, closer: Callable[[], None]) -> Callable[[], None]:
         """Register a best-effort closer to interrupt an in-flight blocking call.
@@ -124,8 +164,22 @@ def cancellable_call(fn: Callable[[], Any], token: CancelToken | None, *, poll: 
         except Exception as exc:  # surfaced on the caller thread below
             box["err"] = exc
 
-    thread = threading.Thread(target=_worker, name="jiuwen-cancellable", daemon=True)
-    thread.start()
+    finish_work = token.register_work()
+
+    def _tracked_worker() -> None:
+        try:
+            _worker()
+        finally:
+            finish_work()
+
+    try:
+        thread = threading.Thread(target=_tracked_worker, name="jiuwen-cancellable", daemon=True)
+        thread.start()
+    except BaseException:
+        # A helper that never started cannot own the registration. Preserve
+        # cleanup even for thread-start interrupts, then propagate the failure.
+        finish_work()
+        raise
     while True:
         thread.join(poll)
         if not thread.is_alive():

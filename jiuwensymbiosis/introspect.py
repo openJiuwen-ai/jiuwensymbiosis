@@ -15,7 +15,6 @@ the body is constructed but never connected. ``state`` does connect, since
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import sys
@@ -43,11 +42,18 @@ def build_session(config_path: str) -> Any:
     exports ``build_<name>_session`` with a ``.from_dict``. So a new body needs no
     change here.
     """
-    raw = load_config(config_path)
-    adapter = str(raw.get("adapter") or "piper")
-    module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
-    factory = getattr(module, f"build_{adapter}_session")
-    return factory.from_dict(raw)
+    return prepare_binding(config_path, include_sidecars=False).build_session()
+
+
+def prepare_binding(config_path: str | Path, *, workspace: str | Path | None = None, include_sidecars: bool = True):
+    """Prepare the frozen session description shared by offline and live CLIs.
+
+    Building action/skill views never acquires hardware. A live caller such as
+    ``state`` passes the returned binding to ``runtime.admission.admitted_session``.
+    """
+    from jiuwensymbiosis.runtime.bindings import prepare_binding as _prepare_binding
+
+    return _prepare_binding(Path(config_path), workspace=workspace, include_sidecars=include_sidecars)
 
 
 def _contract(meta: ToolMeta) -> dict[str, Any]:

@@ -108,8 +108,9 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
                 return self.env.home_pose
 
             @implements(GOTO_XYZR)
-            def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
-                          orientation_policy: str = "top_down") -> None:
+            def goto_xyzr(
+                self, x: float, y: float, z: float, r: float | None = None, orientation_policy: str = "top_down"
+            ) -> None:
                 """移动到指定坐标 (x, y, z, r)。"""
                 self.env.move(x, y, z, r)
 
@@ -257,11 +258,11 @@ def _run_voice(
     return {"ok": True, "mode": "voice"}
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     """通用任务入口：按 config 的 adapter 建会话，用 --query 给任务，执行并输出结果。"""
     p = argparse.ArgumentParser(description="Generic task runner (jiuwensymbiosis).")
     p.add_argument("--config", required=True, help="Path to a robot config YAML (its adapter: field picks the robot).")
-    p.add_argument("--query", help="User task, e.g. --query \"把箱子搬到桌上\". The task is not in the config.")
+    p.add_argument("--query", help='User task, e.g. --query "把箱子搬到桌上". The task is not in the config.')
     p.add_argument(
         "--server-url",
         default=None,
@@ -273,8 +274,11 @@ def main() -> int:
         default=None,
         help=("Override the LLM API key (overrides YAML model.api_key)."),
     )
-    p.add_argument("--mock", action="store_true",
-                   help="Piper-only dry run: MockArmEnv + offline model. Implies --stepagent (no real LLM).")
+    p.add_argument(
+        "--mock",
+        action="store_true",
+        help="Piper-only dry run: MockArmEnv + offline model. Implies --stepagent (no real LLM).",
+    )
     p.add_argument(
         "--robot",
         default=None,
@@ -297,9 +301,7 @@ def main() -> int:
         default="hybrid",
         help="Agent mode: tool-calling, code-as-action, or both.",
     )
-    p.add_argument(
-        "--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail."
-    )
+    p.add_argument("--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail.")
     # --- fastagent tuning (real-time servo tracking at track_detect steps) ---
     p.add_argument(
         "--control-hz",
@@ -345,7 +347,7 @@ def main() -> int:
     p.add_argument("--no-wake", action="store_true", help="语音模式关闭唤醒词，整句当指令。")
     p.add_argument("--tts", choices=["null", "chattts"], default=None, help="语音模式覆盖 TTS 后端。")
     p.add_argument("--asr-device", default=None, help="语音模式覆盖 ASR 设备(cuda:0/cpu)。")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     # Configure logging up front so the voice-listening phase (before the first
     # agent build, which is what otherwise sets logging up) is visible. Without
@@ -369,8 +371,16 @@ def main() -> int:
         return 2
 
     robot = _resolve_robot(args, raw)
+    binding = None
     try:
-        session = _build_session(args, raw)
+        if args.mock and robot == "piper":
+            # This path uses MockArmEnv and does not touch physical resources.
+            session = _build_session(args, raw)
+        else:
+            from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+            effective_config = {**raw, "adapter": robot}
+            binding = prepare_binding(cfg_path, config_snapshot=effective_config, workspace=args.workspace)
     except ImportError as exc:
         logger.error("failed to import the %r adapter (%s).", robot, exc)
         return 2
@@ -399,7 +409,15 @@ def main() -> int:
         exec_config = SkillExecConfig(
             servo=ServoConfig(control_hz=args.control_hz, max_lin_step_mm=args.servo_step_mm),
         )
-    with session:
+    if binding is None:
+        # The explicitly simulated Piper path has no hardware session to admit.
+        session_scope = session
+    else:
+        from jiuwensymbiosis.runtime.admission import admitted_session
+
+        session_scope = admitted_session(binding, resource_manager=resource_manager, operation="cli-task")
+
+    with session_scope as session:
         # YAML ``agent:`` block is the declarative base (exec_mode / rails / trace /
         # logging live there); CLI flags override only when explicitly given.
         agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))

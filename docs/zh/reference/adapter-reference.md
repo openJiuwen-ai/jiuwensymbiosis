@@ -165,6 +165,8 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 
 ## 6. Config 与 Session Builder
 
+路径字段由 Config 的 `path_fields: ClassVar[tuple[str, ...]]` 声明（无路径可省略）。`from_yaml` 使用 `adapters._common.config.load_yaml_config`，与 Runtime、smoke 共用 `parse_config`；解析支持扁平及历史嵌套配置，不因文件暂不存在而退回当前工作目录。
+
 Config 至少提供 `from_dict(data)` 和 `from_yaml(path)`。常用字段按能力选择：
 
 | 分组 | 常用字段 |
@@ -185,6 +187,8 @@ make_builder(
     env_cls,
     api_cls,
     *,
+    config_factory=None,
+    resource_keys=None,
     api_kwargs_from_cfg=None,
     sidecar_builders=None,
     decorate=None,
@@ -194,6 +198,8 @@ make_builder(
 | 参数 | 作用 |
 |---|---|
 | `cfg_cls` | 带 `from_yaml`/`from_dict` 的 Config 类 |
+| `config_factory` | 可选配置工厂，覆盖 cfg_cls 的加载方法；builder 以 `.config_factory` 公开实际工厂 |
+| `resource_keys` | 有效 cfg → 设备资源键；builder 公开 `.resource_keys(cfg)`，供 Runtime/官方维护准入使用 |
 | `env_cls` | 以 `cfg` 构造的 Env 类 |
 | `api_cls` | 以 `env` 和可选 kwargs 构造的 Api 类 |
 | `api_kwargs_from_cfg` | `list[str]` 声明式映射或兼容的 `cfg -> dict` 回调 |
@@ -208,6 +214,11 @@ make_builder(
 | `"detector.url:detector_service_url"` | 嵌套字段重命名后传入 |
 
 返回的 Builder 支持 `build(cfg)`、`.from_yaml(path)` 和 `.from_dict(data)`。`make_detector_sidecar(cfg_attr="detector")` 读取检测子配置，在 `spawn` 为真时随 Session 启停 GroundingDINO/SAM2 服务。
+
+资源键与实际连接必须使用同一份有效配置。Cruzr 的 `ros_domain_id` 可在 YAML 中显式指定；
+省略时在 Config 构建时捕获 `ROS_DOMAIN_ID`（默认 0）。ROS 初始化和命令 worker 使用该值，
+已有 ROS context 的域不一致时拒绝连接。sidecar 的退出失败必须传播；若启动失败但已完成回滚，
+可提供 `cleanup_report() -> CleanupReport` 确认释放，否则 Session 保留未知清理状态。
 
 ## 7. 共享感知与几何模块
 

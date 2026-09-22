@@ -350,6 +350,16 @@ build_xxx_session = make_builder(
 
 `api_kwargs_from_cfg` 支持同名字段、`cfg:api` 重命名和嵌套点路径；复杂转换可使用回调。`make_detector_sidecar()` 读取检测配置并按 `spawn` 决定是否启动本地服务。构造 Session 与连接硬件是不同阶段。
 
+适配器 Config 声明自身的 `path_fields`，`from_yaml` 通过公共 `load_yaml_config` 解析。
+Runtime 和冒烟验证使用同一 `parse_config` 处理配置来源，适配器继续负责默认值、环境覆盖和校验；
+Runtime 只冻结有效配置与资源身份，不维护本体路径字段名单。
+
+通过 Runtime 或官方 CLI 接入硬件时，builder 还须声明 `resource_keys(cfg)`。
+适配器负责识别真实命令端点，公共准入补充相机和自启检测服务。builder 本身不加锁：
+Runtime / `admitted_session` 取得资源使用权，RobotSession 负责连接及清理，
+`CleanupReport` 确认释放后才能重用设备。具体接线见[硬件移植指南](../how-to/port-hardware-adapter.md)。
+
+
 ## 十三、接入新硬件的文件职责
 
 `templates/xxx_adapter/` 提供六个 Python 文件及一份 YAML 模板，另有可选标定模板。模板减少重复配置和装配代码，实际工作量取决于驱动、几何、传感器及行为差异。

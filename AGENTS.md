@@ -19,19 +19,22 @@ JiuwenSymbiosis is an embodied agent framework built on `openjiuwen` for robotic
 # override with `make check CONDA_ENV=` to use plain PATH.
 make check        # ruff format --check + ruff check + mypy on staged files (mypy advisory)
 make fix          # ruff format + ruff check --fix on staged files
-make test         # pytest tests/unit_tests/ (no hardware/GPU)
+make test-core    # pytest tests/unit_tests/ (core; no hardware/GPU)
+make test-gui     # pytest tests/gui/ (GUI extras required; no hardware/GPU)
+make test         # test-core + test-gui
 make test-all     # pytest (incl. integration)
 # Use COMMITS=N to check files changed in the last N commits instead of staged.
 
 # Install in editable mode
 pip install -e ".[dev]"                                    # core + test deps
+pip install -e ".[dev,gui]"                               # tests for GUI pages and components
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + vision/GPU deps
 pip install -e ".[piper]"                                  # + piper hardware SDK
 pip install -e ".[gui]"                                    # + 图形界面 (NiceGUI, 浏览器模式)
 
-# Run tests
-pytest                                                     # all unit tests (no hardware needed)
-pytest tests/unit_tests/                                   # unit tests only (no hardware/GPU)
+# Run tests (make test runs both no-hardware suites)
+pytest tests/unit_tests/                                   # core/domain tests (no hardware/GPU)
+pytest tests/gui/                                          # GUI tests (install .[dev,gui]; no hardware)
 pytest -m integration                                      # integration tests (needs hardware/GPU)
 pytest tests/unit_tests/agent/test_builder.py              # single test file
 pytest -k "test_capabilities"                              # filter by test name
@@ -52,12 +55,16 @@ jiuwensymbiosis-actions --config configs/cruzr/cruzr.yaml [--json]  # that vocab
 jiuwensymbiosis-skills  [--json]                                    # skill library + contracts
 jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # live world state (connects!)
 
-# Run the GUI (browser mode; selects a body + real config and runs on hardware)
-python -m jiuwensymbiosis.gui        # or the console script: jiuwensymbiosis-gui
-#   Opens the default browser at http://127.0.0.1:<port> (NiceGUI, never native=True,
-#   so no pywebview/WebKitGTK). No extra system libs needed. The GUI does a startup
-#   pre-check (jiuwensymbiosis/gui/preflight.py) and prints the exact package to
-#   install (pip install -e ".[gui]") instead of crashing with a raw traceback.
+# Run the existing workbench through the unified GUI launcher
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
+#   The launcher defaults to workbench. Install its UI dependencies with .[gui];
+#   another installed plugin supplies and documents its own dependencies in this
+#   Python environment. `python -m jiuwensymbiosis.gui` is a temporary shim.
+#   Opens the browser at 127.0.0.1:8770 by default. Workbench uses NiceGUI browser
+#   mode (never native=True, so no pywebview/WebKitGTK).
+#   Its dependency preflight is jiuwensymbiosis_gui/workbench/preflight.py.
 #   「工具」 page hosts task-agnostic tools: 感知测试 (click-to-reproject),
 #   手眼标定 (the four-step calibration wizard; needs pip install -e ".[calib]"),
 #   and 硬件控制 (release torque, hand-pose the arm, restore — gated on the driver
@@ -79,7 +86,7 @@ mypy jiuwensymbiosis/
 
 ## Critical: Proxy Hygiene
 
-`clear_proxy_env()` (defined in `jiuwensymbiosis/utils/proxy.py`, exported from `jiuwensymbiosis.utils` and `jiuwensymbiosis`) **must** be called before `import openjiuwen`. HTTP proxy env vars cause `httpx` to require `socksio` and route localhost through proxy, breaking local vLLM/detection calls. `tests/conftest.py` does this automatically for tests.
+`clear_proxy_env()` (defined in `jiuwensymbiosis/utils/proxy.py`, exported from `jiuwensymbiosis.utils` and `jiuwensymbiosis`) **must** be called before `import openjiuwen`. HTTP proxy env vars cause `httpx` to require `socksio` and route localhost through proxy, breaking local vLLM/detection calls. Core and workbench test-suite conftests perform proxy cleanup; root `tests/conftest.py` keeps shared fixtures lazy for the launcher suite.
 
 ## Centralised Logging
 
@@ -178,6 +185,7 @@ New robot types follow this pattern under `jiuwensymbiosis/adapters/<name>/`:
 4. `api.py` — Subclasses `BaseRobotApi` (the mixin layer is gone); every action is an explicit `@implements(SPEC)` method, forwarding to `api/defaults.py` where the body adds nothing; overrides geometry-specific methods, implements vision methods
 5. `calibration.py` — Optional hand-eye calibration wrapper exposing `CALIBRATION_ADAPTER_SPEC` (see the calibration section)
 6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor, and `make_detector_sidecar()` provides the standard detection-server sidecar
+   For Runtime/official CLI admission, pass `resource_keys(cfg)` identifying the physical command endpoint. The builder exposes `.config_factory` and `.resource_keys`; common admission adds cameras and spawned detectors. An explicit `physical_device_id` supplements derived identities. Builders do not acquire locks themselves. Drivers/Env must propagate cleanup errors and retain failed handles; constructors with unconfirmed rollback raise `HardwareCleanupError` (`agent.lifecycle`).
 7. `config_template.yaml` — YAML template with Chinese annotations
 
 Template at `templates/xxx_adapter/`. Validate statically with `scripts/validate_adapter.py`; smoke-test runtime behavior (every action callable + JSON-serializable, driven by a stub driver) with
@@ -204,10 +212,11 @@ satisfy them (`tests/unit_tests/calibration/test_adapter_conformance.py`).
 ### Hand-Eye Calibration Subsystem
 
 `jiuwensymbiosis/calibration/` is a layered, body-agnostic subsystem consumed by both the
-CLI (`scripts/calibrate/`) and the GUI wizard. Dependency direction is one-way: calibration
-may import core, core must not import calibration (enforced by
-`tests/unit_tests/calibration/test_dependency_direction.py`; `gui/` is an exempt *consumer*
-that must still keep its imports lazy).
+CLI (`scripts/calibrate/`) and the workbench calibration wizard. Dependency direction is
+one-way: calibration may import core, core must not import calibration (the core source
+guard is `tests/unit_tests/calibration/test_dependency_direction.py`). The workbench lives
+outside the core package and must keep calibration imports lazy; this is checked in
+`tests/gui/workbench/components/test_import_boundaries.py`.
 
 ```
 domain/       models · ports (hardware Protocols) · solver · quality · trajectory
@@ -226,9 +235,9 @@ own runtime loader publishes a formal schema-2 artifact. Anything else lands in 
 candidate — that bypasses both the quality gates and the loader round-trip.
 
 Adding a body to calibration = one wrapper module under `calibration/adapters/` exposing
-`CALIBRATION_ADAPTER_SPEC`, plus (for the GUI wizard) one entry in
-`gui/data/calibration_profiles.yaml` declaring its trajectory space and calibration-time
-limit relaxations.
+`CALIBRATION_ADAPTER_SPEC`, plus (for the workbench wizard) one entry in
+`jiuwensymbiosis_gui/workbench/data/calibration_profiles.yaml` declaring its trajectory space
+and calibration-time limit relaxations.
 
 ### Visual Perception Pipeline
 
@@ -262,7 +271,11 @@ jiuwensymbiosis/          # Main package
     _common/              # Shared adapter building blocks (builder, capability_spec, geometry,
                           #   joint_transport, kinematic_driver, kinematics, lerobot_backend, safety)
   calibration/            # Body-agnostic hand-eye calibration subsystem (see above)
-  gui/                    # NiceGUI browser UI; pages/ + per-tool engines (run/perception/calibration)
+  runtime/
+    bindings.py           # Immutable source-aware config and adapter resource identities
+    jobs.py / worker.py   # Headless single-task submission, cancellation and cleanup
+    resources.py          # Local process/file-lock admission and conservative recovery records
+    events.py / store.py / artifacts.py  # Facts, durable cursor reads and bounded previews
   serving/                # Visual perception server subprocess (GroundingDINO + SAM2)
   voice/                  # Voice loop: wake word, ASR, TTS (--voice in run_task)
   contracts.py            # Action result shapes + the spatial-relation set. Owned by no layer
@@ -270,10 +283,14 @@ jiuwensymbiosis/          # Main package
                           #   nothing, so neither side depends on the other. Keep it dependency-free.
   introspect.py           # Machine-readable actions / skills / state views (the CLI's backend)
   utils/                  # proxy hygiene (proxy.py), centralised logging (logging.py), geometry
+jiuwensymbiosis_gui/      # GUI launcher, plugin contract, and existing workbench
+  __main__.py / launcher.py / plugin.py / startup.py
+  workbench/              # NiceGUI application, pages, engines, data, and assets
 configs/{piper,so101,cruzr}/  # Per-body YAML; the top-level `adapter:` key picks the session builder
 templates/xxx_adapter/    # Adapter skeleton for new hardware
 tests/
-  unit_tests/             # Mirrors package structure
+  unit_tests/             # Core/domain tests; mirrors jiuwensymbiosis package structure
+  gui/                    # Launcher and workbench GUI tests (requires .[gui] for page collection)
   mocks/                  # MockApi, MockArmEnvWrapper, MockPiperDriver, MockDualArm*, MockScene
   integration/            # Hardware/GPU-dependent tests
 scripts/validate_adapter.py  # Static compatibility checker for new adapters

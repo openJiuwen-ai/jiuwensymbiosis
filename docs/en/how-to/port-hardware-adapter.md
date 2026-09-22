@@ -140,26 +140,29 @@ properties without reimplementing vendor business logic.
 
 ### Env lifecycle and observations
 
-Create and connect the Driver in a local variable, then publish it to `low_level`. During teardown, clear the public
-reference before releasing resources so a failed close does not leave the Env looking connected.
+Keep the driver handle before connecting and track connection state separately. Clear the handle only after a successful close; propagate cleanup errors and retain failed handles for retry. If a constructor acquired hardware and cannot roll back, raise `HardwareCleanupError` from `agent.lifecycle` so Session and admission retain the uncertainty.
 
 ```python
 class MyEnv(BaseRobotEnv):
     def __init__(self, cfg):
-        self._cfg = cfg
+        self.cfg = cfg
         self.low_level = None
+        self._connected = False
 
     def connect(self) -> None:
-        if self.low_level is not None:
+        if self._connected:
             return
-        driver = MyDriver(self._cfg.can_port)
-        driver.connect()
-        self.low_level = driver
+        if self.low_level is not None:
+            raise RuntimeError("previous cleanup is not confirmed")
+        self.low_level = MyDriver(self.cfg.can_port)
+        self.low_level.connect()
+        self._connected = True
 
     def disconnect(self) -> None:
-        driver, self.low_level = self.low_level, None
-        if driver is not None:
-            driver.close()
+        if self.low_level is not None:
+            self.low_level.close()
+            self.low_level = None
+        self._connected = False
 
     def get_observation(self) -> RobotObservation:
         if self.low_level is None:
@@ -244,6 +247,7 @@ Hardware configuration describes the robot, services, calibration, and Agent swi
 task. Prefer flat, explicit fields for a new adapter and support historical nested YAML only when migration requires it.
 
 ```yaml
+adapter: my_robot
 name: my_robot
 can_port: can0
 move_speed: 20
@@ -262,6 +266,8 @@ detector:
 Mark required connection fields, units, and dangerous defaults in `config_template.yaml`. Resolve relative calibration
 paths against the YAML file rather than the caller's working directory.
 
+Declare adapter-owned path keys as `path_fields: ClassVar[tuple[str, ...]]` on Config, such as `("calib_path", "urdf_path")`, and delegate `from_yaml` to `adapters._common.config.load_yaml_config(cls, path)`. Runtime snapshots and smoke use the same `parse_config(factory, data, source_dir=...)`, which returns a normalized copy and parses the effective config once. Paths expand environment variables and `~` and resolve against the source directory even when absent. Source-less `from_dict(data)` retains its existing semantics. New hardware path fields belong in the adapter declaration, not Runtime or validation scripts.
+
 ### Wire the common Builder
 
 ```python
@@ -278,12 +284,19 @@ build_my_session = make_builder(
         "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    resource_keys=lambda cfg: (f"can:{cfg.can_port}",),
 )
 ```
 
 A bare `api_kwargs_from_cfg` field passes under the same name; `cfg.path:api_name` renames a dotted nested path. Use the
 legacy callback only when declarative mapping cannot express the transformation. Ordinary adapters do not need
 `decorate`; it is reserved for Session objects that Config, Api arguments, and sidecars cannot express.
+
+`resource_keys(cfg)` declares device identities from the effective config: the example uses a CAN interface; serial devices need canonical device paths, and ROS endpoints need their domain and command endpoint. Aliases for one device must produce identical keys. Common admission adds cameras, spawned detector services, and optional `physical_device_id`; explicit IDs cannot replace derived keys. Builders expose `.config_factory` and `.resource_keys` to Runtime without taking locks themselves. A bare `with session` does not provide cross-process admission: applications submit tasks through Runtime, while official maintenance entries use admitted_session.
+
+Both template wiring examples include `resource_keys`. The validator's S-17 check verifies the factory and resource callback interfaces. Before constructing a stub session, `smoke_test_adapter.py` validates keys derived from the actual config and rejects empty device keys without `physical_device_id`; it never connects hardware. Interface checks cannot prove physical identity: verify that aliases for the same device produce identical keys.
+
+The interactive `new_adapter` generator also emits `adapter:` and resource callbacks. CAN/serial/TCP keys use the configured endpoint; USB requires a serial number. ROS/custom connections remain placeholders: implement actual resource keys or supply top-level `physical_device_id` before starting through Runtime. The generator does not guess a ROS domain.
 
 Validate all construction forms and always use context-managed lifecycle:
 

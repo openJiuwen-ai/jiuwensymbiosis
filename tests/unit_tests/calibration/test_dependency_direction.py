@@ -10,17 +10,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CORE_ROOT = _REPO_ROOT / "jiuwensymbiosis"
 _CALIBRATION_PREFIX = "jiuwensymbiosis.calibration"
-# Packages under jiuwensymbiosis/ that are calibration *consumers* rather than core
-# runtime: they are allowed to name the calibration package in source. ``gui`` drives
-# the calibration workflows behind its 「手眼标定」 tool, exactly as scripts/calibrate
-# does for the CLI. The import-time guarantee those consumers must still honour is
-# checked by test_importing_gui_does_not_load_calibration below.
-_CALIBRATION_CONSUMERS = ("calibration", "gui")
+# The calibration package is an independent subsystem, so only its own subtree may
+# import its facade. GUI consumers live outside the core package and have their own
+# suite under tests/gui/.
+_CALIBRATION_CONSUMERS = ("calibration",)
 
 
 def _imported_modules(path: Path) -> list[tuple[int, str]]:
@@ -77,29 +73,6 @@ import jiuwensymbiosis.adapters.piper
 import jiuwensymbiosis.adapters.so101
 offenders = sorted(name for name in sys.modules if name == 'jiuwensymbiosis.calibration' or name.startswith('jiuwensymbiosis.calibration.'))
 assert not offenders, offenders
-"""
-    result = _run_probe(probe)
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_importing_gui_does_not_load_calibration() -> None:
-    """The GUI may name the calibration package, but only from inside functions.
-
-    ``gui`` is a calibration consumer, so it is exempt from the source-level rule.
-    The obligation it keeps instead is import-time laziness: opening the GUI must not
-    pull in the calibration subsystem (nor, through it, OpenCV), so the interface still
-    starts on a machine that installed ``[gui]`` without ``[calib]`` — the calibration
-    tool then reports a missing dependency instead of the whole app failing to launch.
-    """
-    pytest.importorskip("nicegui", reason="探针要真的 import 页面模块，页面在 [gui] extra 里")
-    probe = """
-import sys
-import jiuwensymbiosis.gui
-import jiuwensymbiosis.gui.pages.tools_view
-import jiuwensymbiosis.gui.pages.calibration_view
-offenders = sorted(name for name in sys.modules if name == 'jiuwensymbiosis.calibration' or name.startswith('jiuwensymbiosis.calibration.'))
-assert not offenders, offenders
-assert 'cv2' not in sys.modules, 'importing the GUI must not pull in OpenCV'
 """
     result = _run_probe(probe)
     assert result.returncode == 0, result.stdout + result.stderr

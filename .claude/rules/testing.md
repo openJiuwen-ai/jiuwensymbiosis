@@ -5,18 +5,28 @@ paths:
 
 # Testing Rules
 
-- Put deterministic, hardware-free tests in `tests/unit_tests/`, normally
-  mirroring the source subsystem. Real serial/CAN/device access, cameras, GPU
-  inference, and external services belong in explicitly marked integration
-  tests. Do not assume selecting all tests automatically skips those paths.
+- Put deterministic tests for the core and domain packages in
+  `tests/unit_tests/`, normally mirroring the source subsystem. Put GUI
+  launcher, plugin, and workbench tests in `tests/gui/`; these may need the
+  relevant GUI extra but should use fake runtime/hardware. Real serial/CAN/device
+  access, cameras, GPU inference, and external services belong in explicitly
+  marked integration tests. Do not assume selecting all tests automatically
+  skips those paths.
 - Read pytest settings and dependencies from
-  [pyproject.toml](../../pyproject.toml). Select all unit tests with
-  `python -m pytest tests/unit_tests/`; `-m unit` is not equivalent because
-  existing unit tests are not uniformly marked.
-- Reuse the fixtures in `tests/conftest.py`, test doubles exported by
+  [pyproject.toml](../../pyproject.toml). Select core tests with
+  `python -m pytest tests/unit_tests/` or `make test-core`; select the complete
+  GUI suite with `python -m pytest tests/gui/` or `make test-gui` in an
+  environment with GUI dependencies installed. `make test` runs both
+  no-hardware suites. `-m unit` is not equivalent because existing tests are
+  not uniformly marked.
+- Keep `tests/conftest.py` free of eager core/GUI imports so launcher tests can
+  run without importing the core. Reuse its lazy fixtures and the test doubles exported by
   `tests/mocks/__init__.py`, and lifecycle helpers in `tests/helpers.py`.
   Inspect their interfaces before adding a new fake. A focused local fake is
   appropriate when the existing doubles do not express the needed contract.
+- Core tests and GUI workbench tests initialize proxy cleanup from their
+  suite-level `conftest.py` before importing `openjiuwen`; launcher tests keep
+  that dependency boundary lightweight.
 - For LLM tests, use `build_mock_model()` via `RobotAgentConfig(model=...)`.
   Do not require real credentials or hardware configuration.
 - Async tests run under the configured asyncio auto mode. Await async hooks;

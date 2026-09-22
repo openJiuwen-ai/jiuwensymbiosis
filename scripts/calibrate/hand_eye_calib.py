@@ -37,9 +37,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from jiuwensymbiosis.calibration import (
     CalibrationRunOptions,
+    ManualGuidanceRecoveryError,
     collect_waypoints,
     execute_calibration,
     replay_calibration,
@@ -54,6 +58,13 @@ from scripts.calibrate._cli_common import (
 )
 
 logger = logging.getLogger("hand_eye_calib")
+
+
+@dataclass(frozen=True)
+class _CalibrationResourceBinding:
+    """The admitted resource identities for an already-built calibration session."""
+
+    resources: tuple[str, ...]
 
 
 def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
@@ -144,6 +155,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_PREFLIGHT = 2
 EXIT_REVIEW = 3
+_UNSAFE_CLEANUP_ERRORS = (ManualGuidanceRecoveryError,)
 
 
 def _exit_code(outcome) -> int:
@@ -167,7 +179,49 @@ def _mode_label(args: argparse.Namespace) -> str:
     return "replay"
 
 
-def main(argv: list[str] | None = None, *, prog: str | None = None, require_mount: str | None = None) -> int:
+def _prepare_calibration_binding(config_path: str | Path, spec: Any, session: Any) -> _CalibrationResourceBinding:
+    """Derive admission resources from the config that built ``session``.
+
+    The calibration spec's ``session_factory.from_yaml`` remains the only
+    typed-config loader and keeps ownership of adapter-specific relative-path
+    semantics. Resource identities are derived from that session's
+    ``env.cfg``. The YAML is read only for the supplemental top-level
+    ``physical_device_id`` metadata; no second config factory or session is
+    created here.
+    """
+    import yaml
+
+    from jiuwensymbiosis.adapters._common.resources import complete_resource_keys
+
+    source = Path(config_path)
+    metadata = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    if not isinstance(metadata, dict):
+        raise TypeError(f"{source}: calibration config root must be a mapping")
+
+    env = getattr(session, "env", None)
+    cfg = getattr(env, "cfg", None)
+    if cfg is None:
+        raise TypeError("calibration session must expose its loaded typed config as session.env.cfg")
+    resource_keys = getattr(spec.session_factory, "resource_keys", None)
+    if not callable(resource_keys):
+        raise TypeError("calibration session_factory must expose resource_keys(cfg)")
+
+    resources = complete_resource_keys(
+        resource_keys(cfg),
+        cfg,
+        physical_device_id=metadata.get("physical_device_id"),
+        include_sidecars=False,
+    )
+    return _CalibrationResourceBinding(resources=resources)
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    prog: str | None = None,
+    require_mount: str | None = None,
+    resource_manager=None,
+) -> int:
     clear_proxy_env()
     ap = _build_parser(prog)
     args = ap.parse_args(argv)
@@ -187,7 +241,16 @@ def main(argv: list[str] | None = None, *, prog: str | None = None, require_moun
                 ap.error("--collect-poses (live) requires --config.")
             spec, session = load_adapter_spec_and_session(args.config)
             dependencies = workflow_dependencies(spec, args, live=False)
-            with session:
+            from jiuwensymbiosis.runtime.admission import admitted_session
+
+            binding = _prepare_calibration_binding(args.config, spec, session)
+            with admitted_session(
+                binding,
+                session=session,
+                resource_manager=resource_manager,
+                operation="calibration-collect",
+                unsafe_cleanup_errors=_UNSAFE_CLEANUP_ERRORS,
+            ):
                 device = spec.make_calibration_device(session.env)
                 _guard(device, require_mount)
                 collect_waypoints(
@@ -203,7 +266,16 @@ def main(argv: list[str] | None = None, *, prog: str | None = None, require_moun
             dependencies = workflow_dependencies(spec, args, live=True)
             if not args.dry_run and not args.confirm_estop:
                 raise RuntimeError("--auto live motion: pass --confirm-estop to confirm the E-stop is reachable.")
-            with session:
+            from jiuwensymbiosis.runtime.admission import admitted_session
+
+            binding = _prepare_calibration_binding(args.config, spec, session)
+            with admitted_session(
+                binding,
+                session=session,
+                resource_manager=resource_manager,
+                operation="calibration-auto",
+                unsafe_cleanup_errors=_UNSAFE_CLEANUP_ERRORS,
+            ):
                 device = spec.make_calibration_device(session.env)
                 _guard(device, require_mount)
                 outcome = execute_calibration(

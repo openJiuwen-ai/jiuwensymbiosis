@@ -17,7 +17,9 @@ Two lifetimes, both here:
 * **resident** (:class:`ResidentWorker`) — keep a ``--serve`` worker alive and send
   it one request line per call, so rclpy/DDS discovery is paid once instead of per
   call. :func:`stop_and_collect` ends a self-bounding worker (one started to run
-  until told to stop) and reaps its result.
+  until told to stop) and reaps its result. A resident request fails soft only
+  when its worker can be stopped cleanly; an unconfirmed stop propagates so a
+  caller does not issue a fallback command while the prior command may remain active.
 
 The worker script itself is NOT covered here. Workers are loaded by file path under
 another interpreter and cannot import this package (``jiuwensymbiosis/__init__.py``
@@ -35,6 +37,7 @@ from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import Path
 
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -97,32 +100,35 @@ def run_once(
 ) -> dict:
     """Run a worker to completion and return its result dict.
 
-    Every failure converges to ``{"ok": False, "reason": ...}`` rather than raising,
-    because the caller is a driver method whose contract is a structured result.
+    Worker-reported action failures remain structured results. Once a process
+    starts, timeout/abnormal exit/missing results leave actuator stop unconfirmed
+    and raise HardwareCleanupError. The owning driver must retain that evidence.
 
     Args:
         cmd: full argv, starting with the interpreter that can import rclpy.
         timeout_s: hard wall-clock cap on the subprocess.
         label: log prefix identifying the caller, e.g. ``"[CruzrNav] wheel"``.
-        reason_prefix: prepended to the failure reasons, so one body's worker
-            failures stay distinguishable from another's (``"wheel_"`` →
-            ``wheel_worker_error`` / ``wheel_worker_failed`` / ``wheel_no_output`` /
-            ``wheel_bad_output``).
+        reason_prefix: prepended to the spawn failure reason, e.g.
+            ``"wheel_"`` → ``wheel_worker_error``. Unconfirmed stops raise.
         env: environment for the subprocess; ``None`` inherits the agent's.
     """
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
-    except Exception as exc:  # noqa: BLE001 - converge any spawn/timeout error to a structured result
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run kills and reaps the child on timeout; SIGKILL cannot
+        # execute the worker's final zero-velocity command.
+        raise HardwareCleanupError(label, cleanup_errors=(exc,)) from exc
+    except OSError as exc:
         logger.warning("%s worker run failed: %s", label, exc)
         return {"ok": False, "reason": f"{reason_prefix}worker_error"}
     if proc.returncode != 0:
         logger.warning("%s worker rc=%d stderr=%s", label, proc.returncode, (proc.stderr or "").strip())
-        return {"ok": False, "reason": f"{reason_prefix}worker_failed"}
+        error = RuntimeError(f"worker exited with rc={proc.returncode}; actuator stop unconfirmed")
+        raise HardwareCleanupError(label, cleanup_errors=(error,))
     result = _last_json_line(proc.stdout or "")
     if result is None:
-        if not (proc.stdout or "").strip():
-            return {"ok": False, "reason": f"{reason_prefix}no_output"}
-        return {"ok": False, "reason": f"{reason_prefix}bad_output"}
+        error = RuntimeError("worker returned no valid result; actuator stop unconfirmed")
+        raise HardwareCleanupError(label, cleanup_errors=(error,))
     return result
 
 
@@ -131,21 +137,19 @@ def stop_and_collect(
     *,
     label: str,
     kind: str,
-    empty_result: dict,
     timeout_s: float = 15.0,
     kill_timeout_s: float = 5.0,
 ) -> dict:
     """Halt a self-bounding worker and reap its JSON result.
 
     Sends the ``stop`` sentinel for a clean actuator stop while the worker still
-    runs, else just drains a finished one. Falls back to SIGTERM and then SIGKILL,
-    so a wedged worker can never be left driving hardware.
+    runs, else just drains a finished one. A clean exit with a JSON result
+    confirms the worker's stop path ran. Forced termination only reaps the
+    process; it cannot prove that the physical actuator stopped.
 
     Args:
         label: log prefix identifying the caller.
-        kind: names the failure reasons — ``{kind}_stop_failed`` / ``{kind}_bad_output``.
-        empty_result: returned when the worker exits without printing anything (it
-            did nothing, which is a success with a zero-valued measurement).
+        kind: operation name included in cleanup errors (e.g. spin or drive).
     """
     try:
         payload = "stop\n" if proc.poll() is None else None
@@ -157,12 +161,18 @@ def stop_and_collect(
             out, _err = proc.communicate(timeout=kill_timeout_s)
         except Exception as kill_exc:  # noqa: BLE001 - last resort; the process must not survive
             logger.error("%s worker ignored SIGTERM (%s); killing", label, kill_exc)
-            proc.kill()
-            return {"ok": False, "reason": f"{kind}_stop_failed"}
-    if not (out or "").strip():
-        return dict(empty_result)
+            errors: list[BaseException] = [kill_exc]
+            try:
+                proc.kill()
+                proc.communicate(timeout=kill_timeout_s)
+            except Exception as reap_exc:
+                errors.append(reap_exc)
+            raise HardwareCleanupError(f"{label} {kind} stop", cleanup_errors=errors) from kill_exc
     result = _last_json_line(out or "")
-    return result if result is not None else {"ok": False, "reason": f"{kind}_bad_output"}
+    if proc.returncode != 0 or result is None:
+        error = RuntimeError(f"{kind} worker rc={proc.returncode}, no confirmed actuator stop")
+        raise HardwareCleanupError(label, cleanup_errors=(error,))
+    return result
 
 
 class ResidentWorker:
@@ -170,9 +180,10 @@ class ResidentWorker:
 
     Restarting a worker per call means paying rclpy import + DDS discovery every
     time; keeping one warm turns that into a one-off. The cost is that a resident
-    worker can die between calls, so :meth:`request` fails soft: it drops the dead
-    handle and returns ``None``, letting the caller retry or fall back to a one-shot
-    run rather than raising into a motion path.
+    worker can die between calls. A cleanly stopped failed request returns
+    ``None`` and lets a caller retry or fall back to a one-shot run. If its
+    shutdown cannot be confirmed, the cleanup error propagates into the caller's
+    lifecycle so it cannot issue a second hardware command blindly.
     """
 
     def __init__(
@@ -192,6 +203,7 @@ class ResidentWorker:
         self._label = label
         self._env_fn = env_fn
         self._proc: subprocess.Popen | None = None
+        self._stop_uncertainty: BaseException | None = None
 
     @property
     def proc(self) -> subprocess.Popen | None:
@@ -199,9 +211,17 @@ class ResidentWorker:
         return self._proc if self._proc is not None and self._proc.poll() is None else None
 
     def _ensure(self) -> subprocess.Popen | None:
-        """Return a live worker, starting one if absent or dead; ``None`` if it won't start."""
+        """Return a reusable worker, starting one only after confirmed cleanup."""
+        if self._stop_uncertainty is not None:
+            raise RuntimeError(
+                f"{self._label} resident worker shutdown remains unconfirmed"
+            ) from self._stop_uncertainty
         if self.proc is not None:
             return self._proc
+        if self._proc is not None:
+            # Do not overwrite an unexpectedly dead handle and lose its missing
+            # stop confirmation. stop() records that uncertainty and raises.
+            self.stop()
         cmd = self._make_cmd()
         try:
             # stderr → DEVNULL: a long-lived worker would otherwise block on a full pipe.
@@ -222,11 +242,17 @@ class ResidentWorker:
     def request(self, line: str, timeout_s: float) -> str | None:
         """Send one request line and read back one reply line; ``None`` on any failure.
 
-        A failure also drops the worker, so the next call starts a fresh one — a
-        half-dead worker must not be reused for a motion command.
+        A failure also stops the worker before a caller can fall back. If the
+        worker's stop cannot be confirmed, that cleanup error propagates and the
+        worker remains marked uncertain; motion callers must not start a second
+        command while the first worker's outcome is unknown.
         """
         proc = self._ensure()
-        if proc is None or proc.stdin is None:
+        if proc is None:
+            return None
+        if proc.stdin is None:
+            logger.warning("%s resident worker has no stdin pipe", self._label)
+            self.stop()
             return None
         try:
             proc.stdin.write(line if line.endswith("\n") else line + "\n")
@@ -245,9 +271,10 @@ class ResidentWorker:
     def request_json(self, line: str, timeout_s: float, *, bad_output_reason: str) -> dict | None:
         """:meth:`request` plus JSON parsing.
 
-        ``None`` means "no usable worker" (the caller should fall back or retry); a
-        dict with ``ok=False`` means the worker answered but unintelligibly — a live
-        worker talking nonsense is not a reason to restart it.
+        ``None`` means "no usable worker" after its stop was confirmed; a
+        dict with ``ok=False`` means the worker answered but unintelligibly — a
+        live worker talking nonsense is not a reason to restart it. An unconfirmed
+        stop propagates so callers cannot fall back to another command path.
         """
         reply = self.request(line, timeout_s)
         if reply is None:
@@ -260,16 +287,66 @@ class ResidentWorker:
         return parsed if isinstance(parsed, dict) else {"ok": False, "reason": bad_output_reason}
 
     def stop(self) -> None:
-        """Shut the worker down and forget it. Idempotent."""
-        proc, self._proc = self._proc, None
+        """Stop and reap the worker, retaining evidence if shutdown is uncertain."""
+        if self._stop_uncertainty is not None and self._proc is None:
+            raise RuntimeError(
+                f"{self._label} resident worker shutdown remains unconfirmed"
+            ) from self._stop_uncertainty
+        proc = self._proc
         if proc is None:
             return
+        if proc.poll() is not None:
+            self._proc = None
+            error = RuntimeError(f"{self._label} resident worker exited before a stop was confirmed")
+            self._stop_uncertainty = error
+            raise error
+
         try:
-            if proc.poll() is None:
-                proc.communicate(input="stop\n", timeout=5.0)
+            proc.communicate(input="stop\n", timeout=5.0)
         except Exception as exc:  # noqa: BLE001 - force it down; the process must not survive
             logger.warning("%s resident worker ignored stop (%s); terminating", self._label, exc)
+            escalation_errors: list[BaseException] = []
             try:
                 proc.terminate()
-            except Exception as term_exc:  # noqa: BLE001 - already gone
-                logger.debug("%s terminate after failed stop: %s", self._label, term_exc)
+            except Exception as term_exc:  # noqa: BLE001 - retain the failure as shutdown evidence
+                escalation_errors.append(term_exc)
+            try:
+                proc.communicate(timeout=5.0)
+            except Exception as wait_exc:  # noqa: BLE001 - last resort; process must not survive
+                escalation_errors.append(wait_exc)
+                try:
+                    proc.kill()
+                except Exception as kill_exc:  # noqa: BLE001 - retain the handle if kill failed
+                    escalation_errors.append(kill_exc)
+                try:
+                    proc.communicate(timeout=5.0)
+                except Exception as kill_wait_exc:  # noqa: BLE001
+                    escalation_errors.append(kill_wait_exc)
+            if proc.poll() is None:
+                error = RuntimeError(f"{self._label} resident worker is still alive after terminate/kill")
+                # Keep the handle available for stop retries, never new requests.
+                self._stop_uncertainty = error
+                raise error from exc
+            # Forced process termination proves the process is gone, but not that
+            # its outstanding robot command reached a safe stop. Keep this worker
+            # permanently marked uncertain so resource owners fail closed.
+            self._proc = None
+            detail = "; ".join(f"{type(item).__name__}: {item}" for item in escalation_errors)
+            error = RuntimeError(
+                f"{self._label} resident worker required forced termination; stop is unconfirmed"
+                + (f" ({detail})" if detail else "")
+            )
+            self._stop_uncertainty = error
+            raise error from exc
+
+        if proc.poll() is None:
+            error = RuntimeError(f"{self._label} resident worker did not exit after its stop command")
+            self._stop_uncertainty = error
+            raise error
+        if proc.returncode != 0:
+            self._proc = None
+            error = RuntimeError(f"{self._label} resident worker exited with status {proc.returncode} after stop")
+            self._stop_uncertainty = error
+            raise error
+        self._proc = None
+        self._stop_uncertainty = None

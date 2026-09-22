@@ -60,13 +60,26 @@ python -m pip install -e ".[piper]"     # Piper SDK
 python -m pip install -e ".[so101]"     # SO-101 / LeRobot; Python 3.12
 python -m pip install -e ".[cruzr]"     # Cruzr dual-arm (pinocchio arm IK; rclpy from the ROS workspace, not a pip dep)
 python -m pip install -e ".[voice]"     # ASR and audio capture
-python -m pip install -e ".[gui]"       # Browser GUI
+python -m pip install -e ".[gui]"       # Existing workbench GUI (NiceGUI browser UI)
 python -m pip install -e ".[calib]"     # Hand-eye calibration
 python -m pip install -e ".[full]" \
   --extra-index-url https://download.pytorch.org/whl/cu128  # Vision/GPU stack
 ```
 
 See [Installation and Quick Start](docs/en/tutorial/01-quick-start.md) for combined extras and pinned runtime dependencies.
+
+The unified launcher selects a GUI plugin; this repository currently ships `workbench`:
+
+```bash
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench
+# Equivalent module entry point
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+The `.[gui]` extra installs the workbench's dependencies. A separately distributed GUI plugin
+is installed with its own documented dependencies in the same Python environment, then selected
+with `--gui <key>`.
 
 ## Built-in Adapters
 

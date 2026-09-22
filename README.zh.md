@@ -60,13 +60,25 @@ python -m pip install -e ".[piper]"     # Piper SDK
 python -m pip install -e ".[so101]"     # SO-101 / LeRobot；Python 3.12
 python -m pip install -e ".[cruzr]"     # Cruzr 双臂（pinocchio 臂 IK；rclpy 由 ROS 工作区提供，非 pip 依赖）
 python -m pip install -e ".[voice]"     # ASR 与录音
-python -m pip install -e ".[gui]"       # 浏览器 GUI
+python -m pip install -e ".[gui]"       # 现有工作台 GUI（NiceGUI 浏览器界面）
 python -m pip install -e ".[calib]"     # 手眼标定
 python -m pip install -e ".[full]" \
   --extra-index-url https://download.pytorch.org/whl/cu128  # 视觉/GPU 栈
 ```
 
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
+
+统一启动器通过 GUI 插件 key 选择界面；本仓库当前提供 `workbench`：
+
+```bash
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench
+# 等价模块入口
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+`.[gui]` 安装现有工作台的依赖。单独发布的 GUI 插件按各自说明安装到同一 Python
+环境，再通过 `--gui <key>` 选择。
 
 ## 内置适配器
 

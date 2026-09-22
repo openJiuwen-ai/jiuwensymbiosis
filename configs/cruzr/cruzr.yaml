@@ -69,7 +69,7 @@ env:
       waist_depth_topic: /sensor/camera/waist_front_rgbd/depth/raw
       waist_camera_info_topic: /sensor/camera/waist_front_rgbd/color/info
       nav_python: /home/riemann/.local/bin/cruzr_ros_python
-      camera_calib_path: configs/cruzr/cruzr_camera_calib.json
+      camera_calib_path: cruzr_camera_calib.json  # 相对本 YAML 所在目录
       # 机器人描述（ROS 包，在本仓之外）。`~` 与 `$VAR` 会被展开，所以同一份配置
       # 可以在不同机器上用；工作区不在 ~/Robot/Cruzr_ws 时改这两行即可。
       # urdf_path 供 FK / IK；urdf_package_dir 是 package:// 碰撞网格的根，
