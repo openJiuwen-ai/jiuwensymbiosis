@@ -38,6 +38,10 @@ _MOVE_L = 0x02  # linear cartesian (straight line; used for pick/place strokes)
 _CTRL_CAN = 0x01
 _GRIPPER_ENABLE = 0x01
 
+# SocketCAN link pre-check (see _require_can_interface).
+_NET_SYSFS = "/sys/class/net"
+_ARPHRD_CAN = "280"  # linux/if_arp.h ARPHRD_CAN, as reported by <link>/type
+
 
 # =============================================================================
 # Per-run command log. Persists every ``[Piper]`` motion line to
@@ -101,6 +105,64 @@ def _attach_cmd_log_handler() -> Path | None:
 def _ang_diff_deg(a: float, b: float) -> float:
     """Shortest signed angular difference a-b in degrees, wrapped to [-180,180]."""
     return (a - b + 180.0) % 360.0 - 180.0
+
+
+def _is_can_interface(name: str) -> bool | None:
+    """Identify SocketCAN links; None means the link type could not be read."""
+    try:
+        return (Path(_NET_SYSFS) / name / "type").read_text().strip() == _ARPHRD_CAN
+    except OSError:
+        return None
+
+
+def _require_can_interface(can_port: str) -> None:
+    """Reject an unusable ``can_port`` before the vendor SDK touches the bus.
+
+    A wrong interface name is a configuration error, not an uncertain hardware
+    state. Failing here keeps it an ordinary exception, so the caller's rollback
+    stays *confirmed* and the resource records are released. Letting the SDK
+    constructor raise instead yields no CAN handle to close, which can only be
+    reported as cleanup-unconfirmed and blocks the device records until an
+    operator reconciles them.
+
+    A condition this cannot observe is never reported as a failure: without a
+    readable sysfs view the verdict is left to the SDK.
+    """
+    try:
+        interfaces = sorted(os.listdir(_NET_SYSFS))
+    except OSError:
+        return
+    if can_port not in interfaces:
+        available = [name for name in interfaces if _is_can_interface(name)]
+        if available:
+            raise RuntimeError(
+                f"[Piper] CAN interface {can_port!r} does not exist. Available CAN interfaces: "
+                f"{', '.join(available)}. Set `can_port` in the runtime YAML to one of these."
+            )
+        raise RuntimeError(
+            f"[Piper] CAN interface {can_port!r} does not exist and no CAN interface is present. "
+            "Check that the USB-CAN adapter is connected, then bring it up: "
+            "`sudo ip link set can0 up type can bitrate 1000000`."
+        )
+    is_can = _is_can_interface(can_port)
+    if is_can is None:
+        return
+    if not is_can:
+        raise RuntimeError(
+            f"[Piper] Network interface {can_port!r} exists but is not a CAN interface. "
+            "Check `can_port` in the runtime YAML."
+        )
+    try:
+        operstate = (Path(_NET_SYSFS) / can_port / "operstate").read_text().strip()
+    except OSError:
+        return
+    # Linux UNKNOWN also covers drivers that do not implement operstate;
+    # only a known unusable state is grounds to reject before SDK validation.
+    if operstate not in {"up", "unknown"}:
+        raise RuntimeError(
+            f"[Piper] CAN interface {can_port!r} is {operstate!r}, not up. Bring it up first: "
+            f"`sudo ip link set {can_port} up type can bitrate 1000000`."
+        )
 
 
 # =============================================================================
@@ -239,6 +301,9 @@ class PiperLowLevel:
         camera_resolution = params["camera_resolution"]
         camera_fps = params["camera_fps"]
         enable_timeout_s = params["enable_timeout_s"]
+        # Pre-check first: a bad interface name must fail as a plain configuration
+        # error, before the SDK can leave the bus in an unconfirmable state.
+        _require_can_interface(can_port)
         logger.info("[Piper] Connecting CAN %s ...", can_port)
         try:
             self._arm = arm_factory(can_port)

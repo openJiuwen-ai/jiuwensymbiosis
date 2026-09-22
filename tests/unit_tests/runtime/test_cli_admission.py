@@ -167,6 +167,31 @@ def test_connection_failure_releases_only_after_confirmed_cleanup(tmp_path: Path
     assert manager.records() == []
 
 
+def test_session_build_failure_releases_resources(tmp_path: Path) -> None:
+    """A driver rejecting its own configuration must not block the device records.
+
+    ``build_session`` fails before a session object exists, so there is no cleanup
+    evidence to read. An ordinary exception means nothing was opened, and the
+    reservation is released; only ``HardwareCleanupError`` blocks.
+    """
+    events: list[Any] = []
+
+    class _BuildFailure(_Binding):
+        def build_session(self) -> _Session:
+            self.events.append("build_session")
+            raise RuntimeError("[Piper] CAN interface 'can_left' does not exist.")
+
+    manager = ResourceManager(tmp_path)
+    binding = _BuildFailure(events, _Session(events), resources=("can:can_left", "camera:347622072814"))
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        with admitted_session(binding, resource_manager=manager):
+            pytest.fail("a rejected configuration must not connect")
+
+    assert events == ["build_session"]
+    assert manager.records() == []
+
+
 def test_simulated_gui_resource_lease_rejects_cli_admission_before_connect(tmp_path: Path) -> None:
     """A mock GUI owner and official CLI share the same physical-resource gate."""
     events: list[Any] = []

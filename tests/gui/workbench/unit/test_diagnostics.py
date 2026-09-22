@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jiuwensymbiosis import errors
 from jiuwensymbiosis_gui.workbench import diagnostics
 from jiuwensymbiosis_gui.workbench.diagnostics import FIX_USE_HF_MIRROR, FIX_USE_LOCAL_MODEL, diagnose
@@ -67,6 +69,83 @@ def test_detection_miss_is_no_detection_card():
 def test_out_of_reach_is_reach_card():
     d = diagnose("RuntimeError: [Piper] EndPose target OUT OF REACH — Arm Status=TARGET_POS_EXCEEDS_LIMIT")
     assert "可达" in d.title
+
+
+# 真机原始报错(2026-09-22)。它同时踩了两个坑:驱动的措辞是 "UNREACHABLE / out of
+# envelope" 而非 "out of reach",所以可达卡漏判;落到鉴权卡时,末端位姿的 Z 坐标
+# " 403.873" 命中了子串 " 403",于是一次运动学失败被报成"API Key 没填或不对"。
+_UNREACHABLE_WITH_403_COORDINATE = (
+    "[runner] step 3 failed: goto_xyzr({'x': 'pick.x', 'y': 'pick.y', 'z': 'pick.grasp_z + 40'}): "
+    "RuntimeError: [Piper] EndPose not executing — arm did not move from start after 2.0s; "
+    "target likely UNREACHABLE / out of envelope "
+    "(target=(285.3, 64.4, 252.6, 180.0, 30.0, 178.0), "
+    "last=(142.524, -7.331, 403.873, -174.945, 39.333, 178.038)). Aborted; arm held in place."
+)
+
+
+def test_unreachable_target_carrying_a_403_coordinate_is_reach_card_not_auth():
+    d = diagnose(_UNREACHABLE_WITH_403_COORDINATE)
+    assert "可达" in d.title
+    assert "鉴权" not in d.title
+
+
+def test_a_pose_coordinate_is_never_read_as_an_http_auth_code():
+    # 数值与 HTTP 状态码同形但前后接着数字/小数点:不能算鉴权信号。
+    for coordinate in ("403.873", "142.403", "1401", "401.0", "-403.5", "401", "403", "-403"):
+        d = diagnose(f"RuntimeError: something we have no rule for, last=(1.0, {coordinate}, 2.0)")
+        assert d.title == "运行失败", coordinate
+
+
+def test_real_http_auth_codes_still_match():
+    for text in (
+        "openai.APIStatusError: 401 Unauthorized",
+        "httpx.HTTPStatusError: server returned HTTP 403",
+        "model service error (status 401)",
+        "httpx.HTTPStatusError: 403 Forbidden",
+        "model service error (status_code=403)",
+        "model service error: Error code: 401",
+        "requests.HTTPError: 403 Client Error: Forbidden for url: https://model.example/v1",
+    ):
+        assert "鉴权" in diagnose(text).title, text
+
+
+def test_detector_service_unreachable_is_not_blamed_on_arm_reach():
+    # detector_client 的连不上也含 "unreachable",但那是检测服务,不是机械臂到不了。
+    d = diagnose("RuntimeError: detector service at http://127.0.0.1:8114 unreachable: 3 attempts failed")
+    assert "可达" not in d.title
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        "httpx.ConnectError: [Errno 101] Network is unreachable",
+        "OSError: [Errno 113] Host is unreachable",
+        "RuntimeError: model service unreachable",
+    ),
+)
+def test_network_unreachable_is_not_blamed_on_arm_reach(error):
+    assert diagnose(error).title == "运行失败"
+
+
+@pytest.mark.parametrize("error", ("RuntimeError: hardware fault E401", "RuntimeError: device 403B failed"))
+def test_hardware_identifiers_are_not_http_auth_status(error):
+    assert diagnose(error).title == "运行失败"
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        "ValueError: target unreachable, rejected",
+        "ValueError: near singularity or unreachable orientation; target rejected",
+        "ValueError: goto_pose waypoint: IK raised ValueError; target likely unreachable or on a singularity.",
+        "RuntimeError: ik_unreachable",
+        "RuntimeError: lift_unreachable",
+        "RuntimeError: unreachable_any_lifter",
+        "RuntimeError: place_unreachable_any_lifter",
+    ),
+)
+def test_adapter_reachability_failures_keep_the_reach_card(error):
+    assert "可达" in diagnose(error).title
 
 
 def test_no_camera_is_camera_card_not_no_detection():
@@ -173,8 +252,8 @@ class TestArmBusCards:
 
 
 def test_every_rule_needs_a_main_error_signal():
-    # 结构不变量:没有任何一条规则可以只凭日志尾命中
-    assert all(rule.err_needles for rule in diagnostics._RULES)
+    # 结构不变量:没有任何一条规则可以只凭日志尾命中。强信号可以是子串或正则。
+    assert all(rule.err_needles or rule.err_patterns for rule in diagnostics._RULES)
 
 
 def test_noisy_log_tail_alone_does_not_hijack_an_unknown_error():

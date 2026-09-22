@@ -202,6 +202,9 @@ def test_piper_constructor_reports_unconfirmed_can_rollback(monkeypatch):
 
     monkeypatch.setenv("JIUWEN_PIPER_CMD_LOG", "0")
     monkeypatch.setitem(sys.modules, "piper_sdk", SimpleNamespace(C_PiperInterface_V2=lambda _port: _Arm()))
+    # This covers the post-handle rollback, so admit the name the local machine
+    # cannot have; _require_can_interface has its own tests.
+    monkeypatch.setattr("jiuwensymbiosis.adapters.piper.lowlevel._require_can_interface", lambda _port: None)
 
     with pytest.raises(HardwareCleanupError) as failed:
         PiperLowLevel(can_port="fake-can")

@@ -17,6 +17,7 @@ huggingface.co"那样误导)。
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 __all__ = [
@@ -138,25 +139,37 @@ _FALLBACK = Diagnosis(
 _DETECTION_SHAPED = ("produced no usable result", "not detected", "no_valid_depth")
 _FRAME_TIMEOUT = ("grab_frames error", "frame didn't arrive", "frame did not arrive")
 
+# Require an HTTP/status label or reason phrase: coordinates (including whole
+# numbers) and device identifiers can also contain 401/403.
+_HTTP_AUTH_STATUS = re.compile(
+    r"(?<![\w.])(?:http(?:/\d(?:\.\d)?)?|status(?:[ _]code)?|error code)"
+    r"[\"']?\s*[:=]?\s*[\"']?(?:401|403)(?![\w.])"
+    r"|(?<![\w.])(?:401|403)\s+(?:client error:\s*)?(?:unauthorized|forbidden)\b"
+)
+
 
 @dataclass(frozen=True)
 class _Rule:
-    """一条规则:主错误串命中 ``err_needles`` 才算数,日志尾只做佐证。
+    """一条规则:主错误串命中子串或正则才算数,日志尾只做佐证。
 
     Attributes:
         diagnosis: 命中后返回的诊断卡。
-        err_needles: 主错误串里任一命中即满足(强信号,必须有)。
+        err_needles: 主错误串里任一命中即满足(强信号)。
+        err_patterns: 同样的强信号,但用正则——留给那些子串会撞上数值的短记号
+            (见 ``_HTTP_AUTH_STATUS``)。与 ``err_needles`` 是"或"的关系,
+            两者至少要有一个非空。
         log_needles: 非空时,还要求日志尾里任一命中(佐证,用来在同一种错误形态里做区分)。
         err_excludes: 主错误串里任一命中则本条作废(排除更具体的子系统)。
     """
 
     diagnosis: Diagnosis
-    err_needles: tuple[str, ...]
+    err_needles: tuple[str, ...] = ()
+    err_patterns: tuple[re.Pattern[str], ...] = ()
     log_needles: tuple[str, ...] = ()
     err_excludes: tuple[str, ...] = ()
 
     def matches(self, err: str, log: str) -> bool:
-        if not _has(err, *self.err_needles):
+        if not _has(err, *self.err_needles) and not any(p.search(err) for p in self.err_patterns):
             return False
         if self.err_excludes and _has(err, *self.err_excludes):
             return False
@@ -173,7 +186,23 @@ _RULES: tuple[_Rule, ...] = (
     # "produced no usable result" 子串,否则相机/检测器问题会被误诊成"物体没识别到"。
     _Rule(_NO_CAMERA, err_needles=("no_camera", "no camera")),
     _Rule(_MODEL_NOT_READY, err_needles=("detector_unavailable",)),
-    _Rule(_OUT_OF_REACH, err_needles=("out of reach", "exceeds_limit", "out_of_reach")),
+    # Match motion-specific phrases/reasons. A bare "unreachable" also occurs
+    # in network and service failures and does not establish an arm reach issue.
+    _Rule(
+        _OUT_OF_REACH,
+        err_needles=(
+            "out of reach",
+            "out_of_reach",
+            "out of envelope",
+            "exceeds_limit",
+            "target unreachable",
+            "target likely unreachable",
+            "unreachable orientation",
+            "ik_unreachable",
+            "lift_unreachable",
+            "unreachable_any_lifter",
+        ),
+    ),
     # 相机一停出帧,track_grasp/track_detect 会把"没帧"塌缩成"没检出"(报 not detected)。
     # 失败是检测形态、且日志尾显示取帧超时时,归因到相机而非"物体没摆好"。
     _Rule(_NO_CAMERA, err_needles=_DETECTION_SHAPED, log_needles=_FRAME_TIMEOUT),
@@ -188,9 +217,8 @@ _RULES: tuple[_Rule, ...] = (
             "api_key is required",
             "api key is required",
             "authentication",
-            " 401",
-            " 403",
         ),
+        err_patterns=(_HTTP_AUTH_STATUS,),
     ),
     _Rule(
         _LLM_ENDPOINT,
