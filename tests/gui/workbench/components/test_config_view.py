@@ -42,6 +42,19 @@ def test_reveal_field_reports_paths_the_form_does_not_expose(page):
     assert not page.view.reveal_field("env.cfg.low_level.not_a_form_field")
 
 
+def test_switching_detector_mode_rebuilds_only_relevant_fields(page):
+    page.view._set("detector.mode", "remote")
+    assert {path for path in page.view._controls if path.startswith("detector.endpoint.")} == {
+        "detector.endpoint.url",
+        "detector.endpoint.request_timeout_s",
+    }
+    assert not any("model_id" in path for path in page.view._controls)
+    page.view._set("detector.mode", "local")
+    assert "detector.local.gdino_model_id" in page.view._controls
+    assert "detector.local.startup_timeout_s" in page.view._controls
+    assert "detector.endpoint.url" not in page.view._controls
+
+
 def test_save_dialog_prefills_local_name_and_warns_on_overwrite(page):
     page.view._open_save()
     assert page.view._save_name.value == f"{page.body_key}.local"

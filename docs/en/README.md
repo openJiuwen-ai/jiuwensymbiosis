@@ -23,6 +23,7 @@ pages follow the same paths and user tasks.
 - [Calibrate Hand-Eye Geometry](how-to/calibrate-hand-eye.md)
 - [Calibrate an SO-101 with a Fixed Camera](how-to/calibrate-so101-eye-to-hand.md)
 - [Configure the GUI](how-to/configure-gui.md)
+- [Use Remote HTTP Vision and Speech](how-to/remote-inference.md)
 - [Add a GUI Plugin](how-to/add-gui.md)
 - [Configure and Use Logging](how-to/configure-logging.md)
 - [Port a Robot Hardware Adapter](how-to/port-hardware-adapter.md)

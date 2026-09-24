@@ -21,6 +21,49 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+remote = [
+    # Agent-side HTTP inference clients and image codecs; no model runtime.
+    "httpx>=0.28",
+    "pillow>=12",
+]
+camera = [
+    "pyrealsense2>=2.57",
+    "opencv-python>=4.8,<5.0",
+]
+voice-io = [
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "webrtcvad>=2.0.10",
+]
+vision-server = [
+    # Choose matching CPU/CUDA wheels at deployment; never install on remote-only Agents.
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "transformers>=5",
+    "fastapi>=0.136",
+    "uvicorn>=0.46",
+    "pillow>=12",
+    "httpx>=0.28",
+]
+voice-local = [
+    "funasr>=1.0",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "soundfile>=0.12",
+]
+speech-server = [
+    # Combine with voice-local and/or chattts-server only when those models are enabled.
+    "fastapi>=0.136",
+    "uvicorn>=0.46",
+]
+chattts-server = [
+    "ChatTTS==0.2.4",
+    # ChatTTS 0.2.4 uses the Transformers 4 cache API. Deploy TTS in its own
+    # environment, separate from vision-server/full (which require Transformers 5).
+    "transformers==4.53.3",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+]
 dev = [
     "setuptools>=68",  # offline wheel smoke test uses the declared build backend
     "wheel",
@@ -29,6 +72,9 @@ dev = [
     "pytest-mock>=3.14",
     "pytest-timeout>=2.3",
     "respx>=0.22",
+    # HTTP server contract tests use model stubs; no GUI or model runtime needed.
+    "fastapi>=0.136",
+    "uvicorn>=0.46",
     "pillow>=12",
     "httpx>=0.28",
 ]
@@ -62,8 +108,8 @@ so101 = [
     "lerobot[feetech,kinematics]>=0.6.0,<0.7",
 ]
 voice = [
-    # 语音前端（jiuwensymbiosis/voice/）：ASR + 录音。全部惰性 import，
-    # 不安装本组也能 import jiuwensymbiosis.voice（仅 mock backend 可用）。
+    # 兼容旧本地语音安装：ASR + 录音。远程使用 [remote,voice-io]；
+    # 显式本地 FunASR 新安装使用 [voice-local,voice-io] 配对 Torch/TorchAudio。
     # ChatTTS 是本地打包件（n2_voice 的 customer_release_chattts），非 pip 依赖，
     # 用 voice.tts_module_path 指向其 tts.py 即可；不配则默认 NullTTS 不发声。
     "funasr>=1.0",        # ASR / 唤醒（paraformer-zh），间接依赖 torch

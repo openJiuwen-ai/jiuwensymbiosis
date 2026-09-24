@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 
 from jiuwensymbiosis.adapters.piper.env import PiperEnv
 from jiuwensymbiosis.adapters.piper.geometry import FlangePose, pixel_and_depth_to_base_xyz
+from jiuwensymbiosis.agent.cancel import RunCancelled
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     ANALYZE_SCENE,
@@ -49,7 +51,14 @@ from jiuwensymbiosis.api.actions import (
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.contracts import GraspFailure, GraspResult
-from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.errors import InferenceServiceError
+from jiuwensymbiosis.perception.config import DetectorConfig
+from jiuwensymbiosis.perception.detector_client import (
+    check_detection_completion,
+    create_detector_client,
+    init_detector,
+    segment_image,
+)
 from jiuwensymbiosis.perception.vision import (
     apply_xy_correction,
     detect_and_centroid,
@@ -86,7 +95,8 @@ class PiperApi(BaseRobotApi):
         self,
         env: PiperEnv,
         *,
-        detector_service_url: str = "http://127.0.0.1:8114",
+        detector_service_url: str | None = "http://127.0.0.1:8114",
+        detector_client: Any = None,
         default_object_name: str = "object",
         z_correction_mm: float = 0.0,
         grasp_z_offset_mm: float = -25.0,
@@ -95,7 +105,7 @@ class PiperApi(BaseRobotApi):
         """Initialize PiperApi with env, detector service URL, and grasp geometry constants."""
         super().__init__(env)
         self._detector_service_url = detector_service_url
-        self._seg_fn: Callable[..., list[dict[str, Any]]] | None = None
+        self._seg_fn: Callable[..., list[dict[str, Any]]] | None = detector_client
         self._default_object = default_object_name
         # Constant base-frame Z correction added to detections (see PiperConfig).
         self._z_correction_mm = float(z_correction_mm)
@@ -160,8 +170,7 @@ class PiperApi(BaseRobotApi):
         """
         if orientation_policy != "top_down":
             raise ValueError(
-                f"PiperApi.goto_xyzr: this body only offers orientation_policy='top_down', got "
-                f"{orientation_policy!r}."
+                f"PiperApi.goto_xyzr: this body only offers orientation_policy='top_down', got {orientation_policy!r}."
             )
         if r is None:
             r = self.env.get_flange_pose().rz
@@ -267,6 +276,7 @@ class PiperApi(BaseRobotApi):
     @implements(GET_GRASP_INFO_SIMPLE)
     def get_grasp_info_simple(self, object_name: str) -> GraspResult | GraspFailure:
         ll = self._ll()
+        captured_monotonic_s = time.monotonic()
         frames = ll.grab_frames()
         if frames is None:
             return {"ok": False, "reason": "no_camera", "object": object_name}
@@ -278,6 +288,7 @@ class PiperApi(BaseRobotApi):
             rgb=rgb,
             depth_img_m=depth_img_m,
             seg_fn=self._seg_fn,
+            captured_monotonic_s=captured_monotonic_s,
             object_name=object_name,
             tcp_at_grab=_PoseShim(tcp_at_grab),
         )
@@ -400,6 +411,7 @@ class PiperApi(BaseRobotApi):
             place_z,
             best["score"],
         )
+        check_detection_completion(self._seg_fn, captured_monotonic_s, invalidate=self.invalidate_sensing_cache)
         return {
             "ok": True,
             "object": object_name,
@@ -420,6 +432,7 @@ class PiperApi(BaseRobotApi):
     @implements(ANALYZE_SCENE)
     def analyze_scene(self, object_name: str | None = None) -> dict:
         target = object_name or self._default_object
+        captured_monotonic_s = time.monotonic()
         rgb = self.get_image()
         if rgb is None:
             return {"ok": False, "reason": "no_camera"}
@@ -427,15 +440,28 @@ class PiperApi(BaseRobotApi):
         if self._seg_fn is None:
             return {"ok": False, "reason": "detector_unavailable"}
         try:
-            results = self._seg_fn(rgb, text_prompt=target)
+            results = segment_image(
+                self._seg_fn,
+                rgb,
+                target,
+                captured_monotonic_s=captured_monotonic_s,
+            )
+        except RunCancelled:
+            raise
+        except InferenceServiceError as exc:
+            self.invalidate_sensing_cache()
+            return {"ok": False, "reason": "detector_unavailable", "error_code": exc.code}
         except Exception as exc:  # noqa: BLE001 - surface detector failure as ok=False
             return {"ok": False, "reason": str(exc)}
         scores = sorted((float(r.get("score", 0.0)) for r in results), reverse=True)
         # The shared action means "every instance", so list them. This body has no
         # per-instance depth, so an entry carries score + pixel only; a planner still
         # learns HOW MANY there are, which is what drives a multi-target loop.
-        objects = [{"object": target, "score": float(r.get("score", 0.0)),
-                    "pixel_uv": r.get("center") or r.get("pixel_uv")} for r in results]
+        objects = [
+            {"object": target, "score": float(r.get("score", 0.0)), "pixel_uv": r.get("center") or r.get("pixel_uv")}
+            for r in results
+        ]
+        check_detection_completion(self._seg_fn, captured_monotonic_s, invalidate=self.invalidate_sensing_cache)
         return {
             "ok": True,
             "object": target,
@@ -460,16 +486,12 @@ class PiperApi(BaseRobotApi):
         return cast("PiperFullDriver", ll)
 
     def _ensure_detector(self) -> None:
-        """Lazy-init the detector segmentation function if not already bound."""
-        if self._seg_fn is not None:
-            return
-        try:
-            self._seg_fn = init_detector(self._detector_service_url)
-            logger.info("[PiperApi] detector client bound to %s", self._detector_service_url)
-        except Exception as exc:  # noqa: BLE001 - detector init best-effort; tools degrade
-            logger.warning(
-                "[PiperApi] detector init failed (%s); detection tools will return ok=False.",
-                exc,
+        """Bind the legacy URL only for directly constructed, unmanaged APIs."""
+        if self._seg_fn is None:
+            self._seg_fn = (
+                create_detector_client(DetectorConfig())
+                if self._detector_service_url is None
+                else init_detector(self._detector_service_url, request_scoped=True)
             )
 
 

@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from jiuwensymbiosis.errors import DetectorStartError
 from jiuwensymbiosis.perception.detector_sidecar import _port_open, detector_subprocess
 
 
@@ -25,13 +28,13 @@ class TestPortOpen:
         sock.connect_ex.assert_called_once_with(("127.0.0.1", 59999))
 
 
-def test_attached_external_detector_is_never_stopped():
+def test_local_detector_port_conflict_never_attaches_or_spawns():
     with (
         patch("jiuwensymbiosis.perception.detector_sidecar._port_open", return_value=True),
         patch("jiuwensymbiosis.perception.detector_sidecar.subprocess.Popen") as spawn,
     ):
         owner = detector_subprocess()
-        with owner as child:
-            assert child is None
+        with pytest.raises(DetectorStartError, match="mode: remote"), owner:
+            pass
         assert owner.cleanup_report().released
         spawn.assert_not_called()

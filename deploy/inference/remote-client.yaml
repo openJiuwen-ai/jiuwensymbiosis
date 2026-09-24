@@ -1,0 +1,28 @@
+# Merge these fields into the existing body configuration; keep its adapter,
+# serial/USB/HTTP connection, calibration, capability and safety settings.
+detector:
+  mode: remote
+  max_frame_age_s: 10
+  endpoint:
+    url: http://127.0.0.1:8114
+    connect_timeout_s: 3
+    request_timeout_s: 30
+voice:
+  wake_enabled: true
+  wake_command_timeout_s: 10
+  sample_rate: 16000
+  audio_backend: sounddevice
+  asr:
+    backend: remote
+    endpoint:
+      url: http://127.0.0.1:8115
+      request_timeout_s: 15
+    max_audio_duration_s: 30
+    max_command_age_s: 20
+  tts:
+    backend: remote
+    endpoint:
+      url: http://127.0.0.1:8116
+      request_timeout_s: 15
+    voice: default
+    playback_backend: sounddevice

@@ -26,10 +26,15 @@ from __future__ import annotations
 
 import logging
 import math
+import time
+import uuid
 from collections.abc import Callable
-from typing import Any, NamedTuple, Optional
+from functools import partial, wraps
+from typing import Any, NamedTuple, cast
 
 from jiuwensymbiosis.contracts import SPATIAL_RELATIONS
+from jiuwensymbiosis.errors import InferenceServiceError
+from jiuwensymbiosis.perception.detector_client import DetectorClient, segment_image
 from jiuwensymbiosis.perception.frame import CameraFrame
 
 logger = logging.getLogger(__name__)
@@ -54,9 +59,9 @@ def on_surface(
     footprint (± margin) and its z is at/above the surface top. The 'on' relation shared
     by both directions — target-on-reference (grasp) and reference-on-surface (place).
     """
-    return (front_x - margin <= px <= back_x + margin
-            and abs(py - center_y) <= half_width + margin
-            and pz >= top_z - margin)
+    return (
+        front_x - margin <= px <= back_x + margin and abs(py - center_y) <= half_width + margin and pz >= top_z - margin
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +134,15 @@ def _vertical_gap_mm(a: Extent, b: Extent) -> float:
 
 def _rests_on(upper: Extent, lower: Extent, margin: float) -> bool:
     return on_surface(
-        upper.center_mm[0], upper.center_mm[1], upper.center_mm[2],
-        front_x=lower.front_x_mm, back_x=lower.back_x_mm, center_y=lower.center_mm[1],
-        half_width=lower.width_mm / 2.0, top_z=lower.top_z_mm, margin=margin,
+        upper.center_mm[0],
+        upper.center_mm[1],
+        upper.center_mm[2],
+        front_x=lower.front_x_mm,
+        back_x=lower.back_x_mm,
+        center_y=lower.center_mm[1],
+        half_width=lower.width_mm / 2.0,
+        top_z=lower.top_z_mm,
+        margin=margin,
     )
 
 
@@ -141,9 +152,11 @@ def _one_over_the_other(a: Extent, b: Extent) -> bool:
     when deciding "is this resting on that", and inflating a *lateral* test by it would call
     two neighbours a hand's width apart a stack.
     """
+
     def over(p: Extent, q: Extent) -> bool:
-        return (q.front_x_mm <= p.center_mm[0] <= q.back_x_mm
-                and abs(p.center_mm[1] - q.center_mm[1]) <= q.width_mm / 2.0)
+        return (
+            q.front_x_mm <= p.center_mm[0] <= q.back_x_mm and abs(p.center_mm[1] - q.center_mm[1]) <= q.width_mm / 2.0
+        )
 
     return over(a, b) or over(b, a)
 
@@ -158,12 +171,13 @@ def _inside(inner: Extent, outer: Extent, margin: float) -> bool:
     # Horizontal axes get the noise margin; the TOP does not. Allowing slack above the rim
     # is what lets something resting ON the lid read as inside it — and a grasp planned on
     # that answer descends onto a closed drawer.
-    return (outer.front_x_mm - margin <= inner.front_x_mm
-            and inner.back_x_mm <= outer.back_x_mm + margin
-            and abs(inner.center_mm[1] - outer.center_mm[1]) + inner.width_mm / 2.0
-            <= outer.width_mm / 2.0 + margin
-            and inner.top_z_mm <= outer.top_z_mm
-            and inner.bottom_z_mm >= outer.bottom_z_mm - margin)
+    return (
+        outer.front_x_mm - margin <= inner.front_x_mm
+        and inner.back_x_mm <= outer.back_x_mm + margin
+        and abs(inner.center_mm[1] - outer.center_mm[1]) + inner.width_mm / 2.0 <= outer.width_mm / 2.0 + margin
+        and inner.top_z_mm <= outer.top_z_mm
+        and inner.bottom_z_mm >= outer.bottom_z_mm - margin
+    )
 
 
 def relation_holds(
@@ -237,13 +251,18 @@ def surface_footprint_fields(surf: Any) -> dict:
     return {
         "surface_z_mm": surf.top_z_mm,
         "center_mm": list(surf.center_mm),
-        "front_x_mm": surf.front_x_mm, "back_x_mm": surf.back_x_mm,
-        "width_mm": surf.width_mm, "n_points": surf.n_points,
-        "yaw_rad": surf.yaw_rad, "long_mm": surf.long_mm, "short_mm": surf.short_mm,
+        "front_x_mm": surf.front_x_mm,
+        "back_x_mm": surf.back_x_mm,
+        "width_mm": surf.width_mm,
+        "n_points": surf.n_points,
+        "yaw_rad": surf.yaw_rad,
+        "long_mm": surf.long_mm,
+        "short_mm": surf.short_mm,
         "face_normal": [surf.face_normal_x, surf.face_normal_y],
         "edge_midpoint_mm": [surf.edge_mid_x_mm, surf.edge_mid_y_mm],
         "edge_normal": [surf.edge_normal_x, surf.edge_normal_y],
-        "edge_quality": surf.edge_quality, "edge_len_mm": surf.edge_len_mm,
+        "edge_quality": surf.edge_quality,
+        "edge_len_mm": surf.edge_len_mm,
     }
 
 
@@ -253,10 +272,11 @@ def edge_log_str(surf: Any) -> str:
     """
     if math.hypot(surf.edge_normal_x, surf.edge_normal_y) <= 1e-6:
         return " edge=untrusted"
-    return " edge_mid=(%.0f,%.0f) edgeN=%.0fdeg q=%.3f len=%.0fmm" % (
-        surf.edge_mid_x_mm, surf.edge_mid_y_mm,
-        math.degrees(math.atan2(surf.edge_normal_y, surf.edge_normal_x)),
-        surf.edge_quality, surf.edge_len_mm)
+    angle = math.degrees(math.atan2(surf.edge_normal_y, surf.edge_normal_x))
+    return (
+        f" edge_mid=({surf.edge_mid_x_mm:.0f},{surf.edge_mid_y_mm:.0f}) "
+        f"edgeN={angle:.0f}deg q={surf.edge_quality:.3f} len={surf.edge_len_mm:.0f}mm"
+    )
 
 
 def color_stats_str(rgb: Any, mask: Any) -> str:
@@ -278,8 +298,7 @@ def color_stats_str(rgb: Any, mask: Any) -> str:
     mean = px.mean(0)
     bright = float(mean.mean()) / 255.0
     sat = float(((px.max(1) - px.min(1)) / (px.max(1) + 1e-6)).mean())
-    return " [bright=%.2f sat=%.2f rgb=(%d,%d,%d) n=%d]" % (
-        bright, sat, int(mean[0]), int(mean[1]), int(mean[2]), px.shape[0])
+    return f" [bright={bright:.2f} sat={sat:.2f} rgb=({int(mean[0])},{int(mean[1])},{int(mean[2])}) n={px.shape[0]}]"
 
 
 def candidate_geometries(
@@ -288,9 +307,9 @@ def candidate_geometries(
     intrinsics: Any,
     tf_base_cam: Any,
     *,
-    seg_fn: Optional[Callable[..., list[dict]]],
+    seg_fn: Callable[..., list[dict]] | None,
     object_name: str,
-    min_z_mm: Optional[float] = None,
+    min_z_mm: float | None = None,
     score_threshold: float = DEFAULT_SCORE_MIN,
 ) -> list[tuple[Any, dict]]:
     """All ``object_name`` detections in the frame → colour-verified base-frame geometries.
@@ -317,8 +336,9 @@ def candidate_geometries(
         m = np.asarray(r["mask"])
         if cw and not region_color_matches(rgb, m, cw):  # wrong colour → skip
             continue
-        g = object_geometry_from_mask(m, depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam),
-                                      min_z_mm=min_z_mm, debug_label=object_name)
+        g = object_geometry_from_mask(
+            m, depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam), min_z_mm=min_z_mm, debug_label=object_name
+        )
         if g.ok:
             geos.append((g, {"mask": m, "box": r.get("box"), "score": r.get("score")}))
     return geos
@@ -330,13 +350,13 @@ def _best_geometry(
     intrinsics: Any,
     tf_base_cam: Any,
     *,
-    seg_fn: Optional[Callable[..., list[dict]]],
+    seg_fn: Callable[..., list[dict]] | None,
     object_name: str,
     score_threshold: float,
     log_prefix: str,
     debug_label: str,
-    on_pick: Optional[Callable[[Optional[dict]], None]],
-) -> tuple[Any, Optional[dict]]:
+    on_pick: Callable[[dict | None], None] | None,
+) -> tuple[Any, dict | None]:
     """Highest-scoring colour-verified detection → base-frame geometry.
 
     Returns ``(geometry, None)`` or ``(None, failure_dict)``. ``on_pick`` receives the raw
@@ -358,12 +378,20 @@ def _best_geometry(
     # grounded on a brown box) so a fresh sense fails cleanly instead of handing on a wrong target.
     cw = extract_color_word(object_name)
     if cw and not region_color_matches(rgb, np.asarray(best["mask"]), cw):
-        logger.info("%s %r: color mismatch (want %s) → reject%s",
-                    log_prefix, object_name, cw, color_stats_str(rgb, best["mask"]))
+        logger.info(
+            "%s %r: color mismatch (want %s) → reject%s",
+            log_prefix,
+            object_name,
+            cw,
+            color_stats_str(rgb, best["mask"]),
+        )
         return None, {"ok": False, "reason": "color_mismatch", "object": object_name}
     geo = object_geometry_from_mask(
-        np.asarray(best["mask"]), depth_m,
-        np.asarray(intrinsics), np.asarray(tf_base_cam), debug_label=debug_label,
+        np.asarray(best["mask"]),
+        depth_m,
+        np.asarray(intrinsics),
+        np.asarray(tf_base_cam),
+        debug_label=debug_label,
     )
     return geo, None
 
@@ -374,17 +402,24 @@ def detect_object_geometry(
     intrinsics: Any,
     tf_base_cam: Any,
     *,
-    seg_fn: Optional[Callable[..., list[dict]]],
+    seg_fn: Callable[..., list[dict]] | None,
     object_name: str,
     score_threshold: float = DEFAULT_SCORE_MIN,
     log_prefix: str = "[scene3d-object]",
-    on_pick: Optional[Callable[[Optional[dict]], None]] = None,
+    on_pick: Callable[[dict | None], None] | None = None,
 ) -> dict:
     """Detect ``object_name`` and return its base-frame 3-D geometry (mm), or a failure dict."""
     geo, fail = _best_geometry(
-        rgb, depth_m, intrinsics, tf_base_cam, seg_fn=seg_fn, object_name=object_name,
-        score_threshold=score_threshold, log_prefix=log_prefix,
-        debug_label=object_name, on_pick=on_pick,
+        rgb,
+        depth_m,
+        intrinsics,
+        tf_base_cam,
+        seg_fn=seg_fn,
+        object_name=object_name,
+        score_threshold=score_threshold,
+        log_prefix=log_prefix,
+        debug_label=object_name,
+        on_pick=on_pick,
     )
     if fail is not None:
         return fail
@@ -397,11 +432,11 @@ def sense_surface_geometry(
     intrinsics: Any,
     tf_base_cam: Any,
     *,
-    seg_fn: Optional[Callable[..., list[dict]]],
+    seg_fn: Callable[..., list[dict]] | None,
     object_name: str,
     score_threshold: float = DEFAULT_SCORE_MIN,
     log_prefix: str = "[scene3d-surface]",
-    on_pick: Optional[Callable[[Optional[dict]], None]] = None,
+    on_pick: Callable[[dict | None], None] | None = None,
 ) -> dict:
     """Detect a support surface and return its base-frame footprint + top height (mm).
 
@@ -410,23 +445,47 @@ def sense_surface_geometry(
     near-edge midpoint+normal to square the base to that edge.
     """
     surf, fail = _best_geometry(
-        rgb, depth_m, intrinsics, tf_base_cam, seg_fn=seg_fn, object_name=object_name,
-        score_threshold=score_threshold, log_prefix=log_prefix,
-        debug_label="surface_" + object_name, on_pick=on_pick,
+        rgb,
+        depth_m,
+        intrinsics,
+        tf_base_cam,
+        seg_fn=seg_fn,
+        object_name=object_name,
+        score_threshold=score_threshold,
+        log_prefix=log_prefix,
+        debug_label="surface_" + object_name,
+        on_pick=on_pick,
     )
     if fail is not None:
         return fail
     if not surf.ok:
         return {"ok": False, "reason": surf.reason, "object": object_name}
-    logger.info("%s %s: surface_z=%.1fmm x=[%.1f,%.1f] cy=%.1f w=%.1f n=%d%s",
-                log_prefix, object_name, surf.top_z_mm, surf.front_x_mm, surf.back_x_mm,
-                surf.center_mm[1], surf.width_mm, surf.n_points, edge_log_str(surf))
+    logger.info(
+        "%s %s: surface_z=%.1fmm x=[%.1f,%.1f] cy=%.1f w=%.1f n=%d%s",
+        log_prefix,
+        object_name,
+        surf.top_z_mm,
+        surf.front_x_mm,
+        surf.back_x_mm,
+        surf.center_mm[1],
+        surf.width_mm,
+        surf.n_points,
+        edge_log_str(surf),
+    )
     return {"ok": True, "object": object_name, **surface_footprint_fields(surf)}
 
 
-def log_grounded_pick(log_prefix: str, object_name: str, on: str, *,
-                      n_cand: int, n_picks: int, geo: Any,
-                      face_flatness_max: float, square_min_aspect: float) -> None:
+def log_grounded_pick(
+    log_prefix: str,
+    object_name: str,
+    on: str,
+    *,
+    n_cand: int,
+    n_picks: int,
+    geo: Any,
+    face_flatness_max: float,
+    square_min_aspect: float,
+) -> None:
     """One line covering everything a grounded pick can go wrong in: how many candidates survived the
     'on' relation, the footprint the base will square to, and whether the point-cloud face normal is
     trusted. The face normal should point roughly BACK at the robot, so its angle and the
@@ -440,11 +499,25 @@ def log_grounded_pick(log_prefix: str, object_name: str, on: str, *,
         "%s %r on %r: %d cand → %d on-surface, picked center=%s "
         "footprint yaw=%.0f° long=%.0f short=%.0f aspect=%.2f (square-up needs aspect≥%.2f) | "
         "face n=(%.2f,%.2f) angle=%.0f° (target→robot=%.0f°) flatness=%.2f trusted=%s (needs flatness≤%.2f)",
-        log_prefix, object_name, on, n_cand, n_picks, [round(v, 1) for v in geo.center_mm],
-        math.degrees(geo.yaw_rad), geo.long_mm, geo.short_mm,
-        (hi / lo if lo > 1e-6 else 0.0), square_min_aspect,
-        geo.face_normal_x, geo.face_normal_y, face_ang, to_robot,
-        geo.face_flatness, trusted, face_flatness_max)
+        log_prefix,
+        object_name,
+        on,
+        n_cand,
+        n_picks,
+        [round(v, 1) for v in geo.center_mm],
+        math.degrees(geo.yaw_rad),
+        geo.long_mm,
+        geo.short_mm,
+        (hi / lo if lo > 1e-6 else 0.0),
+        square_min_aspect,
+        geo.face_normal_x,
+        geo.face_normal_y,
+        face_ang,
+        to_robot,
+        geo.face_flatness,
+        trusted,
+        face_flatness_max,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -466,14 +539,39 @@ def _scene_camera(api: Any) -> Any:
 
 def _grab_frame(api: Any, camera: str | None = None) -> Any:
     """One rgb + depth + intrinsics + base<-camera frame (default: the Env verb)."""
+    started = time.monotonic()
     override = getattr(api, "_grab_calibrated_frame", None)
-    return override(camera) if override else api.env.grab_calibrated_frame(camera)
+    frame = override(camera) if override else api.env.grab_calibrated_frame(camera)
+    if frame is not None and getattr(frame, "captured_monotonic_s", None) is not None:
+        detector = _seg_fn(api)
+        if isinstance(detector, DetectorClient):
+            detector.check_frame_age(frame.captured_monotonic_s, frame.frame_id or "")
+    elif isinstance(frame, CameraFrame):
+        frame.captured_monotonic_s = started
+    if isinstance(frame, CameraFrame) and frame.frame_id is None:
+        frame.frame_id = uuid.uuid4().hex
+    return frame
 
 
-def _seg_fn(api: Any) -> Any:
+def _seg_fn(api: Any, frame: CameraFrame | None = None) -> Any:
     """The open-vocabulary segmentation callable, or None when no detector is up."""
     override = getattr(api, "detector_seg_fn", None)
-    return override() if override else getattr(api, "_seg_fn", None)
+    fn = override() if override else getattr(api, "_seg_fn", None)
+    if frame is not None and isinstance(fn, DetectorClient):
+        if frame.captured_monotonic_s is None:
+            frame.captured_monotonic_s = time.monotonic()
+        if frame.frame_id is None:
+            frame.frame_id = uuid.uuid4().hex
+        return partial(segment_image, fn, captured_monotonic_s=frame.captured_monotonic_s, frame_id=frame.frame_id)
+    return fn
+
+
+def _check_frame_completion(api: Any, frame: CameraFrame) -> None:
+    """Check the original capture deadline after geometry, before publishing caches."""
+    detector = _seg_fn(api)
+    if isinstance(detector, DetectorClient):
+        captured = frame.captured_monotonic_s
+        detector.check_frame_age(time.monotonic() if captured is None else captured, frame.frame_id or "")
 
 
 def _viz(api: Any, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
@@ -502,8 +600,35 @@ def _unknown_relation(relation: str, object_name: str) -> dict | None:
 
 # ------------------------------------------------------- action implementations
 
-def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None = None,
-                     relation: str = "on") -> dict:
+
+def _service_result(fn: Callable) -> Callable:
+    """Translate service failures and discard any abandoned geometry caches."""
+
+    @wraps(fn)
+    def run(api: Any, *args: Any, **kwargs: Any) -> dict:
+        try:
+            return cast(dict, fn(api, *args, **kwargs))
+        except InferenceServiceError as exc:
+            api.last_detection = None
+            api.last_surface = None
+            return {
+                "ok": False,
+                "reason": "detector_unavailable",
+                "error_code": exc.code,
+                "object": args[0] if args else kwargs.get("object_name", ""),
+            }
+        except Exception:
+            # Includes structural cancellation without importing the agent layer.
+            # A geometry helper may have populated either cache before the final guard.
+            api.last_detection = None
+            api.last_surface = None
+            raise
+
+    return run
+
+
+@_service_result
+def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Detect a target and return its 3-D geometry in the robot base frame (mm).
 
     With ``reference`` set, accept only the candidate standing in ``relation`` to it —
@@ -520,24 +645,26 @@ def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None =
     if fail is not None:
         return fail
     if reference:  # fine-grained: keep only the candidate related to the reference
-        return _detect_related(api, object_name, reference, relation, frame)
-    result = detect_object_geometry(
-        frame.rgb,
-        frame.depth_m,
-        frame.intrinsics,
-        frame.tf_base_cam,
-        seg_fn=_seg_fn(api),
-        object_name=object_name,
-        log_prefix="[scene3d-object]",
-        on_pick=lambda best: _viz(api, _scene_camera(api), object_name, frame.rgb, best),
-    )
+        result = _detect_related(api, object_name, reference, relation, frame)
+    else:
+        result = detect_object_geometry(
+            frame.rgb,
+            frame.depth_m,
+            frame.intrinsics,
+            frame.tf_base_cam,
+            seg_fn=_seg_fn(api, frame),
+            object_name=object_name,
+            log_prefix="[scene3d-object]",
+            on_pick=lambda best: _viz(api, _scene_camera(api), object_name, frame.rgb, best),
+        )
+    _check_frame_completion(api, frame)
     if result.get("ok"):
         api.last_detection = result
     return result
 
 
-def locate_for_place(api: Any, object_name: str = "table", reference: str | None = None,
-                    relation: str = "on") -> dict:
+@_service_result
+def locate_for_place(api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on") -> dict:
     """Detect a support surface and return its base-frame top height in mm.
 
     With ``reference`` set, keep only the surface standing in ``relation`` to it. The
@@ -554,14 +681,18 @@ def locate_for_place(api: Any, object_name: str = "table", reference: str | None
     if fail is not None:
         return fail
     if reference:  # fine-grained: keep only the surface related to the reference object
-        return _sense_surface_related(api, object_name, reference, relation, frame)
-    result = _sense_surface_plain(api, object_name, frame.rgb, frame.depth_m,
-                                  intr=frame.intrinsics, tf=frame.tf_base_cam)
+        result = _sense_surface_related(api, object_name, reference, relation, frame)
+    else:
+        result = _sense_surface_plain(
+            api, object_name, frame.rgb, frame.depth_m, intr=frame.intrinsics, tf=frame.tf_base_cam, frame=frame
+        )
+    _check_frame_completion(api, frame)
     if result.get("ok"):
         api.last_surface = result
     return result
 
 
+@_service_result
 def analyze_scene(api: Any, object_name: str = "box") -> dict:
     """Every instance of ``object_name`` in view, nearest-first."""
     import numpy as np
@@ -576,10 +707,12 @@ def analyze_scene(api: Any, object_name: str = "box") -> dict:
         frame.depth_m,
         np.asarray(frame.intrinsics),
         np.asarray(frame.tf_base_cam),
-        seg_fn=_seg_fn(api),
+        seg_fn=_seg_fn(api, frame),
         object_name=object_name,
     )
+    _check_frame_completion(api, frame)
     return {"ok": True, "object": object_name, "count": len(objs), "objects": objs}
+
 
 # ------------------------------------------------------ shared internals
 
@@ -618,8 +751,15 @@ def _calibrated_frame_or_reason(api: Any, object_name: str) -> tuple[Any, dict |
 
 
 def _candidate_geometries(
-    api: Any, object_name: str, rgb: Any, depth_m: Any, *,
-    intr: Any, tf_base_cam: Any, min_z_mm: float | None = None,
+    api: Any,
+    object_name: str,
+    rgb: Any,
+    depth_m: Any,
+    *,
+    intr: Any,
+    tf_base_cam: Any,
+    min_z_mm: float | None = None,
+    frame: CameraFrame | None = None,
 ) -> list:
     """All ``object_name`` detections in the frame → colour-verified base-frame geometries."""
     return candidate_geometries(
@@ -627,13 +767,15 @@ def _candidate_geometries(
         depth_m,
         intr,
         tf_base_cam,
-        seg_fn=_seg_fn(api),
+        seg_fn=_seg_fn(api, frame),
         object_name=object_name,
         min_z_mm=min_z_mm,
     )
 
 
-def _sense_surface_plain(api: Any, object_name: str, rgb: Any, depth_m: Any, *, intr: Any, tf: Any) -> dict:
+def _sense_surface_plain(
+    api: Any, object_name: str, rgb: Any, depth_m: Any, *, intr: Any, tf: Any, frame: CameraFrame | None = None
+) -> dict:
     """Detect a plain support surface from an ALREADY-GRABBED frame. Factored out of
     ``locate_for_place`` so a caller already holding a frame (``_detect_on_surface``) reuses
     it instead of grabbing again. Does NOT cache — that is the caller's decision.
@@ -643,7 +785,7 @@ def _sense_surface_plain(api: Any, object_name: str, rgb: Any, depth_m: Any, *, 
         depth_m,
         intr,
         tf,
-        seg_fn=_seg_fn(api),
+        seg_fn=_seg_fn(api, frame),
         object_name=object_name,
         log_prefix="[scene3d-surface]",
         on_pick=lambda best: _viz(api, _scene_camera(api), object_name, rgb, best),
@@ -671,18 +813,17 @@ def _measure_reference(api: Any, reference: str, relation: str, frame: CameraFra
     """
     rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
     if relation in ("on", "under"):
-        ref = _sense_surface_plain(api, reference, rgb, depth_m, intr=intr, tf=tf_base_cam)
+        ref = _sense_surface_plain(api, reference, rgb, depth_m, intr=intr, tf=tf_base_cam, frame=frame)
         return ref if ref.get("ok") else None
-    found = _candidate_geometries(api, reference, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam)
+    found = _candidate_geometries(api, reference, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam, frame=frame)
     refs = [g for g, _d in found]
     return min(refs, key=lambda g: g.center_mm[0]) if refs else None  # nearest
 
 
-def _detect_related(api: Any, object_name: str, reference: str, relation: str,
-                    frame: CameraFrame) -> dict:
+def _detect_related(api: Any, object_name: str, reference: str, relation: str, frame: CameraFrame) -> dict:
     """Two-stage 'X <relation> Y' grounding. Measure the reference, detect **all**
     ``object_name`` candidates from the given frame, and return the one that stands in
-    ``relation`` to it. Nearest-to-robot wins. Caches the pick for the grasping step.
+    ``relation`` to it. Nearest-to-robot wins; the caller validates freshness and caches it.
     """
     rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
     cfg = getattr(api.env, "cfg", None)
@@ -698,17 +839,24 @@ def _detect_related(api: Any, object_name: str, reference: str, relation: str,
     min_z = None
     if relation == "on":
         min_z = float(ref["surface_z_mm"]) + float(getattr(cfg, "grasp_face_above_surface_mm", 20.0))
-    cands = _candidate_geometries(api, object_name, rgb, depth_m,
-                                  intr=intr, tf_base_cam=tf_base_cam, min_z_mm=min_z)
+    cands = _candidate_geometries(
+        api, object_name, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam, min_z_mm=min_z, frame=frame
+    )
     thresholds = _relation_thresholds(api)
     picks = [(g, d) for (g, d) in cands if relation_holds(g, ref, relation, **thresholds)]
     prompt = f"{object_name} {relation} {reference}"
     if not picks:
         _viz(api, _scene_camera(api), prompt, rgb, None)
-        logger.info("[scene3d] locate_for_grasp %r %s %r: %d cand → 0 matched",
-                    object_name, relation, reference, len(cands))
-        return {"ok": False, "reason": "no_target_matching_reference", "object": object_name,
-                "reference": reference, "relation": relation}
+        logger.info(
+            "[scene3d] locate_for_grasp %r %s %r: %d cand → 0 matched", object_name, relation, reference, len(cands)
+        )
+        return {
+            "ok": False,
+            "reason": "no_target_matching_reference",
+            "object": object_name,
+            "reference": reference,
+            "relation": relation,
+        }
     geo, det = min(picks, key=lambda gd: gd[0].center_mm[0])  # nearest (smallest forward X)
     _viz(api, _scene_camera(api), prompt, rgb, {"ok": True, **det})
     result = {
@@ -719,7 +867,6 @@ def _detect_related(api: Any, object_name: str, reference: str, relation: str,
         "relation": relation,
         **object_geometry_fields(geo),
     }
-    api.last_detection = result
     log_grounded_pick(
         "[scene3d] locate_for_grasp",
         object_name,
@@ -733,34 +880,43 @@ def _detect_related(api: Any, object_name: str, reference: str, relation: str,
     return result
 
 
-def _sense_surface_related(api: Any, object_name: str, reference: str, relation: str,
-                           frame: CameraFrame) -> dict:
+def _sense_surface_related(api: Any, object_name: str, reference: str, relation: str, frame: CameraFrame) -> dict:
     """The place-side mirror of ``_detect_related``: among all ``object_name`` surface
     candidates keep the one standing in ``relation`` to the reference. So "the table
     that has the cup on it" arrives here as ``relation='under'``, reference='cup'.
-    Nearest matching surface wins; cached for the placing step.
+    Nearest matching surface wins; the caller validates freshness and caches it.
     """
     rgb, depth_m, intr, tf_base_cam = frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
-    found_refs = _candidate_geometries(api, reference, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam)
+    found_refs = _candidate_geometries(api, reference, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam, frame=frame)
     refs = [g for g, _d in found_refs]
     if not refs:
         return {"ok": False, "reason": f"reference_not_found:{reference}", "object": object_name}
     ref = min(refs, key=lambda g: g.center_mm[0])  # nearest reference
     thresholds = _relation_thresholds(api)
-    found = _candidate_geometries(api, object_name, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam)
+    found = _candidate_geometries(api, object_name, rgb, depth_m, intr=intr, tf_base_cam=tf_base_cam, frame=frame)
     cands = [g for g, _d in found]
     picks = [s for s in cands if relation_holds(s, ref, relation, **thresholds)]
     if not picks:
-        logger.info("[scene3d] locate_for_place %r %s %r: %d surf → 0 matched",
-                    object_name, relation, reference, len(cands))
-        return {"ok": False, "reason": "no_surface_matching_reference", "object": object_name,
-                "reference": reference, "relation": relation}
+        logger.info(
+            "[scene3d] locate_for_place %r %s %r: %d surf → 0 matched", object_name, relation, reference, len(cands)
+        )
+        return {
+            "ok": False,
+            "reason": "no_surface_matching_reference",
+            "object": object_name,
+            "reference": reference,
+            "relation": relation,
+        }
     surf = min(picks, key=lambda s: s.center_mm[0])  # nearest matching surface
     # Same footprint payload as the plain path (via surface_footprint_fields) — the grounded path
     # MUST carry yaw_rad/edge_normal too, else the place-side squaring reads no normal.
-    result = {"ok": True, "object": object_name, "reference": reference, "relation": relation,
-              **surface_footprint_fields(surf)}
-    api.last_surface = result
+    result = {
+        "ok": True,
+        "object": object_name,
+        "reference": reference,
+        "relation": relation,
+        **surface_footprint_fields(surf),
+    }
     logger.info(
         "[scene3d] locate_for_place %r %s %r: %d surf → %d matched, picked cy=%.1f z=%.1f%s",
         object_name,

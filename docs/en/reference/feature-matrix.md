@@ -38,15 +38,30 @@ Support means that a code path and interface exist; it does not certify every ro
 | Camera mounting | Synthetic scene | Eye-in-hand | Eye-to-hand | Eye-to-hand (waist + moving head) |
 | Hand-eye transform | Test geometry | `T_base_flange(live) @ T_flange_cam` | Fixed `T_base_cam` | Live `T_base_cam` (TF lookup with static-calibration fallback; head computed from live joints) |
 | Reachability (URDF) | — | — | — | ✅ `planning.reachability` (dual-arm + adaptive-lift judge) |
-| Detector sidecar | — | ◐ `detector.spawn=true` | ◐ `detector.spawn=true` | ◐ (`api_servers`) |
-| Main optional dependency | `dev` for tests | `piper`; add `full` for vision | Python 3.12 + `so101`; add `full` for vision | `cruzr`; add `full` for vision; source the ROS workspace at runtime |
+| HTTP detector service | — | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` |
+| Owned local detector subprocess (sidecar) | — | ◐ Only `mode: local` | ◐ Only `mode: local` | ◐ Only `mode: local` |
+| Main optional dependency | `dev` for tests | `piper`; HTTP client `remote`; RealSense `camera` | Python 3.12 + `so101`; HTTP client `remote`; RealSense `camera` | `cruzr`; HTTP client `remote`; source the ROS workspace at runtime |
 | Configuration directory | Tests or examples | `configs/piper/` | `configs/so101/` | `configs/cruzr/` |
 
 Visual capability activation differs:
 
 - Piper's class-level capability set includes vision. With no `camera_serial`, no camera is created; a visual task still requires camera hardware, calibration, and a detector.
 - SO-101 derives instance capabilities from `camera_serial`. With no configured camera it does not advertise vision, and a connected Driver can narrow capabilities further when it reports no camera. A configured camera that fails to start makes connection fail closed.
-- Cruzr declares waist + head cameras and depth. Vision is served via `api_servers`; when the detector is unreachable the shared client returns empty results, converted to `{"ok": false, "reason": "no_detection"}`.
+- Cruzr declares waist + head cameras and depth and shares `detector.mode` and the HTTP client with the other official adapters.
+
+Detector configuration defaults to `disabled` for all three adapters. `local` means
+an owned local subprocess (sidecar) managed by Session. `remote` means an externally
+managed HTTP inference service, including one running independently on `localhost`.
+Session closes its remote client without stopping the external service. Install model
+dependencies only in the environment that runs the model; hardware connections from
+the Agent host remain unchanged. SO-101's LeRobot dependency may still bring in Torch.
+See [remote inference](../how-to/remote-inference.md) for configuration and migration.
+
+The client reports connection, timeout, protocol and expired-result
+failures through `InferenceServiceError` and `inference_*` codes. Perception actions
+retain `error_code` and return `reason="detector_unavailable"`. Service errors never
+become an empty result or `no_detection`; that reason means successful inference
+found no target.
 
 ## 3. Framework Capability matrix
 
@@ -111,9 +126,10 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | Feature | Status | Implementation or condition |
 |---|---|---|
 | RGB plus aligned depth | ◐ | RealSense/adapter Driver; depth boundary is meters |
-| GroundingDINO text detection | ◐ | Install `full` and start or connect the detector service |
-| SAM2 masks | ◐ | Detector configuration `use_sam2=true` |
-| Detector sidecar lifecycle | ✅ | `make_detector_sidecar()` follows Session lifecycle |
+| GroundingDINO text detection | ◐ | Agent installs `remote` to call HTTP inference; the model environment installs `vision-server` |
+| SAM2 masks | ◐ | Enabled on the inference server; local configuration uses `detector.local.use_sam2=true` |
+| HTTP client lifecycle | ✅ | Session injects and closes clients with `managed_detector=True`; remote servers are externally managed |
+| Owned local subprocess lifecycle | ✅ | `make_detector_sidecar()` starts/stops with Session only in `mode: local` |
 | Mask centroid and median depth | ✅ | `scene3d.locate_for_grasp`/`analyze_scene` |
 | Eye-in-hand projection | ✅ | Piper implementation; needs `T_flange_cam` and live flange pose |
 | Eye-to-hand projection | ✅ | SO-101 uses fixed `T_base_cam`; Cruzr prefers live TF with static-calibration fallback |
@@ -132,16 +148,19 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | Piper adapter | ◐ | `pip install -e ".[piper]"` |
 | SO-101 adapter | ◐ | Python 3.12; `pip install -e ".[so101]"` |
 | Cruzr adapter | ◐ | `pip install -e ".[cruzr]"`; source the ROS workspace at runtime |
-| Vision/GPU | ◐ | `pip install -e ".[full]"` with the CUDA 12.8 PyTorch index |
+| Remote HTTP inference clients | ◐ | `pip install -e ".[remote]"`; installs no vision/speech models |
+| Optional vision model service | ◐ | Install `.[vision-server]` on the model host with compatible Torch/CUDA; Agent owns a subprocess only in `mode: local` |
 | Browser GUI | ◐ | `pip install -e ".[gui]"`; `jiuwensymbiosis-gui --gui workbench`, default `127.0.0.1:8770`; `--list-guis` lists installed plugins |
-| Voice front end | ◐ | `pip install -e ".[voice]"`; optional FunASR/capture, default `NullTTS` |
+| Voice front end | ◐ | Remote uses `.[remote,voice-io]`; ASR defaults to disabled, TTS to null; local FunASR/ChatTTS are explicit options |
 | Hand-eye calibration | ◐ | `pip install -e ".[calib,piper]"` or `.[calib,so101]` |
 | Actions/skills/state introspection | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace replay | ✅ | `jiuwensymbiosis-replay` |
 | Core tests | ✅ | `pip install -e ".[dev]"`; `make test-core` |
 | GUI tests | ◐ | `pip install -e ".[dev,gui]"`; `make test-gui` |
 
-`make test` runs both no-hardware suites. `make test-all` also includes integration tests.
+`make test` defaults to core tests and requires only `.[dev]`. To run both no-hardware
+suites, install `.[dev,gui]` and use `make test test-gui`. `make test-all` also includes
+integration tests and requires the dependencies and environment for those tests.
 The `.[gui]` extra supplies the workbench UI dependencies; other installed GUI plugins supply their own UI dependencies.
 
 When maintaining this matrix, check these sources of truth together:

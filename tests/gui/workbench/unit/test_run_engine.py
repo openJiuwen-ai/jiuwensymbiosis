@@ -170,6 +170,17 @@ def test_strip_vision_services_removes_detector_and_camera():
     assert "api_servers" in cfg  # 深拷贝:原配置不动
 
 
+def test_strip_vision_overrides_remote_and_nested_legacy_detector():
+    cfg = {
+        "detector": {"mode": "remote", "endpoint": {"url": "https://inference.invalid"}},
+        "env": {"cfg": {"api_servers": [{"_target_": "x.grounding_dino"}]}},
+    }
+    out = strip_vision_services(cfg)
+    assert out["detector"] == {"mode": "disabled"}
+    assert "api_servers" not in out["env"]["cfg"]
+    assert cfg["detector"]["mode"] == "remote"
+
+
 def test_disable_vision_strips_real_session_config(tmp_path):
     task = registry.get_task("pick_banana")
     config = {

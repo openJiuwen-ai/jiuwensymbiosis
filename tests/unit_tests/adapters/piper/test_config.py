@@ -88,21 +88,24 @@ class TestExtractDetectorFromApiServers:
             {
                 "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
                 "host": "192.168.1.10",
+                "spawn": False,
                 "port": 9000,
             }
         ]
         cfg = _extract_detector_from_api_servers(servers)
         assert cfg.url == "http://192.168.1.10:9000"
-        assert cfg.spawn is True
+        assert cfg.spawn is False
 
     def test_empty_servers(self):
         cfg = _extract_detector_from_api_servers([])
-        assert cfg.url == "http://127.0.0.1:8114"
+        assert cfg.url is None
+        assert cfg.mode == "disabled"
 
     def test_no_matching_server(self):
         servers = [{"_target_": "other_server", "host": "1.2.3.4", "port": 9999}]
         cfg = _extract_detector_from_api_servers(servers)
-        assert cfg.url == "http://127.0.0.1:8114"
+        assert cfg.url is None
+        assert cfg.mode == "disabled"
 
     @pytest.mark.parametrize(
         ("field_name", "expected"),
@@ -122,19 +125,19 @@ class TestExtractDetectorFromApiServers:
     @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
     def test_invalid_number_names_field(self, field_name):
         servers = [{"_target_": "x.grounding_dino_sam2_server", field_name: "bad"}]
-        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+        with pytest.raises(ValueError, match=rf"detector\.local\.{field_name}"):
             _extract_detector_from_api_servers(servers)
 
     @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
     @pytest.mark.parametrize("value", [True, False])
     def test_boolean_is_rejected_for_number(self, field_name, value):
         servers = [{"_target_": "x.grounding_dino_sam2_server", field_name: value}]
-        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+        with pytest.raises(ValueError, match=rf"detector\.local\.{field_name}"):
             _extract_detector_from_api_servers(servers)
 
     def test_invalid_boolean_names_field(self):
         servers = [{"_target_": "x.grounding_dino_sam2_server", "use_sam2": "false"}]
-        with pytest.raises(ValueError, match=r"api_servers detector\.use_sam2"):
+        with pytest.raises(ValueError, match=r"detector\.local\.use_sam2"):
             _extract_detector_from_api_servers(servers)
 
 
@@ -190,8 +193,8 @@ class TestEnvVarOverrides:
         monkeypatch.setenv("GDINO_MODEL_ID", "env-only-dino")
         monkeypatch.setenv("SAM2_MODEL_ID", "env-only-sam2")
         cfg = _extract_detector_from_api_servers([])
-        assert cfg.gdino_model_id == "env-only-dino"
-        assert cfg.sam2_model_id == "env-only-sam2"
+        assert cfg.mode == "disabled"
+        assert cfg.local is None  # Model environment variables never enable inference.
 
     def test_camera_serial_env_override(self, monkeypatch):
         monkeypatch.setenv("CAMERA_SERIAL", "999999999999")

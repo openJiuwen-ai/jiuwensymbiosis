@@ -64,8 +64,9 @@
 | **Env** | 硬件驱动包装器，实现 `connect/disconnect/get_observation` | 适配器开发者 |
 | **Api** | 继承 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作；无差异的转发 `api/defaults`，有几何或相机差异的显式实现 | 适配器开发者 |
 | **Config** | hardware 参数的 dataclass，含 `from_yaml/from_dict` | 适配器开发者 |
-| **Session** | 将 Env + Api + 子进程 打包为生命周期单元 | `make_builder()` 自动生成 |
-| **Sidecar** | 随 Session 启停的子进程（如视觉检测服务器） | `perception/detector_sidecar.py`（`_common/builder.py` 提供组装封装） |
+| **Session** | 将 Env、Api、客户端和可选本地进程打包为生命周期单元 | `make_builder()` 自动生成 |
+| **HTTP 推理服务** | 提供检测等模型接口；`remote` 连接外部管理的服务，包括本机手动启动的服务 | `perception/detector_client.py` |
+| **本地托管子进程（sidecar）** | 仅 `detector.mode: local` 时随 Session 启停的检测进程 | `perception/detector_sidecar.py`（`_common/builder.py` 提供组装封装） |
 
 ### 约定
 

@@ -27,7 +27,7 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | `lowlevel.py` | Vendor SDK, CAN, serial, socket, camera and actuator I/O | Agent, Rail, `@implements` |
 | `env.py` | Capabilities, lifecycle, observation, safety properties, driver wrapping | Prompts and vendor workflow orchestration |
 | `api.py` | `@implements(SPEC)` bindings, body geometry, camera/calibration/detector hooks | Duplicated detection/correction pipelines |
-| `session.py` | Config/Env/Api, sidecar and extra-object wiring | Large business implementations |
+| `session.py` | Config/Env/Api, HTTP clients, optional local processes and extra-object wiring | Large business implementations |
 | `config_template.yaml` | Deployable starting point with annotated fields | User tasks and secrets |
 | `calibration.py` (optional) | Hand-eye wrapper exposing `CALIBRATION_ADAPTER_SPEC` | Calibration solving/quality logic (owned by the calibration subsystem) |
 
@@ -175,13 +175,13 @@ A Config provides at least `from_dict(data)` and `from_yaml(path)`. Common field
 | Safety | `z_min_safe_mm`, XY bounds, `joint_limits` |
 | End effector | travel, force, suction I/O |
 | Camera | serial, resolution, FPS, intrinsics/calibration path |
-| Detection | URL, spawn, model, threshold |
+| Detection | `detector.mode`; remote `endpoint`; local model, device and thresholds |
 | Grasp/place geometry | `z_correction_mm`, `grasp_z_offset_mm`, `place_z_offset_mm` |
 
 `make_builder()` signature:
 
 ```python
-make_builder(
+def make_builder(
     cfg_cls,
     env_cls,
     api_cls,
@@ -190,8 +190,9 @@ make_builder(
     resource_keys=None,
     api_kwargs_from_cfg=None,
     sidecar_builders=None,
+    managed_detector=False,
     decorate=None,
-)
+): ...
 ```
 
 | Parameter | Role |
@@ -203,6 +204,7 @@ make_builder(
 | `api_cls` | Api class built from `env` and optional kwargs |
 | `api_kwargs_from_cfg` | `list[str]` declarative mapping or compatible `cfg -> dict` callback |
 | `sidecar_builders` | Each receives cfg, returns a context manager, zero-arg factory, or `None` |
+| `managed_detector` | Defaults to `False`; set `True` for a visual adapter so Session creates, injects and closes `detector_client` |
 | `decorate` | Final Session decoration; normally unused |
 
 Declarative field mapping:
@@ -210,25 +212,40 @@ Declarative field mapping:
 | Form | Result |
 |---|---|
 | `"z_correction_mm"` | `cfg.z_correction_mm` to the same-named Api param |
-| `"detector.url:detector_service_url"` | Nested field renamed and passed in |
+| `"camera_calib_path:calibration_path"` | Rename a configuration field; the target must match an Api constructor parameter |
 
-The returned Builder supports `build(cfg)`, `.from_yaml(path)`, and `.from_dict(data)`. `make_detector_sidecar(cfg_attr="detector")` reads the detector sub-config and, when `spawn` is true, starts/stops the GroundingDINO/SAM2 service with the Session.
+The returned Builder supports `build(cfg)`, `.from_yaml(path)`, and `.from_dict(data)`.
+Config uses `DetectorConfig` for its `detector` field and passes the full runtime
+mapping to `parse_detector_config(data)`; the default mode is `disabled`.
+With `managed_detector=True`, the Api constructor must accept the `detector_client`
+keyword argument and reuse that callable. Passing only a URL is a legacy compatibility path.
+
+GroundingDINO/SAM2 provides an HTTP inference service.
+`make_detector_sidecar(cfg_attr="detector")` starts an owned local subprocess (sidecar)
+only for `detector.mode: local`, and Session stops it on exit. `remote` connects through
+`detector.endpoint` to an externally managed HTTP service, including one on `localhost`.
+Session closes only its own client, never that external service. `disabled` sends no
+inference requests. All three construction forms accept `include_sidecars=False`:
+maintenance skips local process startup and inference credential resolution, retains
+client cleanup, and opens the client lazily only for an explicit inference request.
+See the [remote inference guide](../how-to/remote-inference.md) for configuration.
 
 Resource keys and actual connections must use the same effective configuration. Cruzr accepts an explicit
 `ros_domain_id` in YAML; otherwise Config captures `ROS_DOMAIN_ID` when constructed (default 0). ROS
 initialization and command workers use that value, and a pre-existing ROS context in another domain is rejected.
-Sidecars must propagate shutdown failures. If startup fails after successful rollback, they may expose
+Owned local subprocesses must propagate shutdown failures. If startup fails after successful rollback, they may expose
 `cleanup_report() -> CleanupReport` to confirm release; otherwise Session retains an unknown cleanup state.
 
 ## 7. Shared perception and geometry modules
 
 | Module | Main interface | Purpose |
 |---|---|---|
-| `adapters/_common/builder.py` | `make_builder()`, `make_detector_sidecar()` | Session factory and detector sidecar |
+| `adapters/_common/builder.py` | `make_builder()`, `make_detector_sidecar()` | Session client ownership and optional local subprocess wiring |
 | `adapters/_common/capability_spec.py` | `CAPABILITY_ACTIONS`, `CAPABILITY_DRIVER_MEMBERS` | capability→action/driver-member maps (validator & generator) |
 | `adapters/_common/safety.py` | `WorkspaceBounds`, `check_flange_z()` | TIP/FLANGE Z defence |
-| `perception/detector_client.py` | `init_detector()` | HTTP detector client |
-| `perception/detector_sidecar.py` | `detector_subprocess()` | Detector-service lifecycle |
+| `perception/config.py` | `DetectorConfig`, `parse_detector_config()` | remote / local / disabled configuration and legacy normalization |
+| `perception/detector_client.py` | `create_detector_client()`, `segment_image()`; legacy `init_detector()` | Closable HTTP inference client |
+| `perception/detector_sidecar.py` | `detector_subprocess()` | Lifecycle of an owned local detector subprocess only |
 | `perception/scene3d.py` | `locate_for_grasp()`, `locate_for_place()`, `analyze_scene()` | calibrated frame→detection→masked point cloud→object/surface geometry |
 | `perception/vision.py` | `detect_and_centroid()`, `apply_xy_correction()`, `default_pixel_to_base_xyz()`, `default_get_grasp_info_simple()` | shared detection/correction/eye-in-hand projection functions |
 | `perception/calibration.py` | `load_calibration()` | versioned hand-eye calibration loading |
@@ -236,28 +253,51 @@ Sidecars must propagate shutdown failures. If startup fails after successful rol
 | `motion/dual_arm.py` | `dual_arm_grasp()`, `dual_arm_place()` | two-arm coordinated grasp/place (with force confirmation) |
 | `contracts.py` | `GraspResult`, `ObjectGeometryResult`, `SPATIAL_RELATIONS`, … | action result types + spatial-relation set (owned by no layer) |
 
-### `init_detector`
+### `create_detector_client`
 
 ```python
-seg_fn = init_detector("http://127.0.0.1:8114")
-results = seg_fn(image_ndarray, text_prompt="blue box")
+from jiuwensymbiosis.perception.config import parse_detector_config
+from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+detector_cfg = parse_detector_config({
+    "detector": {
+        "mode": "remote",
+        "endpoint": {"url": "http://127.0.0.1:8114"},
+    },
+})
+# Standalone scripts own their client; adapters use the Session-injected client.
+with create_detector_client(detector_cfg) as seg_fn:
+    results = seg_fn(image_ndarray, text_prompt="blue box")
 ```
 
-Result items carry boolean `mask`, `[x1,y1,x2,y2]`, score, and label; an unreachable service returns empty results.
+Result items carry boolean `mask`, `box=[x1,y1,x2,y2]`, score, and label. An empty list
+means inference succeeded without detections. Unavailable services, timeouts,
+invalid responses and expired results raise `InferenceServiceError`
+with the corresponding `inference_*` code. Failures never enable local models automatically.
+
+`init_detector(url)` preserves the original Python call form and uses the current `/v1` interface.
+It also returns a client that must be closed and raises explicit service failures.
+New adapters use Session injection with `managed_detector=True`; new scripts use
+the context manager above.
 
 ### `detect_and_centroid`
 
 ```python
-result = detect_and_centroid(
-    rgb=rgb_ndarray,
-    depth_img_m=depth_ndarray,
-    seg_fn=seg_fn,
-    object_name="red block",
-    tcp_at_grab=pose_at_grab,
-)
+with create_detector_client(detector_cfg) as seg_fn:
+    result = detect_and_centroid(
+        rgb=rgb_ndarray,
+        depth_img_m=depth_ndarray,
+        seg_fn=seg_fn,
+        object_name="red block",
+        tcp_at_grab=pose_at_grab,
+        captured_monotonic_s=capture_started,  # time.monotonic() recorded before capture
+    )
 ```
 
-Successful results include `u`, `v`, `depth_m`, best, mask shape, and image shape; failure reasons include `no_detection`, `empty_mask`, `no_valid_depth`.
+Successful results include `u`, `v`, `depth_m`, best, mask shape, and image shape.
+Observation failures include `no_detection`, `empty_mask` and `no_valid_depth`.
+HTTP service failures return `ok=False`, `reason="detector_unavailable"` and retain
+the `inference_*` value in `error_code`; cancellation propagates to the caller.
 
 ### `apply_xy_correction`
 

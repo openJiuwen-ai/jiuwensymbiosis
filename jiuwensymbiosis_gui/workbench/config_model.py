@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
 import yaml
@@ -268,6 +268,26 @@ DETECTOR_FIELDS: tuple[FieldSpec, ...] = (
     ),
 )
 
+DETECTOR_MODE_FIELD = FieldSpec(
+    "detector.mode",
+    "视觉服务模式",
+    "choice",
+    "视觉服务",
+    choices=(("disabled", "关闭"), ("remote", "远程 HTTP"), ("local", "本地模型（可选）")),
+    default="disabled",
+)
+REMOTE_DETECTOR_FIELDS = (
+    FieldSpec("detector.endpoint.url", "服务地址", "str", "视觉服务", default="http://127.0.0.1:8114"),
+    FieldSpec(
+        "detector.endpoint.request_timeout_s", "请求总超时（秒）", "float", "视觉服务", default=30.0, min_value=0.1
+    ),
+)
+LOCAL_DETECTOR_FIELDS = DETECTOR_FIELDS + (
+    FieldSpec("detector.device", "推理设备", "str", "视觉服务", default="cuda"),
+    FieldSpec("detector.port", "本地服务端口", "int", "视觉服务", default=8114, min_value=1, max_value=65535),
+    FieldSpec("detector.startup_timeout_s", "模型启动超时（秒）", "float", "视觉服务", default=300.0, min_value=0.1),
+)
+
 
 def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
     """返回某本体配置页的完整字段:共享组 + 该本体的「机器人参数」组(未知本体则只有共享组)。"""
@@ -276,9 +296,17 @@ def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
 
 def field_groups_for_config(body_key: str, model: ConfigModel) -> tuple[FieldSpec, ...]:
     """本体字段组;仅当配置含检测器项时追加「视觉服务」组(纯运动任务不显示模型项)。"""
-    fields = field_groups_for_body(body_key)
-    if model.has_detector():
-        fields = fields + DETECTOR_FIELDS
+    fields = field_groups_for_body(body_key) + (DETECTOR_MODE_FIELD,)
+    if model.detector_mode() == "remote":
+        fields += REMOTE_DETECTOR_FIELDS
+    elif model.detector_mode() == "local":
+        fields += (
+            tuple(
+                replace(spec, path=spec.path.replace("detector.", "detector.local.")) for spec in LOCAL_DETECTOR_FIELDS
+            )
+            if "detector" in model.data
+            else LOCAL_DETECTOR_FIELDS
+        )
     return fields
 
 
@@ -323,10 +351,14 @@ class ConfigModel:
         ``detector.<字段>`` 是虚拟路径,路由到 ``api_servers`` 里的检测器项(按 ``_target_``
         识别),让表单能读列表内嵌的检测器字段而不暴露列表下标。
         """
-        if path.startswith(_DETECTOR_PREFIX):
+        if path == "detector.mode":
+            return self.detector_mode()
+        if path.startswith(_DETECTOR_PREFIX) and "detector" not in self.data:
             entry = self._detector_entry()
             if entry is None:
                 return default
+            if path == "detector.endpoint.url":
+                return entry.get("url") or f"http://{entry.get('host', '127.0.0.1')}:{entry.get('port', 8114)}"
             return entry.get(path.removeprefix(_DETECTOR_PREFIX), default)
         node: Any = self.data
         for key in path.split("."):
@@ -341,7 +373,12 @@ class ConfigModel:
         ``detector.<字段>`` 虚拟路径写进 ``api_servers`` 检测器项(复用 ``patch_detector``);
         检测器项不存在时为无操作(表单仅在存在时才渲染这些字段)。
         """
-        if path.startswith(_DETECTOR_PREFIX):
+        if path == "detector.mode":
+            self._set_detector_mode(value)
+            return
+        if path.startswith("detector.endpoint.") and "detector" not in self.data:
+            self._set_detector_mode("remote")
+        if path.startswith(_DETECTOR_PREFIX) and "detector" not in self.data:
             self.patch_detector(**{path.removeprefix(_DETECTOR_PREFIX): value})
             return
         keys = path.split(".")
@@ -360,33 +397,83 @@ class ConfigModel:
         供运行页的一键修复把改动**沉淀进配置**(便于导出 / 另存为新任务);运行期本身另由
         环境变量立即生效。检测器项按 ``_target_`` 含 ``gdino`` 识别。返回是否写入成功。
         """
-        servers = self.data.get("api_servers")
-        if not isinstance(servers, list):
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            if canonical.get("mode") != "local":
+                return False
+            canonical.setdefault("local", {}).update(
+                {key: value for key, value in fields.items() if key != "hf_endpoint"}
+            )
+            return True
+        entry = self._detector_entry()
+        if entry is None:
             return False
-        for server in servers:
-            # 与 piper 配置识别检测器项的方式一致(_target_ 含 grounding_dino 或 gdino)。
-            target = str(server.get("_target_", "")).lower() if isinstance(server, dict) else ""
-            if "grounding_dino" in target or "gdino" in target:
-                server.update(fields)
-                return True
-        return False
+        entry.update(fields)
+        return True
 
     def _detector_entry(self) -> dict[str, Any] | None:
         """定位 ``api_servers`` 里的检测器项(按 ``_target_`` 含 grounding_dino/gdino 识别)。"""
-        servers = self.data.get("api_servers")
-        if not isinstance(servers, list):
-            return None
-        for server in servers:
-            if not isinstance(server, dict):
+        return next((entry for _, entry in self._detector_entries()), None)
+
+    def _detector_entries(self) -> list[tuple[list[Any], dict[str, Any]]]:
+        """Locate legacy detectors together with their owning service lists."""
+        env = self.data.get("env")
+        cfg = env.get("cfg") if isinstance(env, dict) else None
+        nested_servers = cfg.get("api_servers") if isinstance(cfg, dict) else None
+        found = []
+        for servers in (self.data.get("api_servers"), nested_servers):
+            if not isinstance(servers, list):
                 continue
-            target = str(server.get("_target_", "")).lower()
-            if "grounding_dino" in target or "gdino" in target:
-                return server
-        return None
+            for entry in servers:
+                target = str(entry.get("_target_", "")).lower() if isinstance(entry, dict) else ""
+                if "grounding_dino" in target or "gdino" in target:
+                    found.append((servers, entry))
+        return found
 
     def has_detector(self) -> bool:
         """配置是否含检测器项(决定配置页是否显示「视觉服务」组)。"""
-        return self._detector_entry() is not None
+        return self.detector_mode() != "disabled"
+
+    def detector_mode(self) -> str:
+        """Read deployment intent without constructing clients or probing models."""
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            return str(canonical.get("mode", "disabled"))
+        legacy = self._detector_entry()
+        if legacy is None:
+            return "disabled"
+        return "local" if legacy.get("spawn", True) else "remote"
+
+    def local_detector(self) -> dict[str, Any] | None:
+        """Mutable local model settings; remote configurations never expose these."""
+        if self.detector_mode() != "local":
+            return None
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            local = canonical.setdefault("local", {})
+            return local if isinstance(local, dict) else None
+        return self._detector_entry()
+
+    def _set_detector_mode(self, mode: str) -> None:
+        if mode not in {"disabled", "remote", "local"}:
+            raise ValueError("视觉服务模式必须为 disabled、remote 或 local")
+        canonical = self.data.get("detector")
+        if not isinstance(canonical, dict):
+            from jiuwensymbiosis.perception.config import parse_detector_config
+
+            canonical = asdict(parse_detector_config(self.data))
+            for servers, legacy in self._detector_entries():
+                servers.remove(legacy)
+        new: dict[str, Any] = {"mode": mode}
+        if "max_frame_age_s" in canonical:
+            new["max_frame_age_s"] = canonical["max_frame_age_s"]
+        if mode == "remote":
+            new["endpoint"] = canonical.get("endpoint") or {
+                "url": "http://127.0.0.1:8114",
+            }
+        elif mode == "local":
+            new["local"] = canonical.get("local") or {}
+        self.data["detector"] = new
 
     # ------------------------------------------------------------- YAML 视图
     def to_yaml(self) -> str:
@@ -410,6 +497,13 @@ class ConfigModel:
     def validate(self) -> list[str]:
         """返回一组人类可读的告警(不阻断运行,供界面提示)。"""
         warnings: list[str] = []
+        if "detector" in self.data or self._detector_entry() is not None:
+            from jiuwensymbiosis.perception.config import parse_detector_config
+
+            try:
+                parse_detector_config(self.data)
+            except (TypeError, ValueError) as exc:
+                warnings.append(f"视觉服务配置无效：{exc}")
         speed = self.get("env.cfg.low_level.move_speed")
         if isinstance(speed, int | float) and not (0 < speed <= 100):
             warnings.append(f"运动速度 {speed} 超出常规范围 (0, 100]。")

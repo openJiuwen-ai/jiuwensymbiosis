@@ -195,8 +195,8 @@ git push origin feat/<short-description>
 ```bash
 make test-core   # pytest tests/unit_tests/（核心层，不要求 GUI 依赖）
 make test-gui    # pytest tests/gui/（工作台套件要求 .[gui]）
-make test        # test-core + test-gui（无硬件套件）
-make test-all    # 全量 pytest（含 integration，通常跳过）
+make test        # 默认核心测试，仅需 .[dev]
+make test-all    # 全量 pytest（含 GUI 和 integration，需准备对应依赖及环境）
 
 # Makefile 不提供单文件 / 过滤测试的便捷目标，直接用底层 pytest：
 pytest tests/unit_tests/tools/test_builder.py  # 单文件
@@ -206,6 +206,25 @@ pytest -k "test_capabilities"                            # 按名过滤
 python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.piper  # adapter 运行时冒烟
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>   # adapter 静态检查
 ```
+
+CI 建议拆成独立任务。核心任务无需安装 GUI；GUI 任务安装自己的可选依赖，
+实际执行页面和组件测试。修改 GUI、共享 Runtime 或依赖配置时应同时验证 GUI 任务。
+
+```bash
+# 核心任务（在 CI 提供的 Python / venv 中运行，不依赖本地 conda 环境）
+python -m pip install -e ".[dev]"
+make test CONDA_ENV=
+
+# GUI 任务（独立环境）
+python -m pip install -e ".[dev,gui]"
+make test-gui CONDA_ENV=
+```
+
+`dev` 包含使用模型替身的 HTTP 服务契约测试所需的 FastAPI / Uvicorn，
+不需要 NiceGUI、Torch 或模型权重。默认测试范围由 Makefile 明确选择，
+不会随 GUI 是否安装而改变，也不会将缺少 GUI 依赖当作 GUI 测试通过。
+同时验证两套无硬件测试时，安装 `.[dev,gui]` 后运行 `make test test-gui`。
+裸 `pytest` 与 `make test-all` 仍会收集 GUI 和集成测试，不适用于仅装 `dev` 的核心 CI。
 
 ---
 
@@ -224,8 +243,8 @@ python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.<name>   # 
 | `make check` | `ruff format --check` + `ruff check` + `mypy` 一键自检（mypy advisory） |
 | `make test-core` | `pytest tests/unit_tests/`（核心层，不要求 GUI 依赖） |
 | `make test-gui` | `pytest tests/gui/`（工作台测试需 `.[gui]`） |
-| `make test` | 核心 + GUI 无硬件套件 |
-| `make test-all` | 全量 `pytest`（含 integration，常跳过） |
+| `make test` | 默认核心套件，仅需 `.[dev]`，等价于 `make test-core` |
+| `make test-all` | 全量 `pytest`（含 GUI 和 integration，需准备对应依赖及环境） |
 
 ```bash
 # 0. 暂存待提交文件（Makefile 默认检查 staged .py；无暂存改动会报错并提示）
@@ -237,11 +256,11 @@ make fix
 # 2. 一键自检：format check + lint + mypy（mypy 仅建议性，不阻断）
 make check
 
-# 3. 核心与 GUI 单元测试
+# 3. 核心单元测试（仅需 .[dev]）
 make test
-# 单独验证一层时可选用 make test-core 或 make test-gui
+# 涉及 GUI 时，安装 .[dev,gui] 并额外运行 make test-gui
 
-# 4.（按需）全量测试（含 integration，通常跳过）
+# 4.（按需）全量测试（含 GUI 和 integration，需准备对应依赖及环境）
 make test-all
 
 # 5.（按需）adapter 改动 → 脚本冒烟（非 make 目标）
@@ -312,7 +331,7 @@ git add <files>
 make check                         # format check + lint + mypy(advisory)
 make test-core                     # 核心层，不要求 GUI 依赖
 make test-gui                      # GUI 测试；工作台套件需安装 .[gui]
-make test                          # 核心 + GUI 无硬件套件
+make test                          # 默认核心测试，仅需 .[dev]
 # ...按需更新 docs/examples...
 git commit -m "feat: xxx"
 git push origin feat/xxx

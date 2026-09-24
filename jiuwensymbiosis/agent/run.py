@@ -34,6 +34,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwensymbiosis.agent.builder import build_robot_agent
+from jiuwensymbiosis.agent.cancel import RunCancelled
 from jiuwensymbiosis.agent.config import RobotAgentConfig
 from jiuwensymbiosis.agent.fast.sequence import TRACK_DETECT, TRACK_GRASP, qualifiers_for
 from jiuwensymbiosis.agent.session import RobotSession
@@ -146,6 +147,8 @@ def _scan_for(api: Any, names: list[str]) -> tuple[list[dict], list[str]]:
     for n in names:
         try:
             res = api.analyze_scene(n)
+        except RunCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - detector is best-effort
             logger.debug("[fast] analyze_scene(%r) failed: %s", n, exc)
             continue
@@ -155,8 +158,9 @@ def _scan_for(api: Any, names: list[str]) -> tuple[list[dict], list[str]]:
     return found, scanned
 
 
-def _split_by_qualifier(objs: list[dict], refs: list[dict], reference: str,
-                        relation: str) -> tuple[list[dict], list[dict]]:
+def _split_by_qualifier(
+    objs: list[dict], refs: list[dict], reference: str, relation: str
+) -> tuple[list[dict], list[dict]]:
     """Split ``objs`` into (satisfies ``<relation> reference``, seen but does not).
 
     Same predicate the grasp path uses, so the pre-plan prompt and execution agree on which
@@ -224,17 +228,26 @@ def _perceive_scene(
         rejected = [obj for obj in same if obj not in keep]
         if rejected:
             objects = [obj for obj in objects if obj not in rejected]
-            unqualified.append({
-                "object": name,
-                "reference": " / ".join(g["reference"] for g in quals),
-                "relation": " / ".join(g["relation"] for g in quals),
-                "count": len(rejected),
-                "nearest_mm": min((obj.get("distance_mm") for obj in rejected
-                                   if isinstance(obj.get("distance_mm"), (int, float))), default=None),
-            })
+            unqualified.append(
+                {
+                    "object": name,
+                    "reference": " / ".join(g["reference"] for g in quals),
+                    "relation": " / ".join(g["relation"] for g in quals),
+                    "count": len(rejected),
+                    "nearest_mm": min(
+                        (
+                            obj.get("distance_mm")
+                            for obj in rejected
+                            if isinstance(obj.get("distance_mm"), (int, float))
+                        ),
+                        default=None,
+                    ),
+                }
+            )
     # The intersection, not the api alone: the judge lives on the Api and the URDF it reads
     # lives on the Env, so either half missing means the body cannot actually answer.
     from jiuwensymbiosis.tools.builder import _effective_capabilities
+
     has_reach = "planning.reachability" in _effective_capabilities(api, getattr(session, "env", None))
     looked_for = [*scanned_t, *scanned_r]
     if not objects and not refs:
@@ -435,8 +448,11 @@ def run_fast_task(
     # scene-blind compile (backward compatible).
     try:
         intent = parse_task(
-            query, api_base=spec.api_base, api_key=spec.api_key,
-            model_name=spec.model_name, temperature=spec.temperature,
+            query,
+            api_base=spec.api_base,
+            api_key=spec.api_key,
+            model_name=spec.model_name,
+            temperature=spec.temperature,
         )
     except Exception as exc:  # noqa: BLE001 - parser is best-effort
         logger.warning("[fast] task parse failed (scene-blind compile): %s", exc)
@@ -485,8 +501,9 @@ def run_fast_task(
         return {"ok": False, "reason": f"compile_failed: {exc}", "query": query}
 
     raw = planned.sequence
-    steps = parse_sequence(raw, allowed_ops=action_index, special_ops=special_ops,
-                           blocked_access=plan_kwargs["blocked_access"])
+    steps = parse_sequence(
+        raw, allowed_ops=action_index, special_ops=special_ops, blocked_access=plan_kwargs["blocked_access"]
+    )
     logger.info("[fast] %s-tier plan → %d steps for task=%r", planned.tier, len(steps), query)
 
     def replan(measured: WorldState, why: str) -> list | None:
@@ -506,7 +523,9 @@ def run_fast_task(
         fresh_kwargs = dict(plan_kwargs)
         try:
             scene_now = _perceive_scene(
-                session, intent.get("targets") or [], intent.get("references") or [],
+                session,
+                intent.get("targets") or [],
+                intent.get("references") or [],
                 intent.get("grounding") or {},
             )
         except Exception as exc:  # a failed look must not sink the re-plan
@@ -521,8 +540,12 @@ def run_fast_task(
             **fresh_kwargs,
         )
         logger.info("[fast] re-planned at %s-tier → %d steps", again.tier, len(again.sequence))
-        return parse_sequence(again.sequence, allowed_ops=action_index, special_ops=special_ops,
-                              blocked_access=plan_kwargs["blocked_access"])
+        return parse_sequence(
+            again.sequence,
+            allowed_ops=action_index,
+            special_ops=special_ops,
+            blocked_access=plan_kwargs["blocked_access"],
+        )
 
     # The trace run token (JSON filename + frames subdir) derives from this; the
     # dispatch site in run_robot_task always supplies one, default here if called

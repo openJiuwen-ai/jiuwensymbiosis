@@ -37,7 +37,8 @@ from jiuwensymbiosis.api.actions import (
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.motion import approach, dual_arm, lift
 from jiuwensymbiosis.perception import scene3d
-from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.perception.config import DetectorConfig
+from jiuwensymbiosis.perception.detector_client import create_detector_client, init_detector
 from jiuwensymbiosis.perception.frame import project_to_base
 from jiuwensymbiosis.perception.object_geometry import ObjectGeometry3D
 from jiuwensymbiosis.perception.vision import detect_and_centroid
@@ -100,7 +101,8 @@ class CruzrApi(BaseRobotApi):
         self,
         env: CruzrEnv,
         *,
-        detector_service_url: str = "http://127.0.0.1:8114",
+        detector_service_url: str | None = "http://127.0.0.1:8114",
+        detector_client: Any = None,
         camera_calib_path: Optional[str] = None,
     ) -> None:
         """Bind to a Cruzr environment; configure detector + camera calibration."""
@@ -109,7 +111,7 @@ class CruzrApi(BaseRobotApi):
         # the component, so api.py stays the complete list of what Cruzr offers.
         self._detector_service_url = detector_service_url
         self._camera_calib_path = camera_calib_path
-        self._seg_fn = None
+        self._seg_fn = detector_client
         self._calib_cache = None
         self._calib_loaded = False
         # Last box geometry successfully grasped by dual_arm_grasp. dual_arm_place() falls
@@ -1089,15 +1091,13 @@ class CruzrApi(BaseRobotApi):
 
     # ---------------------------------------------------------------- helpers
     def _ensure_detector(self) -> None:
-        """Lazy-bind the detector segmentation function."""
-        if self._seg_fn is not None:
-            return
-        try:
-            self._seg_fn = init_detector(self._detector_service_url)
-            logger.info("[CruzrApi] detector client bound to %s", self._detector_service_url)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[CruzrApi] detector init failed (%s); detect will return ok=False.", exc)
-            self._seg_fn = None
+        """Bind the legacy URL only for directly constructed, unmanaged APIs."""
+        if self._seg_fn is None:
+            self._seg_fn = (
+                create_detector_client(DetectorConfig())
+                if self._detector_service_url is None
+                else init_detector(self._detector_service_url, request_scoped=True)
+            )
 
     def _calib(self) -> dict:
         if not self._calib_loaded:

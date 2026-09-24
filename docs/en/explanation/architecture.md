@@ -11,7 +11,7 @@ Start with three questions: **who owns each responsibility, which actions are av
 | Responsibility | Main implementation | Inputs and outputs |
 |---|---|---|
 | Task orchestration | `run_robot_task`, `plan_task`, `run_sequence`, Agent | Task and configuration → plan, tool calls, and execution results |
-| Lifecycle | `RobotSession` | Env, API, and auxiliary service (sidecar) launchers → connections and resource cleanup |
+| Lifecycle | `RobotSession` | Env, API, clients, and optional local processes → connections and resource cleanup |
 | Action tools | `build_robot_tools`, `RobotControlTool` | Action name and parameters → bound adapter method call |
 | Action implementation | `BaseRobotApi`, adapter API, `api/defaults.py` | Action contract → shared algorithms and hardware operations |
 | Hardware interface | `BaseRobotEnv`, adapter Driver | Common operations → vendor protocols; device readings → `RobotObservation` |
@@ -299,34 +299,55 @@ See the [execution trace reference](../reference/tracing.md) for fields, configu
 
 ## 10. RobotSession: lifecycle ownership
 
-`RobotSession` is a context manager holding an Env instance, an API instance, sidecar launchers, and a `globals_provider` for code-tool globals. Env holds the low-level driver; Session does not determine action order.
+`RobotSession` is a context manager holding Env, API, client resource contexts, optional local-process launchers, and a `globals_provider` for code-tool globals. Env holds the low-level driver; Session does not determine action order.
 
 | Stage | Order |
 |---|---|
-| Enter `with session:` | Start configured sidecars → connect Env → check capability consistency |
+| Enter `with session:` | Open registered resource contexts (start local processes when configured) → connect Env → check capability consistency |
 | Run a task within the session | The caller invokes `run_robot_task`, which builds the Agent and selects the execution mode |
-| Exit `with session:` | Attempt Trace finalization → disconnect Env and release drivers → exit sidecar contexts |
+| Exit `with session:` | Attempt Trace finalization → disconnect Env and release drivers → close owned clients and local processes |
 
 Connection and disconnection are idempotent. Ordinary capabilities declared by the API but unsupported by Env cause startup failure when `strict_capabilities=True`; Env-only capabilities generate warnings. Derived capabilities may be asymmetric and are not treated as ordinary capability mismatches. `describe()` reports effective capabilities using the intersection of both sides.
 
 `globals_provider` returns `env`, `api`, `np`, and adapter-specific objects. During Agent construction, descriptions of available objects are added to the code-tool prompt context.
 
+The Session cleanup stack also owns one HTTP detector client per session. Construction and opening perform no network request.
+An external deployment owns its server process; Session closes only its client connections. Only explicit `detector.mode: local` starts a model subprocess.
+The internal name `sidecar_starters` is retained for compatibility and also accepts client contexts or cleanup callbacks; registering an HTTP client does not transfer ownership of its server process.
+Maintenance sessions with `include_sidecars=False` neither start models nor resolve detector credentials or probe endpoints; a later explicit inference call still uses a session-owned client.
+
 <a id="perception-pipeline"></a>
 
-## 11. Visual perception: detector as a subprocess
+## 11. Visual perception: HTTP inference and optional local models
 
-The detection service runs GroundingDINO and SAM2. The client sends images and target text over HTTP and receives masks, boxes, and scores. Depth and calibration transforms are used for 3D computation in the main process.
+The Agent host connects to robot bodies and peripherals through existing serial, USB, HTTP, and other adapter interfaces, and calls model services through a separate HTTP interface.
+The inference server runs GroundingDINO and SAM2. The Agent sends RGB and target text and receives masks, boxes, and scores; depth, calibration, and 3D computation remain in the Agent process.
+The Agent need not run on the robot. Remote mode neither loads nor downloads visual models and never starts a local model when the service fails.
 
 This diagram expands the internals of vision actions in [stage C of the complete task lifecycle](#task-lifecycle). Inputs are a calibrated frame and target text; outputs follow each action's contract and return to the tool caller for recording and subsequent orchestration.
 
-![Vision pipeline: acquire a calibrated frame, detect over HTTP, then compute 3D geometry in the main process](../../images/architecture-perception.en.svg)
+```mermaid
+flowchart LR
+    B[Body and camera] -->|Existing serial / USB / HTTP interfaces| A[Agent acquires RGB and calibrated frame]
+    A -->|HTTP: RGB + target text| S[External inference server\nor optional local model process]
+    S -->|mask / box / score| G[Agent 3D geometry and action result]
+    A -->|Same-frame depth / intrinsics / transform| G
+```
 
 1. **Acquisition**: the adapter supplies a `CameraFrame` with RGB, depth, camera intrinsics, and the camera-to-base transform.
-2. **Detection**: `detector_client` sends RGB and target text to `/segment`, then decodes masks and other returned results.
+2. **Detection**: the session-owned `DetectorClient` sends RGB and target text to `/v1/segment`, validates request/frame identity, dimensions, payload bounds, and age, and decodes lossless PNG masks. Local and remote deployments share this interface, including migrated configurations and Python entry points; no version selection is required.
 3. **3D computation**: `scene3d` passes masks, depth, intrinsics, and coordinate transforms to shared geometry algorithms, producing positions and object/surface geometry in the base frame.
 4. **Action return**: `locate_for_grasp`, `locate_for_place`, and `analyze_scene` return results or failure reasons according to their own contracts; there is no single result-field set shared by all actions.
 
-Session manages the lifecycle of a local detection sidecar. An existing detection service can also be configured; `spawn` determines whether a local process starts. Adapters still need correct camera, calibration, and detection configuration.
+“HTTP inference service” is the general term: HTTP describes communication; sidecar refers only to a local subprocess whose lifecycle is owned by the Session.
+`perception/config.py` normalizes `detector.mode` for every adapter: `remote` connects to an externally managed HTTP service, `local` explicitly starts a managed local subprocess (sidecar), and `disabled` is the default.
+A manually started localhost service also uses `remote`; a `127.0.0.1` URL does not transfer its process ownership to the Session.
+A local port conflict fails explicitly; select `remote` even for an existing localhost service. Startup uses application health rather than treating an open TCP port as model readiness.
+Legacy `api_servers` and Python `DetectorServerConfig` are supported for one migration version; explicit `spawn: false` maps to the remote legacy protocol.
+
+A successful empty observation differs from service failure. Network, protocol, and deadline failures retain `inference_*` codes and cannot mean a cleared scene or tolerated occlusion.
+Expired results do not update location caches. Tracking errors abort control, and an active base approach stops its drive. Frame-age limits do not replace action-driven location invalidation.
+See [remote inference services](../how-to/remote-inference.md) for deployment, installation groups, HTTP speech backends, and migration examples.
 
 `pixel_to_base_xyz` is a single-point projection action, not a mandatory internal action call in this shared pipeline. `api/defaults.py` delegates to shared functions; vision and approach logic enter the tool list through explicit action bindings.
 
@@ -334,13 +355,14 @@ Session manages the lifecycle of a local detection sidecar. An existing detectio
 
 ## 12. `make_builder`: removing boilerplate
 
-`make_builder` in `adapters/_common/builder.py` encapsulates configuration parsing, Env/API construction, sidecar launcher collection, and Session assembly, with an optional `decorate` callback:
+`make_builder` in `adapters/_common/builder.py` encapsulates configuration parsing, Env/API construction, registration of clients and optional local processes, and Session assembly, with an optional `decorate` callback:
 
 ```python
 build_xxx_session = make_builder(
     XxxConfig, XxxEnv, XxxApi,
-    api_kwargs_from_cfg=["z_correction_mm", "detector.url:detector_service_url"],
+    api_kwargs_from_cfg=["z_correction_mm"],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_set_extra_globals,
 )
 # build_xxx_session(cfg)
@@ -348,7 +370,9 @@ build_xxx_session = make_builder(
 # build_xxx_session.from_dict({...})
 ```
 
-`api_kwargs_from_cfg` supports same-name fields, `cfg:api` renaming, and nested dotted paths; complex transformations can use a callback. `make_detector_sidecar()` reads detection configuration and uses `spawn` to decide whether to start a local service. Constructing a Session and connecting hardware are separate stages.
+`api_kwargs_from_cfg` supports same-name fields, `cfg:api` renaming, and nested dotted paths; complex transformations can use a callback.
+`managed_detector=True` creates and injects a `detector_client` into the API and registers cleanup. `make_detector_sidecar()` supplies a model process only in local mode.
+Both resources use the existing Session lifecycle, with no second owner. Constructing a Session and connecting hardware are separate stages.
 
 ## 13. File responsibilities for new hardware
 
@@ -362,7 +386,7 @@ build_xxx_session = make_builder(
 | `lowlevel.py` | Vendor SDK or communication protocol; implement supported Driver protocols |
 | `env.py` | Lifecycle, observations, capability declarations, units, geometry, and safety properties |
 | `api.py` | Action bindings; reuse shared functions or implement device-specific semantics |
-| `session.py` | Assemble configuration, Env, API, and sidecars with `make_builder` |
+| `session.py` | Assemble configuration, Env, API, clients, and optional local processes with `make_builder` |
 | `calibration.py` (optional template) | Calibration adapter wrapper; follow the template instructions to place it in `calibration/adapters/<body>.py` and expose `CALIBRATION_ADAPTER_SPEC` |
 
 Actions that satisfy shared implementation assumptions can delegate directly to `defaults`. Actions with different coordinate, sensor, end-effector, or recovery semantics need adapter implementations and validation. If the existing vocabulary cannot express a new requirement, design the shared contract before adding an implementation.
@@ -406,4 +430,4 @@ This page covers the main responsibilities and execution mechanisms. Detailed in
 - [Execution trace module design](../../../design/tracing.md): Trace lifecycle, event ownership, persistence, and resource boundaries.
 - [Trace Feedback Loop module design](../../../design/trace-feedback-loop.md): online diagnosis and offline failure clustering.
 - [Logging module design](../../../design/logging.md): handler ownership, output isolation, and forwarding logs to Trace.
-- [Voice control integration design](../../../design/voice-control-integration.md): connecting voice input to the text task executor.
+- [External HTTP inference services: vision and speech](../../../design/remote-vision-and-speech.md): service boundaries, vision/voice flows, resource ownership, and acceptance criteria (Chinese).

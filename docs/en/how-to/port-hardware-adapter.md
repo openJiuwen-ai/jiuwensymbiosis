@@ -22,7 +22,7 @@ A production adapter is complete when:
 - Env and Api capabilities align and generated tools represent real hardware;
 - Driver connection, motion, end-effector, and sensor calls repeat safely and fail clearly;
 - TIP, FLANGE, camera, and base frames are documented and verified;
-- Config, Session, and optional detector sidecars start and stop cleanly;
+- Config, Session, HTTP clients and optional local detector processes initialize and clean up correctly;
 - software boundaries, controller limits, and the physical E-stop have been accepted;
 - static validation, mock smoke tests, unit tests, and low-speed hardware acceptance pass.
 
@@ -237,9 +237,20 @@ Do not hide depth-unit, transform-direction, or loose-camera errors behind large
 then add small residual correction. See [Calibrate Hand-Eye Geometry](calibrate-hand-eye.md) and the
 [shared perception modules](../reference/adapter-reference.md#7-shared-perception-and-geometry-modules).
 
-Manage a local GroundingDINO/SAM2 server as a Session sidecar. For an external service, disable `detector.spawn` but
-preserve the same URL and failure semantics. An unreachable detector produces an empty result, which `api/defaults`
-converts to `{"ok": false, "reason": "no_detection"}`.
+GroundingDINO/SAM2 exposes an **HTTP inference service**. With `detector.mode: local`,
+the Session starts and owns a local subprocess (sidecar). `remote` connects to an
+externally managed service, including one on `localhost`. Both modes use the same
+HTTP client and result contract. Session cleanup closes its client and stops only
+the local process it started; it never stops an externally managed service.
+Omitted detector configuration defaults to `disabled`.
+
+Connection, timeout, protocol and expired-result failures raise
+`InferenceServiceError` with an `inference_*` code. Shared perception actions report
+these as failure results such as
+`{"ok": false, "reason": "detector_unavailable", "error_code": "inference_timeout"}`.
+`no_detection` means inference succeeded without finding the target; never convert
+a service error to an empty result. See [Remote HTTP Vision and Speech](remote-inference.md)
+for deployment and migration.
 
 ## 5. Configure deployment YAML and Session
 
@@ -258,13 +269,20 @@ x_max_mm: 600.0
 y_min_mm: -400.0
 y_max_mm: 400.0
 detector:
-  spawn: true
-  host: 127.0.0.1
-  port: 8114
+  mode: remote
+  endpoint:
+    url: http://gpu-server:8114
+    request_timeout_s: 30
 ```
 
 Mark required connection fields, units, and dangerous defaults in `config_template.yaml`. Resolve relative calibration
 paths against the YAML file rather than the caller's working directory.
+
+Use `perception.config.DetectorConfig` for Config's `detector` field, with
+`DetectorConfig` as its default factory. In `from_dict(data)`, pass the full runtime
+mapping to `parse_detector_config(data)`. For an owned local process, use
+`detector: {mode: local, local: {device: cuda, port: 8114}}`; to disable inference,
+use `detector: {mode: disabled}`.
 
 Declare adapter-owned path keys as `path_fields: ClassVar[tuple[str, ...]]` on Config, such as `("calib_path", "urdf_path")`, and delegate `from_yaml` to `adapters._common.config.load_yaml_config(cls, path)`. Runtime snapshots and smoke use the same `parse_config(factory, data, source_dir=...)`, which returns a normalized copy and parses the effective config once. Paths expand environment variables and `~` and resolve against the source directory even when absent. Source-less `from_dict(data)` retains its existing semantics. New hardware path fields belong in the adapter declaration, not Runtime or validation scripts.
 
@@ -278,21 +296,29 @@ build_my_session = make_builder(
     MyEnv,
     MyApi,
     api_kwargs_from_cfg=[
-        "detector.url:detector_service_url",
         "z_correction_mm",
         "grasp_z_offset_mm",
         "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     resource_keys=lambda cfg: (f"can:{cfg.can_port}",),
 )
 ```
 
 A bare `api_kwargs_from_cfg` field passes under the same name; `cfg.path:api_name` renames a dotted nested path. Use the
 legacy callback only when declarative mapping cannot express the transformation. Ordinary adapters do not need
-`decorate`; it is reserved for Session objects that Config, Api arguments, and sidecars cannot express.
+`decorate`; it is reserved for Session objects that Config, Api arguments and existing resource management cannot express.
 
-`resource_keys(cfg)` declares device identities from the effective config: the example uses a CAN interface; serial devices need canonical device paths, and ROS endpoints need their domain and command endpoint. Aliases for one device must produce identical keys. Common admission adds cameras, spawned detector services, and optional `physical_device_id`; explicit IDs cannot replace derived keys. Builders expose `.config_factory` and `.resource_keys` to Runtime without taking locks themselves. A bare `with session` does not provide cross-process admission: applications submit tasks through Runtime, while official maintenance entries use admitted_session.
+`managed_detector=True` creates one client per Session and injects it into
+`MyApi.__init__` as the `detector_client` keyword argument. The Api stores and reuses
+this callable in its perception hooks; it does not build another client from a URL
+or close the injected client. Session owns cleanup. `make_detector_sidecar()` starts
+a process only in `local` mode. Maintenance sessions with `include_sidecars=False`
+register client cleanup without starting models, resolving inference credentials
+or checking the network. An explicit inference request still opens the client lazily.
+
+`resource_keys(cfg)` declares device identities from the effective config: the example uses a CAN interface; serial devices need canonical device paths, and ROS endpoints need their domain and command endpoint. Aliases for one device must produce identical keys. Common admission adds cameras, owned local detector processes and optional `physical_device_id`; explicit IDs cannot replace derived keys. External HTTP inference services are shared and require no exclusive device lock; a body's HTTP command endpoint still requires physical-device admission. Builders expose `.config_factory` and `.resource_keys` to Runtime without taking locks themselves. A bare `with session` does not provide cross-process admission: applications submit tasks through Runtime, while official maintenance entries use admitted_session.
 
 Both template wiring examples include `resource_keys`. The validator's S-17 check verifies the factory and resource callback interfaces. Before constructing a stub session, `smoke_test_adapter.py` validates keys derived from the actual config and rejects empty device keys without `physical_device_id`; it never connects hardware. Interface checks cannot prove physical identity: verify that aliases for the same device produce identical keys.
 
@@ -355,7 +381,7 @@ Unit tests cover at least:
 - Z, XY, joint boundaries, and non-finite inputs;
 - every suction or gripper capability branch;
 - absent, malformed, and valid calibration;
-- sidecar startup and abnormal Session teardown;
+- HTTP client cleanup, optional local process lifecycle and abnormal Session teardown;
 - JSON-serializable results from every tool.
 
 Accept real hardware in increasing risk order:
@@ -378,7 +404,8 @@ and acceptance results with the deployment configuration.
 | unknown capability | Spelling and `KNOWN_CAPABILITIES` | Use an existing value or update vocabulary, action, Env, validator, and tests together |
 | Expected tool missing | Env capability and Api actions | Inspect `effective_capabilities` and the validator |
 | Repeated connect fails | `connect()` idempotence | Publish `low_level` only after success and fully clean failure paths |
-| `no_detection` | Service, models, frames, prompt, thresholds | Test the detector separately; do not duplicate the shared pipeline |
+| `no_detection` | Frames, prompt and thresholds after successful inference | Check target visibility; do not duplicate the shared pipeline |
+| `detector_unavailable` / `inference_*` | Mode, HTTP endpoint, service readiness, timeout and result age | Follow the error code; never substitute an empty result or enable local models automatically |
 | Projection has a fixed or directional error | Depth units, intrinsics, transform direction, mounting | Recalibrate and ensure the raw seam does not apply correction twice |
 | TIP/FLANGE Z is confused | Public tool semantics and tool offset | Compare Api target to Driver command; use a full transform for a tilted tool |
 | SKILL.md is not loaded | Agent `enable_skill` and resource path | Confirm `RobotControlTool` assembly; this is not a hardware capability |

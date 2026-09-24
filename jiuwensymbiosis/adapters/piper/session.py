@@ -48,5 +48,6 @@ build_piper_session = make_builder(
         "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_attach_piper_cfg,
 )

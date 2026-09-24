@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1060" viewBox="0 0 1280 1060" role="img" aria-labelledby="title desc">
+<title id="title">外挂推理服务的职责边界</title><desc id="desc">remote 部署中，Agent 采集输入并执行三维计算、语音唤醒、任务派发和本地播放。HTTP 服务独立执行视觉检测、ASR 转写和 TTS 合成。本体继续由 Agent 原适配器连接。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#475569"/></marker>
+<style>text { font-family: Noto Sans CJK SC, Microsoft YaHei, PingFang SC, sans-serif; } path { stroke-linecap: round; stroke-linejoin: round; }</style></defs>
+<rect width="1280" height="1060" rx="20" fill="#f5f7fb"/>
+<text x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1200">外挂推理服务的职责边界</text>
+<text x="40" y="88" font-size="20" font-weight="400" fill="#475569" text-anchor="start" data-max-width="1200">以 remote 部署为例：模型可以迁出 Agent 主机，任务与硬件连接仍在原执行路径中。</text>
+<rect x="40" y="122" width="560" height="754" rx="14" fill="#eaf2ff" stroke="#aac9f3" stroke-width="1.5"/>
+<rect x="856" y="122" width="384" height="754" rx="14" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="320" y="164" font-size="25" font-weight="700" fill="#1d4ed8" text-anchor="middle" data-max-width="510">Agent 主机</text>
+<text x="1048" y="164" font-size="24" font-weight="700" fill="#047857" text-anchor="middle" data-max-width="356">外部管理的 HTTP 服务</text>
+<rect x="64" y="204" width="512" height="136" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="320.0" y="239" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">视觉：采集与三维定位</text>
+<text x="320.0" y="272" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">相机 → DetectorClient → 同帧几何</text>
+<text x="320.0" y="301" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">深度、标定与定位缓存留在 Agent</text>
+<rect x="880" y="204" width="336" height="136" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1048.0" y="239" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="308">GroundingDINO + SAM2</text>
+<text x="1048.0" y="272" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">检测 / 分割</text>
+<text x="1048.0" y="301" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">POST /v1/segment</text>
+<path d="M576 260 L880 260" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="246" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">RGB 图像 + 文本</text>
+<path d="M880 320 L576 320" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="306" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">mask / box / score</text>
+<rect x="64" y="384" width="512" height="136" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="320.0" y="419" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">ASR：采集与命令筛选</text>
+<text x="320.0" y="452" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">AudioSource → RemoteASRBackend</text>
+<text x="320.0" y="481" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">VoiceLoop 检查唤醒、时效与取消</text>
+<rect x="880" y="384" width="336" height="136" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1048.0" y="419" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="308">FunASR</text>
+<text x="1048.0" y="452" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">音频转写</text>
+<text x="1048.0" y="481" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">POST /v1/transcribe</text>
+<path d="M576 440 L880 440" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="426" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">PCM16 WAV</text>
+<path d="M880 500 L576 500" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="486" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">转写文本</text>
+<rect x="64" y="564" width="512" height="136" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="320.0" y="599" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">TTS：反馈与播放</text>
+<text x="320.0" y="632" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">RemoteTTSBackend → AudioPlayer</text>
+<text x="320.0" y="661" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">校验返回音频，按实际采样率播放</text>
+<rect x="880" y="564" width="336" height="136" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1048.0" y="599" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="308">ChatTTS</text>
+<text x="1048.0" y="632" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">生成音频，服务端不播放</text>
+<text x="1048.0" y="661" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">POST /v1/synthesize</text>
+<path d="M576 620 L880 620" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="606" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">文本 + 音色</text>
+<path d="M880 680 L576 680" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="728" y="666" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="266">WAV + 音频信息</text>
+<rect x="64" y="738" width="512" height="108" rx="14" fill="#f4efff" stroke="#c4b5fd" stroke-width="1.5"/>
+<text x="320.0" y="773" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">任务、动作、护栏与驱动</text>
+<text x="320.0" y="806" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">沿用 ActionSpec、能力门控与恢复规则</text>
+<rect x="880" y="738" width="336" height="108" rx="14" fill="#f1fbf5" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1048.0" y="773" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="308">部署者管理模型进程</text>
+<text x="1048.0" y="806" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="308">Agent 退出只关闭自己的客户端</text>
+<path d="M320 846 L320 932" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="340" y="912" font-size="18" font-weight="400" fill="#475569" text-anchor="start" data-max-width="460">串口 / USB / CAN / ROS / HTTP</text>
+<rect x="40" y="932" width="560" height="94" rx="14" fill="#fff7e8" stroke="#e8c987" stroke-width="1.5"/>
+<text x="320.0" y="967" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="532">机器人本体与控制器</text>
+<text x="320.0" y="1000" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="532">原有硬件接入方式</text>
+<rect x="856" y="932" width="384" height="94" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1048.0" y="967" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="356">部署位置与所有权分开</text>
+<text x="1048.0" y="1000" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="356">同机手动启动的服务也使用 remote</text>
+</svg>

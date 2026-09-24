@@ -25,6 +25,7 @@ Two places where this body departs from the generic implementation:
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -32,6 +33,7 @@ import numpy as np
 
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
 from jiuwensymbiosis.adapters.so101.lowlevel import So101PreDispatchError
+from jiuwensymbiosis.agent.cancel import RunCancelled
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     ANALYZE_SCENE,
@@ -51,7 +53,14 @@ from jiuwensymbiosis.api.actions import (
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.reachability import Reachability
 from jiuwensymbiosis.contracts import GraspFailure, GraspResult
-from jiuwensymbiosis.perception.detector_client import init_detector
+from jiuwensymbiosis.errors import InferenceServiceError
+from jiuwensymbiosis.perception.config import DetectorConfig
+from jiuwensymbiosis.perception.detector_client import (
+    check_detection_completion,
+    create_detector_client,
+    init_detector,
+    segment_image,
+)
 from jiuwensymbiosis.perception.vision import (
     annotate_detection_overlay,
     apply_xy_correction,
@@ -138,7 +147,8 @@ class So101Api(BaseRobotApi):
         self,
         env: So101Env,
         *,
-        detector_service_url: str = "http://127.0.0.1:8114",
+        detector_service_url: str | None = "http://127.0.0.1:8114",
+        detector_client: Any = None,
         z_correction_mm: float = 0.0,
         grasp_z_offset_mm: float = -25.0,
         place_z_offset_mm: float = 75.0,
@@ -152,7 +162,7 @@ class So101Api(BaseRobotApi):
         # Held, not inherited: any body that ships a URDF gets the same judge.
         self._reach = Reachability(self)
         self._detector_service_url = detector_service_url
-        self._seg_fn: Callable[..., list[dict[str, Any]]] | None = None
+        self._seg_fn: Callable[..., list[dict[str, Any]]] | None = detector_client
         self._z_correction_mm = float(z_correction_mm)
         self._grasp_z_offset_mm = float(grasp_z_offset_mm)
         self._place_z_offset_mm = float(place_z_offset_mm)
@@ -359,14 +369,13 @@ class So101Api(BaseRobotApi):
         return intrinsics, "live"
 
     def _ensure_detector(self) -> None:
-        """Lazy-init the detector segmentation function if not already bound."""
-        if self._seg_fn is not None:
-            return
-        try:
-            self._seg_fn = init_detector(self._detector_service_url)
-            logger.info("[So101Api] detector client bound to %s", self._detector_service_url)
-        except Exception as exc:  # noqa: BLE001 - detector init best-effort
-            logger.warning("[So101Api] detector init failed (%s); detection tools will return ok=False.", exc)
+        """Bind the legacy URL only for directly constructed, unmanaged APIs."""
+        if self._seg_fn is None:
+            self._seg_fn = (
+                create_detector_client(DetectorConfig())
+                if self._detector_service_url is None
+                else init_detector(self._detector_service_url, request_scoped=True)
+            )
 
     @implements(PIXEL_TO_BASE_XYZ)
     def pixel_to_base_xyz(self, u: float, v: float, depth_m: float) -> dict:
@@ -523,6 +532,7 @@ class So101Api(BaseRobotApi):
         from jiuwensymbiosis.utils.geometry import apply_transform, pixel_and_depth_to_camera_xyz
 
         ll = self._ll()
+        captured_monotonic_s = time.monotonic()
         frames = ll.grab_frames()
         if frames is None:
             return {"ok": False, "reason": "no_camera", "object": object_name}, None
@@ -533,6 +543,7 @@ class So101Api(BaseRobotApi):
             rgb=rgb,
             depth_img_m=depth_img_m,
             seg_fn=self._seg_fn,
+            captured_monotonic_s=captured_monotonic_s,
             object_name=object_name,
             tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
         )
@@ -652,6 +663,7 @@ class So101Api(BaseRobotApi):
                 u=float(u),
                 v=float(v),
             )
+        check_detection_completion(self._seg_fn, captured_monotonic_s, invalidate=self.invalidate_sensing_cache)
         return result, tracking
 
     @staticmethod
@@ -689,6 +701,7 @@ class So101Api(BaseRobotApi):
     def analyze_scene(self, object_name: str | None = None) -> dict:
         """Scene analysis grounded on ``object_name`` (detection counts + scores)."""
         target = object_name or "object"
+        captured_monotonic_s = time.monotonic()
         rgb = self.get_image()
         if rgb is None:
             return {"ok": False, "reason": "no_camera"}
@@ -696,7 +709,17 @@ class So101Api(BaseRobotApi):
         if self._seg_fn is None:
             return {"ok": False, "reason": "detector_unavailable"}
         try:
-            results = self._seg_fn(rgb, text_prompt=target)
+            results = segment_image(
+                self._seg_fn,
+                rgb,
+                target,
+                captured_monotonic_s=captured_monotonic_s,
+            )
+        except RunCancelled:
+            raise
+        except InferenceServiceError as exc:
+            self.invalidate_sensing_cache()
+            return {"ok": False, "reason": "detector_unavailable", "error_code": exc.code}
         except Exception as exc:  # noqa: BLE001 - surface detector failure as ok=False
             return {"ok": False, "reason": str(exc)}
         scores = sorted((float(r.get("score", 0.0)) for r in results), reverse=True)
@@ -706,6 +729,7 @@ class So101Api(BaseRobotApi):
             {"object": target, "score": float(r.get("score", 0.0)), "pixel_uv": r.get("center") or r.get("pixel_uv")}
             for r in results
         ]
+        check_detection_completion(self._seg_fn, captured_monotonic_s, invalidate=self.invalidate_sensing_cache)
         return {
             "ok": True,
             "object": target,
