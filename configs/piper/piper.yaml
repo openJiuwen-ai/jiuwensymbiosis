@@ -49,8 +49,24 @@ env:
 
     # 无 prompt/任务字段：任务不进 config，一律由 --query 或 --voice 在运行时给出。
 
-api_servers:
-  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
+# 检测服务模式：local 由框架启动/关闭本地模型；remote 只连接 HTTP 服务；disabled 禁用检测。
+# 切换 remote 时，用以下示例替换整个 detector 块，删除 local 子块及旧 api_servers 中的检测条目：
+# detector:
+#   mode: remote
+#   endpoint:
+#     url: http://127.0.0.1:8114  # 本机手动启动服务；跨主机时改为服务器 URL
+#     connect_timeout_s: 3
+#     request_timeout_s: 30
+#   max_frame_age_s: null          # 默认不额外限制图像年龄；填写正数（秒）才启用，tracking 原有期限仍生效
+#
+# 可直接部署本项目的 jiuwensymbiosis.serving.grounding_dino_sam2_server。
+# 服务可在本机手动启动，再用 remote + 127.0.0.1 模拟远程 HTTP；框架不会启停该服务。
+# 模型依赖和权重安装在服务运行环境，Agent 可使用独立的精简环境。
+# 部署说明（含视觉/ASR/TTS 安装、启动命令、Compose 和 smoke）：
+# [服务部署 README](../../deploy/inference/README.md)（仓库路径 deploy/inference/README.md）
+detector:
+  mode: local  # 显式选择本地 GPU 模型；远程调用无需本机模型依赖。
+  local:
     device: cuda
     port: 8114
     host: 127.0.0.1
@@ -86,4 +102,3 @@ agent:
   # trace_max_frames: 50        # 每次 invoke 最多保存帧数
   # # trace_dir: ./traces       # 覆盖 trace 目录（默认 <workspace>/traces）
   # # trace_capture_loggers: ["jiuwensymbiosis"]  # TraceLogHandler 捕获哪些 logger 的 WARNING+
-

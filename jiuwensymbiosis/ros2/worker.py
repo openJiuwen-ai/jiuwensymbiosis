@@ -59,9 +59,11 @@ def worker_path(module: str) -> Path:
     return Path(spec.origin)
 
 
-def read_line(proc: subprocess.Popen, timeout_s: float) -> str | None:
-    """One stripped stdout line from a running worker, or ``None`` on timeout / EOF.
+def read_line(proc: subprocess.Popen[str], timeout_s: float) -> str | None:
+    """One stripped stdout line, or ``None`` on timeout / a missing stdout pipe.
 
+    EOF raises ``EOFError``: a closed reply channel must not be mistaken for a
+    timeout while the OS has not yet made the child's exit visible to ``poll``.
     ``select`` rather than a bare ``readline`` so a wedged worker cannot block the
     agent forever.
     """
@@ -70,8 +72,10 @@ def read_line(proc: subprocess.Popen, timeout_s: float) -> str | None:
     ready, _, _ = select.select([proc.stdout], [], [], timeout_s)
     if not ready:
         return None
-    line = proc.stdout.readline()
-    return line.strip() if line else None
+    line: str = proc.stdout.readline()
+    if not line:
+        raise EOFError("resident worker closed stdout before replying")
+    return line.strip()
 
 
 def _last_json_line(text: str) -> dict | None:
@@ -204,6 +208,7 @@ class ResidentWorker:
         self._env_fn = env_fn
         self._proc: subprocess.Popen | None = None
         self._stop_uncertainty: BaseException | None = None
+        self._channel_closed = False
 
     @property
     def proc(self) -> subprocess.Popen | None:
@@ -240,7 +245,7 @@ class ResidentWorker:
         return self._proc
 
     def request(self, line: str, timeout_s: float) -> str | None:
-        """Send one request line and read back one reply line; ``None`` on any failure.
+        """Send one request line; a failed request returns ``None`` only after confirmed cleanup.
 
         A failure also stops the worker before a caller can fall back. If the
         worker's stop cannot be confirmed, that cleanup error propagates and the
@@ -259,6 +264,8 @@ class ResidentWorker:
             proc.stdin.flush()
             reply = read_line(proc, timeout_s)
         except Exception as exc:  # noqa: BLE001 - broken pipe / dead worker → drop and report
+            if isinstance(exc, (EOFError, BrokenPipeError)):
+                self._channel_closed = True
             logger.warning("%s resident request failed: %s", self._label, exc)
             self.stop()
             return None
@@ -349,4 +356,10 @@ class ResidentWorker:
             self._stop_uncertainty = error
             raise error
         self._proc = None
+        if self._channel_closed:
+            # EOF/broken stdin preceded our stop request. A later rc=0 only
+            # confirms reaping, including on cleanup retries, not actuator stop.
+            error = RuntimeError(f"{self._label} resident worker exited before a stop was confirmed")
+            self._stop_uncertainty = error
+            raise error
         self._stop_uncertainty = None

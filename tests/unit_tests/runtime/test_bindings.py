@@ -19,6 +19,48 @@ def _piper_source(path: Path) -> Path:
     return path
 
 
+def test_remote_inference_is_shared_and_endpoint_is_frozen(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAMERA_SERIAL", raising=False)
+    source = _piper_source(tmp_path / "piper.yaml")
+    data = {
+        "adapter": "piper",
+        "can_port": "can_test",
+        "detector": {
+            "mode": "remote",
+            "endpoint": {
+                "url": "https://inference.invalid/vision",
+            },
+        },
+    }
+    binding = prepare_binding(source, config_snapshot=data, workspace=tmp_path / "ws")
+    assert binding.resources == ("can:can_test",)
+    session = binding.build_session()
+    assert session.env.cfg.detector.endpoint.url == "https://inference.invalid/vision"
+    assert prepare_binding(source, config_snapshot=data, workspace=tmp_path / "ws").fingerprint == binding.fingerprint
+    assert session.env.cfg.detector.spawn is False
+
+
+def test_model_paths_resolve_relative_to_config_but_hub_ids_are_preserved(tmp_path):
+    source = _piper_source(tmp_path / "piper.yaml")
+    data = {
+        "adapter": "piper",
+        "can_port": "can_test",
+        "detector": {
+            "mode": "local",
+            "local": {
+                "gdino_model_id": "./models/gdino",
+                "sam2_model_id": "facebook/sam2.1-hiera-large",
+            },
+        },
+        "voice": {"tts": {"backend": "chattts", "module_path": "./speech/backend.py"}},
+    }
+    binding = prepare_binding(source, config_snapshot=data, workspace=tmp_path / "ws")
+    config = binding.build_session().env.cfg
+    assert config.detector.local.gdino_model_id == str(tmp_path / "models/gdino")
+    assert config.detector.local.sam2_model_id == "facebook/sam2.1-hiera-large"
+    assert binding.config_data()["voice"]["tts"]["module_path"] == str(tmp_path / "speech/backend.py")
+
+
 def test_binding_rejects_string_resource_declaration_before_building(tmp_path, monkeypatch):
     from unittest.mock import Mock
 
@@ -256,6 +298,7 @@ def test_adapter_without_device_key_requires_physical_device_id():
 
 def test_without_sidecars_preserves_captured_resources_and_build_behavior(tmp_path, monkeypatch):
     source = _piper_source(tmp_path / "piper.yaml")
+    source.write_text(source.read_text() + "detector:\n  mode: local\n", encoding="utf-8")
     monkeypatch.setenv("CAMERA_SERIAL", "camera-before")
     with_sidecar = prepare_binding(source, workspace=tmp_path / "ws")
     assert "detector:local:8114" in with_sidecar.resources
@@ -269,7 +312,9 @@ def test_without_sidecars_preserves_captured_resources_and_build_behavior(tmp_pa
     assert "camera:camera-after" not in without_sidecar.resources
     session = without_sidecar.build_session()
     assert session.env.cfg.camera_serial == "camera-before"
-    assert session.sidecar_starters == []
+    # Maintenance keeps a lazy session-owned client but never a model process.
+    assert len(session.sidecar_starters) == 1
+    assert session.sidecar_starters[0]() == session.api._seg_fn.close
     assert session._connected is False
 
 

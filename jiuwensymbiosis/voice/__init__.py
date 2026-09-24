@@ -3,14 +3,15 @@
 
 """Robot-agnostic voice front-end for jiuwensymbiosis.
 
-Pipeline: microphone → wake word → ASR → ``on_command`` callback → TTS feedback.
+Pipeline: microphone → ASR → wake gate → ``on_command`` callback → TTS feedback.
 The callback hands transcribed text to :func:`jiuwensymbiosis.run_robot_task`, so
 the existing DeepAgent stays the decision-maker; this layer only adds the voice
-I/O. See ``design/voice-control-integration.md``.
+I/O. See ``design/remote-vision-and-speech.md#voice-flow``.
 
 Heavy/optional deps (funasr, sounddevice, soundfile, webrtcvad, ChatTTS) are
 imported lazily by the real backends; importing this package pulls in none of
-them. Install with ``pip install -e ".[voice]"``.
+them. Remote speech uses ``.[remote,voice-io]``; local FunASR additionally needs
+``.[voice-local]`` and an explicit backend selection.
 """
 
 from __future__ import annotations
@@ -19,13 +20,16 @@ from jiuwensymbiosis.voice.asr import (
     ASRBackend,
     FixedASRBackend,
     FunASRBackend,
+    RemoteASRBackend,
     build_asr_backend,
 )
 from jiuwensymbiosis.voice.audio import (
+    AudioPlayer,
     AudioSource,
     FileAudioSource,
     PulseAudioSource,
     RecordTuning,
+    SoundDevicePlayer,
     SoundDeviceSource,
     build_audio_source,
 )
@@ -34,6 +38,7 @@ from jiuwensymbiosis.voice.loop import OnCommand, VoiceLoop, result_to_speech
 from jiuwensymbiosis.voice.tts import (
     ChatTTSBackend,
     NullTTS,
+    RemoteTTSBackend,
     TTSBackend,
     build_tts_backend,
 )
@@ -57,6 +62,8 @@ __all__ = [
     "split_after_last_wake",
     # audio
     "AudioSource",
+    "AudioPlayer",
+    "SoundDevicePlayer",
     "RecordTuning",
     "FileAudioSource",
     "PulseAudioSource",
@@ -66,10 +73,12 @@ __all__ = [
     "ASRBackend",
     "FunASRBackend",
     "FixedASRBackend",
+    "RemoteASRBackend",
     "build_asr_backend",
     # tts
     "TTSBackend",
     "NullTTS",
     "ChatTTSBackend",
+    "RemoteTTSBackend",
     "build_tts_backend",
 ]

@@ -200,7 +200,7 @@ def _run_voice(
     """语音模式：把 VoiceLoop 的 on_command 回调接到 run_robot_task。
 
     语音层是机器人无关的；这里是它与框架的唯一接缝（文本进、反馈出）。换 N2 时只换
-    session，本函数不变。详见 design/voice-control-integration.md。
+    session，本函数不变。详见 design/remote-vision-and-speech.md#voice-flow。
     """
     import numpy as np
 
@@ -216,7 +216,13 @@ def _run_voice(
     if args.tts:
         voice_cfg.tts_backend = args.tts
     if args.asr_device:
+        if voice_cfg.asr_backend != "funasr":
+            raise ValueError("--asr-device only applies to an explicitly selected local FunASR backend")
         voice_cfg.asr_device = args.asr_device
+    if voice_cfg.tts_module_path:
+        module_path = Path(voice_cfg.tts_module_path).expanduser()
+        if not module_path.is_absolute():
+            voice_cfg.tts_module_path = str((Path(args.config).resolve().parent / module_path).resolve())
     if args.no_wake:
         voice_cfg.wake_enabled = False
     logger.info(
@@ -242,19 +248,19 @@ def _run_voice(
         audio = FileAudioSource([np.ones(480, dtype=np.int16)])  # 占位音频；FixedASR 忽略内容
         one_shot = True
     elif args.voice_audio_file is not None:
-        audio = FileAudioSource([args.voice_audio_file])  # 真实 ASR 走配置后端
+        audio = FileAudioSource([args.voice_audio_file], max_audio_duration_s=voice_cfg.max_audio_duration_s)
         one_shot = True
 
-    loop = VoiceLoop(voice_cfg, on_command, asr=asr, audio=audio)
-    if one_shot or args.voice_once:
-        cmd = loop.run_once()
-        if cmd:
-            loop.handle_command(cmd)
-        else:
-            logger.info("[voice] 未得到有效指令（--voice-text 需含唤醒词，或加 --no-wake）")
-        loop.wait()
-        return {"ok": True, "mode": "voice", "one_shot": True}
-    loop.run_forever()
+    with VoiceLoop(voice_cfg, on_command, asr=asr, audio=audio) as loop:
+        if one_shot or args.voice_once:
+            cmd = loop.run_once()
+            if cmd:
+                loop.handle_command(cmd)
+            else:
+                logger.info("[voice] 未得到有效指令（--voice-text 需含唤醒词，或加 --no-wake）")
+            loop.wait()
+            return {"ok": True, "mode": "voice", "one_shot": True}
+        loop.run_forever()
     return {"ok": True, "mode": "voice"}
 
 
@@ -326,12 +332,12 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         ),
     )
     p.add_argument("--debug", action="store_true")
-    # --- voice mode (语音前端；详见 design/voice-control-integration.md) ---
+    # --- voice mode (语音前端；详见 design/remote-vision-and-speech.md#voice-flow) ---
     p.add_argument(
         "--voice",
         action="store_true",
         help="语音模式：麦克风→唤醒词「九问九问」→ASR→agent→TTS，持续监听(Ctrl-C 退出)。"
-        '读 --config 里可选的 voice: 块，缺省用默认值。需 pip install -e ".[voice]"。',
+        "需显式配置 voice.asr.backend；远程语音安装 .[remote,voice-io]，本地 FunASR 另装 .[voice-local]。",
     )
     p.add_argument(
         "--voice-text",
@@ -341,11 +347,13 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     p.add_argument(
         "--voice-audio-file",
         default=None,
-        help="语音模式一次性：对该 WAV 走真实 ASR(需 .[voice] 依赖)，跑一次。",
+        help="语音模式一次性：对单声道 WAV 使用配置的远程或本地 ASR，跑一次。",
     )
     p.add_argument("--voice-once", action="store_true", help="语音模式只监听一次麦克风指令后退出。")
     p.add_argument("--no-wake", action="store_true", help="语音模式关闭唤醒词，整句当指令。")
-    p.add_argument("--tts", choices=["null", "chattts"], default=None, help="语音模式覆盖 TTS 后端。")
+    p.add_argument(
+        "--tts", choices=["null", "chattts", "remote"], default=None, help="语音模式覆盖 TTS 后端；参数由配置提供。"
+    )
     p.add_argument("--asr-device", default=None, help="语音模式覆盖 ASR 设备(cuda:0/cpu)。")
     args = p.parse_args(argv)
 

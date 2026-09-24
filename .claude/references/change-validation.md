@@ -61,9 +61,9 @@ timing. Add focused behavior tests for the changed adapter logic.
 
 For broader core verification use `python -m pytest tests/unit_tests/` or
 `make test-core`. The GUI suite requires its declared extras and is selected with
-`python -m pytest tests/gui/` or `make test-gui`; `make test` runs both
-no-hardware suites. Integration and live-state commands require their own hardware/service
-conditions; do not run them as automatic follow-ups to a documentation review.
+`python -m pytest tests/gui/` or `make test-gui`. `make test` defaults to core
+with `.[dev]`; `make test test-gui` runs both no-hardware suites with `.[dev,gui]`.
+Integration and live-state commands require their own hardware/service conditions; do not run them as automatic follow-ups to a documentation review.
 
 For Python edits, run the configured Ruff checks on changed files and the
 relevant type checks. `make check` selects staged files by default (or

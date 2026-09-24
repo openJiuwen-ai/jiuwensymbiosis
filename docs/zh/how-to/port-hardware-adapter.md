@@ -19,7 +19,7 @@
 - Env 与 Api 能力对齐，生成工具只覆盖硬件真实能力；
 - Driver 的连接、运动、末端和传感接口可重复调用并正确失败；
 - TIP、FLANGE、相机和基座坐标系有书面约定并通过实测；
-- Config、Session、可选检测 sidecar 能完整启停；
+- Config、Session、HTTP 客户端和可选本地检测进程能完整初始化与清理；
 - 软件边界、控制器限位和物理急停均已验收；
 - 静态验证、Mock 冒烟、单元测试和低速真机验收通过。
 
@@ -214,7 +214,16 @@ eye-in-hand 可把该动作转发给 `perception/vision.default_pixel_to_base_xy
 
 不要用大幅运行时偏移掩盖错误的深度单位、变换方向或相机松动。应先重新标定，再增加小范围校正。手眼标定操作见[手眼标定指南](calibrate-hand-eye.md)，共享检测和校正函数见[适配器参考](../reference/adapter-reference.md#7-共享感知与几何模块)。
 
-本地 GroundingDINO/SAM2 服务应作为 Session sidecar 管理；外部服务模式则关闭 `detector.spawn`，但保留相同 URL 和失败语义。检测不可达时，共享客户端返回空结果，`api/defaults` 将其转换为 `{"ok": false, "reason": "no_detection"}`。
+GroundingDINO/SAM2 对外提供 **HTTP 推理服务**。`detector.mode: local` 由 Session
+启动并管理本地托管子进程（sidecar）；`remote` 连接外部管理的服务，地址也可以是
+`localhost`。两种模式使用同一 HTTP 客户端和结果契约。Session 退出时关闭自己的客户端，
+仅停止它启动的本地子进程，不停止外部管理的服务。未配置检测时默认 `disabled`。
+
+客户端的连接、超时、协议和结果过期错误通过 `InferenceServiceError` 的
+`inference_*` 错误码区分；共享感知动作将它们报告为
+`{"ok": false, "reason": "detector_unavailable", "error_code": "inference_timeout"}` 等失败结果。
+只有推理成功但没有目标时才属于 `no_detection`，不能把服务异常转换为空结果。
+部署与迁移操作见[远程 HTTP 视觉与语音服务](remote-inference.md)。
 
 ## 5. 配置部署 YAML 与 Session
 
@@ -232,12 +241,18 @@ x_max_mm: 600.0
 y_min_mm: -400.0
 y_max_mm: 400.0
 detector:
-  spawn: true
-  host: 127.0.0.1
-  port: 8114
+  mode: remote
+  endpoint:
+    url: http://gpu-server:8114
+    request_timeout_s: 30
 ```
 
 必填连接字段、单位和危险默认值必须在 `config_template.yaml` 中标注。相对标定路径应相对于 YAML 文件解析，而不是依赖调用者当前目录。
+
+Config 的 `detector` 字段使用 `perception.config.DetectorConfig`，默认工厂为
+`DetectorConfig`；`from_dict(data)` 调用 `parse_detector_config(data)` 解析完整运行配置。
+需要本地托管进程时改用 `detector: {mode: local, local: {device: cuda, port: 8114}}`，
+只关闭推理时使用 `detector: {mode: disabled}`。
 
 Config 用 `path_fields: ClassVar[tuple[str, ...]]` 声明本体的路径字段（例如 `("calib_path", "urdf_path")`），`from_yaml` 委托给 `adapters._common.config.load_yaml_config(cls, path)`。Runtime 配置快照和 smoke 复用同一`parse_config(factory, data, source_dir=...)` 入口，返回规范化副本和仅解析一次的有效配置。路径会展开环境变量与 `~`，即使目标尚不存在也相对来源目录解析；无来源的 `from_dict(data)` 保持原语义。新增硬件路径字段只改适配器声明，不要在 Runtime 或验证脚本里加字段名单。
 
@@ -251,19 +266,25 @@ build_my_session = make_builder(
     MyEnv,
     MyApi,
     api_kwargs_from_cfg=[
-        "detector.url:detector_service_url",
         "z_correction_mm",
         "grasp_z_offset_mm",
         "place_z_offset_mm",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     resource_keys=lambda cfg: (f"can:{cfg.can_port}",),
 )
 ```
 
-`api_kwargs_from_cfg` 的裸字段同名传递，`cfg.path:api_name` 支持重命名，配置路径可用点号访问嵌套对象。只有声明式映射无法表达转换时才使用旧式回调。普通适配器不需要 `decorate`；它只用于向 Session 注入无法由 Config、Api 参数或 sidecar 表达的附加对象。
+`api_kwargs_from_cfg` 的裸字段同名传递，`cfg.path:api_name` 支持重命名，配置路径可用点号访问嵌套对象。只有声明式映射无法表达转换时才使用旧式回调。普通适配器不需要 `decorate`；它只用于向 Session 注入无法由 Config、Api 参数或已有资源管理机制表达的附加对象。
 
-`resource_keys(cfg)` 从实际有效配置声明设备身份；示例为 CAN 接口，串口应规范化到真实设备路径，ROS 应包含域和命令端点。同一设备的配置别名必须产生相同键。公共准入另补相机、自启检测服务和可选 `physical_device_id`，后者不能覆盖派生键。builder 公开 `.config_factory` 与 `.resource_keys` 供 Runtime 使用，不在 builder 内重复加锁；`with session` 本身不负责跨进程准入，应用任务应使用 Runtime，官方维护入口使用 admitted_session。
+`managed_detector=True` 为每个 Session 创建一个客户端，并通过 `detector_client` 关键字
+传入 `MyApi.__init__`；Api 接收并保存这个可调用对象，感知钩子复用它，不自行按 URL
+另建客户端或关闭它。客户端生命周期归 Session。`make_detector_sidecar()` 只在
+`mode: local` 时启动进程；`include_sidecars=False` 的维护会话只注册客户端清理，
+不启动模型、不解析推理凭据、不做网络检查。只有显式发起推理时才按需打开客户端。
+
+`resource_keys(cfg)` 从实际有效配置声明设备身份；示例为 CAN 接口，串口应规范化到真实设备路径，ROS 应包含域和命令端点。同一设备的配置别名必须产生相同键。公共准入另补相机、本地托管检测进程和可选 `physical_device_id`，后者不能覆盖派生键。外部 HTTP 推理服务可共享，不占独占设备锁；本体的 HTTP 控制端点仍按物理设备准入。builder 公开 `.config_factory` 与 `.resource_keys` 供 Runtime 使用，不在 builder 内重复加锁；`with session` 本身不负责跨进程准入，应用任务应使用 Runtime，官方维护入口使用 admitted_session。
 
 模板的基础和进阶 wiring 都包含 `resource_keys`。`validate_adapter.py` 的 S-17 检查工厂和设备键回调接口；`smoke_test_adapter.py` 在构建 stub session 前用实际配置验证键，设备键为空且未提供 `physical_device_id` 时直接报错，不连接硬件。接口检查不验证物理身份，仍需确认同一设备的别名生成相同键。
 
@@ -325,7 +346,7 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot
 - Z、XY、关节边界和非有限输入；
 - 吸盘或夹爪每个能力分支；
 - 标定缺失、畸形和有效三种情况；
-- sidecar 启停与 Session 异常退出；
+- HTTP 客户端清理、可选本地进程启停与 Session 异常退出；
 - 每个工具返回值可 JSON 序列化。
 
 真机按风险递增验收：
@@ -347,7 +368,8 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot
 | `unknown capabilities` | 拼写和 `KNOWN_CAPABILITIES` | 使用现有词汇；确需扩展时同步词表、动作、Env、验证器和测试 |
 | 预期工具未生成 | Env 能力与 Api 动作 | 查看 `effective_capabilities` 和验证器 |
 | 重复连接失败 | `connect()` 幂等性 | Driver 成功连接后再发布 `low_level`，失败路径彻底清理 |
-| `no_detection` | 服务、模型、图像、提示词和阈值 | 先单独验证检测服务，不在适配器中复制共享流程 |
+| `no_detection` | 成功推理后的图像、提示词和阈值 | 核对目标是否可见，不在适配器中复制共享流程 |
+| `detector_unavailable` / `inference_*` | 检测模式、HTTP 地址、服务状态、超时和结果时效 | 按错误码排查；不转为无目标结果，不自动启用本地模型 |
 | 投影存在固定或方向性偏差 | 深度单位、内参、变换方向、安装方式 | 先重新标定；确认 RAW 接缝未重复应用校正 |
 | TIP/FLANGE Z 混淆 | 公共工具语义与工具偏移 | 对比 Api 目标和 Driver 最终命令；倾斜工具使用完整变换 |
 | SKILL.md 未加载 | Agent 的 `enable_skill` 和资源路径 | 确认 `RobotControlTool` 已装配；这不是硬件能力问题 |

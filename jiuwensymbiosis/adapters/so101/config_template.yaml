@@ -94,17 +94,12 @@ gripper_contact_hold_offset: 1.0  # 接触后仅保留少量闭合预紧，避�
 # 检测服务统一在顶层 api_servers 中配置；未配置时 detector 默认 spawn=False。
 # 无相机时保持整段注释。真机参数放在不提交的本地调试 YAML 中。
 # 指定 host/port 已有服务时 session 直接 attach，否则自动启动 sidecar。
-# api_servers:
-#   - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
-#     host: 127.0.0.1
-#     port: 8114
-#     device: cuda
-#     startup_timeout_s: 300.0
-#     gdino_model_id: "IDEA-Research/grounding-dino-base"
-#     sam2_model_id: "facebook/sam2.1-hiera-large"
-#     box_threshold: 0.35
-#     text_threshold: 0.25
-#     use_sam2: true
+# detector:
+#   mode: remote  # 不配置时关闭；远程模式不要求 Agent 主机安装模型
+#   endpoint:
+#     url: "http://gpu-server:8114"
+#     request_timeout_s: 30
+# 本地模型（可选）：detector: {mode: local, local: {device: cuda, port: 8114}}
 
 # ==================== 顶面抓取点（实验，默认关） ====================
 # 开启后抓取点取自掩码点云的 “yaw-only 外接盒”（base +Z 顶面），而非 mask 2D

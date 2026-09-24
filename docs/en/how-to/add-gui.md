@@ -191,8 +191,9 @@ not import plugins from other environments automatically.
   it with `make test-core`.
 - `tests/gui/` covers the launcher, installed plugin discovery, and interface/contract behavior requiring GUI
   extras; run it with `make test-gui`.
-- `make test` runs both no-hardware suites. Workbench GUI tests require `pip install -e ".[gui]"`.
-  `make test-all` also collects integration tests.
+- `make test` defaults to core tests with `.[dev]`. Install `.[dev,gui]` and run
+  `make test test-gui` for both no-hardware suites. Keep core and GUI CI jobs separate.
+  `make test-all` also collects integration tests and requires their dependencies and environment.
 - Plugin-specific view/layout tests go in `tests/gui/<plugin>/components/`; other GUI/plugin tests go in
   `tests/gui/<plugin>/unit/`. Runtime, resource admission, and core behavior remain in
   `tests/unit_tests/runtime/`.

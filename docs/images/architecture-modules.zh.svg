@@ -139,7 +139,7 @@
   <text id="text-75" x="135.0" y="1367.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">装配与生命周期</text>
   <text id="text-76" x="135.0" y="1397.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">Session</text>
   <text id="text-77" x="256" y="1355" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1038">adapters/_common/builder.py → agent/session.py</text>
-  <text id="text-78" x="256" y="1386" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1038">配置 → make_builder → RobotSession；Session 连接 Env、管理 sidecar，并在退出时清理。</text>
+  <text id="text-78" x="256" y="1386" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1038">配置 → make_builder → RobotSession；管理 Env、客户端与可选本地进程，退出时清理。</text>
   <rect x="40" y="1450" width="1280" height="82" rx="16" fill="#f3efff" stroke="#c9bbf3" stroke-width="1.5"/>
   <rect x="40" y="1450" width="190" height="82" rx="16" fill="#7c3aed"/>
   <rect x="214" y="1450" width="16" height="82" rx="0" fill="#7c3aed"/>

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -138,6 +139,63 @@ class TestResidentWorker:
         assert worker.proc is None
         with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
             worker.request_json("b", 2.0, bad_output_reason="bad")
+
+    @pytest.mark.parametrize("closed_stream", ["stdout", "stdin"])
+    @pytest.mark.parametrize("deferred_cleanup", [False, True])
+    def test_closed_channel_before_exit_is_observable_blocks_restart(
+        self, monkeypatch, closed_stream, deferred_cleanup
+    ):
+        from unittest.mock import Mock
+
+        # Model the OS race deterministically: a pipe is already closed while
+        # poll() still reports a running process. Reaping later returns rc=0.
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        with os.fdopen(read_fd) as stdout:
+
+            class ExitingProc:
+                def __init__(self):
+                    self.stdin = Mock()
+                    self.stdout = stdout
+                    self.returncode = None
+                    self.allow_reap = not deferred_cleanup
+                    if closed_stream == "stdin":
+                        self.stdin.flush.side_effect = BrokenPipeError("worker closed stdin")
+
+                def poll(self):
+                    return self.returncode
+
+                def communicate(self, input=None, timeout=None):
+                    if not self.allow_reap:
+                        raise subprocess.TimeoutExpired("exiting-worker", timeout)
+                    self.returncode = 0
+                    return "", ""
+
+                def terminate(self):
+                    pass
+
+                def kill(self):
+                    pass
+
+            proc = ExitingProc()
+            launch = Mock(return_value=proc)
+            monkeypatch.setattr(W.subprocess, "Popen", launch)
+            worker = W.ResidentWorker(lambda: _script("pass"), label="[t]")
+            failure = "still alive after terminate/kill" if deferred_cleanup else "exited before a stop was confirmed"
+            with pytest.raises(RuntimeError, match=failure):
+                worker.request_json("a", 2.0, bad_output_reason="bad")
+            with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+                worker.request_json("b", 2.0, bad_output_reason="bad")
+            if deferred_cleanup:
+                assert worker.proc is proc
+                proc.allow_reap = True
+                with pytest.raises(RuntimeError, match="exited before a stop was confirmed"):
+                    worker.stop()
+            assert proc.returncode == 0
+            assert worker.proc is None
+            with pytest.raises(RuntimeError, match="shutdown remains unconfirmed"):
+                worker.stop()
+            launch.assert_called_once()
 
     def test_empty_reply_with_confirmed_stop_remains_a_soft_failure(self):
         body = "import sys\nfor line in sys.stdin:\n    if line.strip() == 'stop':\n        break\n"

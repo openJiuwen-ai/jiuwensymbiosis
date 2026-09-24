@@ -17,14 +17,17 @@ from __future__ import annotations
 
 import logging
 import threading
+import wave
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 import numpy as np
 
 if TYPE_CHECKING:
+    from subprocess import Popen
+
     from jiuwensymbiosis.voice.config import VoiceConfig
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,8 @@ __all__ = [
     "PulseAudioSource",
     "SoundDeviceSource",
     "build_audio_source",
+    "AudioPlayer",
+    "SoundDevicePlayer",
 ]
 
 
@@ -71,7 +76,10 @@ class RecordTuning:
             chunk=config.chunk,
             silence_frames=config.silence_frames,
             min_frames=config.min_frames,
-            max_frames=config.max_frames,
+            max_frames=min(
+                config.max_frames or max(1, int(config.max_audio_duration_s * config.sample_rate / config.chunk)),
+                max(1, int(config.max_audio_duration_s * config.sample_rate / config.chunk)),
+            ),
             timeout_frames=config.timeout_frames,
             energy_min=config.energy_min,
             vad_aggressiveness=config.vad_aggressiveness,
@@ -158,16 +166,18 @@ class _SegmentRecorder:
                 self.done = True
                 self.reason = "检测到静音"
                 return True
-            if self.tuning.max_frames > 0 and self.frames >= self.tuning.max_frames:
-                self.done = True
-                self.reason = "达到最长录音"
-                return True
+        if self.recording and self.tuning.max_frames > 0 and self.frames >= self.tuning.max_frames:
+            self.done = True
+            self.reason = "达到最长录音"
+            # Pre-roll belongs to the same hard cap as live samples.
+            self.buffer = self.buffer[: self.tuning.max_frames]
+            return True
         return False
 
     def result(self) -> np.ndarray | None:
         if not self.buffer:
             return None
-        return np.concatenate(self.buffer).astype(np.int16)
+        return cast(np.ndarray, np.concatenate(self.buffer).astype(np.int16))
 
 
 class FileAudioSource:
@@ -175,13 +185,16 @@ class FileAudioSource:
 
     Each call to :meth:`record_segment` returns the next segment, then ``None``
     once exhausted. Segments may be ``np.ndarray`` int16 PCM or paths to WAV
-    files (loaded lazily via ``soundfile``).
+    files (mono PCM16, decoded with the standard library).
     """
 
-    def __init__(self, segments: list[np.ndarray | str | Path], sample_rate: int = 16000):
+    def __init__(
+        self, segments: list[np.ndarray | str | Path], sample_rate: int = 16000, max_audio_duration_s: float = 30.0
+    ):
         self.sample_rate = sample_rate
         self._segments = list(segments)
         self._idx = 0
+        self.max_audio_duration_s = max_audio_duration_s
 
     def record_segment(self) -> np.ndarray | None:
         if self._idx >= len(self._segments):
@@ -189,10 +202,21 @@ class FileAudioSource:
         seg = self._segments[self._idx]
         self._idx += 1
         if isinstance(seg, (str, Path)):
-            import soundfile as sf
-
-            data, _ = sf.read(str(seg), dtype="int16")
-            return np.asarray(data)
+            with wave.open(str(seg), "rb") as wav:
+                self.sample_rate = wav.getframerate()
+                frames = wav.getnframes()
+                if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getcomptype() != "NONE":
+                    raise ValueError("Voice WAV files must be mono PCM16")
+                if (
+                    not 8000 <= self.sample_rate <= 96000
+                    or frames <= 0
+                    or frames / self.sample_rate > self.max_audio_duration_s
+                ):
+                    raise ValueError("Voice WAV file exceeds the duration limit or has an invalid sample rate")
+                data = wav.readframes(frames)
+                if len(data) != frames * 2:
+                    raise ValueError("Truncated voice WAV file")
+            return np.frombuffer(data, dtype="<i2").astype(np.int16, copy=True)
         return np.asarray(seg)
 
 
@@ -204,6 +228,15 @@ class PulseAudioSource:
         self.sample_rate = tuning.sample_rate
         self.pulse_source = pulse_source
         self._vad = _VadGate(tuning.sample_rate, tuning.energy_min, tuning.vad_aggressiveness)
+        self._process: Popen[bytes] | None = None
+        self._closed = False
+        self._state_lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._state_lock:
+            self._closed = True
+            if self._process is not None and self._process.poll() is None:
+                self._process.terminate()
 
     def record_segment(self) -> np.ndarray | None:
         import shutil
@@ -225,7 +258,11 @@ class PulseAudioSource:
         if self.pulse_source:
             cmd.append(f"--device={self.pulse_source}")
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("Audio source is closed")
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self._process = proc
         stdout = proc.stdout
         if stdout is None:  # stdout=PIPE guarantees a stream; narrow for the type checker
             raise RuntimeError("无法打开 pactl 输出流（stdout=None）")
@@ -242,6 +279,11 @@ class PulseAudioSource:
                 proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=1)
+            stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            self._process = None
         if rec.reason:
             logger.debug("[voice] 录音停止: %s", rec.reason)
         return rec.result()
@@ -254,12 +296,25 @@ class SoundDeviceSource:
         self.tuning = tuning
         self.sample_rate = tuning.sample_rate
         self._vad = _VadGate(tuning.sample_rate, tuning.energy_min, tuning.vad_aggressiveness)
+        self._stream = None
+        self._done_event: threading.Event | None = None
+        self._closed = False
+        self._state_lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._state_lock:
+            self._closed = True
+            if self._stream is not None:
+                self._stream.abort()
+            if self._done_event is not None:
+                self._done_event.set()
 
     def record_segment(self) -> np.ndarray | None:
         import sounddevice as sd
 
         rec = _SegmentRecorder(self.tuning, self._vad)
         done_event = threading.Event()
+        self._done_event = done_event
 
         def callback(indata, frames, time_info, status):  # noqa: ARG001 — sd signature
             if rec.done:
@@ -274,12 +329,21 @@ class SoundDeviceSource:
             blocksize=self.tuning.chunk,
             callback=callback,
         )
-        stream.start()
         try:
-            done_event.wait()
+            with self._state_lock:
+                if self._closed:
+                    raise RuntimeError("Audio source is closed")
+                stream.start()
+                self._stream = stream
+            # A stalled audio driver must not leave the frontend blocked forever.
+            timeout_s = (self.tuning.timeout_frames + self.tuning.max_frames + 2) * self.tuning.chunk / self.sample_rate
+            if not done_event.wait(timeout_s):
+                raise TimeoutError("Audio capture exceeded its finite capture window")
         finally:
             stream.stop()
             stream.close()
+            self._stream = None
+            self._done_event = None
         if rec.reason:
             logger.debug("[voice] 录音停止: %s", rec.reason)
         return rec.result()
@@ -300,3 +364,53 @@ def build_audio_source(config: VoiceConfig) -> AudioSource:
     if backend == "file":
         return FileAudioSource([], sample_rate=config.sample_rate)
     raise ValueError(f"未知 audio_backend: {config.audio_backend!r}")
+
+
+@runtime_checkable
+class AudioPlayer(Protocol):
+    """Play mono PCM on an Agent-accessible output device at its actual rate."""
+
+    # fmt: off
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        ...
+
+    def close(self) -> None:
+        ...
+    # fmt: on
+
+
+class SoundDevicePlayer:
+    """Own a cancellable output stream; never use sounddevice's global player."""
+
+    def __init__(self, device: str | int | None = None):
+        self.device = device
+        self._stream = None
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        import sounddevice as sd
+
+        stream = None
+        try:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("Audio player is closed")
+                stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16", device=self.device)
+                self._stream = stream
+                # Cancellation must abort an already-started stream, never one
+                # that this thread can subsequently restart.
+                stream.start()
+            stream.write(audio)
+            stream.stop()
+        finally:
+            if stream is not None:
+                with self._lock:
+                    stream.close()
+                    self._stream = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._stream is not None:
+                self._stream.abort()

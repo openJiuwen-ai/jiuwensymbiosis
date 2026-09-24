@@ -33,6 +33,19 @@ def test_yaml_roundtrip_preserves_values_and_chinese():
     assert back.get("agent.mode") == "tool"
 
 
+@pytest.mark.parametrize("limit", [None, 10.0])
+def test_frame_age_setting_survives_yaml_and_mode_changes(limit):
+    from jiuwensymbiosis.perception.config import parse_detector_config
+
+    cm = ConfigModel.from_dict({"detector": {"mode": "local", "max_frame_age_s": limit}})
+    for mode in ("remote", "local"):
+        cm.set("detector.mode", mode)
+        cm = ConfigModel.from_yaml_text(cm.to_yaml())
+        assert cm.validate() == []
+        assert "max_frame_age_s" in cm.data["detector"]
+        assert parse_detector_config(cm.data).max_frame_age_s == limit
+
+
 def test_from_yaml_text_rejects_non_mapping():
     with pytest.raises(ValueError):
         ConfigModel.from_yaml_text("- just\n- a\n- list")
@@ -135,6 +148,93 @@ def test_patch_detector_writes_into_gdino_server_entry():
 def test_patch_detector_no_detector_entry_returns_false():
     cm = ConfigModel.from_dict({"model": {}})
     assert cm.patch_detector(gdino_model_id="/x") is False
+
+
+def test_remote_detector_fields_edit_endpoint_without_local_weights():
+    cm = ConfigModel.from_dict({"detector": {"mode": "remote", "endpoint": {"url": "https://gpu/vision"}}})
+    paths = {field.path for field in field_groups_for_config("piper", cm)}
+    assert "detector.endpoint.url" in paths
+    assert not any("model_id" in path for path in paths)
+    cm.set("detector.endpoint.url", "https://other/vision")
+    assert cm.get("detector.endpoint.url") == "https://other/vision"
+    assert cm.patch_detector(gdino_model_id="/local") is False
+    assert cm.local_detector() is None
+
+
+def test_detector_mode_switch_normalizes_config_and_drops_conflicting_fields():
+    cm = ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino", "port": 8114}]})
+    cm.set("detector.mode", "remote")
+    assert cm.data["api_servers"] == []
+    assert "local" not in cm.data["detector"]
+    assert cm.get("detector.mode") == "remote"
+    assert cm.data["detector"]["endpoint"] == {"url": "http://127.0.0.1:8114"}
+    assert ConfigModel.from_yaml_text(cm.to_yaml()).validate() == []
+    cm.set("detector.mode", "local")
+    assert "endpoint" not in cm.data["detector"]
+    cm.patch_detector(gdino_model_id="/models/dino")
+    assert cm.get("detector.local.gdino_model_id") == "/models/dino"
+    cm.set("detector.mode", "disabled")
+    assert cm.has_detector() is False
+    assert "local" not in cm.data["detector"]
+
+
+@pytest.mark.parametrize("top_servers", [[], [{"_target_": "other.top_service", "port": 9000}]])
+def test_nested_legacy_detector_migrates_without_removing_other_services(top_servers):
+    from jiuwensymbiosis.perception.config import parse_detector_config
+
+    nested_other = {"_target_": "other.nested_service", "port": 9001}
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": top_servers,
+            "env": {
+                "cfg": {
+                    "api_servers": [
+                        nested_other,
+                        {"_target_": "x.grounding_dino", "spawn": False, "url": "https://gpu/old"},
+                    ]
+                }
+            },
+        }
+    )
+    assert cm.detector_mode() == parse_detector_config(cm.data).mode == "remote"
+    assert cm.get("detector.endpoint.url") == "https://gpu/old"
+    cm.set("detector.endpoint.url", "https://gpu/new")
+    restored = ConfigModel.from_yaml_text(cm.to_yaml())
+    parsed = parse_detector_config(restored.data)
+    assert parsed.endpoint.url == "https://gpu/new"
+    assert restored.data["api_servers"] == top_servers
+    assert restored.data["env"]["cfg"]["api_servers"] == [nested_other]
+    assert restored.validate() == []
+
+
+def test_nested_legacy_local_detector_can_be_prepared_and_disabled():
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": [{"_target_": "other.service"}],
+            "env": {"cfg": {"api_servers": [{"_target_": "x.gdino", "spawn": True}]}},
+        }
+    )
+    assert cm.detector_mode() == "local"
+    assert cm.patch_detector(gdino_model_id="/models/dino") is True
+    assert cm.local_detector()["gdino_model_id"] == "/models/dino"
+    cm.set("detector.mode", "disabled")
+    assert cm.data["env"]["cfg"]["api_servers"] == []
+    assert cm.data["api_servers"] == [{"_target_": "other.service"}]
+    assert cm.validate() == []
+
+
+def test_duplicate_legacy_detectors_are_rejected_without_partial_migration():
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": [{"_target_": "x.gdino"}],
+            "env": {"cfg": {"api_servers": [{"_target_": "x.grounding_dino"}]}},
+        }
+    )
+    before = cm.to_yaml()
+    assert any("multiple legacy" in warning for warning in cm.validate())
+    with pytest.raises(ValueError, match="multiple legacy"):
+        cm.set("detector.mode", "remote")
+    assert cm.to_yaml() == before
 
 
 def test_detector_virtual_path_reads_and_writes_api_servers_entry():

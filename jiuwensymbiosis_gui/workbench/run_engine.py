@@ -39,8 +39,12 @@ def strip_vision_services(config_data: dict[str, Any]) -> dict[str, Any]:
     """
     data = copy.deepcopy(config_data)
     data.pop("api_servers", None)
+    data["detector"] = {"mode": "disabled"}
     env = data.get("env")
     cfg = env.get("cfg") if isinstance(env, dict) else None
+    if isinstance(cfg, dict):
+        cfg.pop("api_servers", None)
+        cfg.pop("detector", None)
     low_level = cfg.get("low_level") if isinstance(cfg, dict) else None
     if isinstance(low_level, dict):
         low_level.pop("camera_serial", None)

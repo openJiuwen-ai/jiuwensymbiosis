@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 
 import yaml
 
@@ -78,6 +79,78 @@ class _RecordingApi(MockApi):
     def __init__(self, env, **kwargs):
         super().__init__(env)
         self.received_kwargs = kwargs
+
+
+def test_managed_detector_client_is_owned_per_session_and_never_spawns_on_maintenance(monkeypatch):
+    from jiuwensymbiosis.perception import detector_client as module
+
+    events = []
+
+    class Client:
+        def bind_cancel_token(self, token):
+            self.token = token
+
+        def open(self, *, lazy=False):
+            assert lazy  # Maintenance only rearms; credentials and I/O remain deferred.
+            return self
+
+        def __enter__(self):
+            events.append("client.open")
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def close(self):
+            events.append("client.close")
+
+    monkeypatch.setattr(module, "create_detector_client", lambda cfg: Client())
+
+    @contextmanager
+    def model_process():
+        events.append("model.start")
+        yield
+        events.append("model.stop")
+
+    builder = make_builder(
+        PiperConfig,
+        _TestEnv,
+        _RecordingApi,
+        managed_detector=True,
+        sidecar_builders=[lambda cfg: model_process],
+    )
+    maintenance = builder(PiperConfig(), include_sidecars=False)
+    normal = builder(PiperConfig())
+    assert events == []
+    assert maintenance.api.received_kwargs["detector_client"] is not normal.api.received_kwargs["detector_client"]
+    with maintenance:
+        assert events == []
+    assert events == ["client.close"]
+    events.clear()
+    with normal:
+        assert events == ["model.start", "client.open"]
+    assert events == ["model.start", "client.open", "client.close", "model.stop"]
+
+
+def test_managed_detector_client_closes_after_failed_hardware_connect(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from jiuwensymbiosis.perception import detector_client as module
+
+    client = MagicMock()
+    client.__enter__.return_value = client
+    monkeypatch.setattr(module, "create_detector_client", lambda cfg: client)
+
+    class FailedEnv(_TestEnv):
+        def connect(self):
+            raise RuntimeError("hardware connection failed")
+
+    session = make_builder(PiperConfig, FailedEnv, _RecordingApi, managed_detector=True)(PiperConfig())
+    with pytest.raises(RuntimeError, match="hardware connection failed"):
+        session.connect()
+    client.__exit__.assert_called_once()
 
 
 class _FlatConfig:

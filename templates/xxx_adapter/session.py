@@ -51,7 +51,7 @@ build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi, resource_keys=_resou
 # def _api_kwargs_from_cfg(cfg: XxxConfig) -> dict:
 #     """Extract Api.__init__ kwargs from config."""
 #     return {
-#         # "detector_service_url": cfg.detector_url,
+#         # "detector_service_url": cfg.detector.url,
 #         # "z_correction_mm": cfg.z_correction_mm,
 #     }
 #
@@ -67,6 +67,7 @@ build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi, resource_keys=_resou
 #     XxxApi,
 #     api_kwargs_from_cfg=_api_kwargs_from_cfg,
 #     # sidecar_builders=[_detector_sidecar],
+#     # managed_detector=True,  # API __init__ 接收 detector_client；由 session 管理关闭
 #     decorate=_decorate,
 #     resource_keys=_resource_keys,  # required command-endpoint admission wiring
 # )

@@ -11,7 +11,7 @@ JiuwenSymbiosis 是基于 `openjiuwen` 的具身智能体框架。它用**共享
 | 职责 | 主要实现 | 输入与输出 |
 |---|---|---|
 | 任务编排 | `run_robot_task`、`plan_task`、`run_sequence`、Agent | 任务与配置 → 计划、工具调用及执行结果 |
-| 生命周期 | `RobotSession` | Env、API、辅助服务进程（sidecar）启动器 → 连接与资源清理 |
+| 生命周期 | `RobotSession` | Env、API、客户端与可选本地进程 → 连接与资源清理 |
 | 动作工具 | `build_robot_tools`、`RobotControlTool` | 动作名与参数 → 调用已绑定的适配器方法 |
 | 动作实现 | `BaseRobotApi`、适配器 API、`api/defaults.py` | 动作契约 → 通用算法与硬件操作 |
 | 硬件接口 | `BaseRobotEnv`、适配器 Driver | 统一操作 → 厂商协议；设备读数 → `RobotObservation` |
@@ -299,34 +299,55 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 
 ## 十、RobotSession：生命周期聚合器
 
-`RobotSession` 是上下文管理器，持有 Env 实例、API 实例、sidecar 启动器，以及提供代码工具全局对象的 `globals_provider`。Env 持有底层驱动；Session 不负责决定动作顺序。
+`RobotSession` 是上下文管理器，持有 Env、API、客户端资源上下文与可选本地进程启动器，以及提供代码工具全局对象的 `globals_provider`。Env 持有底层驱动；Session 不负责决定动作顺序。
 
 | 时机 | 顺序 |
 |---|---|
-| 进入 `with session:` | 启动已配置的 sidecar → 连接 Env → 检查能力一致性 |
+| 进入 `with session:` | 打开已登记的资源上下文（按配置启动本地进程）→ 连接 Env → 检查能力一致性 |
 | 会话内运行任务 | 调用者执行 `run_robot_task`，由它构建 Agent 并选择执行模式 |
-| 退出 `with session:` | Trace 补充收尾 → Env 断开并释放驱动 → 退出 sidecar 上下文 |
+| 退出 `with session:` | Trace 补充收尾 → Env 断开并释放驱动 → 关闭自有客户端和本地进程 |
 
 连接和断开支持重复调用。API 声明而 Env 不支持的普通能力，在 `strict_capabilities=True` 时导致启动失败；Env 独有能力产生警告。派生能力允许两侧不对称，不按普通能力差异报错。`describe()` 的有效能力汇总使用两侧交集。
 
 `globals_provider` 返回 `env`、`api`、`np` 及适配器额外对象；Agent 构建时会把可用对象说明加入代码工具相关的提示上下文。
 
+检测 HTTP 客户端也由 Session 的清理栈持有，每个会话独立实例；构造和打开客户端不发起网络请求。
+外部服务的进程由部署方管理，Session 只关闭连接。只有显式 `detector.mode: local` 才启动模型子进程。
+内部接口名 `sidecar_starters` 沿用历史命名，也可登记客户端上下文或关闭回调；这不表示 Session 拥有 HTTP 服务进程。
+`include_sidecars=False` 的维护会话不启动模型、不解析检测凭据，也不探测远端；若后续显式调用检测，其客户端仍由会话清理。
+
 <a id="perception-pipeline"></a>
 
-## 十一、视觉感知：检测器作为子进程
+## 十一、视觉感知：HTTP 推理与可选本地模型
 
-检测服务运行 GroundingDINO 和 SAM2。客户端通过 HTTP 发送图像和目标文本，接收掩膜、框和分数；深度与标定变换用于主进程内的三维计算。
+Agent 框架主机通过串口、USB、HTTP 等已有适配器连接本体和外设，并通过独立的 HTTP 接口调用模型服务。
+推理服务器运行 GroundingDINO 和 SAM2，Agent 发送图像和目标文本，接收掩膜、框和分数；深度、标定与三维计算留在 Agent 进程。
+Agent 不要求部署在本体上，远程模式不加载或下载视觉模型，也不会在服务失败后启动本地模型。
 
 下图展开[完整任务主线 C 阶段](#task-lifecycle)中视觉动作的内部处理。输入是标定帧与目标文本，输出按动作契约返回到工具调用方，再进入记账和后续编排。
 
-![视觉管线：主进程采集标定帧，通过 HTTP 检测，再在主进程计算三维几何](../../images/architecture-perception.zh.svg)
+```mermaid
+flowchart LR
+    B[本体及相机] -->|串口 / USB / HTTP 等已有接口| A[Agent 采集 RGB 与标定帧]
+    A -->|HTTP: RGB + 目标文本| S[外部推理服务器\n或可选本地模型子进程]
+    S -->|mask / box / score| G[Agent 三维几何与动作结果]
+    A -->|同帧深度 / 内参 / 变换| G
+```
 
 1. **采集**：适配器提供 `CameraFrame`，包括 RGB、深度、相机内参以及相机到基座的变换。
-2. **检测**：`detector_client` 将 RGB 与目标文本发送到 `/segment`，解码返回的 mask 等结果。
+2. **检测**：会话持有的 `DetectorClient` 将 RGB 与目标文本发送到 `/v1/segment`，校验请求/帧标识、尺寸、载荷和年龄，解码无损 PNG mask。本地与远程共用该接口；旧配置和 Python 入口迁移后也使用它，无需配置接口版本。
 3. **三维计算**：`scene3d` 使用 mask、深度、内参和坐标变换调用共享几何算法，得到基座坐标系下的位置及物体/表面几何。
 4. **动作返回**：`locate_for_grasp`、`locate_for_place`、`analyze_scene` 按各自契约返回结果或失败原因；不存在所有动作都相同的一组结果字段。
 
-使用本地检测 sidecar 时，Session 管理其生命周期；也可以配置已有检测服务，是否启动本地进程由 `spawn` 决定。适配器仍需提供正确的相机、标定和检测配置。
+本节统称“HTTP 推理服务”：HTTP 描述通信方式，sidecar 仅指随 Session 启停的本地托管子进程。
+`perception/config.py` 为全部适配器解析 `detector.mode`：`remote` 连接外部管理的 HTTP 服务，`local` 显式启动本地托管子进程（sidecar），`disabled` 关闭检测且是缺省模式。
+本机手动启动的服务也使用 `remote`；即使地址是 `127.0.0.1`，它的进程仍由部署者管理。
+本地端口冲突明确失败；使用已有 localhost 服务时也选择 `remote`。启动检查使用应用健康接口，不能仅以端口开放判断模型就绪。
+旧 `api_servers` 和 Python `DetectorServerConfig` 保留一个迁移版本，显式 `spawn: false` 映射为远程旧协议。
+
+成功的空检测与服务故障分别处理：网络、协议和超时错误保留 `inference_*` 错误码，不能被解释为场景已清空或可容忍遮挡。
+过期结果不写入定位缓存；跟踪错误中止控制，正在执行的底盘逼近会停止驱动。采集年龄上限不替代机器人动作引起的位置失效规则。
+部署、安装组、语音 HTTP 后端及迁移示例见[远程推理服务](../how-to/remote-inference.md)。
 
 `pixel_to_base_xyz` 是单点投影动作，不是这条共享管线内部必经的动作调用。`api/defaults.py` 转发到共享函数；视觉和逼近逻辑仍由显式动作绑定进入工具列表。
 
@@ -334,13 +355,14 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 
 ## 十二、`make_builder`：消除样板代码
 
-`adapters/_common/builder.py` 的 `make_builder` 封装配置解析、Env/API 构造、sidecar 启动器收集和 Session 装配，可追加 `decorate` 回调：
+`adapters/_common/builder.py` 的 `make_builder` 封装配置解析、Env/API 构造、客户端与可选本地进程的资源登记和 Session 装配，可追加 `decorate` 回调：
 
 ```python
 build_xxx_session = make_builder(
     XxxConfig, XxxEnv, XxxApi,
-    api_kwargs_from_cfg=["z_correction_mm", "detector.url:detector_service_url"],
+    api_kwargs_from_cfg=["z_correction_mm"],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_set_extra_globals,
 )
 # build_xxx_session(cfg)
@@ -348,7 +370,9 @@ build_xxx_session = make_builder(
 # build_xxx_session.from_dict({...})
 ```
 
-`api_kwargs_from_cfg` 支持同名字段、`cfg:api` 重命名和嵌套点路径；复杂转换可使用回调。`make_detector_sidecar()` 读取检测配置并按 `spawn` 决定是否启动本地服务。构造 Session 与连接硬件是不同阶段。
+`api_kwargs_from_cfg` 支持同名字段、`cfg:api` 重命名和嵌套点路径；复杂转换可使用回调。
+`managed_detector=True` 创建客户端，通过 `detector_client` 参数注入 Api 并登记清理；`make_detector_sidecar()` 只为 `local` 模式提供模型进程。
+客户端与本地进程共用已有 Session 生命周期，不增加第二个资源所有者。构造 Session 与连接硬件是不同阶段。
 
 适配器 Config 声明自身的 `path_fields`，`from_yaml` 通过公共 `load_yaml_config` 解析。
 Runtime 和冒烟验证使用同一 `parse_config` 处理配置来源，适配器继续负责默认值、环境覆盖和校验；
@@ -372,7 +396,7 @@ Runtime / `admitted_session` 取得资源使用权，RobotSession 负责连接�
 | `lowlevel.py` | 厂商 SDK 或通信协议；实现设备支持的 Driver 协议 |
 | `env.py` | 生命周期、观测、能力声明、单位、几何与安全属性 |
 | `api.py` | 动作绑定；复用通用函数或实现设备特有语义 |
-| `session.py` | 用 `make_builder` 装配配置、Env、API 和 sidecar |
+| `session.py` | 用 `make_builder` 装配配置、Env、API、客户端和可选本地进程 |
 | `calibration.py`（可选模板） | 标定适配包装；按模板说明放入 `calibration/adapters/<本体>.py` 并暴露 `CALIBRATION_ADAPTER_SPEC` |
 
 能满足共享实现假设的动作直接转发 `defaults`。坐标、传感器、末端控制或恢复语义不同的动作，需要适配器实现与验证。若已有动作词表不能表达新需求，应先设计共享契约，再增加实现。
@@ -416,4 +440,4 @@ Runtime / `admitted_session` 取得资源使用权，RobotSession 负责连接�
 - [执行轨迹模块设计](../../../design/tracing.md)：Trace 生命周期、事件归属、持久化与资源边界。
 - [Trace Feedback Loop 模块设计](../../../design/trace-feedback-loop.md)：在线诊断与离线失败聚类。
 - [日志模块设计](../../../design/logging.md)：handler 所有权、输出隔离与 Trace 日志转发。
-- [语音控制集成模块设计](../../../design/voice-control-integration.md)：语音前端与文本任务执行器的连接。
+- [外挂 HTTP 推理服务设计：视觉与语音](../../../design/remote-vision-and-speech.md)：服务职责、视觉/语音调用链、生命周期与验收要求。

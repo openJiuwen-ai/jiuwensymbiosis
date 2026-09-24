@@ -27,7 +27,7 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | `lowlevel.py` | 厂商 SDK、CAN、串口、Socket、相机和执行器 I/O | Agent、Rail、`@implements` |
 | `env.py` | 能力、生命周期、观测、安全属性、Driver 包装 | 提示词和厂商流程编排 |
 | `api.py` | `@implements(SPEC)` 绑定、机型几何、相机/标定/检测钩子 | 重复的检测/校正流水线 |
-| `session.py` | Config/Env/Api、sidecar 和附加对象接线 | 大段业务实现 |
+| `session.py` | Config/Env/Api、HTTP 客户端、可选本地进程和附加对象接线 | 大段业务实现 |
 | `config_template.yaml` | 可部署起点及字段注释 | 用户任务和秘密凭据 |
 | `calibration.py`（可选） | 手眼标定 wrapper，暴露 `CALIBRATION_ADAPTER_SPEC` | 标定求解/质检逻辑（归 calibration 子系统） |
 
@@ -176,13 +176,13 @@ Config 至少提供 `from_dict(data)` 和 `from_yaml(path)`。常用字段按能
 | 安全 | `z_min_safe_mm`、XY 边界、`joint_limits` |
 | 末端 | 开口、力、吸盘 I/O |
 | 相机 | serial、分辨率、FPS、内参/标定路径 |
-| 检测 | URL、spawn、模型、阈值 |
+| 检测 | `detector.mode`；remote 的 `endpoint`；local 的模型、设备与阈值 |
 | 抓放几何 | `z_correction_mm`、`grasp_z_offset_mm`、`place_z_offset_mm` |
 
 `make_builder()` 签名：
 
 ```python
-make_builder(
+def make_builder(
     cfg_cls,
     env_cls,
     api_cls,
@@ -191,8 +191,9 @@ make_builder(
     resource_keys=None,
     api_kwargs_from_cfg=None,
     sidecar_builders=None,
+    managed_detector=False,
     decorate=None,
-)
+): ...
 ```
 
 | 参数 | 作用 |
@@ -204,6 +205,7 @@ make_builder(
 | `api_cls` | 以 `env` 和可选 kwargs 构造的 Api 类 |
 | `api_kwargs_from_cfg` | `list[str]` 声明式映射或兼容的 `cfg -> dict` 回调 |
 | `sidecar_builders` | 每项接收 cfg，返回 context manager、零参工厂或 `None` |
+| `managed_detector` | 默认 `False`；为视觉适配器设为 `True`，由 Session 创建、注入并关闭 `detector_client` |
 | `decorate` | 最终 Session 装饰回调，普通适配器通常不用 |
 
 声明式字段映射：
@@ -211,24 +213,35 @@ make_builder(
 | 写法 | 结果 |
 |---|---|
 | `"z_correction_mm"` | `cfg.z_correction_mm` 传给同名 Api 参数 |
-| `"detector.url:detector_service_url"` | 嵌套字段重命名后传入 |
+| `"camera_calib_path:calibration_path"` | 配置字段重命名后传入；目标名称须与 Api 构造参数一致 |
 
-返回的 Builder 支持 `build(cfg)`、`.from_yaml(path)` 和 `.from_dict(data)`。`make_detector_sidecar(cfg_attr="detector")` 读取检测子配置，在 `spawn` 为真时随 Session 启停 GroundingDINO/SAM2 服务。
+返回的 Builder 支持 `build(cfg)`、`.from_yaml(path)` 和 `.from_dict(data)`。
+Config 的 `detector` 使用 `DetectorConfig`，加载器用 `parse_detector_config(data)` 解析完整
+配置，缺省为 `disabled`。`managed_detector=True` 时 Api 构造方法须接受 `detector_client`
+关键字参数，并复用该可调用客户端；只传 URL 的方式仅用于旧调用方兼容。
+
+GroundingDINO/SAM2 提供 HTTP 推理服务。`make_detector_sidecar(cfg_attr="detector")`
+只在 `detector.mode: local` 时启动本地托管子进程（sidecar），并随 Session 关闭。
+`remote` 通过 `detector.endpoint` 连接外部管理的 HTTP 服务，包含独立运行的 `localhost`
+服务；Session 只关闭自己的客户端，不停止该服务。`disabled` 不发起推理请求。
+三个构造入口均接受 `include_sidecars=False`：维护连接跳过本地进程启动和客户端凭据解析，
+仍注册客户端清理，显式推理时才按需连接。配置示例见[远程推理指南](../how-to/remote-inference.md)。
 
 资源键与实际连接必须使用同一份有效配置。Cruzr 的 `ros_domain_id` 可在 YAML 中显式指定；
 省略时在 Config 构建时捕获 `ROS_DOMAIN_ID`（默认 0）。ROS 初始化和命令 worker 使用该值，
-已有 ROS context 的域不一致时拒绝连接。sidecar 的退出失败必须传播；若启动失败但已完成回滚，
+已有 ROS context 的域不一致时拒绝连接。本地托管子进程的退出失败必须传播；若启动失败但已完成回滚，
 可提供 `cleanup_report() -> CleanupReport` 确认释放，否则 Session 保留未知清理状态。
 
 ## 7. 共享感知与几何模块
 
 | 模块 | 主要接口 | 用途 |
 |---|---|---|
-| `adapters/_common/builder.py` | `make_builder()`、`make_detector_sidecar()` | Session 工厂和检测 sidecar |
+| `adapters/_common/builder.py` | `make_builder()`、`make_detector_sidecar()` | Session 客户端所有权与可选 local 子进程装配 |
 | `adapters/_common/capability_spec.py` | `CAPABILITY_ACTIONS`、`CAPABILITY_DRIVER_MEMBERS` | 能力→动作/Driver 成员映射（验证器与生成器共用） |
 | `adapters/_common/safety.py` | `WorkspaceBounds`、`check_flange_z()` | TIP/FLANGE Z 防御 |
-| `perception/detector_client.py` | `init_detector()` | HTTP 检测客户端 |
-| `perception/detector_sidecar.py` | `detector_subprocess()` | 检测服务生命周期 |
+| `perception/config.py` | `DetectorConfig`、`parse_detector_config()` | remote / local / disabled 配置及兼容归一化 |
+| `perception/detector_client.py` | `create_detector_client()`、`segment_image()`；兼容 `init_detector()` | 可关闭的 HTTP 推理客户端 |
+| `perception/detector_sidecar.py` | `detector_subprocess()` | 仅本地托管检测子进程的生命周期 |
 | `perception/scene3d.py` | `locate_for_grasp()`、`locate_for_place()`、`analyze_scene()` | 标定帧→检测→掩膜点云→物体/表面几何（3-D 场景感知） |
 | `perception/vision.py` | `detect_and_centroid()`、`apply_xy_correction()`、`default_pixel_to_base_xyz()`、`default_get_grasp_info_simple()` | 检测/校正/eye-in-hand 投影共享函数 |
 | `perception/calibration.py` | `load_calibration()` | 版本化手眼标定加载 |
@@ -236,28 +249,47 @@ make_builder(
 | `motion/dual_arm.py` | `dual_arm_grasp()`、`dual_arm_place()` | 双臂协同抓/放（含接触力确认） |
 | `contracts.py` | `GraspResult`、`ObjectGeometryResult`、`SPATIAL_RELATIONS` 等 | 动作结果类型 + 空间关系集（不归属任何层） |
 
-### `init_detector`
+### `create_detector_client`
 
 ```python
-seg_fn = init_detector("http://127.0.0.1:8114")
-results = seg_fn(image_ndarray, text_prompt="blue box")
+from jiuwensymbiosis.perception.config import parse_detector_config
+from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+detector_cfg = parse_detector_config({
+    "detector": {
+        "mode": "remote",
+        "endpoint": {"url": "http://127.0.0.1:8114"},
+    },
+})
+# 独立脚本拥有客户端；适配器使用 Session 注入的 detector_client。
+with create_detector_client(detector_cfg) as seg_fn:
+    results = seg_fn(image_ndarray, text_prompt="blue box")
 ```
 
-结果项包含布尔 `mask`、`[x1,y1,x2,y2]`、score 和 label；服务不可达时返回空结果。
+结果项包含布尔 `mask`、`box=[x1,y1,x2,y2]`、score 和 label。空列表表示成功推理没有检测结果。
+服务不可达、超时、无效响应和结果过期抛出 `InferenceServiceError`，其 `code`
+为对应的 `inference_*` 值；不会自动启动本地模型。
+
+`init_detector(url)` 保留原 Python 调用方式，统一连接当前 `/v1` 接口，返回同样需要关闭的客户端，
+也会显式抛出服务异常。新适配器使用 `managed_detector=True` 注入客户端，新脚本使用上面的上下文。
 
 ### `detect_and_centroid`
 
 ```python
-result = detect_and_centroid(
-    rgb=rgb_ndarray,
-    depth_img_m=depth_ndarray,
-    seg_fn=seg_fn,
-    object_name="red block",
-    tcp_at_grab=pose_at_grab,
-)
+with create_detector_client(detector_cfg) as seg_fn:
+    result = detect_and_centroid(
+        rgb=rgb_ndarray,
+        depth_img_m=depth_ndarray,
+        seg_fn=seg_fn,
+        object_name="red block",
+        tcp_at_grab=pose_at_grab,
+        captured_monotonic_s=capture_started,  # 在采集开始前记录的 time.monotonic()
+    )
 ```
 
-成功结果包含 `u`、`v`、`depth_m`、best、mask shape 和 image shape；失败原因包括 `no_detection`、`empty_mask`、`no_valid_depth`。
+成功结果包含 `u`、`v`、`depth_m`、best、mask shape 和 image shape；观测失败原因包括
+`no_detection`、`empty_mask`、`no_valid_depth`。HTTP 服务异常被报告为 `ok=False`、
+`reason="detector_unavailable"`，并保留 `error_code="inference_*"`；取消继续向上传播。
 
 ### `apply_xy_correction`
 

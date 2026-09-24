@@ -38,15 +38,26 @@
 | 相机安装模型 | 合成场景 | eye-in-hand | eye-to-hand | eye-to-hand（腰部 + 头部随动） |
 | 手眼变换 | 测试几何 | `T_base_flange(live) @ T_flange_cam` | 固定 `T_base_cam` | 实时 `T_base_cam`（TF 查找，静态标定回退；头部按关节实时算） |
 | 可达性（URDF） | — | — | — | ✅ `planning.reachability`（双臂 + 自适应升降判据） |
-| 检测 sidecar | — | ◐ `detector.spawn=true` | ◐ `detector.spawn=true` | ◐（`api_servers`） |
-| 主要可选依赖 | `dev`（测试） | `piper`；视觉再加 `full` | Python 3.12 + `so101`；视觉再加 `full` | `cruzr`；视觉再加 `full`；运行时需 source ROS 工作区 |
+| HTTP 检测服务 | — | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` |
+| 本地托管检测子进程（sidecar） | — | ◐ 仅 `mode: local` | ◐ 仅 `mode: local` | ◐ 仅 `mode: local` |
+| 主要可选依赖 | `dev`（测试） | `piper`；HTTP 客户端 `remote`；RealSense `camera` | Python 3.12 + `so101`；HTTP 客户端 `remote`；RealSense `camera` | `cruzr`；HTTP 客户端 `remote`；运行时需 source ROS 工作区 |
 | 配置目录 | 测试或示例内构造 | `configs/piper/` | `configs/so101/` | `configs/cruzr/` |
 
 视觉条件有一处实现差异：
 
 - Piper Env 的类级能力包含视觉，`camera_serial` 未配置时不会创建相机；运行视觉任务仍必须提供相机、标定和检测服务。
 - SO-101 根据 `camera_serial` 生成实例能力；未配置相机时不会声明视觉能力，已连接 Driver 若报告相机不可用还会进一步收窄能力。配置了相机但启动失败时，连接按 fail-closed 处理。
-- Cruzr 声明腰部 + 头部双路相机与深度；视觉服务经 `api_servers` 提供，检测不可达时共享客户端返回空结果并转换为 `{"ok": false, "reason": "no_detection"}`。
+- Cruzr 声明腰部 + 头部双路相机与深度；与其他正式适配器共用 `detector.mode` 和 HTTP 客户端。
+
+三个适配器的检测配置缺省为 `disabled`。`local` 表示由 Session 管理的本地托管子进程
+（sidecar）；`remote` 表示外部管理的 HTTP 推理服务，包含独立运行在 `localhost` 的服务。
+Session 退出只关闭 remote 客户端，不停止外部服务。模型依赖安装在实际运行模型的环境，
+Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Torch。
+配置与兼容迁移见[远程推理指南](../how-to/remote-inference.md)。
+
+客户端通过 `InferenceServiceError` 和 `inference_*` 错误码报告连接、超时、协议或
+结果过期；感知动作保留 `error_code` 并返回 `reason="detector_unavailable"`。
+服务错误不转换为空结果或 `no_detection`，后者只表示成功推理没有目标。
 
 ## 3. 框架 Capability 矩阵
 
@@ -111,9 +122,10 @@
 | 特性 | 状态 | 实现或条件 |
 |---|---|---|
 | RGB + 对齐深度 | ◐ | RealSense/适配器 Driver；深度边界统一为米 |
-| GroundingDINO 文本检测 | ◐ | 安装 `full` 并启动或连接检测服务 |
-| SAM2 mask | ◐ | 检测配置 `use_sam2=true` |
-| 检测 sidecar 生命周期 | ✅ | `make_detector_sidecar()` 随 Session 启停 |
+| GroundingDINO 文本检测 | ◐ | Agent 安装 `remote` 连接 HTTP 推理服务；模型环境按需安装 `vision-server` |
+| SAM2 mask | ◐ | 推理服务端启用 SAM2；local 对应 `detector.local.use_sam2=true` |
+| HTTP 客户端生命周期 | ✅ | `managed_detector=True` 时由 Session 注入并关闭；remote 服务由外部管理 |
+| 本地托管子进程生命周期 | ✅ | `mode: local` 时 `make_detector_sidecar()` 随 Session 启停 |
 | mask 质心与中值深度 | ✅ | `scene3d.locate_for_grasp`/`analyze_scene` |
 | eye-in-hand 投影 | ✅ | Piper 提供实现；需要 `T_flange_cam` 与实时法兰位姿 |
 | eye-to-hand 投影 | ✅ | SO-101 使用固定 `T_base_cam`；Cruzr 优先使用实时 TF，静态标定回退 |
@@ -132,16 +144,19 @@
 | Piper Adapter | ◐ | `pip install -e ".[piper]"` |
 | SO-101 Adapter | ◐ | Python 3.12；`pip install -e ".[so101]"` |
 | Cruzr Adapter | ◐ | `pip install -e ".[cruzr]"`；运行时需 source ROS 工作区 |
-| 视觉/GPU | ◐ | `pip install -e ".[full]"` 并使用 CUDA 12.8 PyTorch 源 |
+| 远程 HTTP 推理客户端 | ◐ | `pip install -e ".[remote]"`；不安装视觉/语音模型 |
+| 可选视觉模型服务 | ◐ | 在模型主机安装 `.[vision-server]`，选择匹配的 Torch/CUDA；Agent 仅在 `mode: local` 时托管子进程 |
 | 浏览器 GUI | ◐ | `pip install -e ".[gui]"`；`jiuwensymbiosis-gui --gui workbench`，默认 `127.0.0.1:8770`；`--list-guis` 列出已安装插件 |
-| 语音前端 | ◐ | `pip install -e ".[voice]"`；FunASR/录音可选，默认 `NullTTS` |
+| 语音前端 | ◐ | 远程使用 `.[remote,voice-io]`；ASR 默认 disabled，TTS 默认 null；本地 FunASR/ChatTTS 显式可选 |
 | 手眼标定 | ◐ | `pip install -e ".[calib,piper]"` 或 `.[calib,so101]` |
 | 动作/技能/状态自省 | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace 回放 | ✅ | `jiuwensymbiosis-replay` |
 | 核心测试 | ✅ | `pip install -e ".[dev]"`；`make test-core` |
 | GUI 测试 | ◐ | `pip install -e ".[dev,gui]"`；`make test-gui` |
 
-`make test` 运行这两套无硬件测试；`make test-all` 还会包含集成测试。
+`make test` 默认只运行核心测试，仅需 `.[dev]`。运行两套无硬件测试时，安装
+`.[dev,gui]` 后执行 `make test test-gui`。`make test-all` 还会包含集成测试，
+需准备相应依赖及运行环境。
 `.[gui]` 提供工作台的界面依赖；其它已安装的 GUI 插件各自提供所需的界面依赖。
 
 矩阵维护时应同时核对以下权威源：

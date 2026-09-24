@@ -31,7 +31,7 @@ add a construction step with no runtime benefit.
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 __all__ = [
     # Vision / grasp detection
@@ -83,6 +83,7 @@ class GraspFailure(TypedDict):
     ok: Literal[False]
     reason: DetectionReason
     object: str
+    error_code: NotRequired[str]
 
 
 class GraspResult(TypedDict, total=False):
@@ -123,6 +124,7 @@ class SensingFailure(TypedDict):
     ok: Literal[False]
     reason: str
     object: str
+    error_code: NotRequired[str]
 
 
 class ObjectGeometryResult(TypedDict, total=False):
@@ -198,6 +200,7 @@ class ApproachFailure(TypedDict, total=False):
 
     ok: Literal[False]
     reason: str
+    error_code: str
     turn_rad: float
     forward_m: float
     iters: int

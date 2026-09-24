@@ -4,10 +4,10 @@
 
 A license-clean open-vocabulary detection server. The client
 (``detector_client``) and everything downstream (``detect_and_centroid`` →
-projection → grasp_z/place_z → agent) consume this ``/segment`` contract:
+projection → grasp_z/place_z → agent) use the versioned HTTP interface:
 
-  POST /segment  {image_base64, text_prompt}
-    -> {results: [ {mask_base64, shape, box, score, label}, ... ]}
+  POST /v1/segment: image, text prompt, request/frame identity
+    -> versioned result with lossless PNG masks, boxes, scores and labels
 
 Why this backend:
   * GroundingDINO (IDEA-Research, Apache-2.0) does open-vocabulary text→box
@@ -18,7 +18,7 @@ Why this backend:
     ObjectDetection), which avoids compiling GroundingDINO's custom CUDA op
     (painful on CUDA 12.8).
 
-Accuracy choices (see PiperConfig / the api_servers YAML):
+Accuracy choices (see detector.local in the runtime YAML):
   * detector default = ``IDEA-Research/grounding-dino-base`` (Swin-B, not Tiny).
   * segmenter default = ``facebook/sam2.1-hiera-large`` (best masks).
   * box/text thresholds are configurable; the downstream still picks the
@@ -42,9 +42,7 @@ sidecar's ``startup_timeout_s`` must allow for it.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import base64
-import functools
 import io
 import logging
 import os
@@ -53,16 +51,19 @@ import time
 from typing import Any
 
 import numpy as np
-import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+
+from jiuwensymbiosis.perception.detector_client import MAX_PIXELS, encode_mask_png
+from jiuwensymbiosis.serving.http_support import InferenceAdmission, configure_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jiuwensymbiosis.serving.gdino_sam2")
 
 app = FastAPI(title="jiuwensymbiosis GroundingDINO+SAM2 server")
+configure_service(app)
 
 # --- global model state (populated in main()) -------------------------------
 _GDINO_PROCESSOR: Any | None = None
@@ -75,18 +76,16 @@ _TEXT_THR: float = 0.25
 _USE_SAM2: bool = True
 
 # Serialize GPU access — concurrent inference can OOM on small cards.
-_GPU_SEMAPHORE = asyncio.Semaphore(1)
+_ADMISSION = InferenceAdmission()
 
 # Cap detections returned per call (GroundingDINO rarely emits many, but the
 # downstream only ever uses the top few). Override via env JIUWEN_VIS_TOPK.
-_SEGMENT_TOPK = int(os.environ.get("JIUWEN_VIS_TOPK", "32"))
+_SEGMENT_TOPK = min(32, max(1, int(os.environ.get("JIUWEN_VIS_TOPK", "32"))))
 
 
 async def _run_on_gpu(fn, *args, **kwargs):
     """Run a blocking function on a thread pool while serializing GPU access."""
-    async with _GPU_SEMAPHORE:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+    return await _ADMISSION.run(fn, *args, **kwargs)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -98,7 +97,9 @@ def _to_numpy(tensor: Any) -> np.ndarray:
     So route any torch tensor through ``detach().cpu()`` BEFORE the generic
     ``.numpy()`` fallback (which is only for non-torch array-likes).
     """
-    if isinstance(tensor, torch.Tensor):
+    # Numpy-only route/codec tests and --help do not require the model extra.
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(tensor, torch.Tensor):
         t = tensor.detach().cpu()
         if t.dtype == torch.bfloat16:
             t = t.float()
@@ -110,34 +111,42 @@ def _to_numpy(tensor: Any) -> np.ndarray:
     return np.asarray(tensor)
 
 
-def _decode_image(b64: str) -> Image.Image:
+def _decode_image(b64: str, mime_type: str | None = None) -> Image.Image:
     """Decode a base64-encoded image string into an RGB PIL Image."""
     try:
-        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        with Image.open(io.BytesIO(base64.b64decode(b64, validate=True))) as image:
+            if image.format not in {"JPEG", "PNG"} or image.width * image.height > MAX_PIXELS:
+                raise ValueError("unsupported or oversized image")
+            if mime_type is not None and mime_type != {"JPEG": "image/jpeg", "PNG": "image/png"}[image.format]:
+                raise ValueError("image encoding differs from its MIME type")
+            return image.convert("RGB")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}") from exc
 
 
-def _encode_mask(mask: np.ndarray) -> str:
-    """Encode a boolean numpy mask as a base64 uint8 byte string."""
-    return base64.b64encode(mask.astype(np.uint8).tobytes()).decode("utf-8")
+class ImageData(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    mime_type: str
+    data_base64: str = Field(min_length=1, max_length=16_777_216)
+    width: int = Field(gt=0, le=MAX_PIXELS)
+    height: int = Field(gt=0, le=MAX_PIXELS)
 
 
-class SegmentRequest(BaseModel):
-    image_base64: str
-    text_prompt: str
+class SegmentV1Request(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_version: int = Field(default=1, ge=1, le=1)
+    request_id: str = Field(min_length=1, max_length=128)
+    frame_id: str = Field(min_length=1, max_length=128)
+    image: ImageData
+    text_prompt: str = Field(min_length=1, max_length=4096)
+    top_k: int = Field(default=32, gt=0, le=32)
 
 
 class MaskData(BaseModel):
-    shape: list[int]
     box: list[float]
     score: float
     label: str
-    mask_base64: str
-
-
-class SegmentResponse(BaseModel):
-    results: list[MaskData]
+    mask: dict[str, str]
 
 
 # --- inference --------------------------------------------------------------
@@ -154,6 +163,8 @@ def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.nda
     # _GDINO_PROCESSOR / _GDINO_MODEL are module-level import-guard objects
     # (Any | None); this function runs only after server startup has loaded
     # them, so they are non-None here.
+    import torch
+
     inputs = _GDINO_PROCESSOR(images=pil_image, text=text, return_tensors="pt").to(_DEVICE)  # type: ignore[misc]
     with torch.no_grad():
         outputs = _GDINO_MODEL(**inputs)  # type: ignore[misc]
@@ -202,6 +213,8 @@ def _sam2_masks(pil_image: Image.Image, boxes: np.ndarray) -> list[np.ndarray]:
     # (Any | None); this function runs only after server startup has loaded
     # them (and only when --no-sam2 is not set). Per-line type: ignore rather
     # than assert — assert is reserved for tests (`python -O` strips it).
+    import torch
+
     input_boxes = [[[float(x) for x in b] for b in boxes]]  # (batch=1, N, 4)
     inputs = _SAM2_PROCESSOR(
         images=pil_image,
@@ -233,22 +246,32 @@ def _sam2_masks(pil_image: Image.Image, boxes: np.ndarray) -> list[np.ndarray]:
     return out
 
 
-def _do_segment(pil_image: Image.Image, text_prompt: str) -> SegmentResponse:
+def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
     """Run GroundingDINO detection and optional SAM2 segmentation on one image."""
     t0 = time.perf_counter()
     text = _normalize_prompt(text_prompt)
     boxes, scores = _gdino_detect(pil_image, text)
+    h, w = pil_image.height, pil_image.width
+    # GroundingDINO emits cxcywh-derived corners outside the image for edge objects.
+    # SAM2 and the HTTP response share the clipped, nonempty image-space boxes.
+    finite = np.isfinite(boxes).all(axis=1)
+    boxes = boxes.copy()
+    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w)
+    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
+    keep = finite & (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    boxes, scores = boxes[keep], scores[keep]
     t_det = time.perf_counter() - t0
     if boxes.shape[0] == 0:
-        logger.info("[gdino] /segment prompt=%r det=%.0fms kept=0", text_prompt, t_det * 1000.0)
-        return SegmentResponse(results=[])
+        logger.info("[gdino] /v1/segment prompt=%r det=%.0fms kept=0", text_prompt, t_det * 1000.0)
+        return []
 
     order = np.argsort(scores)[::-1][:_SEGMENT_TOPK]
     boxes, scores = boxes[order], scores[order]
 
-    h, w = pil_image.height, pil_image.width
     t1 = time.perf_counter()
-    if _USE_SAM2 and _SAM2_MODEL is not None:
+    if _USE_SAM2 and _SAM2_MODEL is None:
+        raise RuntimeError("SAM2 has not loaded; use --no-sam2 to explicitly disable it")
+    if _USE_SAM2:
         masks = _sam2_masks(pil_image, boxes)
     else:
         masks = [_box_to_mask(b, h, w) for b in boxes]
@@ -260,15 +283,14 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> SegmentResponse:
             continue
         items.append(
             MaskData(
-                mask_base64=_encode_mask(m),
-                shape=list(m.shape),
+                mask=encode_mask_png(m),
                 box=[float(x) for x in b],
                 score=float(s),
                 label=text_prompt,
             )
         )
     logger.info(
-        "[gdino] /segment prompt=%r det=%.0fms seg=%.0fms kept=%d/%d sam2=%s",
+        "[gdino] /v1/segment prompt=%r det=%.0fms seg=%.0fms kept=%d/%d sam2=%s",
         text_prompt,
         t_det * 1000.0,
         t_seg * 1000.0,
@@ -276,31 +298,58 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> SegmentResponse:
         len(scores),
         bool(_USE_SAM2 and _SAM2_MODEL is not None),
     )
-    return SegmentResponse(results=items)
+    return items
 
 
 # --- routes -----------------------------------------------------------------
-@app.get("/health")
-async def health() -> dict:
-    """Return server health status including model readiness and backend."""
+def _ready() -> bool:
+    return _GDINO_MODEL is not None and (not _USE_SAM2 or _SAM2_MODEL is not None)
+
+
+@app.get("/v1/health")
+async def health_v1(request: Request) -> dict:
     return {
-        "status": "ok" if _GDINO_MODEL is not None else "loading",
-        "device": _DEVICE,
-        "backend": "gdino_sam2" if (_USE_SAM2 and _SAM2_MODEL is not None) else "gdino",
+        "schema_version": 1,
+        "request_id": request.headers.get("x-request-id"),
+        "result": {
+            "service": "vision",
+            "status": "ready" if _ready() else "loading",
+            "backend": "gdino_sam2" if _USE_SAM2 else "gdino",
+            "device": _DEVICE,
+            "formats": ["image/jpeg", "image/png"],
+            "max_pixels": MAX_PIXELS,
+            "max_detections": 32,
+        },
     }
 
 
-@app.post("/segment", response_model=SegmentResponse)
-async def segment(req: SegmentRequest):
-    """Run open-vocabulary detection and segmentation on the provided image."""
-    if _GDINO_MODEL is None:
-        raise HTTPException(status_code=503, detail="Model not initialized")
-    pil = _decode_image(req.image_base64)
+@app.post("/v1/segment")
+async def segment_v1(req: SegmentV1Request, request: Request) -> dict:
+    request.state.request_id = req.request_id
+    if not _ready():
+        raise HTTPException(503, detail="Models are not ready")
+    if req.image.mime_type not in {"image/jpeg", "image/png"}:
+        raise HTTPException(422, detail="Unsupported image format")
+    pil = _decode_image(req.image.data_base64, req.image.mime_type)
+    if pil.size != (req.image.width, req.image.height):
+        raise HTTPException(422, detail="Image dimensions differ from declared dimensions")
     try:
-        return await _run_on_gpu(_do_segment, pil, req.text_prompt)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Inference failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
+        result = await _run_on_gpu(_do_segment, pil, req.text_prompt, request=request)
+        return {
+            "schema_version": 1,
+            "request_id": req.request_id,
+            "result": {
+                "frame_id": req.frame_id,
+                "width": pil.width,
+                "height": pil.height,
+                "detections": [item.model_dump() for item in result[: req.top_k]],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Vision inference failed")
+        raise HTTPException(503, detail="Vision inference failed") from exc
 
 
 # --- entry point ------------------------------------------------------------
@@ -322,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.set_defaults(use_sam2=True)
     args = parser.parse_args(argv)
+
+    import torch
 
     global _GDINO_PROCESSOR, _GDINO_MODEL, _SAM2_MODEL, _SAM2_PROCESSOR, _DEVICE
     global _BOX_THR, _TEXT_THR, _USE_SAM2

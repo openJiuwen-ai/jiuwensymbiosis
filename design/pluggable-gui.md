@@ -692,10 +692,11 @@ python -m pytest tests/gui/
 可覆盖两套测试，但裸 pytest 也可能收集 integration，因此无硬件 CI 显式选择目录。
 现有用例未统一标记 unit，不改为仅依赖 `-m unit` 选核心测试。
 
-新增 `make test-core`、`make test-gui`；`make test` 运行核心和完整 GUI
-无硬件套件，`test-all` 保留包含集成测试的语义。
+提供 `make test-core`、`make test-gui`；`make test` 默认只运行核心测试，
+安装 `.[dev,gui]` 后用 `make test test-gui` 运行核心和完整 GUI 无硬件套件。
+`test-all` 保留包含 GUI 和集成测试的语义，需准备对应依赖及环境。
 补齐 Makefile 的 plain PATH 分支 PYTEST 定义，使 `CONDA_ENV=` 真正可用。
-core + dev 环境使用 test-core；完整 GUI 任务预检所需依赖，缺失直接失败。
+core + dev 环境使用 test 或 test-core；完整 GUI 任务预检所需依赖，缺失直接失败。
 
 移除当前缺 NiceGUI 时按文件名静默忽略页面集合的做法。核心 CI 自然不收集 GUI；
 GUI 发布验收必须实际收集并运行页面测试，记录数量和跳过原因。
