@@ -36,10 +36,9 @@ class TestBuildTTSBackend:
     def test_null_backend(self):
         assert isinstance(build_tts_backend(VoiceConfig(tts_backend="null")), NullTTS)
 
-    def test_chattts_without_path_falls_back_to_null(self):
-        # Missing tts_module_path must degrade gracefully, not crash.
-        tts = build_tts_backend(VoiceConfig(tts_backend="chattts", tts_module_path=None))
-        assert isinstance(tts, NullTTS)
+    def test_chattts_without_path_reports_configuration_error(self):
+        with pytest.raises(ValueError, match="module_path"):
+            build_tts_backend(VoiceConfig(tts_backend="chattts", tts_module_path=None))
 
     def test_chattts_with_path(self):
         from jiuwensymbiosis.voice.tts import ChatTTSBackend
@@ -60,6 +59,44 @@ class TestBuildTTSBackend:
 
 
 class TestChatTTSBackend:
+    def test_normal_wait_does_not_use_shutdown_timeout(self):
+        backend = build_tts_backend(
+            VoiceConfig(tts_backend="chattts", tts_module_path="/unused", shutdown_timeout_s=0.01)
+        )
+        gate = threading.Event()
+        started = threading.Event()
+        finished = threading.Event()
+        errors = []
+        backend._loaded = True
+
+        def speaker(text):
+            started.set()
+            assert gate.wait(2)
+
+        backend._speaker = speaker
+
+        def wait_for_tts():
+            try:
+                backend.wait()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        backend.speak("a long reply")
+        assert started.wait(1)
+        waiter = threading.Thread(target=wait_for_tts)
+        waiter.start()
+        try:
+            assert not finished.wait(0.1), "normal playback must outlive the shutdown budget"
+            gate.set()
+            assert finished.wait(1)
+            assert not errors
+        finally:
+            gate.set()
+            waiter.join(1)
+            backend.close(timeout_s=1)
+
     def test_wait_blocks_before_async_worker_acquires_playback_lock(self, monkeypatch):
         from jiuwensymbiosis.voice import tts as tts_module
 

@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+
+import pytest
 
 from jiuwensymbiosis_gui.workbench.app_state import AppState
 from jiuwensymbiosis_gui.workbench.config_model import ConfigModel
@@ -161,6 +164,66 @@ def test_prime_respects_user_env(monkeypatch):
     assert os.environ["GDINO_MODEL_ID"] == "/my/own/gdino"
 
 
+def test_prime_canonical_freezes_env_models_into_actual_sidecar_arguments(monkeypatch):
+    from jiuwensymbiosis.adapters._common.builder import make_detector_sidecar
+    from jiuwensymbiosis.adapters.piper.config import PiperConfig
+    from jiuwensymbiosis_gui.workbench import local_models
+
+    monkeypatch.setenv("GDINO_MODEL_ID", "/my/own/gdino")
+    monkeypatch.setenv("SAM2_MODEL_ID", "/my/own/sam2")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("explicit model paths need no cache search")
+
+    monkeypatch.setattr(local_models, "detect_local_model", forbidden)
+    cfg = ConfigModel.from_dict({"detector": {"mode": "disabled"}})
+    cfg.set("detector.mode", "local")
+    state = AppState()
+    state.set_config("piper", "pick_box", cfg)
+    assert state.prime_detector_models("piper", "pick_box") == []
+
+    # The GUI export and the real sidecar factory must agree after env changes.
+    restored = ConfigModel.from_yaml_text(cfg.to_yaml())
+    monkeypatch.setenv("GDINO_MODEL_ID", "/later/gdino")
+    monkeypatch.setenv("SAM2_MODEL_ID", "/later/sam2")
+    assert state.prime_detector_models("piper", "pick_box") == []
+    command = make_detector_sidecar()(PiperConfig.from_dict(restored.data))().command
+    assert command[command.index("--gdino-model-id") + 1] == "/my/own/gdino"
+    assert command[command.index("--sam2-model-id") + 1] == "/my/own/sam2"
+    assert cfg.get("detector.local.gdino_model_id") == "/my/own/gdino"
+    assert cfg.get("detector.local.sam2_model_id") == "/my/own/sam2"
+
+
+@pytest.mark.parametrize("model_id", ["/configured/gdino", "IDEA-Research/grounding-dino-base"])
+def test_prime_canonical_explicit_model_takes_precedence_over_env(model_id, monkeypatch):
+    from jiuwensymbiosis.perception.config import parse_detector_config
+    from jiuwensymbiosis_gui.workbench import local_models
+
+    monkeypatch.setenv("GDINO_MODEL_ID", "/from/env/gdino")
+    monkeypatch.setattr(local_models, "detect_local_model", lambda *args: None)
+    cfg = ConfigModel.from_dict(
+        {"detector": {"mode": "local", "local": {"gdino_model_id": model_id, "use_sam2": False}}}
+    )
+    state = AppState()
+    state.set_config("piper", "pick_box", cfg)
+    missing = state.prime_detector_models("piper", "pick_box")
+    assert missing == (["GroundingDINO"] if model_id == local_models.GDINO_REPO else [])
+    assert parse_detector_config(cfg.data).local.gdino_model_id == model_id
+
+
+def test_prime_canonical_blank_env_does_not_claim_models_are_ready(monkeypatch):
+    from jiuwensymbiosis_gui.workbench import local_models
+
+    monkeypatch.setenv("GDINO_MODEL_ID", "  \t")
+    monkeypatch.setenv("SAM2_MODEL_ID", "  \n")
+    monkeypatch.setattr(local_models, "detect_local_model", lambda *args: None)
+    cfg = ConfigModel.from_dict({"detector": {"mode": "local", "local": {}}})
+    state = AppState()
+    state.set_config("piper", "pick_box", cfg)
+    assert state.prime_detector_models("piper", "pick_box") == ["GroundingDINO", "SAM2"]
+    assert cfg.local_detector() == {}
+
+
 def test_prime_respects_explicit_config_model_id(tmp_path, monkeypatch):
     from jiuwensymbiosis_gui.workbench import local_models
 
@@ -218,6 +281,28 @@ def test_prime_treats_default_placeholder_as_not_explicit(tmp_path, monkeypatch)
 def test_prime_noop_without_detector():
     state = AppState()
     state.set_config("piper", "pick_box", ConfigModel.from_dict({"env": {"cfg": {"prompt": "hi"}}}))
+    assert state.prime_detector_models("piper", "pick_box") == []
+
+
+def test_prime_remote_never_searches_model_files(monkeypatch):
+    from jiuwensymbiosis_gui.workbench import app_state, local_models
+
+    state = AppState()
+    state.set_config(
+        "piper",
+        "pick_box",
+        ConfigModel.from_dict(
+            {
+                "detector": {"mode": "remote", "endpoint": {"url": "https://inference.invalid"}},
+            }
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("remote mode cannot probe local model files")
+
+    monkeypatch.setattr(local_models, "detect_local_model", forbidden)
+    monkeypatch.setattr(app_state, "os", SimpleNamespace(environ=SimpleNamespace(get=forbidden)))
     assert state.prime_detector_models("piper", "pick_box") == []
 
 

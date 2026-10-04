@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from jiuwensymbiosis_gui.workbench import registry
 from jiuwensymbiosis_gui.workbench.config_model import GROUP_ORDER, ConfigModel, FieldSpec, field_groups_for_config
@@ -107,6 +107,28 @@ class ConfigView:
             self._controls[spec.path] = control
             if spec.help:
                 control.tooltip(spec.help)
+        if group == "视觉服务" and self._model.detector_mode() == "remote":
+            status = ui.label("尚未检查远程服务；连接本体时不会自动发送推理请求。")
+
+            async def check_service() -> None:
+                from jiuwensymbiosis.perception.config import parse_detector_config
+                from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+                status.set_text("正在检查远程服务…")
+                try:
+                    config = parse_detector_config(self._model.data)
+
+                    def probe():
+                        with create_detector_client(config) as client:
+                            return client.readiness()
+
+                    await run.io_bound(probe)
+                except Exception as exc:
+                    status.set_text(f"服务检查失败：{exc}")
+                else:
+                    status.set_text("远程服务已就绪。")
+
+            ui.button("检查远程服务", on_click=check_service).props("flat")
 
     def _make_control(self, spec: FieldSpec) -> Any:
         value = self._model.field_value(spec)
@@ -152,6 +174,9 @@ class ConfigView:
 
     def _set(self, path: str, value: Any) -> None:
         self._model.set(path, value)
+        if path == "detector.mode":
+            self._fields = field_groups_for_config(self._body_key, self._model)
+            self._build_form(active="视觉服务")
         self._refresh_warnings()
 
     def _refresh_warnings(self) -> None:
@@ -168,6 +193,7 @@ class ConfigView:
         except ValueError as exc:
             ui.notify(f"YAML 无效:{exc}", type="negative")
             return
+        self._fields = field_groups_for_config(self._body_key, self._model)
         self._build_form(active=_YAML_TAB)  # 应用后仍停在原始 YAML,便于接着改
         self._refresh_warnings()
         ui.notify("已应用到表单", type="positive", timeout=1500)

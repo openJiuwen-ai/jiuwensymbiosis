@@ -16,6 +16,8 @@ to keep those imports acyclic.
 
 from __future__ import annotations
 
+from typing import Any
+
 from jiuwensymbiosis.contracts import DETECTION_REASONS, DetectionReason
 
 __all__ = [
@@ -30,7 +32,10 @@ __all__ = [
     "DetectionError",
     "GraspNotConfirmedError",
     "DetectorStartError",
+    "INFERENCE_ERROR_CODES",
+    "InferenceServiceError",
     "error_code",
+    "is_inference_service_failure",
 ]
 
 SAFETY_REJECTED = "safety_rejected"
@@ -42,7 +47,16 @@ DETECTOR_START_TIMEOUT = "detector_start_timeout"
 # ``cartesian_bounds_rejected`` etc., already forwarded through ``ServoResult``),
 # and those must survive the trip too. A consumer that has no entry for a code
 # simply falls back to its generic handling.
-ERROR_CODES = DETECTION_REASONS | {SAFETY_REJECTED, GRASP_NOT_CONFIRMED, DETECTOR_START_TIMEOUT}
+INFERENCE_ERROR_CODES = frozenset(
+    {
+        "inference_unavailable",
+        "inference_timeout",
+        "inference_busy",
+        "inference_protocol_error",
+        "inference_result_stale",
+    }
+)
+ERROR_CODES = DETECTION_REASONS | {SAFETY_REJECTED, GRASP_NOT_CONFIRMED, DETECTOR_START_TIMEOUT} | INFERENCE_ERROR_CODES
 
 
 class JiuwenSymbiosisError(Exception):
@@ -82,7 +96,41 @@ class DetectorStartError(JiuwenSymbiosisError, RuntimeError):
     code = DETECTOR_START_TIMEOUT
 
 
+class InferenceServiceError(JiuwenSymbiosisError, RuntimeError):
+    """A model service failed, distinct from a successful empty observation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "inference_unavailable",
+        service: str = "",
+        request_id: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.service = service
+        self.request_id = request_id
+        self.retryable = retryable
+
+
 def error_code(exc: BaseException) -> str:
     """The failure's ``code``, or ``""`` when it carries none."""
     code = getattr(exc, "code", "")
     return code if isinstance(code, str) else ""
+
+
+def is_inference_service_failure(result: Any) -> bool:
+    """True when a result dict attributes its failure to the model service.
+
+    Distinguishes a dead or unavailable inference service from a successful
+    empty observation; callers raise :class:`InferenceServiceError` from it.
+    """
+    return (
+        isinstance(result, dict)
+        and not result.get("ok")
+        and (
+            result.get("reason") in {"detector_unavailable", "no_detector"}
+            or str(result.get("error_code", "")).startswith("inference_")
+        )
+    )

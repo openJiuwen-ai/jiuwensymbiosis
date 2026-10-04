@@ -12,10 +12,15 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+
+from jiuwensymbiosis.errors import InferenceServiceError
+from jiuwensymbiosis.utils.service_http import HttpEndpointConfig, HttpServiceClient
+from jiuwensymbiosis.voice.protocol import encode_audio, response_result
 
 if TYPE_CHECKING:
     from jiuwensymbiosis.voice.config import VoiceConfig
@@ -26,6 +31,7 @@ __all__ = [
     "ASRBackend",
     "FunASRBackend",
     "FixedASRBackend",
+    "RemoteASRBackend",
     "build_asr_backend",
 ]
 
@@ -75,6 +81,14 @@ class FunASRBackend:
             logger.info("[voice] ASR 模型加载完成")
         return self._model
 
+    def load(self) -> None:
+        """Explicit eager loading for a reference service's startup readiness."""
+        self._ensure_model()
+
+    def close(self) -> None:
+        """Release the model reference after synchronous inference has finished."""
+        self._model = None
+
     def transcribe(self, audio: np.ndarray) -> str | None:
         if audio is None or len(audio) == 0:
             return None
@@ -111,6 +125,46 @@ class FixedASRBackend:
         return text
 
 
+class RemoteASRBackend:
+    """Send one bounded WAV utterance to a configured HTTP inference service."""
+
+    def __init__(
+        self, endpoint: HttpEndpointConfig, *, sample_rate: int = 16000, max_audio_duration_s: float = 30.0, client=None
+    ):
+        self.sample_rate = sample_rate
+        self.max_audio_duration_s = max_audio_duration_s
+        self._client = client if client is not None else HttpServiceClient(endpoint, service="asr")
+        self._owns_client = client is None
+
+    def transcribe(self, audio: np.ndarray) -> str | None:
+        return self.transcribe_utterance(audio, self.sample_rate, uuid.uuid4().hex)
+
+    def transcribe_utterance(self, audio: np.ndarray, sample_rate: int, utterance_id: str) -> str | None:
+        """The source sample rate belongs to this capture, not to the model config."""
+        request_id = uuid.uuid4().hex
+        payload = {
+            "request_id": request_id,
+            "utterance_id": utterance_id,
+            "audio": encode_audio(audio, sample_rate, max_duration_s=self.max_audio_duration_s),
+        }
+        envelope = self._client.request_json("POST", "/v1/transcribe", payload, request_id=request_id)
+        result = response_result(envelope, request_id, service="asr")
+        text = result.get("text")
+        if result.get("utterance_id") != utterance_id or "text" not in result:
+            raise InferenceServiceError("Invalid ASR result", code="inference_protocol_error", service="asr")
+        if text is not None and (not isinstance(text, str) or len(text) > 10000):
+            raise InferenceServiceError("Invalid ASR result", code="inference_protocol_error", service="asr")
+        return text.strip() or None if isinstance(text, str) else None
+
+    def bind_cancel_token(self, token) -> None:
+        self._client.bind_cancel_token(token)
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        """Release owned HTTP resources within the caller's remaining budget."""
+        if self._owns_client:
+            self._client.close(timeout_s=timeout_s)
+
+
 def build_asr_backend(config: VoiceConfig) -> ASRBackend:
     """Construct the ASR backend named by ``config.asr_backend``."""
     backend = config.asr_backend.lower()
@@ -124,4 +178,12 @@ def build_asr_backend(config: VoiceConfig) -> ASRBackend:
         )
     if backend == "fixed":
         return FixedASRBackend([])
+    if backend == "remote":
+        if config.asr_endpoint is None:
+            raise ValueError("voice.asr.endpoint is required for remote ASR")
+        return RemoteASRBackend(
+            config.asr_endpoint, sample_rate=config.sample_rate, max_audio_duration_s=config.max_audio_duration_s
+        )
+    if backend == "disabled":
+        raise ValueError("Voice ASR is disabled; configure voice.asr.backend as remote or funasr, or use --voice-text")
     raise ValueError(f"未知 asr_backend: {config.asr_backend!r}")

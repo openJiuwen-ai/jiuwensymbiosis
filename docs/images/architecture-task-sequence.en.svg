@@ -81,7 +81,7 @@
   <text id="text-26" x="228" y="970" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="910">API calls shared algorithms, Env, and Driver as needed; Rails run on events.</text>
   <rect x="32" y="1036" width="1136" height="84" rx="10" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
   <text id="text-27" x="52" y="1066" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">Tracking uses a dedicated servo path; direct calls within Python skip individual action-tool checks.</text>
-  <text id="text-28" x="52" y="1096" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">Session exit: finalize Trace → release Env / Driver → exit sidecars.</text>
+  <text id="text-28" x="52" y="1096" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">Session exit: finalize Trace → release Env / Driver → close owned resources.</text>
   <path d="M696 1152 L744 1152" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
   <text id="text-29" x="756" y="1159" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="100">Call</text>
   <path d="M900 1152 L948 1152" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>

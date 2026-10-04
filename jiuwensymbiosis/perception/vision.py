@@ -25,11 +25,15 @@ import itertools
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from jiuwensymbiosis.errors import InferenceServiceError
+from jiuwensymbiosis.perception.detector_client import check_detection_completion, segment_image
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +93,28 @@ def _run_detect_pick_best(
         # elsewhere — and only the score distinguishes them. Logging it wasn't enough: the caller
         # (and the diagnosis handed to the next LLM turn) got a bare string.
         near = sorted(
-            ({"label": str(r.get("label", "")), "score": round(float(r.get("score", 0.0)), 3)}
-             for r in results_raw),
+            ({"label": str(r.get("label", "")), "score": round(float(r.get("score", 0.0)), 3)} for r in results_raw),
             key=lambda c: -c["score"],
         )[:5]
         return {"ok": False, "reason": "no_detection", "object": object_name, "candidates": near}
     return max(results, key=lambda r: r["score"])
 
 
-_COLOR_WORDS = ("white", "black", "gray", "grey", "silver",
-                "red", "orange", "yellow", "green", "blue", "purple", "pink", "brown")
+_COLOR_WORDS = (
+    "white",
+    "black",
+    "gray",
+    "grey",
+    "silver",
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "blue",
+    "purple",
+    "pink",
+    "brown",
+)
 
 
 def extract_color_word(text: str) -> str | None:
@@ -115,8 +131,7 @@ def extract_color_word(text: str) -> str | None:
     return None
 
 
-def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str,
-                         *, min_pixels: int = 200) -> bool:
+def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str, *, min_pixels: int = 200) -> bool:
     """True if the masked region's mean color is consistent with ``color_word``.
 
     Rejects open-vocab detector false positives whose pixels contradict the requested
@@ -157,8 +172,15 @@ def region_color_matches(rgb: np.ndarray, mask: np.ndarray, color_word: str,
     hue = colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
     if cw == "brown":  # dark, low-brightness orange/red
         return (hue < 60.0 or hue >= 342.0) and brightness < 0.55
-    hue_ranges = {"red": [(0, 18), (342, 360)], "orange": [(18, 42)], "yellow": [(42, 70)],
-            "green": [(70, 170)], "blue": [(170, 262)], "purple": [(262, 315)], "pink": [(315, 342)]}
+    hue_ranges = {
+        "red": [(0, 18), (342, 360)],
+        "orange": [(18, 42)],
+        "yellow": [(42, 70)],
+        "green": [(70, 170)],
+        "blue": [(170, 262)],
+        "purple": [(262, 315)],
+        "pink": [(315, 342)],
+    }
     rng = hue_ranges.get(cw)
     return True if rng is None else any(lo <= hue < hi for lo, hi in rng)
 
@@ -273,26 +295,33 @@ def detect_all_object_geometry(
         if mask is None:
             continue
         g = object_geometry_from_mask(
-            np.asarray(mask), depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam),
-            q_lo=q_lo, q_hi=q_hi, min_points=min_points,
+            np.asarray(mask),
+            depth_m,
+            np.asarray(intrinsics),
+            np.asarray(tf_base_cam),
+            q_lo=q_lo,
+            q_hi=q_hi,
+            min_points=min_points,
         )
         if not g.ok:
             continue
-        objs.append({
-            "object": object_name,
-            "center_mm": list(g.center_mm),
-            "distance_mm": float(np.linalg.norm(g.center_mm)),  # Euclidean from base origin (always ≥ 0)
-            "forward_mm": float(g.center_mm[0]),  # forward-x, for planners that need "how far in front"
-            "width_mm": g.width_mm,
-            "height_mm": g.height_mm,
-            # The box a spatial relation is judged on (scene3d.extent_of). Emitted because
-            # extent_of defaults absent bounds to 0.0, which would place every object at the
-            # base origin and make "in"/"on" answer yes to things nowhere near each other.
-            "front_x_mm": g.front_x_mm,
-            "back_x_mm": g.back_x_mm,
-            "top_z_mm": g.top_z_mm,
-            "score": float(r.get("score", 0.0)),
-        })
+        objs.append(
+            {
+                "object": object_name,
+                "center_mm": list(g.center_mm),
+                "distance_mm": float(np.linalg.norm(g.center_mm)),  # Euclidean from base origin (always ≥ 0)
+                "forward_mm": float(g.center_mm[0]),  # forward-x, for planners that need "how far in front"
+                "width_mm": g.width_mm,
+                "height_mm": g.height_mm,
+                # The box a spatial relation is judged on (scene3d.extent_of). Emitted because
+                # extent_of defaults absent bounds to 0.0, which would place every object at the
+                # base origin and make "in"/"on" answer yes to things nowhere near each other.
+                "front_x_mm": g.front_x_mm,
+                "back_x_mm": g.back_x_mm,
+                "top_z_mm": g.top_z_mm,
+                "score": float(r.get("score", 0.0)),
+            }
+        )
     objs.sort(key=lambda obj: obj["distance_mm"])  # nearest-first
     logger.info("[scene] detect_all %r: %d raw → %d instances", object_name, len(raw), len(objs))
     return objs
@@ -307,6 +336,8 @@ def detect_and_centroid(
     tcp_at_grab: Any,
     score_threshold: float = 0.05,
     log_prefix: str = "[grasp-debug]",
+    captured_monotonic_s: float | None = None,
+    frame_id: str | None = None,
 ) -> dict:
     """Run detector, pick the best mask, compute median (u, v) and median depth.
 
@@ -323,6 +354,7 @@ def detect_and_centroid(
     where the arm was when the frame was grabbed; this module never reads
     or interprets the pose itself.
     """
+    captured_monotonic_s = time.monotonic() if captured_monotonic_s is None else captured_monotonic_s
     img_h, img_w = rgb.shape[:2]
     dep_h, dep_w = depth_img_m.shape[:2]
     logger.info(
@@ -351,13 +383,18 @@ def detect_and_centroid(
     if seg_fn is None:
         return {"ok": False, "reason": "detector_unavailable"}
 
-    best = _run_detect_pick_best(
-        rgb,
-        seg_fn,
-        object_name,
-        score_threshold,
-        log_prefix,
-    )
+    try:
+        best = _run_detect_pick_best(
+            rgb,
+            lambda image, text_prompt: segment_image(
+                seg_fn, image, text_prompt, captured_monotonic_s=captured_monotonic_s, frame_id=frame_id
+            ),
+            object_name,
+            score_threshold,
+            log_prefix,
+        )
+    except InferenceServiceError as exc:
+        return {"ok": False, "reason": "detector_unavailable", "object": object_name, "error_code": exc.code}
     if best.get("ok") is False:
         return best
     if not best["mask"].any():
@@ -373,6 +410,7 @@ def detect_and_centroid(
     if depth_m is None:
         return {"ok": False, "reason": "no_valid_depth"}
 
+    check_detection_completion(seg_fn, captured_monotonic_s)
     return {
         "ok": True,
         "u": centroid["u"],
@@ -645,6 +683,7 @@ def default_get_grasp_info_simple(
     )
 
     ll = api.env.low_level
+    captured_monotonic_s = time.monotonic()
     frames = ll.grab_frames()
     if frames is None:
         return {"ok": False, "reason": "no_camera", "object": object_name}
@@ -657,6 +696,7 @@ def default_get_grasp_info_simple(
         object_name=object_name,
         tcp_at_grab=SimpleNamespace(x=0.0, y=0.0, z=0.0, r=0.0),
         score_threshold=score_threshold,
+        captured_monotonic_s=captured_monotonic_s,
     )
     if not det.get("ok"):
         return det
@@ -688,6 +728,7 @@ def default_get_grasp_info_simple(
     place_z = top_z + chip_thickness_mm
     x_f, y_f = float(xyz_final[0]), float(xyz_final[1])
     best = det["best"]
+    check_detection_completion(seg_fn, captured_monotonic_s, invalidate=getattr(api, "invalidate_sensing_cache", None))
     return {
         "ok": True,
         "object": object_name,

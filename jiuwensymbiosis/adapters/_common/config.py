@@ -49,6 +49,11 @@ def parse_config(
     fields = getattr(factory, "path_fields", ())
     if not isinstance(fields, (tuple, list)) or any(not isinstance(key, str) or not key for key in fields):
         raise TypeError("config factory path_fields must be a sequence of non-empty field names")
+    conditional_fields = getattr(factory, "path_or_id_fields", ())
+    if not isinstance(conditional_fields, (tuple, list)) or any(
+        not isinstance(key, str) or not key for key in conditional_fields
+    ):
+        raise TypeError("config factory path_or_id_fields must be a sequence of non-empty field names")
     directory = Path(source_dir).expanduser().resolve() if source_dir is not None else None
 
     def resolve(value: Any) -> Any:
@@ -60,7 +65,17 @@ def parse_config(
     def visit(value: Any) -> Any:
         if isinstance(value, dict):
             return {
-                key: resolve(item) if directory is not None and key in fields else visit(item)
+                key: resolve(item)
+                if directory is not None
+                and (
+                    key in fields
+                    or (
+                        key in conditional_fields
+                        and isinstance(item, str)
+                        and item.startswith(("./", "../", "/", "~", "$"))
+                    )
+                )
+                else visit(item)
                 for key, item in value.items()
             }
         if isinstance(value, list):

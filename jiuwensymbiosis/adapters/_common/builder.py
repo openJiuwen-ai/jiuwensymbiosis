@@ -128,6 +128,7 @@ def make_builder(
     resource_keys: ResourceKeys | None = None,
     api_kwargs_from_cfg: ApiKwargsSpec | None = None,
     sidecar_builders: list[SidecarBuilder] | None = None,
+    managed_detector: bool = False,
     decorate: SessionDecorator | None = None,
 ):
     """Build a polymorphic session-factory callable.
@@ -156,6 +157,10 @@ def make_builder(
         manager (e.g. ``detector_subprocess(...)``) or None. Only non-None returns
         are appended to the session's sidecar_starters. The order is preserved.
       decorate: Optional final-pass callback for storing things on the session.
+      managed_detector: Own a lazy HTTP detector client in the session and inject
+        it into ``api_cls`` as ``detector_client``. Maintenance sessions retain
+        this client, but never spawn a model process or contact the service on
+        connect. The first explicit inference call performs network I/O.
 
     Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``,
     ``.from_dict(dict)``, ``.config_factory``, and ``.resource_keys(cfg)`` as
@@ -168,6 +173,12 @@ def make_builder(
     def _session_from_cfg(cfg: Any, *, include_sidecars: bool = True) -> RobotSession:
         env = env_cls(cfg)
         api_kwargs = _resolve_api_kwargs(api_kwargs_from_cfg, cfg)
+        detector_client = None
+        if managed_detector:
+            from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+            detector_client = create_detector_client(cfg.detector)
+            api_kwargs["detector_client"] = detector_client
         api = api_cls(env, **api_kwargs)
 
         sidecar_starters: list[Callable[[], Any]] = []
@@ -184,6 +195,22 @@ def make_builder(
                 else:
                     # bridge cm→zero-arg factory; list typed list[Callable[[],Any]]
                     sidecar_starters.append(lambda cm=cm_or_lambda: cm)  # type: ignore[misc]
+
+        if detector_client is not None:
+
+            def client_starter(token=None):
+                detector_client.bind_cancel_token(token)
+                # Maintenance does not need an inference connection pool.
+                # A deliberate later inference call still opens lazily, and its
+                # resources remain owned by this session's cleanup stack.
+                if include_sidecars:
+                    return detector_client
+                detector_client.open(lazy=True)
+                return detector_client.close
+
+            # Registered after the local process so ExitStack closes the client
+            # before stopping the model process. Opening the client is lazy.
+            sidecar_starters.append(client_starter)
 
         session = RobotSession(
             env=env,

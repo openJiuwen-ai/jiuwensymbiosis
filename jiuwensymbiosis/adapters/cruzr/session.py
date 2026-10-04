@@ -44,5 +44,6 @@ build_cruzr_session = make_builder(
     api_kwargs_from_cfg=_api_kwargs_from_cfg,
     resource_keys=_cruzr_resource_keys,
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_decorate,
 )

@@ -48,5 +48,6 @@ build_so101_session = make_builder(
         "grasp_mask_erode_px",
     ],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_attach_so101_cfg,
 )

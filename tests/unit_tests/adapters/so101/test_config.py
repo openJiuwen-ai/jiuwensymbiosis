@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwensymbiosis.adapters.so101.config import So101Config
+from jiuwensymbiosis.adapters.so101.config import DetectorServerConfig, So101Config
 
 _ARM_LIMITS = {
     "shoulder_pan": (-90.0, 90.0),
@@ -18,6 +18,18 @@ _ARM_LIMITS = {
     "wrist_flex": (-90.0, 90.0),
     "wrist_roll": (-180.0, 180.0),
 }
+
+
+def test_legacy_detector_constructor_keeps_remote_default():
+    default = DetectorServerConfig()
+    assert default.spawn is False
+    assert default.url == "http://127.0.0.1:8114"
+    remote = DetectorServerConfig(url="http://gpu-server:8114")
+    assert remote.mode == "remote"
+    assert remote.local is None
+    assert remote.url == "http://gpu-server:8114"
+    assert DetectorServerConfig.from_dict({"url": "http://gpu-server:8114"}).spawn is False
+    assert DetectorServerConfig(spawn=True).mode == "local"
 
 
 def _base_kwargs(**overrides) -> dict:
@@ -321,7 +333,8 @@ class TestDetectorConfig:
     def test_no_api_servers_yields_fail_closed_default(self):
         # No api_servers entry -> DetectorServerConfig() default (spawn=False).
         cfg = So101Config.from_dict({**_base_kwargs(camera_serial="camera")})
-        assert cfg.detector.url == "http://127.0.0.1:8114"
+        assert cfg.detector.url is None
+        assert cfg.detector.mode == "disabled"
         assert cfg.detector.spawn is False
 
     def test_unknown_detector_field_is_rejected(self):
@@ -336,7 +349,7 @@ class TestDetectorConfig:
         # __post_init__ rejects https (non-http) url when spawn=True.
         from jiuwensymbiosis.adapters.so101.config import DetectorServerConfig
 
-        with pytest.raises(ValueError, match="absolute http URL"):
+        with pytest.raises(ValueError, match="http loopback origin"):
             DetectorServerConfig(url="https://localhost:9123", spawn=True)
 
     def test_api_servers_env_override(self, monkeypatch):
@@ -361,8 +374,8 @@ class TestDetectorConfig:
         cfg = So101Config.from_dict(_base_kwargs())
 
         assert cfg.detector.spawn is False
-        assert cfg.detector.gdino_model_id == "env-only-gdino"
-        assert cfg.detector.sam2_model_id == "env-only-sam2"
+        assert cfg.detector.mode == "disabled"
+        assert cfg.detector.local is None  # No local model settings are captured.
 
     @pytest.mark.parametrize(
         ("field_name", "expected"),
@@ -385,7 +398,7 @@ class TestDetectorConfig:
 
     @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
     def test_invalid_api_server_number_names_field(self, field_name):
-        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+        with pytest.raises(ValueError, match=rf"detector\.local\.{field_name}"):
             So101Config.from_dict(
                 {
                     **_base_kwargs(),
@@ -396,7 +409,7 @@ class TestDetectorConfig:
     @pytest.mark.parametrize("field_name", ["port", "startup_timeout_s", "box_threshold", "text_threshold"])
     @pytest.mark.parametrize("value", [True, False])
     def test_api_server_boolean_is_rejected_for_number(self, field_name, value):
-        with pytest.raises(ValueError, match=rf"api_servers detector\.{field_name}"):
+        with pytest.raises(ValueError, match=rf"detector\.local\.{field_name}"):
             So101Config.from_dict(
                 {
                     **_base_kwargs(),
@@ -405,7 +418,7 @@ class TestDetectorConfig:
             )
 
     def test_invalid_api_server_boolean_names_field(self):
-        with pytest.raises(ValueError, match=r"api_servers detector\.use_sam2"):
+        with pytest.raises(ValueError, match=r"detector\.local\.use_sam2"):
             So101Config.from_dict(
                 {
                     **_base_kwargs(),

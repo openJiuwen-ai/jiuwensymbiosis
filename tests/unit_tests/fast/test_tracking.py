@@ -14,18 +14,148 @@ exceeds a configured ``staleness_s`` is still seen as "a frame arrived".
 from __future__ import annotations
 
 import math
+import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
+from jiuwensymbiosis.agent.fast.realtime import tracking
 from jiuwensymbiosis.agent.fast.realtime.mask_tracking import (
     MaskTargetFilter,
     MaskTrackingState,
 )
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, _slew
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
+
+
+def test_service_failure_aborts_tracking_instead_of_tolerating_occlusion():
+    from jiuwensymbiosis.errors import InferenceServiceError
+
+    def fail():
+        raise InferenceServiceError("unavailable", code="inference_timeout")
+
+    with BackgroundTracker(fail, staleness_s=1) as tracker:
+        with pytest.raises(InferenceServiceError):
+            tracker.wait_first(1)
+        with pytest.raises(InferenceServiceError):
+            tracker.latest_target()
+
+
+@pytest.mark.parametrize("wait_method", ["wait_first", "wait_for_next", "wait_for_capture_after"])
+def test_wait_timeout_preserves_failure_from_final_poll(monkeypatch, wait_method):
+    from jiuwensymbiosis.errors import InferenceServiceError
+
+    entered, release = threading.Event(), threading.Event()
+    clock = [0.0]
+
+    def detect():
+        entered.set()
+        assert release.wait(5)
+        raise InferenceServiceError("late inference failure", code="inference_timeout")
+
+    tracker = BackgroundTracker(detect, staleness_s=1).start()
+    worker = tracker._thread
+
+    def sleep(_seconds):
+        release.set()
+        worker.join(1)
+        assert not worker.is_alive()
+        clock[0] = 1.0  # The failure arrives during the last polling sleep.
+
+    try:
+        assert entered.wait(1)
+        monkeypatch.setattr(tracking, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+        args = () if wait_method == "wait_first" else (0,)
+        with pytest.raises(InferenceServiceError) as exc:
+            getattr(tracker, wait_method)(*args, timeout_s=1)
+        assert exc.value.code == "inference_timeout"
+    finally:
+        release.set()
+        tracker.stop()
+
+
+def test_tracker_rejects_a_detection_completed_after_cancellation():
+    from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
+
+    token = CancelToken()
+
+    def detect():
+        token.set()
+        return {"x": 100.0}
+
+    with BackgroundTracker(detect, staleness_s=1, cancel_token=token) as tracker:
+        with pytest.raises(RunCancelled):
+            tracker.wait_first(1)
+        assert tracker.detections == 0
+
+
+def test_tracker_retains_pending_work_and_handle_until_blocked_detection_exits():
+    from jiuwensymbiosis.agent.cancel import CancelToken
+
+    token = CancelToken()
+    entered, release = threading.Event(), threading.Event()
+
+    def detect():
+        entered.set()
+        release.wait(5)
+        return {"x": 1.0}
+
+    tracker = BackgroundTracker(detect, staleness_s=1, cancel_token=token).start()
+    assert entered.wait(1)
+    thread = tracker._thread
+    with pytest.raises(RuntimeError, match="cleanup is incomplete"):
+        tracker.stop(timeout_s=0)
+    assert tracker._thread is thread
+    assert token.pending_work
+    release.set()
+    tracker.stop()
+    assert not token.pending_work
+    assert tracker.latest_target() is None
+
+
+def test_cancellation_interrupts_tracker_shutdown_wait():
+    from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
+
+    token = CancelToken()
+    entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+
+    def detect():
+        entered.set()
+        release.wait(5)
+        return {"x": 1.0}
+
+    tracker = BackgroundTracker(detect, staleness_s=8, cancel_token=token).start()
+    worker = tracker._thread
+
+    def stop():
+        try:
+            tracker.stop()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            stopped.set()
+
+    closer = threading.Thread(target=stop)
+    try:
+        assert entered.wait(1)
+        closer.start()
+        assert tracker._stop_evt.wait(1)
+        token.set()
+        assert stopped.wait(0.5)
+        assert len(errors) == 1 and isinstance(errors[0], RunCancelled)
+        assert token.pending_work
+        assert tracker._thread is worker
+    finally:
+        release.set()
+        worker.join(2)
+        if closer.ident is not None:
+            closer.join(2)
+        tracker.stop()
+    assert not token.pending_work
 
 
 def _mask_sample(

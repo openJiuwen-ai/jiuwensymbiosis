@@ -18,11 +18,13 @@ A target is a pose ``dict`` (``x/y/z`` mm + optional ``r``/``rz`` deg) or
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
 
-from jiuwensymbiosis.agent.cancel import CancelToken
+from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled
+from jiuwensymbiosis.errors import InferenceServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class BackgroundTracker:
         max_hz: float = 10.0,
         staleness_s: float | None,
         name: str = "track",
+        cancel_token: CancelToken | None = None,
     ) -> None:
         self._detect_fn = detect_fn
         self._min_period = 1.0 / max_hz if max_hz > 0 else 0.0
@@ -64,6 +67,8 @@ class BackgroundTracker:
         self._detections = 0
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
+        self._cancel_token = cancel_token
+        self._failure: Exception | None = None
 
     # ----------------------------------------------------------------- lifecycle
     def start(self) -> BackgroundTracker:
@@ -71,17 +76,57 @@ class BackgroundTracker:
         if self._thread is not None:
             return self
         self._stop_evt.clear()
-        self._thread = threading.Thread(target=self._loop, name=f"track-{self._name}", daemon=True)
-        self._thread.start()
+        self._failure = None
+        finish = self._cancel_token.register_work(f"tracker:{self._name}") if self._cancel_token else lambda: None
+
+        def tracked() -> None:
+            try:
+                self._loop()
+            finally:
+                finish()
+
+        self._thread = threading.Thread(target=tracked, name=f"track-{self._name}", daemon=True)
+        try:
+            self._thread.start()
+        except BaseException:
+            self._thread = None
+            finish()
+            raise
         return self
 
-    def stop(self) -> None:
-        """Stop the detection thread. Idempotent."""
-        self._stop_evt.set()
+    def stop(self, *, timeout_s: float | None = None) -> None:
+        """Join in-flight detection within its freshness budget; cancellation stays prompt.
+
+        Without a freshness limit, use the HTTP client's default 30-second budget.
+        An explicit timeout allows callers to bound cleanup more tightly.
+        """
+        budget = max(2.0, self._staleness_s or 30.0) if timeout_s is None else timeout_s
+        if not math.isfinite(budget) or budget < 0:
+            raise ValueError("tracker stop timeout must be finite and nonnegative")
+        with self._lock:
+            self._stop_evt.set()
         t = self._thread
         if t is not None:
-            t.join(timeout=2.0)
+            deadline = time.monotonic() + budget
+            while t.is_alive():
+                # Retain both the handle and token work until detection really exits.
+                # Cleanup must not replace cancellation with a recoverable action failure.
+                if self._cancel_token is not None:
+                    self._cancel_token.raise_if_set()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Tracker detection is still running; cleanup is incomplete")
+                t.join(timeout=min(0.05, remaining))
         self._thread = None
+
+    def raise_if_failed(self) -> None:
+        """Raise a terminal detection failure, including one received during stop.
+
+        Call after ``stop()`` before accepting a tracking result; stopping alone
+        only releases resources and remains safe for repeated cleanup.
+        """
+        if self._failure is not None:
+            raise self._failure
 
     def __enter__(self) -> BackgroundTracker:
         return self.start()
@@ -97,6 +142,7 @@ class BackgroundTracker:
         ``staleness_s=None`` means a target is never reported stale; a
         configured positive value makes a target older than that None.
         """
+        self.raise_if_failed()
         with self._lock:
             tgt, stamp = self._target, self._stamp
         if tgt is None:
@@ -115,6 +161,7 @@ class BackgroundTracker:
         Staleness is intentionally not applied; wait-style callers reason about
         detection *generation* (``_detections``) themselves.
         """
+        self.raise_if_failed()
         with self._lock:
             return (None if self._target is None else dict(self._target)), self._stamp
 
@@ -140,6 +187,7 @@ class BackgroundTracker:
         this health signal is intended to abort immediately when either
         deadline expires; callers must not add a second grace period.
         """
+        self.raise_if_failed()
         with self._lock:
             has_target = self._target is not None
             capture_t = self._stamp
@@ -168,12 +216,16 @@ class BackgroundTracker:
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            self.raise_if_failed()
             if cancel_token is not None:
                 cancel_token.raise_if_set()
             with self._lock:
                 if self._target is not None and self._detections > 0:
                     return True
             time.sleep(0.02)
+        self.raise_if_failed()
+        if cancel_token is not None:
+            cancel_token.raise_if_set()
         with self._lock:
             return self._target is not None and self._detections > 0
 
@@ -187,10 +239,12 @@ class BackgroundTracker:
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            self.raise_if_failed()
             with self._lock:
                 if self._detections > previous_detections and self._target is not None:
                     return dict(self._target), self._stamp
             time.sleep(0.02)
+        self.raise_if_failed()
         return None, 0.0
 
     def wait_for_capture_after(
@@ -208,6 +262,7 @@ class BackgroundTracker:
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            self.raise_if_failed()
             if cancel_token is not None:
                 cancel_token.raise_if_set()
             with self._lock:
@@ -216,6 +271,9 @@ class BackgroundTracker:
             if target is not None and stamp >= capture_threshold_t:
                 return dict(target), stamp
             time.sleep(0.02)
+        self.raise_if_failed()
+        if cancel_token is not None:
+            cancel_token.raise_if_set()
         return None
 
     # -------------------------------------------------------------------- thread
@@ -223,13 +281,28 @@ class BackgroundTracker:
         while not self._stop_evt.is_set():
             t0 = time.monotonic()
             try:
+                if self._cancel_token is not None:
+                    self._cancel_token.raise_if_set()
                 tgt = self._detect_fn()
+                if self._cancel_token is not None:
+                    self._cancel_token.raise_if_set()
+            except (RunCancelled, InferenceServiceError) as exc:
+                with self._lock:
+                    self._target = None
+                    self._failure = exc
+                return
             except Exception as exc:  # noqa: BLE001 - detection must never kill the thread
                 logger.debug("[track-%s] detect error (ignored): %s", self._name, exc)
                 tgt = None
-            if tgt is not None:
+            if tgt is not None and not self._stop_evt.is_set():
                 completed_t = time.monotonic()
                 with self._lock:
+                    if self._stop_evt.is_set():
+                        return
+                    if self._cancel_token is not None and self._cancel_token.is_set():
+                        self._target = None
+                        self._failure = RunCancelled()
+                        return
                     self._target = dict(tgt)
                     self._stamp = t0
                     self._completed_t = completed_t

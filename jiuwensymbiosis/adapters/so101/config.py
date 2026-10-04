@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import os
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
-from urllib.parse import urlparse
 
 from jiuwensymbiosis.adapters._common.config import load_yaml_config
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
+from jiuwensymbiosis.perception.config import DetectorConfig, parse_detector_config
+from jiuwensymbiosis.perception.config import DetectorServerConfig as _DetectorServerConfig
 from jiuwensymbiosis.utils import get_logger
 
 _logger = get_logger(__name__)
@@ -31,142 +31,16 @@ _logger = get_logger(__name__)
 _ARM_JOINT_SET = frozenset(ARM_JOINT_ORDER)
 
 
-@dataclass
-class DetectorServerConfig:
-    """Connection and spawn settings for the GroundingDINO/SAM2 sidecar.
+class DetectorServerConfig(_DetectorServerConfig):
+    """Preserve SO-101's no-spawn default during Python config migration."""
 
-    When ``spawn`` is enabled, ``url`` is canonical and ``host``/``port`` are
-    derived from it during validation.
-    """
-
-    url: str = "http://127.0.0.1:8114"
-    spawn: bool = False
-    host: str = "127.0.0.1"
-    port: int = 8114
-    device: str = "cuda"
-    startup_timeout_s: float = 300.0
-    gdino_model_id: str = "IDEA-Research/grounding-dino-base"
-    sam2_model_id: str = "facebook/sam2.1-hiera-large"
-    box_threshold: float = 0.35
-    text_threshold: float = 0.25
-    use_sam2: bool = True
-
-    @classmethod
-    def from_dict(cls, raw: Any) -> DetectorServerConfig:
-        if isinstance(raw, cls):
-            return raw
-        if not isinstance(raw, dict):
-            raise ValueError(f"So101Config: detector must be a mapping, got {type(raw).__name__}.")
-        valid = {f.name for f in dataclasses.fields(cls)}
-        unknown = set(raw) - valid
-        if unknown:
-            raise ValueError(f"So101Config: unknown detector fields: {sorted(unknown)}.")
-        return cls(**raw)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.url, str) or not self.url:
-            raise ValueError("So101Config: detector.url must be a non-empty string.")
-        if not isinstance(self.spawn, bool):
-            raise ValueError("So101Config: detector.spawn must be bool.")
-        if not isinstance(self.host, str) or not self.host:
-            raise ValueError("So101Config: detector.host must be a non-empty string.")
-        if isinstance(self.port, bool) or not isinstance(self.port, int) or not (1 <= self.port <= 65535):
-            raise ValueError(f"So101Config: detector.port must be an integer in [1, 65535], got {self.port!r}.")
-        if not isinstance(self.device, str) or not self.device:
-            raise ValueError("So101Config: detector.device must be a non-empty string.")
-        for name in ("startup_timeout_s", "box_threshold", "text_threshold"):
-            value = getattr(self, name)
-            if not _is_finite(value):
-                raise ValueError(f"So101Config: detector.{name} must be finite, got {value!r}.")
-        if self.startup_timeout_s <= 0:
-            raise ValueError("So101Config: detector.startup_timeout_s must be > 0.")
-        if not 0.0 <= self.box_threshold <= 1.0:
-            raise ValueError("So101Config: detector.box_threshold must be in [0, 1].")
-        if not 0.0 <= self.text_threshold <= 1.0:
-            raise ValueError("So101Config: detector.text_threshold must be in [0, 1].")
-        if not isinstance(self.use_sam2, bool):
-            raise ValueError("So101Config: detector.use_sam2 must be bool.")
-        if self.spawn:
-            try:
-                parsed = urlparse(self.url)
-                url_port = parsed.port
-            except ValueError as exc:
-                raise ValueError(f"So101Config: invalid detector.url {self.url!r}: {exc}.") from exc
-            if parsed.scheme != "http" or not parsed.hostname:
-                raise ValueError("So101Config: detector.url must be an absolute http URL when detector.spawn=True.")
-            # ``url`` is the canonical endpoint used by the API. Derive the
-            # sidecar bind address from it so the subprocess cannot start on a
-            # different port than the client calls.
-            self.host = parsed.hostname
-            self.port = url_port or 80
+    def __init__(self, url: str | None = None, spawn: bool = False, **kwargs: Any) -> None:
+        super().__init__(url=url, spawn=spawn, **kwargs)
 
 
 def _is_finite(value: float) -> bool:
-    """True only when ``value`` is a real number (not NaN / Inf)."""
+    """True only for a finite real number, excluding bool."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
-
-
-def _server_value(server: dict[str, Any], field_name: str, default: Any) -> Any:
-    """Return an api-server value, treating explicit YAML null as absent."""
-    value = server.get(field_name, default)
-    return default if value is None else value
-
-
-def _server_number(server: dict[str, Any], field_name: str, default: int | float, converter: Any) -> Any:
-    """Convert one numeric detector field with a configuration-specific error."""
-    value = _server_value(server, field_name, default)
-    type_name = "an integer" if converter is int else "a number"
-    if isinstance(value, bool):
-        raise ValueError(f"So101Config: api_servers detector.{field_name} must be {type_name}, got {value!r}.")
-    try:
-        return converter(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"So101Config: api_servers detector.{field_name} must be {type_name}, got {value!r}.") from exc
-
-
-def _server_bool(server: dict[str, Any], field_name: str, default: bool) -> bool:
-    """Read one boolean detector field without truthiness coercion."""
-    value = _server_value(server, field_name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"So101Config: api_servers detector.{field_name} must be bool, got {value!r}.")
-    return value
-
-
-def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServerConfig:
-    """Pick the GroundingDINO+SAM2 server entry from a top-level ``api_servers:`` list.
-
-    Mirrors piper's loader so SO-101 YAMLs use the same ``api_servers:`` shape
-    (``_target_`` containing ``grounding_dino``/``gdino`` identifies the detector).
-    ``GDINO_MODEL_ID`` / ``SAM2_MODEL_ID`` env vars override the YAML model ids,
-    letting the GUI prime local offline model dirs without editing YAML.
-    """
-    defaults = DetectorServerConfig()
-    for s in api_servers or []:
-        if not isinstance(s, dict):
-            continue
-        target = str(s.get("_target_", "")).lower()
-        if "grounding_dino" not in target and "gdino" not in target:
-            continue
-        host = _server_value(s, "host", "127.0.0.1")
-        port = _server_number(s, "port", defaults.port, int)
-        return DetectorServerConfig(
-            url=f"http://{host}:{port}",
-            spawn=True,
-            host=host,
-            port=port,
-            device=_server_value(s, "device", defaults.device),
-            startup_timeout_s=_server_number(s, "startup_timeout_s", defaults.startup_timeout_s, float),
-            gdino_model_id=os.environ.get("GDINO_MODEL_ID")
-            or _server_value(s, "gdino_model_id", defaults.gdino_model_id),
-            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or _server_value(s, "sam2_model_id", defaults.sam2_model_id),
-            box_threshold=_server_number(s, "box_threshold", defaults.box_threshold, float),
-            text_threshold=_server_number(s, "text_threshold", defaults.text_threshold, float),
-            use_sam2=_server_bool(s, "use_sam2", defaults.use_sam2),
-        )
-    return DetectorServerConfig(
-        gdino_model_id=os.environ.get("GDINO_MODEL_ID") or defaults.gdino_model_id,
-        sam2_model_id=os.environ.get("SAM2_MODEL_ID") or defaults.sam2_model_id,
-    )  # no detector entry -> fail-closed defaults (spawn=False)
 
 
 @dataclass
@@ -177,7 +51,14 @@ class So101Config:
     overridable per deployment.
     """
 
-    path_fields: ClassVar[tuple[str, ...]] = ("calib_path", "urdf_path", "calibration_dir")
+    path_or_id_fields: ClassVar[tuple[str, ...]] = ("gdino_model_id", "sam2_model_id")
+    path_fields: ClassVar[tuple[str, ...]] = (
+        "calib_path",
+        "urdf_path",
+        "calibration_dir",
+        "module_path",
+        "tts_module_path",
+    )
 
     # --- required safety config ---
     port: str
@@ -420,7 +301,7 @@ class So101Config:
 
     # Open-vocabulary detection server (GroundingDINO + SAM2). The session
     # builder spawns it as a sidecar when detector.spawn=True (piper-style).
-    detector: DetectorServerConfig = field(default_factory=DetectorServerConfig)
+    detector: DetectorConfig = field(default_factory=DetectorConfig)
 
     # --- grasp geometry (eye-to-hand projection → grasp/place z) ---
     # Constant base-frame Z correction added to every detection (piper: 0).
@@ -610,12 +491,7 @@ class So101Config:
         if "joint_limits" in kw and kw["joint_limits"] is not None:
             kw["joint_limits"] = _normalise_joint_limits(kw["joint_limits"])
 
-        # ``api_servers`` is the unified detector config shape (same as piper):
-        # a top-level (or ``env.cfg``) list whose ``_target_`` identifies the
-        # GroundingDINO+SAM2 server entry. Extracted into ``cfg.detector``.
-        env_cfg = data.get("env", {}).get("cfg", {}) if isinstance(data.get("env"), dict) else {}
-        api_servers = data.get("api_servers") or env_cfg.get("api_servers") or []
-        kw["detector"] = _extract_detector_from_api_servers(api_servers)
+        kw["detector"] = parse_detector_config(data)
 
         if "camera_resolution" in kw and kw["camera_resolution"] is not None:
             cr = kw["camera_resolution"]
@@ -1074,8 +950,8 @@ class So101Config:
             )
 
         # --- detector sidecar -------------------------------------------------
-        if not isinstance(self.detector, DetectorServerConfig):
-            self.detector = DetectorServerConfig.from_dict(self.detector)
+        if not isinstance(self.detector, DetectorConfig):
+            self.detector = parse_detector_config({"detector": self.detector})
 
 
 def _normalise_joint_limits(raw: Any) -> dict[str, tuple[float, float]]:

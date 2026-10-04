@@ -130,7 +130,7 @@ finally:
 
 - `tests/unit_tests/` 测核心 Agent、Runtime、适配器、准入和无 GUI 依赖的行为，运行 `make test-core`。
 - `tests/gui/` 测启动器、插件安装/发现，以及需要 GUI 可选依赖的界面和接入行为，运行 `make test-gui`。
-- `make test` 运行两个无硬件套件；工作台 GUI 测试需要先安装 `pip install -e ".[gui]"`。`make test-all` 还会收集 integration 测试。
+- `make test` 默认只运行核心测试，仅需 `.[dev]`；安装 `.[dev,gui]` 后可用 `make test test-gui` 运行两个无硬件套件。核心 CI 与 GUI CI 分开运行。`make test-all` 还会收集 integration 测试，需准备对应依赖及环境。
 - 插件专属的 view/layout 测试放在 `tests/gui/<plugin>/components/`；其他 GUI/plugin 测试放在 `tests/gui/<plugin>/unit/`。Runtime、资源准入与核心行为仍放在 `tests/unit_tests/runtime/`。
 - 从 `jiuwensymbiosis.gui` 迁移的测试应改为导入 `jiuwensymbiosis_gui.workbench`；只有兼容期入口测试继续实际执行旧模块转发。不要在核心单元测试中导入 NiceGUI 或具体工作台页面。
 

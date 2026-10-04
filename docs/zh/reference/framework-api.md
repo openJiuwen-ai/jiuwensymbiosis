@@ -70,12 +70,16 @@ RobotSession(
 
 | 方法 | 作用 |
 | --- | --- |
-| `connect()` / `disconnect()` | 幂等地管理 Env、sidecar 和 Trace 生命周期 |
+| `connect()` / `disconnect()` | 幂等地管理 Env、客户端、可选本地托管进程和 Trace 生命周期 |
 | `globals_provider()` | 返回代码工具每次执行时注入的 `env`、`api`、`np` 等对象 |
 | `describe()` | 返回名称以及 Env/API/有效 Capability 摘要 |
 | `attach_trace_rail(rail)` | 绑定由 Session 负责最终清理的 TraceRail |
 
 推荐始终使用 `with session:` 管理连接。
+
+`sidecar_starters` 是沿用的内部资源登记接口，也用于客户端上下文和关闭回调。
+检测配置为 `local` 时，Session 启停本地托管子进程（sidecar）；配置为 `remote` 时，
+Session 只关闭自有 HTTP 客户端，不停止外部服务，本机手动启动的 HTTP 服务也遵循此规则。
 
 ## Agent 构建与运行
 

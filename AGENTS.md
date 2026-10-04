@@ -21,18 +21,22 @@ make check        # ruff format --check + ruff check + mypy on staged files (myp
 make fix          # ruff format + ruff check --fix on staged files
 make test-core    # pytest tests/unit_tests/ (core; no hardware/GPU)
 make test-gui     # pytest tests/gui/ (GUI extras required; no hardware/GPU)
-make test         # test-core + test-gui
-make test-all     # pytest (incl. integration)
+make test         # test-core (requires only .[dev])
+make test-all     # pytest (incl. GUI + integration; requires their dependencies)
 # Use COMMITS=N to check files changed in the last N commits instead of staged.
 
 # Install in editable mode
 pip install -e ".[dev]"                                    # core + test deps
 pip install -e ".[dev,gui]"                               # tests for GUI pages and components
+pip install -e ".[remote]"                                # HTTP vision/speech clients, no model runtime
+pip install -e ".[remote,camera,voice-io]"                 # optional host camera/audio capture and playback
+pip install -e ".[vision-server]"                         # optional local/remote vision server; choose Torch wheels for host
+pip install -e ".[speech-server,voice-local]"             # optional FunASR server; ChatTTS uses chattts-server
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + vision/GPU deps
 pip install -e ".[piper]"                                  # + piper hardware SDK
 pip install -e ".[gui]"                                    # + 图形界面 (NiceGUI, 浏览器模式)
 
-# Run tests (make test runs both no-hardware suites)
+# Run tests (make test defaults to core; GUI tests are selected explicitly)
 pytest tests/unit_tests/                                   # core/domain tests (no hardware/GPU)
 pytest tests/gui/                                          # GUI tests (install .[dev,gui]; no hardware)
 pytest -m integration                                      # integration tests (needs hardware/GPU)
@@ -132,7 +136,7 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 
 **Safety rails unwrap robot_control**: When RobotControlTool is used, rails transparently unpack `action`/`params` to apply safety checks on the actual motion command.
 
-**RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (env + sidecars), `__exit__` calls `disconnect()`. Both are idempotent. Sidecars (e.g., detection subprocess) are started/stopped automatically.
+**RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (Env + registered resources), `__exit__` calls `disconnect()`. Both are idempotent. The Session owns its HTTP clients and any explicitly enabled local subprocesses (sidecars); it never starts or stops externally managed inference servers, including manually started localhost services. The internal `sidecar_starters` name also covers client contexts and cleanup callbacks.
 
 **Known Capabilities** (defined in `env/base.py:KNOWN_CAPABILITIES`):
 - arm — `motion.cartesian`, `motion.joint`, `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
@@ -184,7 +188,7 @@ New robot types follow this pattern under `jiuwensymbiosis/adapters/<name>/`:
 3. `env.py` — `BaseRobotEnv` subclass: `capabilities` frozenset, `connect`/`disconnect`/`get_observation`, expose `home_pose`/`tool_offset_mm` plus whichever SafetyRail envelopes the hardware can actually state (`z_min_safe`/`workspace_bounds`/`joint_limits`/`base_step_limits`/`lift_limits`/`waist_step_limit_rad`; each defaults to `None` = unchecked), and `holding_payload` if the body can carry something
 4. `api.py` — Subclasses `BaseRobotApi` (the mixin layer is gone); every action is an explicit `@implements(SPEC)` method, forwarding to `api/defaults.py` where the body adds nothing; overrides geometry-specific methods, implements vision methods
 5. `calibration.py` — Optional hand-eye calibration wrapper exposing `CALIBRATION_ADAPTER_SPEC` (see the calibration section)
-6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor, and `make_detector_sidecar()` provides the standard detection-server sidecar
+6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor. `managed_detector=True` injects a Session-owned HTTP client; `make_detector_sidecar()` provides a managed local model subprocess only for `detector.mode: local`.
    For Runtime/official CLI admission, pass `resource_keys(cfg)` identifying the physical command endpoint. The builder exposes `.config_factory` and `.resource_keys`; common admission adds cameras and spawned detectors. An explicit `physical_device_id` supplements derived identities. Builders do not acquire locks themselves. Drivers/Env must propagate cleanup errors and retain failed handles; constructors with unconfirmed rollback raise `HardwareCleanupError` (`agent.lifecycle`).
 7. `config_template.yaml` — YAML template with Chinese annotations
 
@@ -241,7 +245,31 @@ and calibration-time limit relaxations.
 
 ### Visual Perception Pipeline
 
-Detection runs as a subprocess (GroundingDINO + SAM2) via `perception/detector_sidecar.py`. `RobotSession` manages lifecycle. The body-agnostic `perception/` package provides the shared pipeline: `detector_client.init_detector()`, `vision.detect_and_centroid()`, `vision.apply_xy_correction()`, `object_geometry` (mask → 3D extent), and `scene3d` (the detect → centroid → project → correct → geometry chain behind `api/defaults.py`'s sensing forwarders).
+Detection deployment is explicit in `perception/config.py`: `detector.mode` is `remote`,
+`local`, or `disabled` (default). Remote mode calls the configured HTTP service and
+never loads model weights or spawns a process. Local mode optionally starts
+GroundingDINO + SAM2 through `perception/detector_sidecar.py`. Use “HTTP inference service”
+for the service in general; “sidecar” means only the Session-owned local subprocess.
+A manually started localhost server is externally managed and uses remote mode. Official adapter builders
+inject one managed callable detector client per `RobotSession`; the session owns its
+cleanup and any local process, never the external server. Maintenance with
+`include_sidecars=False` registers only client cleanup: no model startup, credentials
+resolution or network call until an explicit inference request.
+
+The body-agnostic `perception/` package provides `create_detector_client()`,
+`vision.detect_and_centroid()`, `vision.apply_xy_correction()`, `object_geometry`
+(mask → 3D extent), and `scene3d` (detect → centroid → project → correct → geometry).
+The legacy `init_detector(url)` and old `api_servers` configuration remain migration
+entry points. Inference failures carry stable error codes and must never become an
+empty successful detection. Capture age is checked across remote inference.
+
+Speech uses independent `voice.asr` and `voice.tts` backend settings: remote HTTP,
+explicit optional FunASR/ChatTTS, or disabled/null defaults. Capture and playback stay
+on the Agent host. This host need not be on the robot: hardware adapters keep their
+serial/USB/CAN/ROS/HTTP links. Remote client extras do not require model Torch; the
+optional SO-101 LeRobot dependency still does. See
+[remote inference](docs/zh/how-to/remote-inference.md) and
+[server deployment](deploy/inference/README.md). MCP is outside this implementation.
 
 ### Workspace Resolution
 

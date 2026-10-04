@@ -10,8 +10,8 @@
 #   make type-check      # mypy only
 #   make test-core       # pytest tests/unit_tests/ (no GUI extras)
 #   make test-gui        # pytest tests/gui/ (requires GUI extras)
-#   make test            # core + GUI no-hardware suites
-#   make test-all        # pytest (incl. integration)
+#   make test            # core tests (requires only .[dev])
+#   make test-all        # pytest (incl. GUI + integration; requires their dependencies)
 #
 # Tool env: defaults to the conda env "jiuwensymbiosis". Override with:
 #   make check CONDA_ENV=jiuwensymbiosis   # use conda run -n jiuwensymbiosis (default)
@@ -62,8 +62,8 @@ help:
 	@echo "  type-check   mypy (staged files, advisory — does not abort)"
 	@echo "  test-core    pytest tests/unit_tests/ (no GUI extras)"
 	@echo "  test-gui     pytest tests/gui/ (requires GUI extras)"
-	@echo "  test         core + GUI no-hardware suites"
-	@echo "  test-all     pytest (incl. integration)"
+	@echo "  test         core tests (requires only .[dev])"
+	@echo "  test-all     pytest (incl. GUI + integration; requires their dependencies)"
 	@echo ""
 	@echo "Options:"
 	@echo "  COMMITS=N    check files changed in last N commits instead of staged"
@@ -104,7 +104,7 @@ test-core:
 test-gui:
 	@PYTHONPATH="" $(PYTEST) tests/gui/
 
-test: test-core test-gui
+test: test-core
 
 test-all:
 	@PYTHONPATH="" $(PYTEST)

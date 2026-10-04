@@ -16,9 +16,10 @@ paths:
   [pyproject.toml](../../pyproject.toml). Select core tests with
   `python -m pytest tests/unit_tests/` or `make test-core`; select the complete
   GUI suite with `python -m pytest tests/gui/` or `make test-gui` in an
-  environment with GUI dependencies installed. `make test` runs both
-  no-hardware suites. `-m unit` is not equivalent because existing tests are
-  not uniformly marked.
+  environment with GUI dependencies installed. `make test` defaults to the
+  core suite and requires only `.[dev]`; `make test test-gui` runs both
+  no-hardware suites with `.[dev,gui]`. `-m unit` is not equivalent because
+  existing tests are not uniformly marked.
 - Keep `tests/conftest.py` free of eager core/GUI imports so launcher tests can
   run without importing the core. Reuse its lazy fixtures and the test doubles exported by
   `tests/mocks/__init__.py`, and lifecycle helpers in `tests/helpers.py`.

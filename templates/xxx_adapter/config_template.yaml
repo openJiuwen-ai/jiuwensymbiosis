@@ -48,9 +48,11 @@ z_min_safe_mm: 50.0  # [选填] Z 向安全下限 (SafetyRail 用)
 
 # ==================== 检测服务 [选填-仅 vision.detection] ====================
 # detector:
-#   spawn: true
-#   host: "127.0.0.1"
-#   port: 8114
+#   mode: remote  # 不配置时 disabled；本地模型需显式选择 local
+#   endpoint:
+#     url: "http://gpu-server:8114"
+#     request_timeout_s: 30
+# 本地可选：detector: {mode: local, local: {device: cuda, port: 8114}}
 
 # ==================== 标定 [选填-仅 vision.detection] ====================
 # calib_path: "calib.json"      # [选填-仅 vision.detection] 手眼标定文件

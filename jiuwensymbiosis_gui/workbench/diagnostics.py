@@ -237,6 +237,23 @@ _RULES: tuple[_Rule, ...] = (
 # 失败点自己写下的机器码(jiuwensymbiosis.errors)→ 诊断卡。命中即返回,不再做文本推断:
 # 源头已经确定的事,轮不到这里猜。没有 code 的失败(三方库抛的鉴权/网络/显存)才走规则表。
 _CODE_TABLE: dict[str, Diagnosis] = {
+    "inference_unavailable": Diagnosis(
+        "感知服务不可用", "感知服务未启用或暂时无法连接。", ("检查视觉/语音服务模式、HTTP 地址及服务端状态。",)
+    ),
+    "inference_timeout": Diagnosis(
+        "感知请求超时",
+        "感知服务未在请求总时限内完成。",
+        ("检查网络延迟、服务端排队和推理耗时；按任务需求配置总超时。",),
+    ),
+    "inference_busy": Diagnosis("感知服务繁忙", "服务端推理队列已满。", ("等待服务容量恢复后重新执行任务。",)),
+    "inference_protocol_error": Diagnosis(
+        "感知接口不兼容",
+        "感知服务返回的数据不符合接口契约。",
+        ("核对客户端协议版本与服务端版本、输入格式和响应限制。",),
+    ),
+    "inference_result_stale": Diagnosis(
+        "感知结果已过期", "图像或语音超过当前任务允许的有效时间。", ("重新采集数据，并检查网络和推理耗时。",)
+    ),
     "no_camera": _NO_CAMERA,
     "no_detection": _NO_DETECTION,
     "empty_mask": _NO_DETECTION,

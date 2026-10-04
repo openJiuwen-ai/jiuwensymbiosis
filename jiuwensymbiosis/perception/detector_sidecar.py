@@ -7,9 +7,8 @@ The server is intentionally NOT imported in-process: it loads heavy CUDA
 models (GroundingDINO + SAM2) and conflicts with vLLM/torch state if hosted in
 the same process.
 
-If the chosen port is already accepting connections, we assume an external
-detector instance is already running and just attach to it (no subprocess
-spawned).
+The local process owns its listening port. An occupied port is a configuration
+error; externally managed services use remote mode, including on localhost.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from types import TracebackType
 
 from jiuwensymbiosis.agent.cancel import CancelToken
 from jiuwensymbiosis.agent.lifecycle import CleanupReport, HardwareCleanupError
-from jiuwensymbiosis.errors import DetectorStartError
+from jiuwensymbiosis.errors import DetectorStartError, InferenceServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +39,28 @@ def _wait_for_port(host: str, port: int, timeout: float, *, cancel_token: Cancel
     # and raise RunCancelled on cancel (the caller's finally terminates the proc).
     # None → the original 1.0s cadence, unchanged for CLI.
     poll = 0.1 if cancel_token is not None else 1.0
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if cancel_token is not None:
-            cancel_token.raise_if_set()
-        if _port_open(host, port, timeout=1.0):
-            return True
-        time.sleep(poll)
-    return False
+    from jiuwensymbiosis.perception.config import DetectorConfig
+    from jiuwensymbiosis.perception.detector_client import create_detector_client
+    from jiuwensymbiosis.utils.service_http import HttpEndpointConfig
+
+    deadline = time.monotonic() + timeout
+    config = DetectorConfig(
+        mode="remote",
+        endpoint=HttpEndpointConfig(url=f"http://{host}:{port}", connect_timeout_s=0.5, request_timeout_s=1.0),
+    )
+    with create_detector_client(config) as client:
+        client.bind_cancel_token(cancel_token)
+        while time.monotonic() < deadline:
+            if cancel_token is not None:
+                cancel_token.raise_if_set()
+            if _port_open(host, port, timeout=0.5):
+                try:
+                    client.readiness()
+                    return True
+                except InferenceServiceError:
+                    pass  # Model loading is not readiness; retry within startup budget.
+            time.sleep(min(poll, max(0, deadline - time.monotonic())))
+        return False
 
 
 @dataclass
@@ -65,8 +78,9 @@ class _DetectorSidecar:
 
     def __enter__(self) -> subprocess.Popen | None:
         if _port_open(self.host, self.port, timeout=0.5):
-            logger.info("detector already running at %s:%d, attaching", self.host, self.port)
-            return None
+            raise DetectorStartError(
+                f"detector port {self.host}:{self.port} is occupied; use mode: remote for externally managed services"
+            )
         logger.info("Spawning detector server: %s", " ".join(self.command))
         self._released = False
         stdout = None if self.log_stdout else subprocess.DEVNULL
@@ -133,10 +147,9 @@ def detector_subprocess(
     use_sam2: bool = True,
     cancel_token: CancelToken | None = None,
 ) -> _DetectorSidecar:
-    """Start (or attach to) the GroundingDINO(+SAM2) detection server.
+    """Start an explicitly owned GroundingDINO(+SAM2) detection server.
 
-    The context yields the spawned ``Popen``, or ``None`` for an external
-    instance. Its cleanup report confirms successful startup rollback; failed
+    The context yields the spawned ``Popen``. Its cleanup report confirms successful startup rollback; failed
     shutdown raises rather than silently declaring the child stopped.
 
     The first spawn downloads the model weights from HuggingFace, so

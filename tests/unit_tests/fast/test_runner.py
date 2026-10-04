@@ -530,6 +530,9 @@ def test_track_detect_rejects_first_detection_that_is_already_stale(monkeypatch)
         def stop(self):
             return None
 
+        def raise_if_failed(self):
+            return None
+
         def wait_first(self, timeout_s, *, cancel_token=None):
             return True
 
@@ -567,6 +570,9 @@ def test_track_detect_stall_watchdog_beats_eight_second_cached_target(monkeypatc
             return self
 
         def stop(self):
+            return None
+
+        def raise_if_failed(self):
             return None
 
         def wait_first(self, timeout_s, *, cancel_token=None):
@@ -743,6 +749,9 @@ class _DeterministicTracker:
         return self
 
     def stop(self):
+        return None
+
+    def raise_if_failed(self):
         return None
 
     def wait_first(self, timeout_s, *, cancel_token=None):

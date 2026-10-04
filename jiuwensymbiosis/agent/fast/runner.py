@@ -47,7 +47,14 @@ from jiuwensymbiosis.api.decorators import ToolMeta
 from jiuwensymbiosis.api.memory import ExecutionMemory
 from jiuwensymbiosis.api.state import contradicted_requirements
 from jiuwensymbiosis.api.world_state import WorldState, current_tokens
-from jiuwensymbiosis.errors import DetectionError, GraspNotConfirmedError, JiuwenSymbiosisError, error_code
+from jiuwensymbiosis.errors import (
+    DetectionError,
+    GraspNotConfirmedError,
+    InferenceServiceError,
+    JiuwenSymbiosisError,
+    error_code,
+    is_inference_service_failure,
+)
 from jiuwensymbiosis.rails.recovery import read_holding_payload, recover_session
 from jiuwensymbiosis.tools.robot_control_tool import _build_action_index, record_action
 
@@ -182,9 +189,12 @@ def _detect_once(api: Any, object_name: str, *, require_grasp: bool = False) -> 
     """One detection → normalized binding dict, or ``None`` if not detected."""
     try:
         gi = api.get_grasp_info_simple(object_name)
+    except (RunCancelled, InferenceServiceError):
+        raise
     except Exception as exc:  # noqa: BLE001 - detection may raise; treat as miss
         logger.debug("[runner] detection raised for %r: %s", object_name, exc)
         return None
+    _raise_detection_service_failure(gi)
     if not isinstance(gi, dict) or not gi.get("ok"):
         return None
     if require_grasp:
@@ -204,9 +214,12 @@ def _detect_mask_tracking_once(
     """One private adapter sample through the fixed-camera mask filter."""
     try:
         gi = provider(object_name)
+    except (RunCancelled, InferenceServiceError):
+        raise
     except Exception as exc:  # noqa: BLE001 - detection may raise; treat as miss
         logger.debug("[runner] mask tracking detection raised for %r: %s", object_name, exc)
         return target_filter.miss(type(exc).__name__)
+    _raise_detection_service_failure(gi)
     if not isinstance(gi, dict) or not gi.get("ok"):
         reason = gi.get("reason", "not_detected") if isinstance(gi, dict) else "invalid_result"
         return target_filter.miss(str(reason))
@@ -220,7 +233,14 @@ def _detect_mask_tracking_once(
     return target_filter.update(sample)
 
 
-def _prescan(session: Any, steps: list[ActionStep]) -> dict[str, dict[str, Any]]:
+def _raise_detection_service_failure(result: Any) -> None:
+    if is_inference_service_failure(result):
+        raise InferenceServiceError(
+            "Detection service failed", service="vision", code=result.get("error_code") or "inference_unavailable"
+        )
+
+
+def _prescan(session: Any, steps: list[ActionStep | LoopStep]) -> dict[str, dict[str, Any]]:
     """At the home pose, detect every tracking target once and cache it.
 
     Eye-in-hand: a target grasped later occludes the wrist camera, so its
@@ -327,8 +347,10 @@ def _track_detect(
         max_hz=cfg.detect_hz,
         staleness_s=_MAX_TRACKING_IMAGE_AGE_S,
         name=object_name,
+        cancel_token=token,
     )
     tracker.start()
+    failed = False
     try:
         if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             cached = cache.get(object_name)
@@ -378,8 +400,14 @@ def _track_detect(
             raise _servo_failure("track_detect", res)
         latest = tracker.latest_target()
         return dict(latest) if latest is not None else None
+    except BaseException:
+        # Keep the action's failure or interruption as the primary cause.
+        failed = True
+        raise
     finally:
         tracker.stop()
+        if not failed:
+            tracker.raise_if_failed()
 
 
 def _track_grasp(
@@ -424,8 +452,10 @@ def _track_grasp(
         max_hz=cfg.detect_hz,
         staleness_s=_MAX_TRACKING_IMAGE_AGE_S,
         name=f"grasp-{object_name}",
+        cancel_token=token,
     )
     tracker.start()
+    failed = False
     try:
         if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             return None
@@ -562,8 +592,14 @@ def _track_grasp(
             tracker.detections,
         )
         return dict(latest)
+    except BaseException:
+        # Keep the action's failure or interruption as the primary cause.
+        failed = True
+        raise
     finally:
         tracker.stop()
+        if not failed:
+            tracker.raise_if_failed()
 
 
 def _wait_post_descend_target(
@@ -618,10 +654,12 @@ def _raise_executor_failure(
     message = str(response.get("reason") or fallback)
     if context is not None:
         message = f"{context}: {message}"
+    result = response.get("result")
+    nested_code = result.get("error_code", "") if isinstance(result, dict) else ""
     raise _StepExecutionError(
         message,
         recovery_managed=response.get("recovery_managed") is True,
-        code=str(response.get("error_code") or ""),
+        code=str(response.get("error_code") or nested_code),
     )
 
 
@@ -644,6 +682,8 @@ def direct_executor(api_or_index: Any) -> Executor:
             return {"ok": False, "reason": f"op {op!r} not available on this robot"}
         try:
             result = fn(**params)
+        except RunCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - convert op failure to structured result
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
         api = getattr(fn, "__self__", None)
@@ -792,7 +832,14 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     upgrades whole-binding params (``box`` / ``surface``) before dispatch.
     """
     env, run_op, session, cfg, cache, out, state = (
-        ctx.env, ctx.run_op, ctx.session, ctx.cfg, ctx.cache, ctx.out, ctx.state)
+        ctx.env,
+        ctx.run_op,
+        ctx.session,
+        ctx.cfg,
+        ctx.cache,
+        ctx.out,
+        ctx.state,
+    )
     i = state["i"]
     holding = state["holding"]
     tracked_grasp: _TrackedGraspContext | None = state["tracked_grasp"]
@@ -829,6 +876,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
             if not res.get("ok"):
                 _raise_executor_failure(res, f"{step.op} failed")
             result = res.get("result")
+            _raise_detection_service_failure(result)
             if step.bind:
                 # A bind step must yield a usable detection; a detection that
                 # ran but returned ok=False (e.g. no valid depth at the target)
@@ -886,6 +934,10 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         # GUI, which finalizes the run as "已停止".
         raise
     except Exception as exc:  # noqa: BLE001 - surface as structured failure
+        # A concurrent cancellation wins over action/cleanup failures: recovery
+        # would otherwise issue fresh motion after the user requested a stop.
+        if token is not None:
+            token.raise_if_set()
         logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
         if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
             logger.info("[runner] recovery already handled by the ability rail stack")
@@ -913,27 +965,67 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
     each pass (robust to objects moving); stops cleanly when detect finds no target.
     """
     env, run_op, session, out, state = ctx.env, ctx.run_op, ctx.session, ctx.out, ctx.state
+    token = getattr(session, "cancel_token", None)
     cap = loop.max_iters if loop.max_iters else _LOOP_HARD_CAP
     for _ in range(cap):
+        if token is not None:
+            token.raise_if_set()
         i = state["i"]
-        # 1. detect ONE target (single-target detector; ok=False ⇒ none left)
+        # Only a successful observation explicitly reporting no detection ends the loop.
         try:
             det_res = run_op(loop.detect_op, resolve_params(loop.detect_params, env))
         except RunCancelled:
             raise  # user cancellation: no failed step, no _safe_retreat (see _run_action)
         except Exception as exc:  # noqa: BLE001
-            _safe_retreat(session)
-            out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": False, "reason": f"{type(exc).__name__}: {exc}"})
+            if token is not None:
+                token.raise_if_set()
+            if not (isinstance(exc, _StepExecutionError) and exc.recovery_managed):
+                _safe_retreat(session)
+            out.append(
+                {
+                    "i": i,
+                    "op": f"loop:{loop.detect_op}",
+                    "ok": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "error_code": error_code(exc),
+                }
+            )
             state["i"] = i + 1
             return False
+        if token is not None:
+            token.raise_if_set()
         det = det_res.get("result")
+        if isinstance(det, dict) and not det.get("ok") and det.get("reason") == "no_detection":
+            if not det.get("error_code") and not det_res.get("error_code") and not det_res.get("recovery_managed"):
+                out.append(
+                    {"i": i, "op": f"loop:{loop.detect_op}", "ok": True, "result": {"terminated": "no_more_target"}}
+                )
+                state["i"] = i + 1
+                return True  # clean termination — the scene is clear
         if not det_res.get("ok") or not (isinstance(det, dict) and det.get("ok")):
-            out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True, "result": {"terminated": "no_more_target"}})
+            if not det_res.get("recovery_managed"):
+                _safe_retreat(session)
+            failure = det if isinstance(det, dict) else det_res
+            out.append(
+                {
+                    "i": i,
+                    "op": f"loop:{loop.detect_op}",
+                    "ok": False,
+                    "reason": failure.get("reason", "invalid_detection"),
+                    "error_code": failure.get("error_code", ""),
+                }
+            )
             state["i"] = i + 1
-            return True  # clean termination — the scene is clear
+            return False
         env[loop.bind] = normalize_detection(det)
-        out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True,
-                    "result": {"target": det.get("position") or det.get("center_mm")}})
+        out.append(
+            {
+                "i": i,
+                "op": f"loop:{loop.detect_op}",
+                "ok": True,
+                "result": {"target": det.get("position") or det.get("center_mm")},
+            }
+        )
         state["i"] = i + 1
         # 2. process this one target: run the body once
         for bstep in loop.body:
@@ -1094,8 +1186,7 @@ def run_sequence(
 
     out: list[dict] = []
     state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
-    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg,
-                      cache=cache, out=out, state=state)
+    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg, cache=cache, out=out, state=state)
     # Empty without a replanner, which makes _drift a dict lookup that always misses.
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)

@@ -74,7 +74,7 @@
   <rect x="214" y="790" width="16" height="82" rx="0" fill="#2563eb"/>
   <text id="text-32" x="135.0" y="839.0" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="166">RobotSession</text>
   <text id="text-33" x="256" y="822" font-size="23" font-weight="700" fill="#172033" text-anchor="start" data-max-width="878">Session lifecycle</text>
-  <text id="text-34" x="256" y="851" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="878">Connect Env, manage sidecars, and clean up on session exit.</text>
+  <text id="text-34" x="256" y="851" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="878">Connect Env; own clients and optional local processes.</text>
   <path d="M480 915 L526 915" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
   <text id="text-35" x="541" y="922" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="210">Call shared algorithms</text>
   <path d="M785 915 L831 915" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>

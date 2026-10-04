@@ -9,12 +9,17 @@ independent of whether ``webrtcvad`` is installed.
 
 from __future__ import annotations
 
+import sys
+import threading
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from jiuwensymbiosis.voice.audio import (
     FileAudioSource,
     RecordTuning,
+    SoundDevicePlayer,
     _SegmentRecorder,
     build_audio_source,
 )
@@ -136,3 +141,76 @@ class TestBuildAudioSource:
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="audio_backend"):
             build_audio_source(VoiceConfig(audio_backend="nope"))
+
+
+def test_player_close_cannot_abort_before_stream_start(monkeypatch):
+    starting, allow_start, closing, aborted = (threading.Event() for _ in range(4))
+    events, errors = [], []
+
+    class Stream:
+        def start(self):
+            starting.set()
+            assert allow_start.wait(2)
+            events.append("start")
+
+        def write(self, audio):
+            assert aborted.wait(2)
+
+        def stop(self):
+            pass
+
+        def abort(self):
+            events.append("abort")
+            aborted.set()
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(OutputStream=lambda **kwargs: Stream()))
+    player = SoundDevicePlayer()
+
+    def play():
+        try:
+            player.play(_loud(), 16000)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def close():
+        closing.set()
+        player.close()
+
+    playback = threading.Thread(target=play)
+    closer = threading.Thread(target=close)
+    playback.start()
+    try:
+        assert starting.wait(1)
+        closer.start()
+        assert closing.wait(1)
+        assert not aborted.wait(0.1)
+    finally:
+        allow_start.set()
+        if closer.ident is not None:
+            closer.join(3)
+        playback.join(3)
+    assert not playback.is_alive() and not closer.is_alive()
+    assert not errors
+    assert events == ["start", "abort", "close"]
+    assert player._stream is None
+
+
+def test_player_closes_stream_when_start_fails(monkeypatch):
+    closed = []
+
+    class Stream:
+        def start(self):
+            raise RuntimeError("device failed to start")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(OutputStream=lambda **kwargs: Stream()))
+    player = SoundDevicePlayer()
+    with pytest.raises(RuntimeError, match="device failed to start"):
+        player.play(_loud(), 16000)
+    assert closed == [True]
+    assert player._stream is None

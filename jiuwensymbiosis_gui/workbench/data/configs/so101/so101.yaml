@@ -21,6 +21,10 @@ env:
       camera_serial: null
       calib_path: null
 
+# 无本地模型启动；可在配置页切换到远程 HTTP。
+detector:
+  mode: disabled
+
 model:
   provider: OpenAI
   api_base: "https://model-endpoint.invalid/v1"

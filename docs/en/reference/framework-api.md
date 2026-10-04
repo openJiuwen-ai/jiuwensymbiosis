@@ -74,11 +74,15 @@ RobotSession(
 
 | Method | Purpose |
 | --- | --- |
-| `connect()` | Idempotently start sidecars and connect the Env |
-| `disconnect()` | Flush tracing, disconnect the Env, and close sidecars |
+| `connect()` | Idempotently open registered resources, start optional owned local processes, and connect Env |
+| `disconnect()` | Flush tracing, disconnect Env, and close owned clients and local processes |
 | `globals_provider()` | Return `env`, `api`, `np`, and extra globals for the code tool |
 | `describe()` | Return robot name and Env/Api/effective capabilities |
 | `attach_trace_rail(rail)` | Transfer final Trace cleanup ownership to the Session |
+
+The internal `sidecar_starters` interface also registers client contexts and cleanup callbacks.
+In detection mode `local`, Session starts/stops a managed local subprocess (sidecar).
+In `remote`, it closes only its HTTP client and never stops the external server, including a manually started localhost server.
 
 Prefer context management:
 

@@ -13,33 +13,16 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from jiuwensymbiosis.adapters._common.config import load_yaml_config
+from jiuwensymbiosis.perception.config import DetectorConfig, parse_detector_config
+from jiuwensymbiosis.perception.config import DetectorServerConfig as DetectorServerConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DetectorServerConfig:
-    """How to reach (or spawn) the open-vocabulary detection server
-    (GroundingDINO + SAM2), serving the ``/segment`` contract.
-    """
-
-    url: str = "http://127.0.0.1:8114"
-    spawn: bool = True
-    host: str = "127.0.0.1"
-    port: int = 8114
-    device: str = "cuda"
-    startup_timeout_s: float = 300.0
-    # --- GroundingDINO (text→box) + SAM2 (box→mask) knobs.
-    gdino_model_id: str = "IDEA-Research/grounding-dino-base"
-    sam2_model_id: str = "facebook/sam2.1-hiera-large"
-    box_threshold: float = 0.35
-    text_threshold: float = 0.25
-    use_sam2: bool = True
-
-
-@dataclass
 class PiperConfig:
-    path_fields: ClassVar[tuple[str, ...]] = ("calib_path",)
+    path_or_id_fields: ClassVar[tuple[str, ...]] = ("gdino_model_id", "sam2_model_id")
+    path_fields: ClassVar[tuple[str, ...]] = ("calib_path", "module_path", "tts_module_path")
 
     # --- arm (single-arm; LEFT arm only)
     can_port: str = "can_left"
@@ -113,7 +96,7 @@ class PiperConfig:
     place_z_offset_mm: float = 75.0
 
     # --- task knobs
-    detector: DetectorServerConfig = field(default_factory=DetectorServerConfig)
+    detector: DetectorConfig = field(default_factory=DetectorConfig)
     task_prompt: str | None = None
     name: str = "piper"
 
@@ -126,8 +109,7 @@ class PiperConfig:
         """
         ll = data.get("env", {}).get("cfg", {}).get("low_level", {}) if isinstance(data.get("env"), dict) else None
         prompt = data.get("env", {}).get("cfg", {}).get("prompt") if isinstance(data.get("env"), dict) else None
-        api_servers = data.get("api_servers") or []
-        detector_cfg = _extract_detector_from_api_servers(api_servers)
+        detector_cfg = parse_detector_config(data)
 
         if isinstance(ll, dict) and ll:
             kw = {k: v for k, v in ll.items() if not k.startswith("_")}
@@ -181,62 +163,6 @@ class PiperConfig:
         return load_yaml_config(cls, path)
 
 
-def _server_value(server: dict[str, Any], field_name: str, default: Any) -> Any:
-    """Return an api-server value, treating explicit YAML null as absent."""
-    value = server.get(field_name, default)
-    return default if value is None else value
-
-
-def _server_number(server: dict[str, Any], field_name: str, default: int | float, converter: Any) -> Any:
-    """Convert one numeric detector field with a configuration-specific error."""
-    value = _server_value(server, field_name, default)
-    type_name = "an integer" if converter is int else "a number"
-    if isinstance(value, bool):
-        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be {type_name}, got {value!r}.")
-    try:
-        return converter(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be {type_name}, got {value!r}.") from exc
-
-
-def _server_bool(server: dict[str, Any], field_name: str, default: bool) -> bool:
-    """Read one boolean detector field without truthiness coercion."""
-    value = _server_value(server, field_name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"PiperConfig: api_servers detector.{field_name} must be bool, got {value!r}.")
-    return value
-
-
-def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorServerConfig:
-    """If the YAML lists the detection server, copy its connection + model knobs.
-    Recognizes the entry by ``_target_`` containing
-    ``grounding_dino_sam2_server`` (or ``gdino``).
-    """
-    for s in api_servers or []:
-        if not isinstance(s, dict):
-            continue
-        target = str(s.get("_target_") or "").lower()
-        if "grounding_dino" not in target and "gdino" not in target:
-            continue
-        defaults = DetectorServerConfig()
-        host = _server_value(s, "host", defaults.host)
-        port = _server_number(s, "port", defaults.port, int)
-        return DetectorServerConfig(
-            url=f"http://{host}:{port}",
-            spawn=True,
-            host=host,
-            port=port,
-            device=_server_value(s, "device", defaults.device),
-            startup_timeout_s=_server_number(s, "startup_timeout_s", defaults.startup_timeout_s, float),
-            gdino_model_id=os.environ.get("GDINO_MODEL_ID")
-            or _server_value(s, "gdino_model_id", defaults.gdino_model_id),
-            sam2_model_id=os.environ.get("SAM2_MODEL_ID") or _server_value(s, "sam2_model_id", defaults.sam2_model_id),
-            box_threshold=_server_number(s, "box_threshold", defaults.box_threshold, float),
-            text_threshold=_server_number(s, "text_threshold", defaults.text_threshold, float),
-            use_sam2=_server_bool(s, "use_sam2", defaults.use_sam2),
-        )
-    defaults = DetectorServerConfig()
-    return DetectorServerConfig(
-        gdino_model_id=os.environ.get("GDINO_MODEL_ID") or defaults.gdino_model_id,
-        sam2_model_id=os.environ.get("SAM2_MODEL_ID") or defaults.sam2_model_id,
-    )
+def _extract_detector_from_api_servers(api_servers: list[Any]) -> DetectorConfig:
+    """Compatibility helper; canonical parsing lives in perception.config."""
+    return parse_detector_config({"api_servers": api_servers})
