@@ -28,23 +28,23 @@ class PiperConfig:
     can_port: str = "can_left"
     # MOVE speed percentage (0-100) passed to MotionCtrl_2; start slow on real HW.
     move_speed: int = 50
-    # Tool-tip offset from the flange along base -Z (mm).
+    # Tool-tip extension along flange-local +Z (mm); API rotates it into the base frame.
     tool_offset_mm: float = 135.8
 
     # --- workspace constants
     calib_path: str | None = None
     home_lift_mm: float = 250.0
     z_safe_margin_mm: float = -10.0
-    # 6-DoF home pose used only when no calib_path is given (mm/deg, FLANGE frame).
+    # 6-DoF home pose used when calibration has no object anchor (mm/deg, FLANGE frame).
     home_pose_xyzrxryrz_mm_deg: list[float] = field(default_factory=lambda: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0])
     # Calibration anchor object pose (used only when no calib_path).
     calib_object_xyzrxryrz_mm_deg: list[float] | None = None
-    z_min_safe_mm: float = 50.0
+    z_min_safe_mm: float = 50.0  # TIP Z floor when calibration has no object anchor.
     home_use_init_pose: bool = False
 
-    # --- cartesian workspace box (mm). Clamped before
-    #     every EndPoseCtrl so the firmware-chosen IK solution can't wander out
-    #     of the front hemisphere. None on a side disables that bound.
+    # --- cartesian workspace box (mm). Both TIP and FLANGE targets must be
+    #     within XY bounds; z_max is a FLANGE ceiling. Violations are rejected
+    #     before EndPoseCtrl. None on a side disables that bound.
     x_min_mm: float | None = 0.0
     x_max_mm: float | None = 700.0
     y_min_mm: float | None = -500.0

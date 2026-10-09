@@ -199,6 +199,9 @@ class CruzrApi(BaseRobotApi):
 
 当前 `fastagent` 的普通动作执行器固定调用 `robot_control`。使用内置构建器时，需要设置 `enable_skill=True` 来注册该入口；只设置 `exec_mode="fastagent"` 不会自动注册它。`plan_task` 直接读取技能库，与 `SkillUseRail` 加载说明是不同机制。
 
+Fast path 还要求显式提供 `RobotAgentConfig.model_spec`，用于 HTTP 任务解析和规划；仅注入 `model`
+无法替代它。完整配置见 [API 参考](../reference/framework-api.md#fast-path-最小配置)。
+
 `InProcessCodeTool` 通过 `exec()` 访问注入的 `env`、`api`、`np` 等对象，没有沙盒隔离。其内部直接调用 API/Env 不会逐条经过动作工具的能力过滤、SafetyRail 和记账包装。需要这些检查的操作应使用动作工具路径。
 
 `mode` 决定工具配置；`exec_mode` 决定任务由模型逐步编排还是先编译序列，二者含义不同。
@@ -273,7 +276,7 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 
 `SafetyRail` 根据运动能力检查 Z 下限、XY 工作区、关节软限位、底盘单步位移/转角、升降范围和腰部转角。超限时抛出 `ValueError`。`stepagent` 可将工具异常反馈给模型；`fastagent` 按执行器的失败策略处理，不保证发生逐步模型纠错。
 
-检查范围还取决于动作名和参数格式。例如 Piper 的 `goto_pose` 使用法兰坐标 `x_mm` / `y_mm` / `z_mm`，当前由驱动执行对应的 Z 下限检查，不直接套用 SafetyRail 的工具尖端 Z/XY 检查。
+检查范围还取决于动作名和参数格式。例如 SO-101 的 `goto_pose` 将 `x` / `y` / `z` 放在嵌套的 `pose` 对象中，SafetyRail 提取这些字段后执行 Z/XY 检查。Piper 当前通过 `goto_xyzr` 接受工具尖端 XYZ/R 目标并使用标定倾角，尚未实现 `goto_pose`。
 
 `RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位。恢复属于尽力执行，不能保证设备最终处于安全状态。
 

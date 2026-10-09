@@ -8,6 +8,9 @@ Hardware-dependent paths (actual motion, detection) are tested via mock injectio
 
 from __future__ import annotations
 
+from math import sqrt
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -80,6 +83,118 @@ class _SpyDriver:
 
     def set_gripper(self, on):
         self.log.append(("gripper", on))
+
+
+class _PoseDriver(_SpyDriver):
+    """Instantly applies flange commands and exposes their raw hardware readback."""
+
+    def __init__(self):
+        super().__init__()
+        self.pose = super().get_pose()
+        self.tool_offset_mm = 100.0
+
+    def get_pose(self):
+        return self.pose
+
+    def move_to_pose_blocking(self, pose):
+        super().move_to_pose_blocking(pose)
+        self.pose = SimpleNamespace(
+            x=pose.x_mm, y=pose.y_mm, z=pose.z_mm, rx=pose.rx_deg, ry=pose.ry_deg, rz=pose.rz_deg
+        )
+
+    def servo_to_pose(self, pose):
+        self.log.append(("servo", pose))
+        self.pose = SimpleNamespace(**pose)
+
+
+class TestPiperTipCoordinates:
+    def _build(self):
+        from jiuwensymbiosis.adapters.piper.api import PiperApi
+        from jiuwensymbiosis.adapters.piper.config import PiperConfig
+        from jiuwensymbiosis.adapters.piper.env import PiperEnv
+
+        env = PiperEnv(PiperConfig())
+        driver = _PoseDriver()
+        env._inner = driver
+        return PiperApi(env), env, driver
+
+    @pytest.mark.parametrize(
+        ("angles", "tip_offset"),
+        [
+            ((0, 0, 0), (0, 0, 100)),
+            ((180, 0, 0), (0, 0, -100)),
+            ((180, 30, 0), (-50, 0, -50 * sqrt(3))),
+            ((180, 30, 90), (0, -50, -50 * sqrt(3))),
+            ((90, 0, 0), (0, -100, 0)),
+            ((0, 90, 0), (100, 0, 0)),
+        ],
+    )
+    def test_readback_rotates_offset_by_live_orientation(self, angles, tip_offset):
+        api, _env, driver = self._build()
+        driver.pose = SimpleNamespace(x=200, y=20, z=300, rx=angles[0], ry=angles[1], rz=angles[2])
+
+        pose = api.get_pose()
+
+        assert [pose[k] for k in ("x", "y", "z")] == pytest.approx(
+            [200 + tip_offset[0], 20 + tip_offset[1], 300 + tip_offset[2]]
+        )
+        assert [pose[k] for k in ("rx", "ry", "rz")] == list(angles)
+
+    @pytest.mark.parametrize("command", ["blocking", "servo_r", "servo_rz"])
+    @pytest.mark.parametrize(
+        ("yaw", "flange_xy"), [(0, (250, 20)), (90, (200, 70)), (180, (150, 20)), (-90, (200, -30))]
+    )
+    def test_command_and_readback_agree_at_different_yaws(self, command, yaw, flange_xy):
+        api, _env, driver = self._build()
+        if command == "blocking":
+            api.goto_xyzr(200, 20, 100, yaw)
+        else:
+            yaw_key = "r" if command == "servo_r" else "rz"
+            api.servo_to_tip({"x": 200, "y": 20, "z": 100, yaw_key: yaw})
+
+        # Independent flange expectations prevent two wrong inverse transforms from passing.
+        assert (driver.pose.x, driver.pose.y, driver.pose.z) == pytest.approx((*flange_xy, 100 + 50 * sqrt(3)))
+        assert api.get_pose() == pytest.approx({"x": 200, "y": 20, "z": 100, "rx": 180, "ry": 30, "rz": yaw})
+
+    @pytest.mark.parametrize("command", ["blocking", "servo"])
+    def test_missing_yaw_preserves_live_yaw(self, command):
+        api, _env, driver = self._build()
+        driver.pose.rz = 90
+        if command == "blocking":
+            api.goto_xyzr(200, 20, 100)
+        else:
+            api.servo_to_tip({"x": 200, "y": 20, "z": 100})
+
+        assert (driver.pose.x, driver.pose.y, driver.pose.rz) == pytest.approx((200, 70, 90))
+        assert api.get_pose()["z"] == pytest.approx(100)
+
+    def test_zero_tool_extension_keeps_tip_at_flange(self):
+        api, _env, driver = self._build()
+        driver.tool_offset_mm = 0
+        api.goto_xyzr(200, 20, 100, 45)
+        assert (driver.pose.x, driver.pose.y, driver.pose.z) == pytest.approx((200, 20, 100))
+        assert api.get_pose() == pytest.approx({"x": 200, "y": 20, "z": 100, "rx": 180, "ry": 30, "rz": 45})
+
+    def test_servo_binding_reaches_target_with_flange_readback(self):
+        from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
+        from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController
+
+        api, env, _driver = self._build()
+        api.goto_xyzr(180, 0, 120, 45)
+        binding = ServoBinding(SimpleNamespace(api=api, env=env))
+        target = {"x": 200, "y": 0, "z": 120, "rz": 45}
+        result = ServoController(
+            binding.read_pose,
+            binding.servo_to,
+            lambda: target,
+            config=ServoConfig(
+                control_hz=200, max_lin_step_mm=6, pos_tol_mm=0.001, settle_ticks=1, timeout_s=1, absolute_timeout_s=2
+            ),
+        ).run()
+
+        assert result.ok, result
+        assert result.reason == "reached"
+        assert {k: binding.read_pose()[k] for k in target} == pytest.approx(target)
 
 
 class TestPiperApiDelegatesThroughEnv:

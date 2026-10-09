@@ -19,13 +19,15 @@ mixins won when both defined a name. A function has neither problem, and — the
 point of the shape — **the adapter file lists every action the body offers**,
 instead of that list being spread across a base-class tuple.
 
-Each function takes the api object first (``api``), reads ``api.env`` and nothing
-else about the body, and matches its ``ActionSpec`` signature exactly.
+Each function takes the api object first (``api``) and reads ``api.env``.
+Adapter-specific geometry can be supplied explicitly as an implementation-only
+callback; it does not change the action's public signature.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -129,14 +131,22 @@ def goto_xyzr(
     api.env.move_to_flange(SimpleNamespace(x=float(x), y=float(y), z=float(z), rx=rx, ry=ry, rz=float(r)))
 
 
-def move_direction(api: Any, direction: str, distance_mm: float) -> dict:
+def move_direction(
+    api: Any,
+    direction: str,
+    distance_mm: float,
+    *,
+    flange_to_tip: Callable[[Any], dict[str, float]] | None = None,
+) -> dict:
     """Relative Cartesian nudge with a self-contained bounds check.
 
     ``move_direction`` is NOT in SafetyRail's watch set (the rail only sees
     ``goto_xyzr`` at the tool layer), so it validates the target against
     ``env.z_min_safe`` / ``env.workspace_bounds`` here and raises ``ValueError`` on a
-    violation — the agent sees that and self-corrects. A relative translation is
-    frame-agnostic, so a tool offset does not matter.
+    violation — the agent sees that and self-corrects. Translation preserves
+    the full flange orientation. A body with a tool offset supplies
+    ``flange_to_tip`` so absolute bounds and returned XYZ use TIP coordinates.
+    The target and its TIP are derived from a single live flange sample.
     """
     key = (direction or "").strip().lower()
     if key not in _DIRECTION_OFFSETS:
@@ -147,7 +157,6 @@ def move_direction(api: Any, direction: str, distance_mm: float) -> dict:
     ux, uy, uz = _DIRECTION_OFFSETS[key]
     cur = api.env.get_flange_pose()
     tx, ty, tz = cur.x + ux * dist, cur.y + uy * dist, cur.z + uz * dist
-    _check_translation_bounds(api.env, tx, ty, tz)
     target = SimpleNamespace(
         x=tx,
         y=ty,
@@ -156,8 +165,11 @@ def move_direction(api: Any, direction: str, distance_mm: float) -> dict:
         ry=getattr(cur, "ry", 0.0),
         rz=getattr(cur, "rz", getattr(cur, "r", 0.0)),
     )
+    reported = flange_to_tip(target) if flange_to_tip is not None else pose_to_dict(target)
+    tip_xyz = {axis: reported[axis] for axis in ("x", "y", "z")}
+    _check_translation_bounds(api.env, **tip_xyz)
     api.env.move_to_flange(target)
-    return {"ok": True, "direction": key, "distance_mm": dist, "pose": {"x": tx, "y": ty, "z": tz}}
+    return {"ok": True, "direction": key, "distance_mm": dist, "pose": tip_xyz}
 
 
 # =============================================================================
@@ -246,24 +258,23 @@ def turn_waist(api: Any, delta_rad: float) -> dict:
 # ``motion/approach.py``. They used to reach it through an ``Approach`` component the adapter
 # held, which made these three the only actions in the vocabulary whose implementation path
 # differed from the other twenty-seven.
-def search_target(api: Any, object_name: str = "box", reference: str | None = None,
-                  relation: str = "on") -> dict:
+def search_target(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Look through every camera at the current heading; report the first bearing found."""
     from jiuwensymbiosis.motion import approach
 
     return approach.search_target(api, object_name, reference, relation)
 
 
-def approach_for_grasp(api: Any, object_name: str = "box", reference: str | None = None,
-                       relation: str = "on") -> dict:
+def approach_for_grasp(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Find the target, face it, drive square to its face at the work distance."""
     from jiuwensymbiosis.motion import approach
 
     return approach.approach_target_for_grasp(api, object_name, reference, relation)
 
 
-def approach_for_place(api: Any, object_name: str = "table", reference: str | None = None,
-                       relation: str = "on") -> dict:
+def approach_for_place(
+    api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on"
+) -> dict:
     """Find the surface, face it, drive to its near edge at placing distance."""
     from jiuwensymbiosis.motion import approach
 
@@ -276,16 +287,14 @@ def approach_for_place(api: Any, object_name: str = "table", reference: str | No
 # Same one hop as everything else: the pipeline and its orchestration both live in
 # ``perception/scene3d.py``. These three used to reach it through a ``Scene3D`` component
 # the adapter held.
-def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None = None,
-                     relation: str = "on") -> dict:
+def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Measure a target and return what PICKING IT UP needs, in the base frame."""
     from jiuwensymbiosis.perception import scene3d
 
     return scene3d.locate_for_grasp(api, object_name, reference, relation)
 
 
-def locate_for_place(api: Any, object_name: str = "table", reference: str | None = None,
-                     relation: str = "on") -> dict:
+def locate_for_place(api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on") -> dict:
     """Measure a support surface and return what PUTTING SOMETHING ON IT needs."""
     from jiuwensymbiosis.perception import scene3d
 

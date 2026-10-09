@@ -61,6 +61,9 @@ profiles:
     profile:
       trajectory:
         space: joint            # 6-DoF 也可笛卡尔,但关节空间插值更稳
+        # 默认 joint 轨迹走关节命令,不经过 Piper 的笛卡尔 XY/Z 检查。
+        # 若改用/导入 cartesian 轨迹,驱动会拒绝工作框外目标。需要更大标定范围时,
+        # 显式调整 x_min_mm/x_max_mm/y_min_mm/y_max_mm,不是 SO-101 的 workspace_bounds。
       observability:
         min_relative_rotation_deg: 5.0
         min_axis_separation_deg: 15.0
@@ -74,4 +77,4 @@ profiles:
       calib_path: null
       home_use_init_pose: true
       tool_offset_mm: 0.0       # 标定只读法兰位姿,与工具偏移无关
-      z_min_safe_mm: 50.0       # 保留桌面保护:腕部相机标定仍在桌面上方运动
+      z_min_safe_mm: 50.0       # 笛卡尔目标的高度下限;不检查 joint 轨迹的桌面净空

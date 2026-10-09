@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 | 定位 | 内存 4-DoF 仿真臂 | AgileX Piper 6-DoF CAN 机械臂 | LeRobot SO-101 5-DoF 欠驱动机械臂 | Cruzr 移动双臂（底盘 + 升降 + 腰部） |
 | 会话入口 | `MockArmEnv` + Mock Api/Model | `build_piper_session` | `build_so101_session` | `build_cruzr_session` |
-| 笛卡尔运动 | ✅ 内存位姿 | ✅ XYZ/R + 完整 `goto_pose` | ✅ XYZ + 最佳努力姿态 IK | — |
+| 笛卡尔运动 | ✅ 内存位姿 | ✅ `goto_xyzr`（工具尖端 XYZ/R，标定倾角） | ✅ XYZ + 最佳努力姿态 IK | — |
 | 关节运动 | — | ✅ 六关节 | ✅ 五个机械臂关节 | ✅ 双臂（named joint，弧度） |
 | 实时伺服 | ✅ 仿真 sink | ✅ `servo_to_tip`/`servo_to_flange`（fast path 伺服 op 驱动） | ✅ `servo_to_tip`/`servo_to_flange`（fast path 伺服 op 驱动） | — |
 | 移动底盘 | — | — | — | ✅ `navigate_relative`/`rotate_base`/`drive_arc`；连续 `base_servo` |
@@ -86,6 +86,8 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 | `sorting.command` | 词表和适配器扩展点 | —（无内置通用工具） | — | — | — | — |
 | `speech.tts` | 词表标记；语音前端独立提供 TTS | —（无内置机器人动作） | — | — | — | — |
 
+能力列的 ✅ 表示提供该能力下的动作，不表示实现动作列中的全部动作。Piper 的笛卡尔动作包括 `goto_xyzr`、`move_direction`、`get_pose` 和 `get_home_pose`，其中 `goto_xyzr` 使用标定倾角；完整姿态动作 `goto_pose` 当前由 SO-101 实现。
+
 `grasp.suction` 已有完整框架契约，但当前仓库没有内置吸盘真机适配器；Tutorial 中的 SCARA + 吸盘是教学实现，不应视为经过真机验收的内置硬件支持。
 
 ## 4. 执行与工具策略矩阵
@@ -101,6 +103,10 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 | 自定义工具/Rail | ✅ | 无 | 通过 `extra_tools`、`extra_rails` 注入 |
 | 并行工具调用 | ◐ | `parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
 | 无硬件/无模型干跑 | ✅ | `--mock` 时 | `MockArmEnv` + `MockModelClient`（工厂 `build_mock_model`，仅 Piper），不访问 CAN、相机或模型端点 |
+
+默认执行模式与字段默认值需一起配置：`fastagent` 要求显式 `model_spec` 和 `enable_skill=True`，
+用于模型规划及 `robot_control` 动作执行。仅提供 `model` 时应使用 `stepagent`。
+见 [API 最小配置](framework-api.md#fast-path-最小配置)。
 
 ## 5. Rails、Trace 与反馈矩阵
 

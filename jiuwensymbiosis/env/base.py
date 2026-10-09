@@ -88,7 +88,9 @@ class RobotObservation:
     Attributes:
         pose: Cartesian pose dict, schema is robot-specific but conventional
             keys are {"x","y","z","r"} for SCARA and {"x","y","z","rx","ry",
-            "rz"} (Euler, deg) for 6-DOF.
+            "rz"} (Euler, deg) for 6-DOF. Cartesian arm observations use the same
+            controlled point as the public API (TIP for a tool-offset arm).
+            Raw flange snapshots may be exposed separately in extra.
         joints: Joint angles in rad or deg (per-robot convention).
         rgb: HxWx3 uint8 image, base-of-robot camera or wrist camera.
         depth: HxW float32 depth in meters, aligned to ``rgb`` if both present.
@@ -487,7 +489,9 @@ class BaseRobotEnv(ABC):
         if len(values) != len(names):
             logger.warning(
                 "%s: get_angles() returned %d values for %d joint names; holding at 0.0",
-                self.name, len(values), len(names),
+                self.name,
+                len(values),
+                len(names),
             )
             return [0.0] * len(names)
         return [float(v) for v in values]

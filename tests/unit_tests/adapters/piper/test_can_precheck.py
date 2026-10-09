@@ -130,6 +130,6 @@ def test_constructor_rejects_bad_can_port_without_touching_the_sdk(net: Path, mo
     monkeypatch.setitem(sys.modules, "piper_sdk", SimpleNamespace(C_PiperInterface_V2=_must_not_construct))
 
     with pytest.raises(RuntimeError, match="does not exist") as failed:
-        lowlevel.PiperLowLevel(can_port="can_left")
+        lowlevel.PiperLowLevel(can_port="can_left", home_pose_xyzrxryrz_mm_deg=[200, 0, 400, 0, 90, 0])
 
     assert not isinstance(failed.value, HardwareCleanupError)

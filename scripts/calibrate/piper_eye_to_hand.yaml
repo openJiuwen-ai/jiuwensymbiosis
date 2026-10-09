@@ -1,4 +1,6 @@
-# Piper eye-to-hand 手眼标定配置 —— 供 scripts/calibrate/eye_to_hand_calib.py 使用。
+# Piper eye-to-hand 历史配置参考（当前 Piper 驱动不支持，不能直接运行）。
+# 当前 PiperConfig 仅接受 camera_mount: eye_in_hand；腕部相机标定请使用
+# scripts/calibrate/calibrate.yaml。支持桌面相机需要适配器和标定集成支持，不能仅改此字段。
 #
 # 与 configs/piper/piper.yaml（eye-in-hand 腕部相机）不同：本配置用一台**桌面固定
 # 相机**（eye-to-hand），标定求解 T_base_cam（相机在 base 系的常量位姿，不随法兰变）。
@@ -20,18 +22,17 @@ env:
       tool_offset_mm: 95.0          # 法兰→指尖（与运行配置一致）
 
       # --- camera mount（单一权威来源）
-      camera_mount: "eye_to_hand"   # 桌面固定相机；from_dict 拒绝其他值
-      poses_are_tip_frame: false    # eye-to-hand 无 object 锚点时用 YAML home/z_min
+      camera_mount: "eye_to_hand"   # 历史桌面相机设想；当前 PiperConfig 会拒绝此值
 
       # --- workspace（标定放宽；真机请收紧）
       calib_path: null              # 标定产出此文件，运行配置再指向它
       home_lift_mm: 250.0
       z_safe_margin_mm: -10.0
       home_pose_xyzrxryrz_mm_deg: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0]  # 法兰 home（mm/deg）
-      z_min_safe_mm: 50.0
+      z_min_safe_mm: 50.0           # TIP 目标 Z 下限；不验证关节轨迹净空
       home_use_init_pose: true
 
-      # --- cartesian 安全盒（mm）
+      # --- cartesian 目标边界（mm；越界拒绝，不钳制）
       x_min_mm: 0.0
       x_max_mm: 700.0
       y_min_mm: -500.0

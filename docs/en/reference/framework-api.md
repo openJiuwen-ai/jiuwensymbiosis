@@ -59,6 +59,10 @@ ModelSpec(
 `RobotAgentConfig.from_dict(data)` consumes the YAML `agent:` mapping. Unknown fields raise `TypeError`.
 `parallel_tool_calls=True` is rejected for motion/grasp hardware and cannot be combined with tracing.
 
+These are field defaults; `RobotAgentConfig()` alone does not satisfy the default `fastagent` runtime requirements.
+The fast path needs an explicit `model_spec` and `enable_skill=True` to register `robot_control` for ordinary action
+execution. See the configuration example below.
+
 ## `RobotSession`
 
 ```python
@@ -111,8 +115,19 @@ build_robot_agent_config(
 ```
 
 `build_robot_agent()` creates an immediately usable Agent instance. `build_robot_agent_config()` returns the openjiuwen
-configuration object for callers that own final Agent construction. Both resolve tools, Rails, system prompt, workspace,
-logging, tracing, skills, and capability constraints from the same `RobotAgentConfig`.
+`SubAgentConfig` for a multi-robot top-level Agent. It supports the subset of `RobotAgentConfig` described below.
+
+### Multi-robot sub-agent configuration scope
+
+`build_robot_agent_config` builds tools from `mode` and `extra_tools`, configures the model, iteration limit and parallel
+setting, and attaches capability-gated SafetyRail, RecoveryRail, VisualFeedbackRail and `extra_rails`.
+`enable_skill=True` adds `RobotControlTool`, but does not automatically attach `SkillUseRail`.
+
+This function currently does not generate a default system prompt, resolve or create a workspace, configure logging,
+attach TraceRail/DiagnosisRail, or propagate `config.strict_capabilities` to the Session. It passes `system_prompt`
+unchanged to `SubAgentConfig` (default `None`). The caller constructing the top-level Agent must configure those features
+when needed. Enable strict capability checks through `RobotSession(strict_capabilities=True)` or the Session attribute
+before connecting. Setting the sub-agent's `enable_tracing` or `enable_diagnosis` fields alone does not enable those features.
 
 Task execution:
 
@@ -145,9 +160,33 @@ run_fast_task(
 
 The caller owns Session connection; use `with session:` to guarantee cleanup.
 
+### Minimal fast-path configuration
+
+This assumes an adapter has constructed `session` and the model service is available. The caller still owns connection:
+
+```python
+config = RobotAgentConfig(
+    exec_mode="fastagent",
+    enable_skill=True,
+    model_spec=ModelSpec(
+        api_base="http://127.0.0.1:8110/v1",
+        api_key="EMPTY",
+        model_name="Qwen/Qwen3-VL-32B-Instruct",
+    ),
+)
+with session:
+    result = run_robot_task(session, "pick the red box", config)
+```
+
+Fast-path task parsing and planning read the HTTP endpoint parameters directly from `model_spec`.
+Providing only `config.model` returns `{"ok": False, "reason": "no_model_spec", ...}`. When injecting a custom or offline
+model through `model` alone, select `exec_mode="stepagent"`. Setting `enable_skill=False` removes the ordinary action
+dispatcher, so a compiled sequence cannot execute those actions through it. This flag does not disable the fast planner's
+direct reading of the built-in skill library.
+
 Workspace resolution:
 
-Workspace selection follows:
+For the single-robot builder `build_robot_agent`, workspace selection follows:
 
 1. explicit configuration;
 2. `JIUWENSYMBIOSIS_WORKSPACE`;

@@ -337,7 +337,10 @@ def _track_detect(
 
     binding = ServoBinding(session)
     pose0 = binding.read_pose()
-    r0 = float(pose0.get("r", pose0.get("rz", 0.0)))
+    # Use the readback's yaw key so slew limiting and reached checks compare
+    # the same channel. Mixing target r with live rz loses the locked yaw.
+    yaw_key = "rz" if "rz" in pose0 else "r"
+    r0 = float(pose0.get(yaw_key, 0.0))
     obs_x, obs_y, obs_z = float(pose0["x"]), float(pose0["y"]), float(pose0["z"])
 
     api = session.api
@@ -377,7 +380,7 @@ def _track_detect(
                 "x": obs_x + (float(latest["x"]) - obj0x),
                 "y": obs_y + (float(latest["y"]) - obj0y),
                 "z": obs_z,
-                "r": r0,
+                yaw_key: r0,
             }
 
         res = _run_servo_phase(

@@ -21,7 +21,7 @@ Support means that a code path and interface exist; it does not certify every ro
 |---|---|---|---|---|
 | Positioning | In-memory 4-DoF simulated arm | AgileX Piper 6-DoF CAN arm | LeRobot SO-101 underactuated 5-DoF arm | Cruzr mobile dual-arm (base + lift + waist) |
 | Session entry | `MockArmEnv` + Mock Api/Model | `build_piper_session` | `build_so101_session` | `build_cruzr_session` |
-| Cartesian motion | ✅ In-memory pose | ✅ XYZ/R plus full `goto_pose` | ✅ XYZ plus best-effort orientation IK | — |
+| Cartesian motion | ✅ In-memory pose | ✅ `goto_xyzr` (tool-tip XYZ/R, calibrated tilt) | ✅ XYZ plus best-effort orientation IK | — |
 | Joint motion | — | ✅ Six joints | ✅ Five arm joints | ✅ Dual arms (named joint, radians) |
 | Real-time servo | ✅ Simulated sink | ✅ `servo_to_tip`/`servo_to_flange` (driven by fast-path servo ops) | ✅ `servo_to_tip`/`servo_to_flange` (driven by fast-path servo ops) | — |
 | Mobile base | — | — | — | ✅ `navigate_relative`/`rotate_base`/`drive_arc`; continuous `base_servo` |
@@ -90,6 +90,8 @@ Capability axes are **orthogonal and freely combinable**: motion (cartesian/join
 | `sorting.command` | Vocabulary and adapter extension point | — (no built-in generic tool) | — | — | — | — |
 | `speech.tts` | Vocabulary marker; voice front end provides TTS separately | — (no built-in robot action) | — | — | — | — |
 
+A ✅ capability entry means the body provides actions under that capability, not every action in the action column. Piper's Cartesian actions are `goto_xyzr`, `move_direction`, `get_pose`, and `get_home_pose`; `goto_xyzr` uses the calibrated tilt. SO-101 currently implements the full-pose action `goto_pose`.
+
 The framework fully defines `grasp.suction`, but this repository has no built-in real suction adapter. The Tutorial's SCARA-with-suction implementation is educational and is not hardware-accepted built-in support.
 
 ## 4. Execution and tool strategy matrix
@@ -105,6 +107,10 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | Custom tools/Rails | ✅ | None | Inject through `extra_tools` and `extra_rails` |
 | Parallel tool calls | ◐ | `parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
 | No-hardware/no-model dry run | ✅ | With `--mock` | `MockArmEnv` + `MockModelClient` (factory `build_mock_model`, Piper only); no CAN, camera, or model endpoint |
+
+The execution mode and field defaults need to be configured together: `fastagent` requires an explicit `model_spec` and
+`enable_skill=True` for planning and `robot_control` action execution. Use `stepagent` when supplying only `model`.
+See the [minimal API configuration](framework-api.md#minimal-fast-path-configuration).
 
 ## 5. Rails, Trace, and feedback matrix
 
