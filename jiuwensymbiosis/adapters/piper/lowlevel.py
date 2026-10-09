@@ -108,6 +108,13 @@ def _ang_diff_deg(a: float, b: float) -> float:
     return (a - b + 180.0) % 360.0 - 180.0
 
 
+def _out_of_bounds(value: float, lo: float | None, hi: float | None) -> bool:
+    """Check one axis against the enabled sides of an EPS-tolerant [lo, hi] box."""
+    if lo is not None and value < lo - _GEOMETRY_EPS_MM:
+        return True
+    return hi is not None and value > hi + _GEOMETRY_EPS_MM
+
+
 def _is_can_interface(name: str) -> bool | None:
     """Identify SocketCAN links; None means the link type could not be read."""
     try:
@@ -763,9 +770,7 @@ class PiperLowLevel:
         x_min, x_max, y_min, y_max, z_max = self._xy_box
         for frame, x, y in (("FLANGE", pose.x_mm, pose.y_mm), ("TIP", tx, ty)):
             for axis, value, lo, hi in (("x", x, x_min, x_max), ("y", y, y_min, y_max)):
-                if (lo is not None and value < lo - _GEOMETRY_EPS_MM) or (
-                    hi is not None and value > hi + _GEOMETRY_EPS_MM
-                ):
+                if _out_of_bounds(value, lo, hi):
                     raise SafetyViolationError(f"[Piper] {frame} {axis}={value:.6f}mm out of bounds [{lo}, {hi}]")
         if z_max is not None and pose.z_mm > z_max + _GEOMETRY_EPS_MM:
             raise SafetyViolationError(f"[Piper] FLANGE z={pose.z_mm:.6f}mm above z_max={z_max}mm")
