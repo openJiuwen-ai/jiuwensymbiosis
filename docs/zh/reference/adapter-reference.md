@@ -238,7 +238,6 @@ GroundingDINO/SAM2 提供 HTTP 推理服务。`make_detector_sidecar(cfg_attr="d
 |---|---|---|
 | `adapters/_common/builder.py` | `make_builder()`、`make_detector_sidecar()` | Session 客户端所有权与可选 local 子进程装配 |
 | `adapters/_common/capability_spec.py` | `CAPABILITY_ACTIONS`、`CAPABILITY_DRIVER_MEMBERS` | 能力→动作/Driver 成员映射（验证器与生成器共用） |
-| `adapters/_common/safety.py` | `WorkspaceBounds`、`check_flange_z()` | TIP/FLANGE Z 防御 |
 | `perception/config.py` | `DetectorConfig`、`parse_detector_config()` | remote / local / disabled 配置及兼容归一化 |
 | `perception/detector_client.py` | `create_detector_client()`、`segment_image()`；兼容 `init_detector()` | 可关闭的 HTTP 推理客户端 |
 | `perception/detector_sidecar.py` | `detector_subprocess()` | 仅本地托管检测子进程的生命周期 |
@@ -347,4 +346,4 @@ xyz_final, description = apply_xy_correction(
 | Config | `adapters/piper/config.py` | `adapters/so101/config.py` | `adapters/cruzr/config.py` |
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
-Piper 的 30° 倾斜工具、历史嵌套 YAML 和临时 Z 校正都属于机型特例；新适配器只在硬件确有相同约束时复用。Cruzr 的双臂 + 升降可达性（`Reachability` 覆写）、头/腰双路相机、ROS 2 驱动也属于机型特例，通用机制（`scene3d`/`approach`/`dual_arm` 共享实现）不要复制到别处。
+Piper 的 30° 倾斜工具、历史嵌套 YAML 和临时 Z 校正都属于机型特例；新适配器只在硬件确有相同约束时复用。工具偏移修复的坐标契约、边界和升级影响见 [Piper 坐标与迁移说明](piper-coordinates.md)。Cruzr 的双臂 + 升降可达性（`Reachability` 覆写）、头/腰双路相机、ROS 2 驱动也属于机型特例，通用机制（`scene3d`/`approach`/`dual_arm` 共享实现）不要复制到别处。

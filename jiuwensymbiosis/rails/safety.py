@@ -216,18 +216,10 @@ class SafetyRail(AgentRail):
 
         # goto_pose ships x/y/z inside a nested ``pose`` object (one Cartesian
         # pose as a value object); goto_xyzr keeps them top-level. Flatten the
-        # nested pose so the Z/XY checks below cover the SO-101 ``goto_pose``
-        # signature. Missing fields fall through to None — same "no param → no
-        # rejection" path as a flat call missing a coordinate.
-        #
-        # NOTE: this only unpacks SO-101's ``x/y/z`` field names. Piper's
-        # ``goto_pose`` uses ``x_mm/y_mm/z_mm`` in the FLANGE frame, while the
-        # rail's ``z_min_safe`` is the TIP-frame floor — different coordinate
-        # systems. Unpacking ``z_mm`` against ``z_min_safe`` would let a
-        # flange-Z below the tip floor pass the pre-check (false safety).
-        # Piper's nested pose is therefore NOT unpacked here; its driver-level
-        # ``check_flange_z`` remains the enforcement. A future change that
-        # exposes ``flange_z_min_safe`` on PiperEnv could close that gap.
+        # nested pose so the Z/XY checks below cover the shared ``goto_pose``
+        # schema, currently implemented by SO-101. Piper uses ``goto_xyzr``.
+        # Missing fields fall through to None — same "no param → no rejection"
+        # path as a flat call missing a coordinate.
         pose_obj = args.get("pose") if tool_name == "goto_pose" else None
         if isinstance(pose_obj, dict):
             x, y, z = pose_obj.get("x"), pose_obj.get("y"), pose_obj.get("z")

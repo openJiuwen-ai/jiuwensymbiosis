@@ -30,7 +30,7 @@ env:
       z_safe_margin_mm: -10.0
       home_use_init_pose: true         # 启动位姿 = 观察位（由操作者摆放）
 
-      # --- cartesian 安全盒（mm；EndPoseCtrl 前钳制）
+      # --- cartesian 安全盒（mm；TIP/FLANGE 的 XY 均检查，z_max 为法兰上限；越界拒绝）
       x_min_mm: 0.0
       x_max_mm: 700.0
       y_min_mm: -500.0

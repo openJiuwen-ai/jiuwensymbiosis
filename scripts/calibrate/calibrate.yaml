@@ -18,9 +18,10 @@ env:
 
       home_use_init_pose: true       # 不需要调整，用于把启动时的位姿设置为 home 位
       home_pose_xyzrxryrz_mm_deg: [200.0, 0.0, 400.0, 0.0, 90.0, 0.0]  # 不需要调整，用于字段兜底，会被启动位姿覆盖
-      z_min_safe_mm: 50.0            # flange Z 下限（mm）；自动采集前钳制，按现场桌面高度调整
+      z_min_safe_mm: 50.0            # TIP 目标 Z 下限（mm）；本配置 L=0，TIP 与法兰重合
 
-      # --- cartesian 安全盒（mm；EndPoseCtrl 前钳制）
+      # --- cartesian 目标边界（mm；EndPoseCtrl 前检查，越界拒绝，不钳制）
+      # Z 下限和这些边界不检查关节轨迹；按现场条件选择适合标定目标的限值。
       x_min_mm: 0.0
       x_max_mm: 700.0
       y_min_mm: -500.0
