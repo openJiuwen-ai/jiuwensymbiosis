@@ -297,7 +297,7 @@ jiuwensymbiosis/          # Main package
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)
     cruzr/                # Cruzr mobile dual-arm (base + lifter + waist + paddle grasp)
     _common/              # Shared adapter building blocks (builder, capability_spec, geometry,
-                          #   joint_transport, kinematic_driver, kinematics, lerobot_backend, safety)
+                          #   joint_transport, kinematic_driver, kinematics, lerobot_backend)
   calibration/            # Body-agnostic hand-eye calibration subsystem (see above)
   runtime/
     bindings.py           # Immutable source-aware config and adapter resource identities

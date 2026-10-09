@@ -7,7 +7,7 @@ Design notes:
   * Agent-facing tool surface keeps the 4-DoF view (``goto_xyzr(x, y, z, r)``)
     where ``r`` becomes ``rz`` and ``rx, ry`` default to "tool pointing down".
     top-down pick prompts reuse the existing tool shape verbatim.
-  * Full 6-DoF access for tilted picks is via ``goto_pose``.
+  * ``goto_xyzr`` uses the calibrated tilt; this API does not implement ``goto_pose``.
   * Parallel gripper (``open_gripper`` / ``close_gripper``) drives the piper
     ``GripperCtrl``; v1 uses two-state open/close (width/force args accepted but
     the configured open-width is used — richer control lives in the lowlevel).
@@ -15,15 +15,14 @@ Design notes:
     RealSense + 6-DoF eye-in-hand reprojection
     ``tf_base_cam = tf_base_flange(GetArmEndPose) @ tf_flange_cam``.
 
-``_TOOL_DOWN_RX/RY`` defines the Euler "tool pointing straight down" orientation.
+``_TOOL_DOWN_RX/RY`` defines the calibrated downward tilt in Euler degrees.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
@@ -32,7 +31,13 @@ if TYPE_CHECKING:
     from jiuwensymbiosis.env.protocol import PiperFullDriver
 
 from jiuwensymbiosis.adapters.piper.env import PiperEnv
-from jiuwensymbiosis.adapters.piper.geometry import FlangePose, pixel_and_depth_to_base_xyz
+from jiuwensymbiosis.adapters.piper.geometry import (
+    FlangePose,
+    flange_pose_to_tip,
+    pixel_and_depth_to_base_xyz,
+    resolve_yaw,
+    tip_offset_in_base,
+)
 from jiuwensymbiosis.agent.cancel import RunCancelled
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
@@ -119,33 +124,28 @@ class PiperApi(BaseRobotApi):
 
     @implements(MOVE_DIRECTION)
     def move_direction(self, direction: str, distance_mm: float) -> dict:
-        return defaults.move_direction(self, direction, distance_mm)
+        return defaults.move_direction(self, direction, distance_mm, flange_to_tip=self._flange_to_tip)
 
     @implements(GET_POSE)
     def get_pose(self) -> dict:
-        p = self.env.get_flange_pose()
-        tool_off = self.env.tool_offset_mm
-        return {
-            "x": p.x,
-            "y": p.y,
-            "z": p.z - tool_off,
-            "rx": p.rx,
-            "ry": p.ry,
-            "rz": p.rz,
-        }
+        """Read the TIP position using the live flange orientation (mm/deg)."""
+        return self._flange_to_tip(self.env.get_flange_pose())
+
+    def _flange_to_tip(self, p: Any) -> dict[str, float]:
+        """Convert a vendor flange pose to the public TIP pose (mm/deg)."""
+        return flange_pose_to_tip(p, self.env.tool_offset_mm)
 
     @implements(GET_HOME_POSE)
     def get_home_pose(self) -> dict:
-        p = self.env.home_pose
-        return {
-            "x": p.x,
-            "y": p.y,
-            "z": p.z,
-            "rx": p.rx,
-            "ry": p.ry,
-            "rz": p.rz,
-            "r": p.rz,
-        }
+        """Return the TIP pose at the driver's configured physical home target."""
+        home = self.env.home_pose
+        if home is None:
+            raise RuntimeError(
+                "PiperApi.get_home_pose: env not connected. Call session.connect() / use `with session:`."
+            )
+        pose = self._flange_to_tip(home)
+        pose["r"] = pose["rz"]
+        return pose
 
     @implements(GOTO_XYZR)
     def goto_xyzr(
@@ -164,9 +164,8 @@ class PiperApi(BaseRobotApi):
         found vertical unreachable at grasp height. The label is shared; the number is the
         body's.
 
-        Adding ``preserve`` needs the general tip↔flange transform first — the conversion below
-        projects the offset with a single ``ry`` term, which is only valid because ``rx``/``ry``
-        are the calibrated constants. A live tilt needs the full rotation matrix.
+        The tool extension is rotated by the commanded orientation, including yaw, before
+        converting the TIP target to a flange target.
         """
         if orientation_policy != "top_down":
             raise ValueError(
@@ -174,28 +173,32 @@ class PiperApi(BaseRobotApi):
             )
         if r is None:
             r = self.env.get_flange_pose().rz
-        # Tilted tool (ry=_TOOL_DOWN_RY): the tip sits tool_offset_mm along the tool
-        # axis below AND ahead of the flange. flange = tip + tool_offset_mm·(sin ry in
-        # +X, cos ry in +Z).  (The +X sign matches the touch calibration: flange is
-        # behind the tip.)
-        tool_offset_mm = self.env.tool_offset_mm
-        ry_rad = math.radians(_TOOL_DOWN_RY)
-        flange_x = x + tool_offset_mm * math.sin(ry_rad)
-        flange_z = z + tool_offset_mm * math.cos(ry_rad)
+        flange = self._tip_to_flange(x, y, z, float(r))
         logger.info(
             "[PiperApi] goto_xyzr TIP=(%.2f, %.2f, %.2f, rz=%.2f) -> flange=(%.2f, %.2f, %.2f, ry=%.1f)",
             x,
             y,
             z,
             r,
-            flange_x,
-            y,
-            flange_z,
+            flange.x_mm,
+            flange.y_mm,
+            flange.z_mm,
             _TOOL_DOWN_RY,
         )
-        self.env.move_to_flange(FlangePose(flange_x, y, flange_z, _TOOL_DOWN_RX, _TOOL_DOWN_RY, float(r)))
+        self.env.move_to_flange(flange)
 
-    def servo_to_tip(self, pose: dict) -> None:
+    def _tip_to_flange(self, x: float, y: float, z: float, r: float) -> FlangePose:
+        offset = tip_offset_in_base(_TOOL_DOWN_RX, _TOOL_DOWN_RY, r, self.env.tool_offset_mm)
+        return FlangePose(
+            float(x - offset[0]),
+            float(y - offset[1]),
+            float(z - offset[2]),
+            _TOOL_DOWN_RX,
+            _TOOL_DOWN_RY,
+            r,
+        )
+
+    def servo_to_tip(self, pose: Mapping[str, Any]) -> None:
         """NON-BLOCKING servo command toward a TIP-frame pose (real-time loop).
 
         Mirrors ``goto_xyzr``'s tip→flange conversion (tilted tool ``ry``, tool
@@ -204,35 +207,40 @@ class PiperApi(BaseRobotApi):
         real-time ``ServoController`` calls this each tick; ``get_pose`` (also
         TIP frame) is its matching pose reader, so the loop stays frame-
         consistent. ``pose`` keys: ``x/y/z`` (mm) + optional ``r``/``rz`` (deg).
+        A non-None ``rz`` takes precedence over ``r``; when both are missing
+        or None, preserve the live flange yaw. XYZ is required; missing or
+        None coordinates are rejected before readback or dispatch.
         """
+        if not isinstance(pose, Mapping):
+            raise TypeError("Piper TIP pose must be a mapping with x/y/z fields.")
+        missing = [key for key in ("x", "y", "z") if pose.get(key) is None]
+        if missing:
+            raise TypeError(f"Piper TIP pose missing required fields: {', '.join(missing)}.")
         x = float(pose["x"])
         y = float(pose["y"])
         z = float(pose["z"])
-        r = pose.get("r", pose.get("rz"))
+        r = resolve_yaw(pose)
         if r is None:
             r = self.env.get_flange_pose().rz
-        tool_offset_mm = self.env.tool_offset_mm
-        ry_rad = math.radians(_TOOL_DOWN_RY)
-        flange_x = x + tool_offset_mm * math.sin(ry_rad)
-        flange_z = z + tool_offset_mm * math.cos(ry_rad)
+        flange = self._tip_to_flange(x, y, z, float(r))
         self.env.servo_to_flange(
             {
-                "x": flange_x,
-                "y": y,
-                "z": flange_z,
-                "rx": _TOOL_DOWN_RX,
-                "ry": _TOOL_DOWN_RY,
-                "rz": float(r),
+                "x": flange.x_mm,
+                "y": flange.y_mm,
+                "z": flange.z_mm,
+                "rx": flange.rx_deg,
+                "ry": flange.ry_deg,
+                "rz": flange.rz_deg,
             }
         )
 
     # No flange-frame read/write here. "Where the flange is" depends on how long this
     # robot's tool happens to be, so it was never an action — task code wants the TIP
-    # (get_pose / goto_pose / goto_xyzr). Bring-up, calibration and tool changes, where
+    # (get_pose / goto_xyzr). Bring-up, calibration and tool changes, where
     # the flange IS the thing you mean, go through the Env verbs directly:
     # ``env.get_flange_pose()`` / ``env.move_to_flange(FlangePose(...))``. Those skip
-    # SafetyRail, so the driver's own ``flange_z_min_safe`` is what holds the floor —
-    # which is where a calibration move should be checked anyway.
+    # SafetyRail; the driver checks the target TIP height and TIP/FLANGE workspace
+    # using the full commanded orientation, including for calibration moves.
 
     # ============================================================  Joint
     @implements(MOVE_JOINT)

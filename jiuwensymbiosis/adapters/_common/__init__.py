@@ -3,7 +3,7 @@
 """Cross-vendor adapter building blocks and configuration admission contracts.
 
 Adapter implementations use the generic session
-builder (``builder``), cartesian workspace bounds (``safety``), and the reusable
+builder (``builder``) and the reusable
 motion core for joint-level arms — ``geometry`` (pose/unit/SE(3) conversions),
 ``joint_transport`` (the vendor SDK seam), ``kinematics`` (FK/IK backend seam +
 waypoint planning/rejection), and ``kinematic_driver`` (``KinematicArmDriver``,

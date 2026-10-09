@@ -72,15 +72,22 @@ class CartesianDriver(RobotDriver, Protocol):
     # Safety bounds.
     @property
     def z_min_safe(self) -> float:
-        """Tip-frame Z floor in mm (flange floor = this + ``tool_offset_mm``)."""
+        """Target TIP Z floor in mm; not a whole-robot or trajectory collision check.
+
+        Flange-to-tip geometry is adapter-specific.
+        """
 
     @property
     def flange_z_min_safe(self) -> float:
-        """Flange-frame Z floor in mm, enforced by ``move_to_pose_blocking``."""
+        """Conservative scalar flange Z reference in mm for the adapter's tool.
+
+        A driver may accept a lower flange target when checking its complete
+        target pose proves that TIP Z still satisfies ``z_min_safe``.
+        """
 
     @property
     def tool_offset_mm(self) -> float:
-        """Tool-tip offset from the flange along Z (mm), for tip↔flange conversion."""
+        """Tool-tip offset in mm; the adapter declares the axis/frame convention."""
 
     def home(self) -> None:
         """Move the robot to its home pose (blocking)."""

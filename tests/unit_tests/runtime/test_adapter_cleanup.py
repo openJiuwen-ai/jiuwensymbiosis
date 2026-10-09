@@ -207,7 +207,7 @@ def test_piper_constructor_reports_unconfirmed_can_rollback(monkeypatch):
     monkeypatch.setattr("jiuwensymbiosis.adapters.piper.lowlevel._require_can_interface", lambda _port: None)
 
     with pytest.raises(HardwareCleanupError) as failed:
-        PiperLowLevel(can_port="fake-can")
+        PiperLowLevel(can_port="fake-can", home_pose_xyzrxryrz_mm_deg=[200, 0, 400, 0, 90, 0])
 
     assert isinstance(failed.value.original_error, RuntimeError)
     assert "CAN connect interrupted" in str(failed.value.original_error)

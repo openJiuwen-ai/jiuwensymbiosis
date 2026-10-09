@@ -242,7 +242,6 @@ Owned local subprocesses must propagate shutdown failures. If startup fails afte
 |---|---|---|
 | `adapters/_common/builder.py` | `make_builder()`, `make_detector_sidecar()` | Session client ownership and optional local subprocess wiring |
 | `adapters/_common/capability_spec.py` | `CAPABILITY_ACTIONS`, `CAPABILITY_DRIVER_MEMBERS` | capability→action/driver-member maps (validator & generator) |
-| `adapters/_common/safety.py` | `WorkspaceBounds`, `check_flange_z()` | TIP/FLANGE Z defence |
 | `perception/config.py` | `DetectorConfig`, `parse_detector_config()` | remote / local / disabled configuration and legacy normalization |
 | `perception/detector_client.py` | `create_detector_client()`, `segment_image()`; legacy `init_detector()` | Closable HTTP inference client |
 | `perception/detector_sidecar.py` | `detector_subprocess()` | Lifecycle of an owned local detector subprocess only |
@@ -355,4 +354,4 @@ Common validation outcomes (the validator prints numbered Chinese messages; thes
 | Config | `adapters/piper/config.py` | `adapters/so101/config.py` | `adapters/cruzr/config.py` |
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
-Piper's 30° tilted tool, historical nested YAML, and temporary Z correction are body-specific; a new adapter should reuse them only when the hardware genuinely has the same constraint. Cruzr's dual-arm + lift reachability (`Reachability` override), head/waist dual cameras, and ROS 2 driver are also body-specific — the generic mechanisms (`scene3d`/`approach`/`dual_arm` shared implementations) must not be copied elsewhere.
+Piper's 30° tilted tool, historical nested YAML, and temporary Z correction are body-specific; a new adapter should reuse them only when the hardware genuinely has the same constraint. See [Piper Coordinates and Migration](piper-coordinates.md) for the tool-offset fix's coordinate contract, bounds, and upgrade impact. Cruzr's dual-arm + lift reachability (`Reachability` override), head/waist dual cameras, and ROS 2 driver are also body-specific — the generic mechanisms (`scene3d`/`approach`/`dual_arm` shared implementations) must not be copied elsewhere.

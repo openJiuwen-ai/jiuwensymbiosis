@@ -55,6 +55,10 @@ ModelSpec(
 
 `RobotAgentConfig.from_dict(data)` 从 YAML 的 `agent:` 映射构造配置；未知字段会触发 `TypeError`。
 
+这些是字段默认值；直接使用 `RobotAgentConfig()` 尚不满足默认 `fastagent` 的运行条件。
+Fast path 需要显式提供 `model_spec`，并设置 `enable_skill=True` 注册普通动作执行所需的
+`robot_control`。配置示例见下文。
+
 ## `RobotSession`
 
 ```python
@@ -118,3 +122,39 @@ run_fast_task(
 - `run_robot_task` 根据 `config.exec_mode` 选择普通 Agent 或 fast path。
 - `run_fast_task` 要求显式传入配置；无法构建 fast path 时返回带 `ok=False` 的结果字典。
 - `cancel_token` 是可选的取消令牌（GUI 强停等场景用）；两个运行函数均接受。
+
+### 多机器人子 Agent 的配置范围
+
+`build_robot_agent_config` 使用 `mode`、`extra_tools` 构建工具，配置模型、迭代上限和并行开关，
+并按能力和开关装配 SafetyRail、RecoveryRail、VisualFeedbackRail 及 `extra_rails`。
+`enable_skill=True` 会添加 `RobotControlTool`，但不会自动附加 `SkillUseRail`。
+
+以下单机器人构建行为目前没有在该函数中实现：生成默认系统提示词、解析或创建工作区、
+调用日志配置、装配 TraceRail/DiagnosisRail，以及把 `config.strict_capabilities` 写入 Session。
+`system_prompt` 按原值传给 `SubAgentConfig`（默认 `None`）。需要这些功能时，由顶层 Agent 的调用方
+负责配置；严格能力检查应在连接前通过 `RobotSession(strict_capabilities=True)` 或 Session 属性启用。
+不能仅设置子 Agent 的 `enable_tracing`、`enable_diagnosis` 等字段就认为对应功能已经开启。
+
+### Fast path 最小配置
+
+下面假设 `session` 已由适配器构造，模型服务可用；Session 连接仍由调用方管理：
+
+```python
+config = RobotAgentConfig(
+    exec_mode="fastagent",
+    enable_skill=True,
+    model_spec=ModelSpec(
+        api_base="http://127.0.0.1:8110/v1",
+        api_key="EMPTY",
+        model_name="Qwen/Qwen3-VL-32B-Instruct",
+    ),
+)
+with session:
+    result = run_robot_task(session, "抓取红色盒子", config)
+```
+
+Fast path 的任务解析和规划直接读取 `model_spec` 中的 HTTP 端点参数。
+只提供 `config.model` 会返回 `{"ok": False, "reason": "no_model_spec", ...}`；
+自定义或离线模型仅通过 `model` 注入时，应选择 `exec_mode="stepagent"`。
+`enable_skill=False` 会移除普通动作分派入口，即使序列已编译，也无法通过该入口执行动作。
+它不会关闭 fast planner 对内置技能库的读取。

@@ -5,7 +5,8 @@
 
 Wraps the driver (``low_level``), exposes ``connect``/``disconnect``/
 ``get_observation`` plus the safety contract (``z_min_safe`` /
-``workspace_bounds``). Motion/end-effector use the inherited Env verbs.
+``workspace_bounds``). Cartesian input is normalized to the driver's pose type;
+other motion/end-effector operations use the inherited Env verbs.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 from jiuwensymbiosis.adapters.piper.config import PiperConfig
+from jiuwensymbiosis.adapters.piper.geometry import flange_pose_to_tip, normalize_flange_pose
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 if TYPE_CHECKING:
@@ -127,7 +129,7 @@ class PiperEnv(BaseRobotEnv):
 
     @property
     def home_pose(self):
-        """Home pose (vendor Pose object) from the driver, or None before connect."""
+        """FLANGE home target (vendor Pose object), or None before connect."""
         if self._inner is not None:
             return self._inner.home_pose
         return None
@@ -138,7 +140,7 @@ class PiperEnv(BaseRobotEnv):
 
     @property
     def tool_offset_mm(self) -> float:
-        """Flange-to-tip offset (mm) from the driver, or 0 before connect."""
+        """Local +Z tool extension (mm), from the driver or config before connect."""
         if self._inner is not None:
             return float(self._inner.tool_offset_mm)
         return float(getattr(self.cfg, "tool_offset_mm", 0.0))
@@ -201,12 +203,22 @@ class PiperEnv(BaseRobotEnv):
         self._connected = False
 
     def home(self) -> None:
-        """Move the arm to its home pose (blocking) — the driver's snapshotted init pose."""
+        """Move to the configured home target; home_use_init_pose selects the startup pose."""
         self._require_cartesian().home()
+
+    def move_to_flange(self, pose: Any) -> None:
+        """Normalize a complete flange pose before dispatching to the driver.
+
+        Accept native FlangePose values, mappings (including read-only ones),
+        and complete x/y/z/rx/ry/rz attribute objects. r aliases yaw; rz wins.
+        Missing fields are rejected rather than filled with hardware targets.
+        """
+        target = normalize_flange_pose(pose)
+        self._require_cartesian().move_to_pose_blocking(target)
 
     # -------------------------------------------------------------- observation
     def get_observation(self) -> RobotObservation:
-        """Collect RGB, depth, pose, and joint state into a RobotObservation."""
+        """Publish TIP/FLANGE from one sample together, or neither if conversion fails."""
         if self._inner is None:
             return RobotObservation()
         rgb: np.ndarray | None = None
@@ -218,11 +230,14 @@ class PiperEnv(BaseRobotEnv):
         except Exception as exc:  # noqa: BLE001 - camera read best-effort
             logger.debug("PiperEnv.grab_frames failed: %s", exc)
         pose: dict | None = None
+        flange_pose: dict | None = None
         try:
             p = self._inner.get_pose()
-            pose = {"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}
-        except Exception:  # noqa: BLE001 - pose read best-effort
-            pose = None
+            sample_flange = {"x": p.x, "y": p.y, "z": p.z, "rx": p.rx, "ry": p.ry, "rz": p.rz}
+            sample_tip = flange_pose_to_tip(p, self.tool_offset_mm)
+            flange_pose, pose = sample_flange, sample_tip
+        except Exception as exc:  # noqa: BLE001 - pose read/conversion best-effort
+            logger.debug("PiperEnv pose read/conversion failed: %s", exc)
         joints: list[float] | None = None
         try:
             a = self._inner.get_angles()  # type: ignore[attr-defined]  # JointDriver sibling protocol
@@ -235,6 +250,7 @@ class PiperEnv(BaseRobotEnv):
             rgb=rgb,
             depth=depth,
             extra={
+                "flange_pose": flange_pose,
                 "z_min_safe": self.z_min_safe,
                 # GripperDriver sibling protocol; grasp.parallel-capability-gated
                 "gripper_state": (
