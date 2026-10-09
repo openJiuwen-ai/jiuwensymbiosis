@@ -199,6 +199,9 @@ class CruzrApi(BaseRobotApi):
 
 当前 `fastagent` 的普通动作执行器固定调用 `robot_control`。使用内置构建器时，需要设置 `enable_skill=True` 来注册该入口；只设置 `exec_mode="fastagent"` 不会自动注册它。`plan_task` 直接读取技能库，与 `SkillUseRail` 加载说明是不同机制。
 
+Fast path 还要求显式提供 `RobotAgentConfig.model_spec`，用于 HTTP 任务解析和规划；仅注入 `model`
+无法替代它。完整配置见 [API 参考](../reference/framework-api.md#fast-path-最小配置)。
+
 `InProcessCodeTool` 通过 `exec()` 访问注入的 `env`、`api`、`np` 等对象，没有沙盒隔离。其内部直接调用 API/Env 不会逐条经过动作工具的能力过滤、SafetyRail 和记账包装。需要这些检查的操作应使用动作工具路径。
 
 `mode` 决定工具配置；`exec_mode` 决定任务由模型逐步编排还是先编译序列，二者含义不同。

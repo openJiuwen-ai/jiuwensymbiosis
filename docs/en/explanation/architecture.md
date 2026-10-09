@@ -199,6 +199,10 @@ For example, if the hardware does not declare `grasp.parallel`, the individual-t
 
 The current `fastagent` executor dispatches ordinary actions through `robot_control`. With the built-in builder, set `enable_skill=True` to register that entry point; setting only `exec_mode="fastagent"` does not register it automatically. `plan_task` reads the skill library directly, a separate mechanism from loading descriptions through `SkillUseRail`.
 
+The fast path also requires an explicit `RobotAgentConfig.model_spec` for HTTP task parsing and planning; injecting only
+`model` does not replace it. See the complete configuration in the
+[API reference](../reference/framework-api.md#minimal-fast-path-configuration).
+
 `InProcessCodeTool` uses `exec()` with injected objects such as `env`, `api`, and `np`, without sandbox isolation. Its direct API/Env calls do not individually pass through action-tool capability gating, SafetyRail, or recording wrappers. Operations that need those checks should use the action-tool path.
 
 `mode` controls tool configuration; `exec_mode` controls whether the model orchestrates a task step by step or a sequence is compiled first. They are separate settings.

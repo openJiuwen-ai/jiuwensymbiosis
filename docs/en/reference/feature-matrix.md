@@ -108,6 +108,10 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | Parallel tool calls | ◐ | `parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
 | No-hardware/no-model dry run | ✅ | With `--mock` | `MockArmEnv` + `MockModelClient` (factory `build_mock_model`, Piper only); no CAN, camera, or model endpoint |
 
+The execution mode and field defaults need to be configured together: `fastagent` requires an explicit `model_spec` and
+`enable_skill=True` for planning and `robot_control` action execution. Use `stepagent` when supplying only `model`.
+See the [minimal API configuration](framework-api.md#minimal-fast-path-configuration).
+
 ## 5. Rails, Trace, and feedback matrix
 
 | Capability | Status | Default | Automatic condition or dependency |

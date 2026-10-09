@@ -104,6 +104,10 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 | 并行工具调用 | ◐ | `parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
 | 无硬件/无模型干跑 | ✅ | `--mock` 时 | `MockArmEnv` + `MockModelClient`（工厂 `build_mock_model`，仅 Piper），不访问 CAN、相机或模型端点 |
 
+默认执行模式与字段默认值需一起配置：`fastagent` 要求显式 `model_spec` 和 `enable_skill=True`，
+用于模型规划及 `robot_control` 动作执行。仅提供 `model` 时应使用 `stepagent`。
+见 [API 最小配置](framework-api.md#fast-path-最小配置)。
+
 ## 5. Rails、Trace 与反馈矩阵
 
 | 能力 | 状态 | 默认 | 自动启用条件或依赖 |

@@ -17,13 +17,20 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 | `--mock` | In-memory dry run for Piper only (MockArmEnv + offline model); implies `--stepagent` |
 | `--stepagent` | Force per-step LLM (single-step debugging); default is `fastagent` (compile once, no per-step LLM) |
 | `--voice` / `--voice-text` / `--voice-audio-file` / `--voice-once` / `--no-wake` / `--tts` / `--asr-device` | Voice mode |
-| `--no-skill` | Disable SkillUseRail + the robot_control dispatcher |
+| `--no-skill` | Disable SkillUseRail + the robot_control dispatcher; use with `--stepagent` |
 | `--mode` | `tool` / `code` / `hybrid` |
 | `--no-visual-feedback` | Disable VisualFeedbackRail |
 | `--server-url` / `--model` / `--api-key` | Override LLM endpoint/model/key |
 | `--max-iter` / `--workspace` / `--debug` | Iteration cap, workspace, log level |
 
 `--mock` uses an offline model and a Mock environment; `--control-hz`/`--servo-step-mm` tune the fastagent real-time servo.
+
+The default fastagent needs `agent.enable_skill: true` in the YAML to execute ordinary actions; disabling it removes the
+required `robot_control` dispatcher. The CLI constructs `ModelSpec` from the top-level `model:` configuration and LLM
+overrides. Direct Python API callers must supply `RobotAgentConfig.model_spec` explicitly; see the
+[minimal API configuration](framework-api.md#minimal-fast-path-configuration). Setting only `exec_mode: fastagent` does
+not enable these dependencies automatically. `--no-skill` does not disable the fast planner's direct reading of the built-in
+skill library; use `--stepagent --no-skill` when disabling the skill entry point.
 
 ## piper-pick-demo
 
