@@ -17,7 +17,7 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 | `--mock` | 仅 Piper 内存干跑：MockArmEnv + 离线模型；隐含 `--stepagent` |
 | `--stepagent` | 强制逐 step LLM（单步调试）；默认 `fastagent`（编译一次、无逐 step LLM） |
 | `--voice` / `--voice-text` / `--voice-audio-file` / `--voice-once` / `--no-wake` / `--tts` / `--asr-device` | 语音模式 |
-| `--no-skill` | 关闭 SkillUseRail + robot_control 分派器；与 `--stepagent` 配合使用 |
+| `--no-skill` | 关闭技能知识；fastagent 直接组合动作 |
 | `--mode` | `tool` / `code` / `hybrid` |
 | `--no-visual-feedback` | 关闭 VisualFeedbackRail |
 | `--server-url` / `--model` / `--api-key` | 覆盖 LLM 端点/模型/key |
@@ -25,12 +25,9 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 
 `--mock` 使用离线模型和 Mock 环境；`--control-hz`/`--servo-step-mm` 调 fastagent 实时伺服。
 
-默认 fastagent 执行普通动作需要 YAML 中设置 `agent.enable_skill: true`；关闭它会移除执行所需的
-`robot_control`。CLI 会从顶层 `model:` 配置和 LLM 覆盖参数构造 `ModelSpec`；直接调用 Python API
-时则需显式传入 `RobotAgentConfig.model_spec`，见 [API 最小配置](framework-api.md#fast-path-最小配置)。
-仅写 `exec_mode: fastagent` 不会自动开启上述依赖。
-`--no-skill` 不会禁用 fast planner 直接读取内置技能库的行为，因此需要关闭技能入口时使用
-`--stepagent --no-skill`。
+Agent 字段与默认值见 [全量配置参考](agent-config.md)。fastagent 默认开启技能规划；`--no-skill` 改为直接组合动作，动作分派器始终保留。
+CLI 从顶层 `model:` 和显式 LLM 参数构造 `ModelSpec`；Python 调用者需自行提供 `model_spec`。
+`--mode`、`--max-iter`、`--control-hz`、`--servo-step-mm` 仅在显式传入时覆盖 YAML。
 
 ## piper-pick-demo
 

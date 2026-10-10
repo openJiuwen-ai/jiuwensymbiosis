@@ -96,10 +96,10 @@ mypy jiuwensymbiosis/
 
 `jiuwensymbiosis.utils.logging` provides one choke point for all logging:
 
-- `configure_logging(level="INFO", *, log_dir=None)` — idempotent root-logger setup: one `StreamHandler` with a uniform format (`%(asctime)s %(levelname)s %(name)s: %(message)s`) plus an optional `RotatingFileHandler` (`<log_dir>/jiuwensymbiosis.log`, 5 MB / 3 backups). `build_robot_agent` calls it with `RobotAgentConfig.log_level` / `log_dir`.
+- `configure_logging(level="INFO", *, log_dir=None)` — idempotent root-logger setup: one `StreamHandler` with a uniform format (`%(asctime)s %(levelname)s %(name)s: %(message)s`) plus an optional `RotatingFileHandler` (`<log_dir>/jiuwensymbiosis.log`, 5 MB / 3 backups). `build_robot_agent` calls it with `RobotAgentConfig.logging.level` / `logging.dir`.
 - `get_logger(name=None)` — thin alias over `logging.getLogger`; new code should use it. Legacy `logging.getLogger(__name__)` calls remain valid.
 - The Piper driver's per-run `commands.log` (`_attach_cmd_log_handler`) now routes through `configure_logging` + a tagged `FileHandler` with the same format. Disable with `JIUWEN_PIPER_CMD_LOG=0`; override dir with `JIUWEN_PIPER_CMD_LOG_DIR`.
-- `TraceLogHandler` — a `logging.Handler` that forwards `WARNING`+ records from `RobotAgentConfig.trace_capture_loggers` (default `["jiuwensymbiosis"]`) into the active execution trace, so rail warnings / detector failures land in the trace with no business-code changes.
+- `TraceLogHandler` — a `logging.Handler` that forwards `WARNING`+ records from `RobotAgentConfig.modules.tracing.capture_loggers` (default `["jiuwensymbiosis"]`) into the active execution trace, so rail warnings / detector failures land in the trace with no business-code changes.
 
 ## Architecture: Layered Capability-Gated Design
 
@@ -131,7 +131,7 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 
 **Two Tool Strategies** (can coexist):
 - `build_robot_tools(api)` — each `@implements` method becomes a separate LLM tool (good for few tools)
-- `RobotControlTool(api)` — single `robot_control` entry point with `action`/`params` dispatch (good for SKILL.md workflows); appended by `build_robot_agent` only when `RobotAgentConfig.enable_skill=True`
+- `RobotControlTool(api)` — single `robot_control` entry point with `action`/`params` dispatch (good for SKILL.md workflows); always registered for fastagent, and registered for stepagent when `modules.skills.enabled=True`. Disabling skills in fastagent selects action composition without removing its action dispatcher.
 - `InProcessCodeTool` — in-process Python execution (available in "code" and "hybrid" modes)
 
 **Safety rails unwrap robot_control**: When RobotControlTool is used, rails transparently unpack `action`/`params` to apply safety checks on the actual motion command.
@@ -150,14 +150,26 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 1. **SafetyRail** — Pre-motion boundary check, with the watch set **derived from declared capabilities** rather than hard-coded: `motion.cartesian` → Z floor (`z_min_safe`) + XY workspace bounds on `goto_xyzr`/`goto_pose`; `motion.joint` → joint soft limits on `move_joint(q)` (`joint_limits`, unit = env's `move_joint` convention); `motion.base` → per-command translation/turn caps (`base_step_limits`) on `navigate_relative`/`rotate_base`/`drive_arc`; `motion.lift` → `lift_limits` on `set_lift_pose`; `motion.waist` → `waist_step_limit_rad` on `turn_waist`. Every envelope property defaults to `None` = **no range check** (type/finite checks still run), so declaring a capability never invents a limit the hardware never stated. Rejects with `ValueError` (per-failure message: missing q / wrong type / length mismatch / non-finite / out of range) so LLM can self-correct.
 2. **RecoveryRail** — On motion/grasp failure, auto-homes + releases end-effector to return to safe state. The release step goes through a generic `release_effector()` hook, and homing consults `env.holding_payload` first — a body still carrying a payload must not be homed blindly (that would drop it).
 3. **VisualFeedbackRail** — Captures camera frame after every motion/grasp, injects into agent context for VLM result verification.
-4. **DiagnosisRail** — Online failure-feedback (Trace Feedback Loop P1): after a failed step, stages a compact diagnosis (current params + relevant recent history + system state) and flushes it into the next LLM turn via `before_model_call`; gated by `enable_diagnosis` (requires `enable_tracing`). Lives in `jiuwensymbiosis/rails/diagnosis.py`.
-5. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.enable_skill=True`. (`rails/__init__.py` re-exports SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail; `SkillUseRail` comes from openjiuwen, re-exported via `agent/abstractions.py` and attached in `agent/builder.py`.)
+4. **DiagnosisRail** — Online failure-feedback (Trace Feedback Loop P1): after a failed step, stages a compact diagnosis (current params + relevant recent history + system state) and flushes it into the next LLM turn via `before_model_call`; gated by `modules.diagnosis.enabled` (requires `modules.tracing.enabled`). Lives in `jiuwensymbiosis/rails/diagnosis.py`.
+5. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.modules.skills.enabled=True`. (`rails/__init__.py` re-exports SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail; `SkillUseRail` comes from openjiuwen, re-exported via `agent/abstractions.py` and attached in `agent/builder.py`.)
 
-Note: `TraceRail` (see "Execution Trace & Replay" below) is another parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `enable_tracing` rather than a safety flag.
+Note: `TraceRail` (see "Execution Trace & Replay" below) is another parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `modules.tracing.enabled` rather than a safety flag.
 
 Rails are enabled/disabled via `RobotAgentConfig` flags and gated by session capabilities (e.g., VisualFeedbackRail requires `vision.camera`; SafetyRail attaches when **any** of `motion.cartesian` / `motion.joint` / `motion.base` / `motion.lift` / `motion.waist` is present, so joint-only arms and gripperless mobile bodies both get a pre-check).
 
-### Two-Tier Autonomous Planning (`exec_mode: fastagent`)
+**Agent configuration** uses `execution`, `modules`, and `logging` blocks. Module switches are
+`modules.{skills,safety,recovery,visual_feedback,diagnosis,tracing}.enabled`; fast tracking lives under
+`execution.fastagent.tracking`. Only the grouped schema is accepted; old flat fields and Python aliases have been removed.
+CLI, Runtime and workbench share defaults and merge explicit overrides by leaf. Fastagent defaults to skills on
+and visual feedback off; stepagent defaults to skills off and visual feedback on. Diagnosis requires tracing;
+diagnosis and visual feedback are stepagent-only at task dispatch. Recovery's switch also controls fast-runner
+failure retreat. Apply `config.prepare_session(session)` before connecting for strict capabilities and motion logs.
+`build_robot_agent` and `build_robot_agent_config` default to the stepagent profile when config is omitted;
+explicit configs must set `execution.mode="stepagent"`. Passing `RobotAgentConfig()` (fastagent by default)
+raises before building models or tools. Builders preserve explicit module switches; use `run_robot_task` for mode dispatch.
+Full fields and mode restrictions: [Agent configuration](docs/zh/reference/agent-config.md).
+
+### Two-Tier Autonomous Planning (`execution.mode: fastagent`)
 
 `agent/fast/planner.py:plan_task` turns a task into one flat action sequence, then `run_sequence` executes it with **no per-step LLM call**:
 
@@ -170,15 +182,15 @@ Distilling a successful Tier 2 sequence back into a SKILL.md is **not implemente
 
 ### Execution Trace & Replay
 
-`TraceRail` (`jiuwensymbiosis/agent/trace.py`) is an optional parallel rail (enabled via `RobotAgentConfig.enable_tracing`, default **off** for zero overhead) that records each `agent.invoke()` as a structured `ExecutionTrace`:
+`TraceRail` (`jiuwensymbiosis/agent/trace.py`) is an optional parallel rail (enabled via `RobotAgentConfig.modules.tracing.enabled`, default **off** for zero overhead) that records each `agent.invoke()` as a structured `ExecutionTrace`:
 
 - Per tool-call step: `tool_name`, `input_params`, `output_summary`, `success`/`error`, `duration_s`, an `observation` snapshot (pose/joints/extra, no raw arrays), and an optional saved `frame_path`.
 - Rail events pushed via the `TraceEventSink` interface: SafetyRail rejections, RecoveryRail recovery (with real `home_ok`/`released_ok`), VisualFeedbackRail frame injections.
-- `WARNING`+ log lines from `trace_capture_loggers` (default `["jiuwensymbiosis"]`) captured via `TraceLogHandler` — no business-code changes.
+- `WARNING`+ log lines from `modules.tracing.capture_loggers` (default `["jiuwensymbiosis"]`) captured via `TraceLogHandler` — no business-code changes.
 
-The trace JSON is persisted to `<workspace>/traces/{conversation_id}_{timestamp}_{pid}.json` on invoke completion (one write per run); JPEG frames go to `<workspace>/traces/frames/{run_token}/` (one subdir per invoke, so `step_NNN.jpg` never collides across runs) when `trace_save_frames=True`. Override the output dir with `trace_dir` (default `<workspace>/traces`). Cap with `trace_max_entries` / `trace_max_frames`. Full config: `enable_tracing` / `trace_max_entries` / `trace_max_frames` / `trace_save_frames` / `trace_console` / `trace_dir` / `trace_capture_loggers`.
+The trace JSON is persisted to `<workspace>/traces/{conversation_id}_{timestamp}_{pid}.json` on invoke completion (one write per run); JPEG frames go to `<workspace>/traces/frames/{run_token}/` (one subdir per invoke, so `step_NNN.jpg` never collides across runs) when `modules.tracing.save_frames=True`. Override the output dir with `modules.tracing.dir` (default `<workspace>/traces`). Cap with `modules.tracing.max_entries` / `modules.tracing.max_frames`. Full config: `modules.tracing.enabled` / `modules.tracing.max_entries` / `modules.tracing.max_frames` / `modules.tracing.save_frames` / `modules.tracing.console` / `modules.tracing.dir` / `modules.tracing.capture_loggers`.
 
-`jiuwensymbiosis-replay <trace.json>` prints a text timeline of steps, rail events, log events, and frame paths. Set `trace_console=True` for a live one-line-per-step dashboard during the run.
+`jiuwensymbiosis-replay <trace.json>` prints a text timeline of steps, rail events, log events, and frame paths. Set `modules.tracing.console=True` for a live one-line-per-step dashboard during the run.
 
 ### Hardware Adapter Pattern (7 files)
 

@@ -372,6 +372,6 @@ python scripts/smoke_test_adapter.py --module jiuwensymbiosis.adapters.my_robot
 | `detector_unavailable` / `inference_*` | 检测模式、HTTP 地址、服务状态、超时和结果时效 | 按错误码排查；不转为无目标结果，不自动启用本地模型 |
 | 投影存在固定或方向性偏差 | 深度单位、内参、变换方向、安装方式 | 先重新标定；确认 RAW 接缝未重复应用校正 |
 | TIP/FLANGE Z 混淆 | 公共工具语义与工具偏移 | 对比 Api 目标和 Driver 最终命令；倾斜工具使用完整变换 |
-| SKILL.md 未加载 | Agent 的 `enable_skill` 和资源路径 | 确认 `RobotControlTool` 已装配；这不是硬件能力问题 |
+| SKILL.md 未加载 | Agent 的 `modules.skills.enabled` 和资源路径 | 确认 `RobotControlTool` 已装配；这不是硬件能力问题 |
 
 若问题属于接口字段或参数含义，转到[机器人适配器参考](../reference/adapter-reference.md)；若 Mock 示例本身尚未跑通，返回[构建第一个机器人适配器](../tutorial/02-build-first-adapter.md)，不要带着框架集成问题进入真机调试。

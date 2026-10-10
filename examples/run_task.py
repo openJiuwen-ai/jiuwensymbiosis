@@ -293,18 +293,18 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     p.add_argument(
         "--stepagent",
         action="store_true",
-        help="Force exec_mode=stepagent (per-step LLM) for single-step debugging / verification. "
-        "Default: the config's exec_mode (fastagent — compile once, no per-step LLM).",
+        help="Force execution.mode=stepagent (per-step LLM) for debugging. "
+        "Default: execution.mode from config (fastagent when omitted).",
     )
     p.add_argument(
         "--no-skill",
         action="store_true",
-        help="Override config: disable the SkillUseRail + robot_control dispatcher.",
+        help="Disable skill knowledge; fastagent composes actions directly.",
     )
     p.add_argument(
         "--mode",
         choices=["tool", "code", "hybrid"],
-        default="hybrid",
+        default=None,
         help="Agent mode: tool-calling, code-as-action, or both.",
     )
     p.add_argument("--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail.")
@@ -312,23 +312,22 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     p.add_argument(
         "--control-hz",
         type=float,
-        default=10.0,
+        default=None,
         help="fastagent: servo control-loop rate (Hz). Start low on the Piper (firmware EndPoseCtrl).",
     )
     p.add_argument(
         "--servo-step-mm",
         type=float,
-        default=5.0,
+        default=None,
         help="fastagent: max linear move per servo tick (mm, slew limit).",
     )
-    p.add_argument("--max-iter", type=int, default=30)
+    p.add_argument("--max-iter", type=int, default=None)
     p.add_argument(
         "--workspace",
         default=None,
         help=(
-            "Agent workspace directory (default: ~/.openjiuwen/{session_name}_workspace/). "
-            "Matches openjiuwen CLI's --workspace; resolution priority is "
-            "--workspace > $OPENJIUWEN_WORKSPACE > default."
+            "Agent workspace directory (default: ~/.jiuwensymbiosis/{session_name}_workspace/). "
+            "Priority: --workspace > $JIUWENSYMBIOSIS_WORKSPACE > settings.json > default."
         ),
     )
     p.add_argument("--debug", action="store_true")
@@ -394,9 +393,38 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         return 2
     spec = _build_model_spec(raw, args)
 
-    # exec_mode: the config declares it (fastagent by default); --stepagent or
-    # --mock (offline, no real LLM to compile) force the per-step stepagent path.
-    exec_mode = "stepagent" if (args.mock or args.stepagent) else (raw.get("agent") or {}).get("exec_mode", "fastagent")
+    overrides = {"execution": {}, "modules": {}, "logging": {}}
+    if args.mock or args.stepagent:
+        overrides["execution"]["mode"] = "stepagent"
+    step = {}
+    for name, value in (("mode", args.mode), ("max_iterations", args.max_iter)):
+        if value is not None:
+            step[name] = value
+    if step:
+        overrides["execution"]["stepagent"] = step
+    if args.workspace is not None:
+        overrides["workspace"] = args.workspace
+    if args.no_skill:
+        overrides["modules"]["skills"] = {"enabled": False}
+    if args.no_visual_feedback:
+        overrides["modules"]["visual_feedback"] = {"enabled": False}
+    if args.debug:
+        overrides["logging"]["level"] = "DEBUG"
+    servo = {}
+    if args.control_hz is not None:
+        servo["control_hz"] = args.control_hz
+    if args.servo_step_mm is not None:
+        servo["max_lin_step_mm"] = args.servo_step_mm
+    if servo:
+        overrides["execution"]["fastagent"] = {"tracking": {"servo": servo}}
+    agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"), overrides=overrides)
+    agent_cfg.validate(for_execution=True)
+    agent_cfg.model_spec = spec
+    if args.mock:
+        from jiuwensymbiosis.agent.mock_model import build_mock_model
+
+        agent_cfg.model = build_mock_model()
+    exec_mode = agent_cfg.execution.mode
 
     logger.info("=== jiuwensymbiosis task runner ===")
     logger.info("  robot : %s", robot)
@@ -409,45 +437,20 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     logger.info("  query : %s", query[:120] + ("..." if len(query) > 120 else ""))
     logger.info("")
 
-    exec_config = None
-    if exec_mode == "fastagent":
-        from jiuwensymbiosis.agent.fast import SkillExecConfig
-        from jiuwensymbiosis.agent.fast.realtime import ServoConfig
-
-        exec_config = SkillExecConfig(
-            servo=ServoConfig(control_hz=args.control_hz, max_lin_step_mm=args.servo_step_mm),
-        )
     if binding is None:
-        # The explicitly simulated Piper path has no hardware session to admit.
+        agent_cfg.prepare_session(session)
         session_scope = session
     else:
         from jiuwensymbiosis.runtime.admission import admitted_session
 
-        session_scope = admitted_session(binding, resource_manager=resource_manager, operation="cli-task")
+        session_scope = admitted_session(
+            binding,
+            resource_manager=resource_manager,
+            operation="cli-task",
+            configure_session=agent_cfg.prepare_session,
+        )
 
     with session_scope as session:
-        # YAML ``agent:`` block is the declarative base (exec_mode / rails / trace /
-        # logging live there); CLI flags override only when explicitly given.
-        agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))
-        agent_cfg.model_spec = spec
-        # --mock: offline model so the YAML placeholder api_key/api_base is never
-        # validated against a real client (mirrors MockArmEnv for the LLM side).
-        if args.mock:
-            from jiuwensymbiosis.agent.mock_model import build_mock_model
-
-            agent_cfg.model = build_mock_model()
-        agent_cfg.mode = args.mode
-        agent_cfg.max_iterations = args.max_iter
-        agent_cfg.exec_mode = exec_mode
-        agent_cfg.exec_config = exec_config
-        if args.no_visual_feedback:
-            agent_cfg.enable_visual_feedback = False
-        if args.no_skill:
-            agent_cfg.enable_skill = False
-        if args.debug:
-            agent_cfg.log_level = "DEBUG"
-        if args.workspace:
-            agent_cfg.workspace = args.workspace
         conv_id = f"task-{uuid.uuid4().hex[:8]}"
         if _voice_enabled(args):
             result = _run_voice(session, agent_cfg, conv_id, raw, args)

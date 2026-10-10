@@ -40,13 +40,15 @@ class TestParallelToolCalls:
     def test_default_is_false(self):
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
-        assert RobotAgentConfig().parallel_tool_calls is False
+        assert RobotAgentConfig().execution.stepagent.parallel_tool_calls is False
 
     def test_builder_defaults_false_to_create_deep_agent(self, mock_session, tmp_path, monkeypatch):
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         builder_mod, captured = _patch_create_deep_agent(monkeypatch)
-        builder_mod.build_robot_agent(mock_session, RobotAgentConfig(workspace=str(tmp_path)))
+        builder_mod.build_robot_agent(
+            mock_session, RobotAgentConfig(workspace=str(tmp_path), execution={"mode": "stepagent"})
+        )
         assert captured.get("parallel_tool_calls") is False
 
     @pytest.mark.parametrize(
@@ -62,7 +64,9 @@ class TestParallelToolCalls:
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         _set_env_caps(monkeypatch, caps)
-        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True)
+        cfg = RobotAgentConfig(
+            workspace=str(tmp_path), execution={"mode": "stepagent", "stepagent": {"parallel_tool_calls": True}}
+        )
         with pytest.raises(ValueError, match=match):
             build_robot_agent(mock_session, cfg)
 
@@ -71,7 +75,11 @@ class TestParallelToolCalls:
 
         builder_mod, captured = _patch_create_deep_agent(monkeypatch)
         _set_env_caps(monkeypatch, {"vision.camera", "vision.detection"})
-        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True, enable_tracing=False)
+        cfg = RobotAgentConfig(
+            workspace=str(tmp_path),
+            execution={"mode": "stepagent", "stepagent": {"parallel_tool_calls": True}},
+            modules={"tracing": {"enabled": False}},
+        )
         builder_mod.build_robot_agent(mock_session, cfg)
         assert captured.get("parallel_tool_calls") is True
 
@@ -86,7 +94,7 @@ class TestParallelToolCalls:
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         _set_env_caps(monkeypatch, {"vision.camera"})
-        cfg = RobotAgentConfig(parallel_tool_calls=True)
+        cfg = RobotAgentConfig(execution={"mode": "stepagent", "stepagent": {"parallel_tool_calls": True}})
         sac = build_robot_agent_config(mock_session, config=cfg)
         assert sac.parallel_tool_calls is True
 
@@ -94,7 +102,7 @@ class TestParallelToolCalls:
         from jiuwensymbiosis.agent.builder import build_robot_agent_config
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
-        cfg = RobotAgentConfig(parallel_tool_calls=True)
+        cfg = RobotAgentConfig(execution={"mode": "stepagent", "stepagent": {"parallel_tool_calls": True}})
         with pytest.raises(ValueError):
             build_robot_agent_config(mock_session, config=cfg)
 
@@ -104,7 +112,9 @@ class TestParallelToolCalls:
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         builder_mod, captured = _patch_create_deep_agent(monkeypatch)
-        builder_mod.build_robot_agent(mock_session, RobotAgentConfig(workspace=str(tmp_path)))
+        builder_mod.build_robot_agent(
+            mock_session, RobotAgentConfig(workspace=str(tmp_path), execution={"mode": "stepagent"})
+        )
         sac = build_robot_agent_config(mock_session)
         assert captured["parallel_tool_calls"] is False
         assert sac.parallel_tool_calls is False
@@ -116,8 +126,12 @@ class TestParallelToolCalls:
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
         _set_env_caps(monkeypatch, {"vision.camera"})
-        cfg = RobotAgentConfig(workspace=str(tmp_path), parallel_tool_calls=True, enable_tracing=True)
-        with pytest.raises(ValueError, match="enable_tracing=True is not supported"):
+        cfg = RobotAgentConfig(
+            workspace=str(tmp_path),
+            execution={"mode": "stepagent", "stepagent": {"parallel_tool_calls": True}},
+            modules={"tracing": {"enabled": True}},
+        )
+        with pytest.raises(ValueError, match="modules.tracing.enabled=True is not supported"):
             if path == "single":
                 build_robot_agent(mock_session, cfg)
             else:

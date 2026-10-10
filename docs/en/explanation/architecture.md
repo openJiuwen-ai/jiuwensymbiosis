@@ -186,18 +186,18 @@ For example, if the hardware does not declare `grasp.parallel`, the individual-t
 
 ## 6. Tool layer: three strategies can coexist
 
-`agent/builder.py` builds tools according to `mode`, then adds the skill entry point according to `enable_skill`:
+`agent/builder.py` builds tools according to `execution.stepagent.mode`, then adds the skill entry point according to `modules.skills.enabled`:
 
 | Configuration or tool | Behavior |
 |---|---|
-| `mode="tool"` | Uses `build_robot_tools`, with one individual tool per available action |
-| `mode="code"` | Uses `InProcessCodeTool` for in-process Python execution |
-| `mode="hybrid"` (default) | Provides both individual action tools and the in-process Python tool |
-| `enable_skill=True` | Adds `RobotControlTool` and `SkillUseRail`; configured independently of `mode` |
+| `execution.stepagent.mode="tool"` | Uses `build_robot_tools`, with one individual tool per available action |
+| `execution.stepagent.mode="code"` | Uses `InProcessCodeTool` for in-process Python execution |
+| `execution.stepagent.mode="hybrid"` (default) | Provides both individual action tools and the in-process Python tool |
+| `modules.skills.enabled=True` | Adds `RobotControlTool` and `SkillUseRail`; configured independently of `execution.stepagent.mode` |
 
 `RobotControlTool` dispatches through `action` / `params`. SafetyRail reads those fields before checking the actual action and parameters, so individual action tools and this unified entry point can share the same motion checks.
 
-The current `fastagent` executor dispatches ordinary actions through `robot_control`. With the built-in builder, set `enable_skill=True` to register that entry point; setting only `exec_mode="fastagent"` does not register it automatically. `plan_task` reads the skill library directly, a separate mechanism from loading descriptions through `SkillUseRail`.
+The `fastagent` executor dispatches ordinary actions through `robot_control`, which its builder always registers. `modules.skills.enabled` only controls whether `plan_task` reads skill knowledge; disabling it selects action composition. The fast executor does not attach `SkillUseRail`.
 
 The fast path also requires an explicit `RobotAgentConfig.model_spec` for HTTP task parsing and planning; injecting only
 `model` does not replace it. See the complete configuration in the
@@ -205,15 +205,15 @@ The fast path also requires an explicit `RobotAgentConfig.model_spec` for HTTP t
 
 `InProcessCodeTool` uses `exec()` with injected objects such as `env`, `api`, and `np`, without sandbox isolation. Its direct API/Env calls do not individually pass through action-tool capability gating, SafetyRail, or recording wrappers. Operations that need those checks should use the action-tool path.
 
-`mode` controls tool configuration; `exec_mode` controls whether the model orchestrates a task step by step or a sequence is compiled first. They are separate settings.
+`mode` controls tool configuration; `execution.mode` controls whether the model orchestrates a task step by step or a sequence is compiled first. They are separate settings.
 
 <a id="6-two-tier-autonomous-planning"></a>
 
 <a id="execution-modes"></a>
 
-## 7. Two-tier autonomous planning (`exec_mode: fastagent`)
+## 7. Two-tier autonomous planning (`execution.mode: fastagent`)
 
-The caller first connects with `with session:`, then calls `run_robot_task(session, query, config)`. Session manages resources; the task entry point selects execution according to `exec_mode`. This diagram expands the two orchestration modes in [stages B/C of the complete task lifecycle](#task-lifecycle):
+The caller first connects with `with session:`, then calls `run_robot_task(session, query, config)`. Session manages resources; the task entry point selects execution according to `execution.mode`. This diagram expands the two orchestration modes in [stages B/C of the complete task lifecycle](#task-lifecycle):
 
 ![Task execution: fastagent plans before execution; stepagent lets the model choose tools step by step](../../images/architecture-task-sequence.en.svg)
 
@@ -226,7 +226,7 @@ Both paths obtain Rails through the same Agent assembly. `fastagent` explicitly 
 
 ### Two-tier planning: try skills, then compose actions
 
-The skill library contains workflow descriptions and contracts for the planner to select and expand, not fixed executable scripts. `fastagent` reads the library directly for compilation; in `stepagent`, `SkillUseRail` loads skill descriptions when attached through `enable_skill=True`.
+The skill library contains workflow descriptions and contracts for the planner to select and expand, not fixed executable scripts. `fastagent` reads the library directly for compilation; in `stepagent`, `SkillUseRail` loads skill descriptions when attached through `modules.skills.enabled=True`.
 
 This diagram expands `fastagent` planning in [stage B of the complete task lifecycle](#task-lifecycle). Inputs are the task, state, skills, and action contracts; the output is a valid sequence passed to the executor.
 
@@ -281,7 +281,7 @@ Coverage also depends on the action name and parameter format. For example, SO-1
 
 `RecoveryRail` uses action tags and payload state to decide whether to release the end-effector and attempt homing. A motion failure with a confirmed payload preserves the grasp. Recovery prefers `recovery_home()`, falling back to `home()` when unavailable. A homing failure does not trigger another homing attempt. Recovery is best effort and cannot guarantee that the device ends in a safe state.
 
-`VisualFeedbackRail` requires camera capability and injects images before the next model call. Since `fastagent` does not call the model at every step, this does not automatically provide per-step VLM verification. `DiagnosisRail` requires Trace to be enabled; see [Trace Feedback Loop](../how-to/use-trace-feedback.md).
+`VisualFeedbackRail` requires camera capability and injects images before the next model call. `fastagent` rejects this module because it has no per-step model call. `DiagnosisRail` requires Trace to be enabled; see [Trace Feedback Loop](../how-to/use-trace-feedback.md).
 
 `parallel_tool_calls` is disabled by default. The current builder rejects it when Env declares any of `motion.cartesian`, `motion.joint`, `grasp.suction`, or `grasp.parallel`; combining it with Trace is also rejected. This check does not yet cover every motion and grasp capability, so its acceptance does not establish that other capabilities are safe to run concurrently. Software boundary checks do not replace device emergency stops or hardware protection.
 
@@ -289,7 +289,7 @@ Coverage also depends on the action name and parameter format. For example, SO-1
 
 ## 9. Execution trace and replay (TraceRail)
 
-`TraceRail` lives in `agent/trace.py` and is attached through `enable_tracing`, which is off by default. It collects execution evidence rather than intercepting actions or performing recovery.
+`TraceRail` lives in `agent/trace.py` and is attached through `modules.tracing.enabled`, which is off by default. It collects execution evidence rather than intercepting actions or performing recovery.
 
 Depending on configuration, traces record action names, parameters, result summaries, success or error, duration, observation snapshots, and optional JPEG frames, subject to entry and frame limits. Observations do not directly serialize raw RGB/depth arrays. `TraceEventSink` collects Rail events; `TraceLogHandler` collects `WARNING` and higher records from configured loggers.
 

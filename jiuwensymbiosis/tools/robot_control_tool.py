@@ -11,7 +11,8 @@
 - ``RobotControlTool``：单一入口 + ``action`` 字段派发。适合配 SKILL.md 走 workflow
   式控制 / 多机器人共享一个 prompt 入口 / 想缩短 tool list。
 
-两者并存：``build_robot_agent(..., enable_skill=True)`` 会同时挂上两边。
+两者并存：给 ``build_robot_agent`` 传入 ``execution.mode="stepagent"`` 且
+``modules.skills.enabled=True`` 的配置，会同时挂上两边。
 
 实现要点（避免 openjiuwen 元类 ``_ToolMeta`` 的坑）：
 

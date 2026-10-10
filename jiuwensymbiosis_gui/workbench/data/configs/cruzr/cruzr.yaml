@@ -25,10 +25,17 @@ model:
   max_tokens: 2048
 
 agent:
-  mode: hybrid
-  exec_mode: fastagent
-  enable_skill: true
-  enable_safety: true
-  enable_recovery: true
-  enable_visual_feedback: false
-  max_iterations: 15
+  execution:
+    mode: fastagent
+    stepagent:
+      mode: hybrid
+      max_iterations: 15
+  modules:
+    skills:
+      enabled: true
+    safety:
+      enabled: true
+    recovery:
+      enabled: true
+    visual_feedback:
+      enabled: false

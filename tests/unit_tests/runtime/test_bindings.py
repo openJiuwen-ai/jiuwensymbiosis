@@ -138,18 +138,18 @@ def test_config_snapshot_and_returned_data_are_deeply_isolated(tmp_path, monkeyp
         "adapter": "piper",
         "can_port": "can_snapshot",
         "calib_path": "calibration/not-created.json",
-        "agent": {"exec_mode": "fastagent"},
+        "agent": {"execution": {"mode": "fastagent"}},
     }
 
     binding = prepare_binding(source, config_snapshot=supplied, workspace=tmp_path / "ws")
     supplied["can_port"] = "changed-after-prepare"
-    supplied["agent"]["exec_mode"] = "changed"
+    supplied["agent"]["execution"]["mode"] = "changed"
 
     returned = binding.config_data()
     assert returned["can_port"] == "can_snapshot"
-    assert returned["agent"]["exec_mode"] == "fastagent"
-    returned["agent"]["exec_mode"] = "changed-through-copy"
-    assert binding.config_data()["agent"]["exec_mode"] == "fastagent"
+    assert returned["agent"]["execution"]["mode"] == "fastagent"
+    returned["agent"]["execution"]["mode"] = "changed-through-copy"
+    assert binding.config_data()["agent"]["execution"]["mode"] == "fastagent"
 
     session = binding.build_session()
     assert session.env.cfg.can_port == "can_snapshot"

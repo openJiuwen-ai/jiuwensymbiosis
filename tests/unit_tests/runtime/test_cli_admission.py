@@ -100,6 +100,25 @@ def test_admitted_session_acquires_before_session_creation_and_finishes_after_cl
     assert manager.records() == []
 
 
+def test_connection_settings_applied_after_admission_before_connect(tmp_path):
+    from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+    events = []
+    cfg = RobotAgentConfig(strict_capabilities=True, logging={"motion_dir": str(tmp_path / "motion")})
+
+    class Session(_Session):
+        def connect(self):
+            assert self.strict_capabilities is True
+            assert self.motion_log_dir == str(tmp_path / "motion")
+            super().connect()
+
+    session = Session(events)
+    manager = _RecordingManager(tmp_path / "locks", events)
+    with admitted_session(_Binding(events, session), resource_manager=manager, configure_session=cfg.prepare_session):
+        pass
+    assert events[:3] == ["acquire", "build_session", "connect"]
+
+
 def test_unconfirmed_cleanup_keeps_resources_blocked(tmp_path: Path) -> None:
     events: list[Any] = []
     report = CleanupReport(errors=("torque restore failed",), connected=True)
@@ -361,7 +380,7 @@ def test_simulated_piper_cli_does_not_admit_physical_resources(monkeypatch) -> N
     monkeypatch.setattr(
         run_task,
         "_load_yaml",
-        lambda _path: {"adapter": "piper", "agent": {"exec_mode": "stepagent"}},
+        lambda _path: {"adapter": "piper", "agent": {"execution": {"mode": "stepagent"}}},
     )
     monkeypatch.setattr(run_task, "_build_session", lambda _args, _raw: session)
     monkeypatch.setattr(run_task, "run_robot_task", lambda *_args, **_kwargs: {"ok": True})
@@ -378,3 +397,36 @@ def test_simulated_piper_cli_does_not_admit_physical_resources(monkeypatch) -> N
         == 0
     )
     assert events == ["connect", "disconnect"]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_task_cli_only_overrides_explicit_agent_options(monkeypatch, explicit):
+    script = Path(__file__).resolve().parents[3] / "examples" / "run_task.py"
+    spec = spec_from_file_location("_run_task_config_test", script)
+    run_task = module_from_spec(spec)
+    spec.loader.exec_module(run_task)
+    session = _Session([])
+    raw = {
+        "adapter": "piper",
+        "agent": {
+            "execution": {
+                "stepagent": {"mode": "tool", "max_iterations": 8},
+                "fastagent": {"tracking": {"servo": {"control_hz": 7, "max_lin_step_mm": 2}}},
+            },
+            "modules": {"tracing": {"enabled": True, "max_frames": 3}},
+        },
+    }
+    monkeypatch.setattr(run_task, "_load_yaml", lambda _path: raw)
+    monkeypatch.setattr(run_task, "_build_session", lambda _args, _raw: session)
+    captured = []
+    monkeypatch.setattr(run_task, "run_robot_task", lambda _session, _query, cfg, **kw: captured.append(cfg))
+    args = ["--config", "configs/piper/piper.yaml", "--query", "test", "--mock"]
+    if explicit:
+        args += ["--mode", "hybrid", "--max-iter", "4", "--control-hz", "9"]
+    assert run_task.main(args) == 0
+    cfg = captured[0]
+    assert cfg.execution.stepagent.mode == ("hybrid" if explicit else "tool")
+    assert cfg.execution.stepagent.max_iterations == (4 if explicit else 8)
+    assert cfg.execution.fastagent.tracking.servo.control_hz == (9 if explicit else 7)
+    assert cfg.execution.fastagent.tracking.servo.max_lin_step_mm == 2
+    assert cfg.modules.tracing.enabled and cfg.modules.tracing.max_frames == 3

@@ -6,19 +6,35 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
+from jiuwensymbiosis_gui.workbench import registry
 from jiuwensymbiosis_gui.workbench.app_state import AppState
 from jiuwensymbiosis_gui.workbench.config_model import ConfigModel
 
 
-def test_config_for_task_applies_agent_defaults_and_tracing():
+@pytest.mark.parametrize("config_root", ["configs", "jiuwensymbiosis_gui/workbench/data/configs"])
+@pytest.mark.parametrize("body, expected", [("so101", (20.0, 3.0)), ("piper", (10.0, 5.0))])
+def test_workbench_preserves_shipped_body_servo_tuning(config_root, body, expected):
+    root = Path(__file__).resolve().parents[4]
+    state = AppState()
+    state.current_config_file = str(root / config_root / body / f"{body}.yaml")
+    model = state.config_for(body, "pick_box")
+    model.validate_agent()
+    servo = model.get("agent.execution.fastagent.tracking.servo")
+    assert (servo["control_hz"], servo["max_lin_step_mm"]) == expected
+
+
+def test_config_for_task_preserves_framework_tracing_default():
     state = AppState()
     model = state.config_for("piper", "pick_box")
-    assert model.get("agent.enable_tracing") is True  # 默认开启轨迹记录
-    assert model.get("agent.exec_mode") == "fastagent"  # 默认快速模式
+    assert model.get("agent.modules.tracing.enabled") is None  # 未覆盖框架默认 false
+    assert model.get("agent.execution.mode") == "fastagent"  # 默认快速模式
 
 
 def test_config_for_task_prefills_prompt_from_default_query():
@@ -37,6 +53,27 @@ def test_config_for_task_is_cached():
     assert state.config_for("piper", "pick_box") is first  # 同一实例(带缓存)
 
 
+@pytest.mark.parametrize("configured_module", ["tracing", "diagnosis"])
+def test_task_and_yaml_agent_dependencies_are_validated_after_merging(tmp_path, monkeypatch, configured_module):
+    default_module = "diagnosis" if configured_module == "tracing" else "tracing"
+    task = replace(registry.get_task("pick_box"), agent_defaults={"modules": {default_module: {"enabled": True}}})
+    monkeypatch.setattr(registry, "get_task", lambda _key: task)
+    data = {"agent": {"execution": {"mode": "stepagent"}, "modules": {configured_module: {"enabled": True}}}}
+    source = tmp_path / "agent.yaml"
+    source.write_text(yaml.safe_dump(data), encoding="utf-8")
+    state = AppState()
+    state.current_config_file = str(source)
+
+    model = state.config_for("piper", "pick_box")
+    model.validate_agent()
+    assert model.get("agent.modules.tracing.enabled") is True
+    assert model.get("agent.modules.diagnosis.enabled") is True
+    assert model.get("env.cfg.prompt") == task.default_query
+    assert state.config_for("piper", "pick_box") is model
+    assert yaml.safe_load(source.read_text(encoding="utf-8")) == data
+    assert task.agent_defaults == {"modules": {default_module: {"enabled": True}}}
+
+
 def test_config_for_uses_selected_config_file(tmp_path):
     alt = tmp_path / "so101.alt.yaml"
     alt.write_text("env:\n  cfg:\n    low_level:\n      port: /dev/ttyACM9\n", encoding="utf-8")
@@ -48,7 +85,7 @@ def test_config_for_uses_selected_config_file(tmp_path):
 
     assert alt_model is not default_model  # 换配置文件 = 另一份独立可编辑配置
     assert alt_model.get("env.cfg.low_level.port") == "/dev/ttyACM9"
-    assert alt_model.get("agent.enable_tracing") is True  # 任务/GUI 默认照样叠上
+    assert alt_model.get("agent.modules.tracing.enabled") is None  # GUI 不另设默认
     state.current_config_file = None
     assert state.config_for("so101", "pick_box") is default_model  # 切回默认取回原缓存
 
@@ -312,3 +349,29 @@ def test_prime_noop_when_vision_disabled():
     cfg.set("gui.disable_vision", True)  # 「禁用视觉服务」开关打开
     state.set_config("piper", "pick_box", cfg)
     assert state.prime_detector_models("piper", "pick_box") == []  # 不去喂检测器模型
+
+
+@pytest.mark.parametrize("bad_agent", ["agent: [invalid]\n", "agent:\n  exec_mode: fastagent\n"])
+def test_config_load_failure_keeps_source_and_does_not_cache_defaults(tmp_path, bad_agent):
+    from jiuwensymbiosis_gui.workbench.app_state import ConfigLoadError
+
+    source = tmp_path / "selected.yaml"
+    source.write_text("env:\n  cfg:\n    low_level:\n      can_port: can_selected\n" + bad_agent)
+    state = AppState()
+    state.current_config_file = str(source)
+    with pytest.raises(ConfigLoadError, match="selected.yaml") as caught:
+        state.config_for("piper", "pick_box")
+    assert caught.value.path == source
+    assert state._configs == {}
+    source.write_text("env:\n  cfg:\n    low_level:\n      can_port: can_selected\nagent: {}\n")
+    assert state.config_for("piper", "pick_box").get("env.cfg.low_level.can_port") == "can_selected"
+
+
+def test_missing_selected_config_does_not_fall_back(tmp_path):
+    from jiuwensymbiosis_gui.workbench.app_state import ConfigLoadError
+
+    state = AppState()
+    state.current_config_file = str(tmp_path / "missing.yaml")
+    with pytest.raises(ConfigLoadError, match="missing.yaml"):
+        state.config_for("piper", "pick_box")
+    assert state._configs == {}

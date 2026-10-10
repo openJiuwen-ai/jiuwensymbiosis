@@ -48,7 +48,7 @@ class ConfigView:
             with ui.row().classes("w-full items-center gap-2"):
                 ui.button("← 返回主页", on_click=lambda: on_back()).props("flat")
                 ui.space()
-                ui.button("▶ 用当前配置运行", on_click=lambda: on_run()).props("color=primary")
+                self._run_button = ui.button("▶ 用当前配置运行", on_click=lambda: on_run()).props("color=primary")
             self._save_dialog, self._save_name, self._save_hint = self._build_save_dialog()
 
     # ------------------------------------------------------------------ API
@@ -60,6 +60,17 @@ class ConfigView:
         self._title.set_text(f"配置:{title}")
         self._build_form()
         self._refresh_warnings()
+
+    def show_load_error(self, error: Exception) -> None:
+        """Clear stale controls when the selected source cannot be read."""
+        self._model = ConfigModel()
+        self._fields = ()
+        self._controls.clear()
+        self._form_host.clear()
+        self._yaml = None
+        self._title.set_text("配置加载失败")
+        self._warn.set_text(str(error))
+        self._run_button.disable()
 
     def reveal_field(self, path: str) -> bool:
         """切到某字段所在的分组并聚焦它;该字段不在本体表单里(只能走原始 YAML)则返回 False。"""
@@ -174,13 +185,19 @@ class ConfigView:
 
     def _set(self, path: str, value: Any) -> None:
         self._model.set(path, value)
-        if path == "detector.mode":
+        if path in ("detector.mode", "agent.execution.mode", "agent.modules.visual_feedback.enabled"):
             self._fields = field_groups_for_config(self._body_key, self._model)
-            self._build_form(active="视觉服务")
+            self._build_form(active="视觉服务" if path == "detector.mode" else "执行方式")
         self._refresh_warnings()
 
     def _refresh_warnings(self) -> None:
         self._warn.set_text("  ".join(f"⚠ {w}" for w in self._model.validate()))
+        try:
+            self._model.validate_agent()
+        except (TypeError, ValueError):
+            self._run_button.disable()
+        else:
+            self._run_button.enable()
 
     # ------------------------------------------------------------------ YAML 同步
     def _on_tab(self, e: Any) -> None:

@@ -119,7 +119,7 @@ class RobotSession:
     _cleanup_errors: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _cleanup_error_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _disconnect_lock: Lock = field(default_factory=Lock, init=False, repr=False)
-    # Optional TraceRail (set by build_robot_agent when enable_tracing). Flushed
+    # Optional TraceRail (set by build_robot_agent when modules.tracing.enabled). Flushed
     # on disconnect as a safety net in case after_invoke didn't fire.
     _trace_rail: Any = field(default=None, init=False, repr=False)
 

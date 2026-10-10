@@ -3,7 +3,7 @@
 
 """Unified task entry — the speed switch between the two execution mechanisms.
 
-``run_robot_task(session, query, config)`` dispatches on ``config.exec_mode``:
+``run_robot_task(session, query, config)`` dispatches on ``config.execution.mode``:
 
 * ``"stepagent"``: build the ``DeepAgent`` and ``invoke`` it — per-step LLM
   orchestration, many round-trips. Identical to calling ``build_robot_agent`` +
@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwensymbiosis.agent.builder import build_robot_agent
+from jiuwensymbiosis.agent.builder import _build_fast_agent, build_robot_agent
 from jiuwensymbiosis.agent.cancel import RunCancelled
 from jiuwensymbiosis.agent.config import RobotAgentConfig
 from jiuwensymbiosis.agent.fast.sequence import TRACK_DETECT, TRACK_GRASP, qualifiers_for
@@ -95,7 +95,7 @@ def run_robot_task(
     conversation_id: str | None = None,
     cancel_token: Any = None,
 ) -> Any:
-    """Run a task on ``session`` using the mechanism selected by ``config.exec_mode``.
+    """Run a task on ``session`` using the mechanism selected by ``config.execution.mode``.
 
     The session's ``connect()``/``disconnect()`` is the caller's responsibility
     (use ``with session:``).
@@ -106,7 +106,8 @@ def run_robot_task(
     → unchanged behaviour for CLI / tests.
     """
     config = config or RobotAgentConfig()
-    if config.exec_mode == "fastagent":
+    config.validate(for_execution=True)
+    if config.execution.mode == "fastagent":
         conv_id = conversation_id or f"task-{uuid.uuid4().hex[:8]}"
         return run_fast_task(session, query, config, conversation_id=conv_id, cancel_token=cancel_token)
 
@@ -363,7 +364,7 @@ def _resolve_fast_special_ops(
     verb). Requiring both would wrongly disable tracking for an adapter that
     only implements the env sink.
 
-    ``enabled`` is the ``RobotAgentConfig.enable_fast_special_ops`` switch: when
+    ``enabled`` is the ``RobotAgentConfig.execution.fastagent.tracking.enabled`` switch: when
     False the runner-owned servo ops are withheld regardless of capabilities, so
     the fast path compiles to plain per-op steps only.
     """
@@ -400,10 +401,11 @@ def run_fast_task(
     measured state contradicts a step's pre-conditions, the runner re-plans the
     remainder from what the world actually is rather than failing there.
 
-    Fast and agent now share one execution engine: we build the agent exactly as
-    agent mode does (``build_robot_agent`` → all rails), then drive its
+    Fast and stepagent share tool/rail assembly. The fast builder always adds
+    the action dispatcher and leaves skill documents to the planner, then drives
     ``ability_manager`` with the precompiled sequence instead of looping the LLM.
-    SafetyRail / VisualFeedbackRail / RecoveryRail therefore all apply.
+    SafetyRail / RecoveryRail apply to discrete actions. Model-feedback modules
+    are stepagent-only; tracking owns its internal control checks.
 
     ``conversation_id`` seeds the trace's run token (its JSON filename + frames
     subdir) the same way the agent path's ``invoke`` does. The fast path skips
@@ -416,7 +418,6 @@ def run_fast_task(
     # Imported lazily so the slow path never pulls in the realtime stack.
     from jiuwensymbiosis.agent.fast import (
         DEFAULT_REGISTRY,
-        SkillExecConfig,
         parse_sequence,
         plan_task,
         run_sequence,
@@ -426,20 +427,25 @@ def run_fast_task(
     from jiuwensymbiosis.api.world_state import WorldState
     from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
 
+    config.validate(for_execution=True)
+    if config.execution.mode != "fastagent":
+        raise ValueError("run_fast_task requires agent.execution.mode=fastagent")
     spec = config.model_spec
     if spec is None:
         return {"ok": False, "reason": "no_model_spec", "query": query}
 
-    exec_cfg = config.exec_config or SkillExecConfig()
+    tracking = config.execution.fastagent.tracking
     # planner_only: this index is BOTH the vocabulary the planner is shown and the
     # allow-list ``parse_sequence`` validates against, so narrowing it here is what
     # actually keeps a bring-up tool out of a plan (a prompt instruction would not).
     action_index = _build_action_index(session.api, planner_only=True)
     action_sigs = {name: _action_param_sig(fn) for name, fn in action_index.items()}
-    skills_md = DEFAULT_REGISTRY.skills_markdown()
+    skills_md = DEFAULT_REGISTRY.skills_markdown() if config.modules.skills.enabled else []
 
     caps = set(getattr(session.env, "capabilities", frozenset()))
-    special_ops = _resolve_fast_special_ops(caps, session.api, session.env, enabled=config.enable_fast_special_ops)
+    special_ops = _resolve_fast_special_ops(
+        caps, session.api, session.env, enabled=config.execution.fastagent.tracking.enabled
+    )
 
     # ① LLM① parse the task → structured intent (targets); ② perceive the scene
     # (no LLM, reuses the standing detector) so ③ the compiler (LLM②) plans from
@@ -554,14 +560,14 @@ def run_fast_task(
 
     # Build the agent (same rails as agent mode) and run the sequence through its
     # ability_manager so every op passes the rail stack — no LLM in the loop.
-    agent = build_robot_agent(session, config)
+    agent = _build_fast_agent(session, config)
     # The fast path never calls agent.invoke(), so do its two invoke-time side
     # effects by hand: lazy rail registration, then the BEFORE/AFTER_INVOKE
     # lifecycle that primes + flushes the TraceRail (a no-op when tracing is off).
     _prime_fast_agent(agent)
     from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
 
-    if config.enable_tracing:
+    if config.modules.tracing.enabled:
         _fire_invoke_event(
             agent,
             AgentCallbackEvent.BEFORE_INVOKE,
@@ -569,8 +575,16 @@ def run_fast_task(
             query=query,
         )
     executor = build_ability_executor(agent)
-    result = run_sequence(session, steps, config=exec_cfg, executor=executor, replan=replan)
-    if config.enable_tracing:
+    result = run_sequence(
+        session,
+        steps,
+        config=tracking,
+        executor=executor,
+        replan=replan,
+        max_replans=config.execution.fastagent.max_replans,
+        recovery_enabled=config.modules.recovery.enabled,
+    )
+    if config.modules.tracing.enabled:
         _fire_invoke_event(
             agent,
             AgentCallbackEvent.AFTER_INVOKE,

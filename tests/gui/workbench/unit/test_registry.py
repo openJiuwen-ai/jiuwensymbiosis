@@ -45,8 +45,8 @@ def test_pick_banana_task_is_body_agnostic_with_fast_defaults():
     task = registry.get_task("pick_banana")
     assert task.bodies == ()  # 一张卡片,任意本体都能执行
     assert task.default_query
-    assert task.agent_defaults.get("exec_mode") == "fastagent"
-    assert task.agent_defaults.get("enable_skill") is True
+    assert task.agent_defaults["execution"]["mode"] == "fastagent"
+    assert task.agent_defaults["modules"]["skills"]["enabled"] is True
 
 
 def test_body_agnostic_tasks_appear_for_every_body():

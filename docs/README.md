@@ -47,6 +47,7 @@
 - [特性矩阵](zh/reference/feature-matrix.md)
 - [命令行参考](zh/reference/cli.md)
 - [Agent 与框架 API 参考](zh/reference/framework-api.md)
+- [Agent 全量配置参考](zh/reference/agent-config.md)
 - [机器人环境、能力与工具 API 参考](zh/reference/robot-api.md)
 - [执行轨迹参考](zh/reference/tracing.md)
 
@@ -79,6 +80,7 @@
 - [Feature Matrix](en/reference/feature-matrix.md)
 - [Command-Line Reference](en/reference/cli.md)
 - [Agent and Framework API Reference](en/reference/framework-api.md)
+- [Complete Agent Configuration Reference](en/reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](en/reference/robot-api.md)
 - [Execution Tracing Reference](en/reference/tracing.md)
 

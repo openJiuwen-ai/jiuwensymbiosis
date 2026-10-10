@@ -61,7 +61,7 @@ def test_track_detect_restores_entry_yaw_with_slew_and_completion_checks(piper_f
             pass
 
     monkeypatch.setattr(runner, "BackgroundTracker", StaticTracker)
-    cfg = runner.SkillExecConfig(
+    cfg = runner.TrackingConfig(
         servo=ServoConfig(
             max_ang_step_deg=5,
             pos_tol_mm=0.01,

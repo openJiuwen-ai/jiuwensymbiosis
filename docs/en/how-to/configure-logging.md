@@ -57,7 +57,7 @@ logs/
     └── performance/jiuwen_performance.log
 ```
 
-Each run's motion artifacts get their own directory (configured by `agent.motion_log_dir`, default
+Each run's motion artifacts get their own directory (configured by `agent.logging.motion_dir`, default
 `./jiuwen_motion_log`):
 
 ```
@@ -85,9 +85,11 @@ jiuwen_motion_log/<timestamp>/       ← one directory per run
 
 ## 2. Control logging through configuration
 
-Logging is controlled by two `RobotAgentConfig` fields, `log_level` and `log_dir`, which are eventually passed to
+Logging is controlled by two `RobotAgentConfig` fields, `logging.level` and `logging.dir`, which are eventually passed to
 `build_robot_agent → configure_logging`. Two ways to set them: the **YAML `agent:` block** (declarative, recommended)
 and **CLI options** (temporary override). They compose, with the CLI taking precedence.
+
+Canonical fields are `logging.level` / `logging.dir` / `logging.motion_dir`; only grouped fields are accepted. See [complete agent configuration](../reference/agent-config.md). Omitting the directory still writes to `./logs`; only explicit `null` disables file output.
 
 ### 2.1 Declarative YAML `agent:` block
 
@@ -95,8 +97,9 @@ Write an `agent:` block in the task configuration file (e.g. `configs/piper/pipe
 
 ```yaml
 agent:
-  log_level: INFO            # root logger level: INFO / DEBUG / WARNING / ERROR ...
-  log_dir: ./logs            # log file directory; null (or omitted) means console only
+  logging:
+    level: INFO
+    dir: ./logs
 ```
 
 The loading chain:
@@ -104,50 +107,51 @@ The loading chain:
 ```
 YAML → raw["agent"] → RobotAgentConfig.from_dict(raw["agent"])   # run_task.py / jiuwensymbiosis-run
                       → build_robot_agent(config=...)
-                          → configure_logging(level=config.log_level, log_dir=config.log_dir)
+                          → configure_logging(level=config.logging.level, log_dir=config.logging.dir)
 ```
 
-- `from_dict` passes everything through with `cls(**data)`: whatever `log_level`/`log_dir` the YAML says is what is used.
+- `from_dict` recursively merges overrides and validates grouped fields and types.
 - **An unknown key raises `TypeError`** ([agent/config.py](../../../jiuwensymbiosis/agent/config.py)
-  `RobotAgentConfig.from_dict`) — a typo (writing `enable_trace` for `enable_tracing`) fails immediately at load time
+  `RobotAgentConfig.from_dict`) — a typo (writing `enable_trace` for `modules.tracing.enabled`) fails immediately at load time
   instead of being silently ignored.
 
-The `log_level` / `log_dir` fields:
+The `logging.level` / `logging.dir` fields:
 
 | Field | Default | Meaning |
 |------|------|------|
-| `log_level` | `"INFO"` | Root logger level (a `logging` level name or int) |
-| `log_dir` | `"./logs"` | Log file directory; `None`/`null` = console only. Defaults to `./logs` (openjiuwen logs land in `logs/logs/` by its own implementation, independent of this directory) |
+| `logging.level` | `"INFO"` | Root logger level (a `logging` level name string) |
+| `logging.dir` | `"./logs"` | Log file directory; `None`/`null` = console only. Defaults to `./logs` (openjiuwen logs land in `logs/logs/` by its own implementation, independent of this directory) |
 
 #### Disable file output and keep console only
 
 ```yaml
 agent:
-  log_dir: null      # or drop this line from the agent block and set RobotAgentConfig(log_dir=None) in code
+  logging:
+    dir: null
 ```
 
 #### Switch to DEBUG for detailed diagnostics
 
 ```yaml
 agent:
-  log_level: DEBUG
-  log_dir: ./logs
+  logging:
+    level: DEBUG
+    dir: ./logs
 ```
 
 ### 2.2 CLI override for temporary demo debugging
 
-`examples/run_task.py` provides `--debug`, which rewrites `log_level` to `DEBUG` after
-`RobotAgentConfig.from_dict(...)`, **taking precedence over YAML**:
+`examples/run_task.py` provides `--debug`, which sets `logging.level` to `DEBUG` through
+`RobotAgentConfig.from_dict(..., overrides=...)`, **taking precedence over YAML**:
 
 ```python
-agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))
-if args.debug:
-    agent_cfg.log_level = "DEBUG"
-agent = build_robot_agent(session, config=agent_cfg)
+overrides = {"logging": {"level": "DEBUG"}} if args.debug else {}
+agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"), overrides=overrides)
+result = run_robot_task(session, args.query, agent_cfg)
 ```
 
 ```bash
-# Temporarily enable DEBUG without changing the YAML log_level
+# Temporarily enable DEBUG without changing the YAML logging.level
 python examples/run_task.py --config configs/piper/piper.yaml --mock --debug
 ```
 
@@ -159,14 +163,15 @@ python examples/run_task.py --config configs/piper/piper.yaml --mock --debug
 
 ### 2.3 Link warnings to execution traces
 
-Logs can also enter the execution trace (when `enable_tracing` is on). The related settings live in the `agent:` block
+Logs can also enter the execution trace (when `modules.tracing.enabled` is on). The related settings live in the `agent:` block
 (see the [Tracing reference](../reference/tracing.md)):
 
 ```yaml
 agent:
-  enable_tracing: true                 # enable TraceRail, recording every tool call
-  trace_capture_loggers: ["jiuwensymbiosis"]   # whose WARNING+ records enter the trace
-  # capture_log_level is currently fixed at WARNING (see §3.3) and is not configurable
+  modules:
+    tracing:
+      enabled: true
+      capture_loggers: ["jiuwensymbiosis"]
 ```
 
 Records emitted during a tool step appear in that entry's `log_events`; records with no active step appear in
@@ -245,7 +250,7 @@ logging.getLogger("jiuwensymbiosis").addHandler(handler)
 - **Lifetime** is managed by `TraceRail` (see the [tracing internals](../../../design/tracing.md)): `set_sink(sink)`
   swaps the sink (bound back at the start of each invoke, set to None at the end).
 
-If warnings do not appear in Trace, confirm `enable_tracing`, `trace_capture_loggers`, and a record level of at least
+If warnings do not appear in Trace, confirm `modules.tracing.enabled`, `modules.tracing.capture_loggers`, and a record level of at least
 `WARNING`.
 
 ### 3.4 Constants
@@ -277,7 +282,7 @@ This guarantees that:
   explicitly closing the old handler first.
 
 Per-run motion artifacts live in their own directory, one per run: `<motion_log_dir>/<stamp>/` holds the Piper
-`commands.log` and the `grasp_debug/` detection dumps side by side. Set the root with `agent.motion_log_dir`
+`commands.log` and the `grasp_debug/` detection dumps side by side. Set the root with `agent.logging.motion_dir`
 (default `./jiuwen_motion_log`); disable the Piper command log with `JIUWEN_PIPER_CMD_LOG=0`.
 
 ---
@@ -288,9 +293,9 @@ Per-run motion artifacts live in their own directory, one per run: `<motion_log_
 |------|------|
 | [jiuwensymbiosis/utils/logging.py](../../../jiuwensymbiosis/utils/logging.py) | This module's implementation |
 | [jiuwensymbiosis/utils/\_\_init\_\_.py](../../../jiuwensymbiosis/utils/__init__.py) | re-exports `configure_logging` / `get_logger` / `TraceLogHandler` / `DEFAULT_FMT` |
-| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.log_level` / `log_dir` fields + `from_dict` (YAML pass-through) |
+| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.logging.level` / `logging.dir` fields + `from_dict` (YAML pass-through) |
 | [jiuwensymbiosis/agent/builder.py](../../../jiuwensymbiosis/agent/builder.py) | `build_robot_agent` calls `configure_logging`; attaches `TraceLogHandler` when tracing is on |
-| [examples/run_task.py](../../../examples/run_task.py) | `--debug` overrides `log_level`; demonstrates the YAML `agent:` loading chain |
+| [examples/run_task.py](../../../examples/run_task.py) | `--debug` overrides `logging.level`; demonstrates the YAML `agent:` loading chain |
 | [jiuwensymbiosis/adapters/piper/lowlevel.py](../../../jiuwensymbiosis/adapters/piper/lowlevel.py) | Piper `_attach_cmd_log_handler` reuses `configure_logging` |
 | [Tracing reference](../reference/tracing.md) | The consumer of `TraceLogHandler` and its data format |
 | [Logging design](../../../design/logging.md) | Internal ownership and lifecycle decisions |

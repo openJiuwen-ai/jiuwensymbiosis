@@ -237,3 +237,34 @@ class TestRerunTakesTheCurrentConfig:
         assert fresh.config_source != previous.config_source
         binding = prepare_binding(fresh.config_source, config_snapshot=fresh._config.data, include_sidecars=False)
         assert binding.config_data()["calib_path"] == str(source.parent / "calibration.json")
+
+
+def test_bad_selected_config_clears_stale_form_and_blocks_run(layout, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    layout._sync_config_view()
+    assert layout._config._controls
+    source = tmp_path / "invalid.yaml"
+    source.write_text(_BASE_YAML + "agent: [invalid]\n")
+    layout._state.current_config_file = str(source)
+    layout._sync_config_view()
+    assert layout._config._controls == {}
+    assert not layout._config._run_button.enabled
+    assert str(source) in layout._config._warn.text
+    release = Mock()
+    attach = Mock()
+    monkeypatch.setattr(layout._tools, "release_hardware", release)
+    monkeypatch.setattr(layout._run, "attach", attach)
+    layout._start_run(layout._state.current_task)
+    release.assert_not_called()
+    attach.assert_not_called()
+    assert layout._state.engine is None
+
+
+def test_dropped_valid_config_can_replace_a_source_that_failed_to_load(layout, tmp_path):
+    source = tmp_path / "broken.yaml"
+    source.write_text("agent: [invalid]\n")
+    layout._state.current_config_file = str(source)
+    _drop(layout, "fixed.yaml", _DROPPED_YAML)
+    layout._confirm_drop()
+    assert layout._state.current_config().get("env.cfg.low_level.port") == "/dev/dropped"

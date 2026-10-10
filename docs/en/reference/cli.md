@@ -17,7 +17,7 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 | `--mock` | In-memory dry run for Piper only (MockArmEnv + offline model); implies `--stepagent` |
 | `--stepagent` | Force per-step LLM (single-step debugging); default is `fastagent` (compile once, no per-step LLM) |
 | `--voice` / `--voice-text` / `--voice-audio-file` / `--voice-once` / `--no-wake` / `--tts` / `--asr-device` | Voice mode |
-| `--no-skill` | Disable SkillUseRail + the robot_control dispatcher; use with `--stepagent` |
+| `--no-skill` | Disable skill knowledge; fastagent composes actions directly |
 | `--mode` | `tool` / `code` / `hybrid` |
 | `--no-visual-feedback` | Disable VisualFeedbackRail |
 | `--server-url` / `--model` / `--api-key` | Override LLM endpoint/model/key |
@@ -25,12 +25,9 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 
 `--mock` uses an offline model and a Mock environment; `--control-hz`/`--servo-step-mm` tune the fastagent real-time servo.
 
-The default fastagent needs `agent.enable_skill: true` in the YAML to execute ordinary actions; disabling it removes the
-required `robot_control` dispatcher. The CLI constructs `ModelSpec` from the top-level `model:` configuration and LLM
-overrides. Direct Python API callers must supply `RobotAgentConfig.model_spec` explicitly; see the
-[minimal API configuration](framework-api.md#minimal-fast-path-configuration). Setting only `exec_mode: fastagent` does
-not enable these dependencies automatically. `--no-skill` does not disable the fast planner's direct reading of the built-in
-skill library; use `--stepagent --no-skill` when disabling the skill entry point.
+See the [complete agent configuration](agent-config.md) for fields and shared defaults. Fastagent uses skills by default; `--no-skill` selects action composition and keeps the action dispatcher available.
+The CLI builds `ModelSpec` from the top-level `model:` block and explicit LLM arguments; Python callers must supply `model_spec`.
+`--mode`, `--max-iter`, `--control-hz` and `--servo-step-mm` override YAML only when explicitly supplied.
 
 ## piper-pick-demo
 

@@ -94,19 +94,19 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 
 | 特性 | 状态 | 默认 | 启用或约束 |
 |---|---|---|---|
-| fastagent 编译一次执行 | ✅ | `exec_mode="fastagent"` | 一次模型规划（技能组合 + 动作组合两级）后顺序执行，无逐 step LLM；`--stepagent` 强制逐步 |
-| 运行时重规划 | ✅ | 每步前 | 世界反驳下一步前置条件时重新规划，上限 `max_replans` |
-| 独立工具模式 | ✅ | 可选 | `mode="tool"`，每个 `@implements` 方法成为一个工具 |
-| 代码模式 | ✅ | 可选 | `mode="code"`，提供 `InProcessCodeTool` |
-| Hybrid 模式 | ✅ | `mode="hybrid"` | 同时提供独立工具和代码工具 |
-| Skill 工作流 | ◐ | `enable_skill=False` | 启用 `SkillUseRail` 和 `RobotControlTool`；内置 `visual_pick`/`visual_place`/`transport` |
+| fastagent 编译一次执行 | ✅ | `execution.mode="fastagent"` | 一次模型规划（技能组合 + 动作组合两级）后顺序执行，无逐 step LLM；`--stepagent` 强制逐步 |
+| 运行时重规划 | ✅ | 每步前 | 世界反驳下一步前置条件时重新规划，上限 `execution.fastagent.max_replans` |
+| 独立工具模式 | ✅ | 可选 | stepagent 下设置 `execution.stepagent.mode="tool"`，每个 `@implements` 方法成为一个工具 |
+| 代码模式 | ✅ | 可选 | stepagent 下设置 `execution.stepagent.mode="code"`，提供 `InProcessCodeTool` |
+| Hybrid 模式 | ✅ | `execution.stepagent.mode="hybrid"` | stepagent 同时提供独立工具和代码工具 |
+| fastagent 技能规划 | ◐ | `modules.skills.enabled=True` | 规划器直接读取技能库，不挂载 `SkillUseRail`；关闭后直接组合动作 |
+| stepagent 技能工作流 | ◐ | `modules.skills.enabled=False` | 单机器人 builder 开启技能后添加 `SkillUseRail` 和 `RobotControlTool` |
 | 自定义工具/Rail | ✅ | 无 | 通过 `extra_tools`、`extra_rails` 注入 |
-| 并行工具调用 | ◐ | `parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
+| 并行工具调用 | ◐ | `execution.stepagent.parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
 | 无硬件/无模型干跑 | ✅ | `--mock` 时 | `MockArmEnv` + `MockModelClient`（工厂 `build_mock_model`，仅 Piper），不访问 CAN、相机或模型端点 |
 
-默认执行模式与字段默认值需一起配置：`fastagent` 要求显式 `model_spec` 和 `enable_skill=True`，
-用于模型规划及 `robot_control` 动作执行。仅提供 `model` 时应使用 `stepagent`。
-见 [API 最小配置](framework-api.md#fast-path-最小配置)。
+`fastagent` 要求显式 `model_spec` 用于模型规划。`robot_control` 始终注册；关闭 `modules.skills.enabled` 后直接组合动作。仅提供 `model` 时应使用 `stepagent`。
+内置技能包括 `visual_pick`、`visual_place`、`transport`。见 [API 最小配置](framework-api.md#fast-path-最小配置)及 [Agent 全量配置](agent-config.md)。
 
 ## 5. Rails、Trace 与反馈矩阵
 
@@ -114,14 +114,14 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 |---|---|---|---|
 | SafetyRail | ✅ | 开 | Env 具有任一运动能力（cartesian/joint/base/lift/waist）；按声明能力派生检查 |
 | RecoveryRail | ✅ | 开 | Env 具有运动、吸盘或夹爪；失败后尝试 Home 与释放 |
-| VisualFeedbackRail | ◐ | 开 | 还需 `vision.camera`；动作后帧进入下一轮上下文 |
-| SkillUseRail | ◐ | 关 | `enable_skill=True` |
-| TraceRail | ◐ | 关 | `enable_tracing=True`；记录工具、观测、Rail 事件、日志和可选帧 |
-| DiagnosisRail | ◐ | 关 | `enable_diagnosis=True` 且必须同时开启 Trace |
-| WARNING+ 日志入 Trace | ◐ | 随 Trace | `trace_capture_loggers` 默认 `jiuwensymbiosis` |
+| VisualFeedbackRail | ◐ | stepagent 开；fastagent 不支持 | `modules.visual_feedback.enabled=True` 且具有 `vision.camera`；动作后帧进入下一轮上下文 |
+| SkillUseRail | ◐ | 关 | 单机器人 stepagent 下 `modules.skills.enabled=True`；fastagent 不挂载 |
+| TraceRail | ◐ | 关 | `modules.tracing.enabled=True`；记录工具、观测、Rail 事件、日志和可选帧 |
+| DiagnosisRail | ◐ | 关 | 仅 stepagent；`modules.diagnosis.enabled=True` 且必须同时开启 Trace |
+| WARNING+ 日志入 Trace | ◐ | 随 Trace | `modules.tracing.capture_loggers` 默认 `jiuwensymbiosis` |
 | Trace HTML/文本回放 | ✅ | 按需 | `jiuwensymbiosis-replay <trace.json>`，默认生成自包含 HTML |
 | 离线 Trace Feedback | ✅ | 按需 | `scripts/analyze_traces.py` 聚类失败并生成需人工审核的建议 |
-| 中央日志 | ✅ | INFO + `./logs` | 控制台和轮转文件；`log_dir=None` 时仅控制台 |
+| 中央日志 | ✅ | INFO + `./logs` | 控制台和轮转文件；`logging.dir=None` 时仅控制台 |
 
 ## 6. 视觉与感知矩阵
 

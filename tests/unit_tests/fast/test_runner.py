@@ -24,7 +24,7 @@ from jiuwensymbiosis.agent.fast import runner as runner_module
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
 from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter, MaskTrackingConfig, MaskTrackingState
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoResult
-from jiuwensymbiosis.agent.fast.runner import SkillExecConfig, run_sequence
+from jiuwensymbiosis.agent.fast.runner import TrackingConfig, run_sequence
 from jiuwensymbiosis.agent.fast.sequence import TRACK_DETECT, ActionStep, parse_sequence
 from jiuwensymbiosis.api.actions import GET_GRASP_INFO_SIMPLE, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
@@ -64,6 +64,16 @@ class _FakeApi:
 
 def _session(api):
     return types.SimpleNamespace(api=api, env=None)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recovery_switch_controls_runner_owned_failure(enabled):
+    api = _FakeApi({}, fail_goto_at=1)
+    steps = parse_sequence([{"op": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}}], allowed_ops={"goto_xyzr"})
+    result = run_sequence(_session(api), steps, action_index={"goto_xyzr": api.goto_xyzr}, recovery_enabled=enabled)
+    assert not result["ok"]
+    assert (("home",) in api.calls) is enabled
+    assert (("open",) in api.calls) is enabled
 
 
 class _EyeToHandEnv:
@@ -159,7 +169,7 @@ class TestPrescanRecordsWhatItDid:
 
 
 def _tracking_config(**kwargs):
-    return SkillExecConfig(**kwargs)
+    return TrackingConfig(**kwargs)
 
 
 def test_runner_executes_grasp_like_sequence_descends_to_grasp_z():

@@ -151,14 +151,16 @@ AI explanation, duration, and return value / error**. Clicking a historical step
 The **History** page scans the workspace's `traces/` directory, lists a summary of each run, and "🌐 open replay in
 browser" reviews the whole execution trace using the self-contained HTML (with inlined camera frames).
 
-> Replay depends on execution traces: enable `enable_tracing: true` in the `agent` block under **Configuration**
+> Replay depends on execution traces: enable `modules.tracing.enabled: true` in the `agent` block under **Configuration**
 > (off by default, zero overhead). Once on, trace JSON lands in `<workspace>/traces/`. The workspace location can be
 > changed on the **Settings** page.
 
 ```yaml
 agent:
-  enable_tracing: true
-  trace_save_frames: true
+  modules:
+    tracing:
+      enabled: true
+      save_frames: true
 ```
 
 ### Automatic error diagnosis and one-click fixes

@@ -45,7 +45,7 @@
   <rect x="48" y="210" width="510" height="32" rx="3" fill="#eaf3ff"/>
   <text id="text-11" x="52" y="236" font-size="23" font-weight="700" fill="#2563eb" text-anchor="start" data-max-width="1076">A. Submit a task (Session connected)</text>
   <rect x="48" y="356" width="570" height="32" rx="3" fill="#ecf9f4"/>
-  <text id="text-12" x="52" y="382" font-size="23" font-weight="700" fill="#047857" text-anchor="start" data-max-width="1076">B. Choose one branch by exec_mode</text>
+  <text id="text-12" x="52" y="382" font-size="23" font-weight="700" fill="#047857" text-anchor="start" data-max-width="1076">B. Choose one branch by execution.mode</text>
   <rect x="64" y="410" width="296" height="30" rx="3" fill="#ecf9f4"/>
   <text id="text-13" x="68" y="434" font-size="21" font-weight="700" fill="#7c3aed" text-anchor="start" data-max-width="1000">alt  fastagent (default)</text>
   <rect x="64" y="650" width="208" height="30" rx="3" fill="#ecf9f4"/>

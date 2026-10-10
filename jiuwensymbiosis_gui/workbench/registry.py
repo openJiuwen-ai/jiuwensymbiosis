@@ -287,7 +287,7 @@ def _fallback_tasks() -> dict[str, TaskDef]:
             display_name="拾取盒子",
             description="把黑色盒子抓起来放到白色盒子上。",
             default_query="把黑色盒子抓起来放到白色盒子上。",
-            agent_defaults={"enable_skill": True},
+            agent_defaults={"modules": {"skills": {"enabled": True}}},
         )
     }
 

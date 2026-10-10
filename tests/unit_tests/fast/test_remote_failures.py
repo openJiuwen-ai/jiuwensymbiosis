@@ -70,7 +70,7 @@ def test_late_detection_failure_preserves_motion_error(monkeypatch, op):
             session,
             [ActionStep(op, {"object_name": "box", "approach_mm": 20}), ActionStep("next_motion", {})],
             executor=lambda action, params: actions.append(action) or {"ok": True},
-            config=runner.SkillExecConfig(detect_hz=100),
+            config=runner.TrackingConfig(detect_hz=100),
         )
         assert result["ok"] is False
         assert result["steps"][0]["error_code"] == "cartesian_bounds_rejected"
@@ -128,7 +128,7 @@ def test_service_failure_during_tracker_shutdown_aborts_sequence(monkeypatch, op
                 ActionStep("next_motion", {}),
             ],
             executor=lambda action, params: actions.append(action) or {"ok": True, "result": {"ok": True}},
-            config=runner.SkillExecConfig(first_target_timeout_s=0.02),
+            config=runner.TrackingConfig(first_target_timeout_s=0.02),
         )
         assert result["ok"] is False
         assert result["steps"][0]["error_code"] == "inference_timeout"

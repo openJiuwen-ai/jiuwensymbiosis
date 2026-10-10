@@ -144,7 +144,7 @@ bash scripts/launch_gui.sh
 **历史**页扫描工作区 `traces/` 目录，列出每次运行的摘要，点「🌐 在浏览器打开回放」用
 自包含 HTML（内联相机帧）复盘整条执行轨迹。
 
-> 回放依赖执行轨迹：需在**配置**的 `agent` 段开启 `enable_tracing: true`（默认关闭，
+> 回放依赖执行轨迹：需在**配置**的 `agent` 段开启 `modules.tracing.enabled: true`（默认关闭，
 > 零开销）。开启后轨迹 JSON 落在 `<工作区>/traces/`。工作区位置在**设置**页可改。
 
 ### 自动错误诊断（一键修复）

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
@@ -52,7 +53,7 @@ class FieldSpec:
             ``min`` / ``max`` —— 上下箭头步进不会越界(如温度限 [0, 2])。
         step: 数字类字段每次步进的增量(缺省走控件默认 1;如温度用 0.1)。
         on_value / off_value: ``kind="bool"`` 时若给出,复选框存的不是 True/False
-            而是这两个值(如 exec_mode 的 ``"fastagent"`` / ``"stepagent"``)。
+            而是这两个值(如 execution.mode 的 ``"fastagent"`` / ``"stepagent"``)。
     """
 
     path: str
@@ -76,7 +77,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
     FieldSpec("env.cfg.prompt", "任务指令", "text", "基础", help="留空则用内置默认指令。"),
     # -- 执行方式 --
     FieldSpec(
-        "agent.mode",
+        "agent.execution.stepagent.mode",
         "智能体模式",
         "choice",
         "执行方式",
@@ -88,10 +89,16 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default="hybrid",
     ),
     FieldSpec(
-        "agent.max_iterations", "最大步数", "int", "执行方式", help="智能体循环的上限步数。", default=15, min_value=1
+        "agent.execution.stepagent.max_iterations",
+        "最大步数",
+        "int",
+        "执行方式",
+        help="智能体循环的上限步数。",
+        default=15,
+        min_value=1,
     ),
     FieldSpec(
-        "agent.enable_skill",
+        "agent.modules.skills.enabled",
         "启用技能工作流",
         "bool",
         "执行方式",
@@ -99,7 +106,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=False,
     ),
     FieldSpec(
-        "agent.exec_mode",
+        "agent.execution.mode",
         "快速模式(fastagent)",
         "bool",
         "执行方式",
@@ -110,7 +117,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
     ),
     # -- 安全与反馈 --
     FieldSpec(
-        "agent.enable_safety",
+        "agent.modules.safety.enabled",
         "运动前边界检查",
         "bool",
         "安全与反馈",
@@ -118,7 +125,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_recovery",
+        "agent.modules.recovery.enabled",
         "失败自动回零",
         "bool",
         "安全与反馈",
@@ -126,7 +133,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_visual_feedback",
+        "agent.modules.visual_feedback.enabled",
         "每步拍照校验",
         "bool",
         "安全与反馈",
@@ -134,7 +141,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_tracing",
+        "agent.modules.tracing.enabled",
         "记录执行轨迹",
         "bool",
         "安全与反馈",
@@ -294,6 +301,15 @@ def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
     return FIELD_GROUPS + ROBOT_PARAM_FIELDS.get(body_key, ())
 
 
+def _fast_agent_field_visible(spec: FieldSpec, model: ConfigModel) -> bool:
+    """fastagent 模式下隐藏 stepagent 专属字段;visual_feedback 仅在显式开启时保留。"""
+    if spec.path.startswith("agent.execution.stepagent."):
+        return False
+    if spec.path == "agent.modules.visual_feedback.enabled":
+        return model.get(spec.path) is True
+    return True
+
+
 def field_groups_for_config(body_key: str, model: ConfigModel) -> tuple[FieldSpec, ...]:
     """本体字段组;仅当配置含检测器项时追加「视觉服务」组(纯运动任务不显示模型项)。"""
     fields = field_groups_for_body(body_key) + (DETECTOR_MODE_FIELD,)
@@ -307,6 +323,8 @@ def field_groups_for_config(body_key: str, model: ConfigModel) -> tuple[FieldSpe
             if "detector" in model.data
             else LOCAL_DETECTOR_FIELDS
         )
+    if model.get("agent.execution.mode", "fastagent") == "fastagent":
+        fields = tuple(spec for spec in fields if _fast_agent_field_visible(spec, model))
     return fields
 
 
@@ -321,19 +339,25 @@ class ConfigModel:
     ``to_yaml()`` / ``replace_from_yaml()``。两者共享同一个 ``data``。
     """
 
-    def __init__(self, data: dict[str, Any] | None = None) -> None:
-        """用一个配置 dict 初始化(浅拷贝顶层引用,直接持有传入结构)。"""
-        self.data: dict[str, Any] = data if isinstance(data, dict) else {}
+    def __init__(self, data: dict[str, Any] | None = None, *, agent_defaults: dict[str, Any] | None = None) -> None:
+        """初始化配置;提供任务默认值时,先合并再校验 Agent 设置。"""
+        self.data: dict[str, Any] = dict(data) if isinstance(data, dict) else {}
+        if agent_defaults is not None:
+            self.apply_agent_defaults(agent_defaults)
+        elif "agent" in self.data:
+            from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+            RobotAgentConfig.from_dict(self.data["agent"])
 
     # ------------------------------------------------------------- 构造
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> ConfigModel:
+    def from_dict(cls, data: dict[str, Any] | None, *, agent_defaults: dict[str, Any] | None = None) -> ConfigModel:
         """从内存 dict 构造。"""
-        return cls(dict(data) if isinstance(data, dict) else {})
+        return cls(data, agent_defaults=agent_defaults)
 
     @classmethod
-    def from_yaml_text(cls, text: str) -> ConfigModel:
-        """从 YAML 文本构造;非法 YAML 或顶层非映射时抛 ``ValueError``。"""
+    def from_yaml_text(cls, text: str, *, agent_defaults: dict[str, Any] | None = None) -> ConfigModel:
+        """从 YAML 构造并合并任务默认值;格式或 Agent 配置无效时抛 ``ValueError``。"""
         try:
             parsed = yaml.safe_load(text)
         except yaml.YAMLError as exc:
@@ -342,7 +366,10 @@ class ConfigModel:
             parsed = {}
         if not isinstance(parsed, dict):
             raise ValueError("配置顶层必须是一个映射(键值对),而不是列表或标量。")
-        return cls(parsed)
+        try:
+            return cls(parsed, agent_defaults=agent_defaults)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Agent 配置无效：{exc}") from exc
 
     # ------------------------------------------------------------- 点分路径读写
     def get(self, path: str, default: Any = None) -> Any:
@@ -390,6 +417,30 @@ class ConfigModel:
                 node[key] = child
             node = child
         node[keys[-1]] = value
+
+    def apply_agent_defaults(self, defaults: dict[str, Any]) -> None:
+        """Fill missing leaves, validate the combined settings, then publish them.
+
+        Each source may provide only part of a module dependency. Keep explicit
+        values (including null) and leave the original untouched on failure.
+        """
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        if not isinstance(defaults, dict):
+            raise TypeError("agent_defaults must be a mapping")
+        candidate = copy.deepcopy(self.data)
+
+        def fill(target: dict[str, Any], fallback: dict[str, Any]) -> None:
+            for key, value in fallback.items():
+                if key not in target:
+                    target[key] = copy.deepcopy(value)
+                elif isinstance(target[key], dict) and isinstance(value, dict):
+                    fill(target[key], value)
+
+        if defaults:
+            fill(candidate, {"agent": defaults})
+        RobotAgentConfig.from_dict(candidate.get("agent"))
+        self.data = candidate
 
     def patch_detector(self, **fields: Any) -> bool:
         """把检测器字段(如 ``gdino_model_id`` / ``hf_endpoint``)写进 ``api_servers`` 里的检测器项。
@@ -490,13 +541,34 @@ class ConfigModel:
         """取某个表单字段当前值,缺失时回落到 ``spec.default``。"""
         val = self.get(spec.path, _MISSING)
         if val is _MISSING:
+            if spec.path.startswith("agent."):
+                from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+                try:
+                    effective = RobotAgentConfig.from_dict(self.data.get("agent")).to_dict()
+                    node = effective
+                    for key in spec.path.removeprefix("agent.").split("."):
+                        node = node[key]
+                    return node
+                except (KeyError, TypeError, ValueError):
+                    return spec.default
             return spec.default
         return val
 
     # ------------------------------------------------------------- 校验
+    def validate_agent(self) -> None:
+        """Reject invalid agent settings before any execution or connection."""
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        RobotAgentConfig.from_dict(self.data.get("agent")).validate(for_execution=True)
+
     def validate(self) -> list[str]:
         """返回一组人类可读的告警(不阻断运行,供界面提示)。"""
         warnings: list[str] = []
+        try:
+            self.validate_agent()
+        except (TypeError, ValueError) as exc:
+            warnings.append(f"Agent 配置无效：{exc}")
         if "detector" in self.data or self._detector_entry() is not None:
             from jiuwensymbiosis.perception.config import parse_detector_config
 

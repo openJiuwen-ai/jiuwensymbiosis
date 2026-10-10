@@ -24,7 +24,7 @@ from typing import Any
 from nicegui import ui
 
 from jiuwensymbiosis_gui.workbench import registry
-from jiuwensymbiosis_gui.workbench.app_state import AppState
+from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
 from jiuwensymbiosis_gui.workbench.maintenance import MaintenanceOwner
 from jiuwensymbiosis_gui.workbench.pages.calibration_view import CalibrationView
 from jiuwensymbiosis_gui.workbench.pages.hardware_view import HardwareView
@@ -225,7 +225,10 @@ class ToolsView:
         body_key = st.current_body
         if task_key is None or body_key is None:
             return "请先在主页选择一个本体与任务(决定用哪个本体与配置)。"
-        config = st.config_for(body_key, task_key)
+        try:
+            config = st.config_for(body_key, task_key)
+        except ConfigLoadError as exc:
+            return str(exc)
         if config.get("gui.disable_vision"):
             return "已在「配置」页勾选「禁用视觉服务」;感知测试需要相机,请先取消该开关。"
         low_level = _dig(config.data, "env", "cfg", "low_level") or {}

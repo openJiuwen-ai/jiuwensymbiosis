@@ -98,19 +98,19 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 
 | Feature | Status | Default | Activation or constraint |
 |---|---|---|---|
-| fastagent compile-once | ✅ | `exec_mode="fastagent"` | One model plan (tiered skill + action composition) then execute sequentially, no per-step LLM; `--stepagent` forces per-step |
-| Runtime re-planning | ✅ | Before each step | Re-plan when the world contradicts the next step's pre-conditions, capped by `max_replans` |
-| Individual tool mode | ✅ | Optional | `mode="tool"`; each `@implements` method becomes one tool |
-| Code mode | ✅ | Optional | `mode="code"`; provides `InProcessCodeTool` |
-| Hybrid mode | ✅ | `mode="hybrid"` | Provides individual and code tools together |
-| Skill workflows | ◐ | `enable_skill=False` | Enables `SkillUseRail` and `RobotControlTool`; built-in `visual_pick`/`visual_place`/`transport` |
+| fastagent compile-once | ✅ | `execution.mode="fastagent"` | One model plan (tiered skill + action composition) then execute sequentially, no per-step LLM; `--stepagent` forces per-step |
+| Runtime re-planning | ✅ | Before each step | Re-plan when the world contradicts the next step's pre-conditions, capped by `execution.fastagent.max_replans` |
+| Individual tool mode | ✅ | Optional | Set `execution.stepagent.mode="tool"` in stepagent; each `@implements` method becomes one tool |
+| Code mode | ✅ | Optional | Set `execution.stepagent.mode="code"` in stepagent; provides `InProcessCodeTool` |
+| Hybrid mode | ✅ | `execution.stepagent.mode="hybrid"` | Stepagent provides individual and code tools together |
+| Fastagent skill planning | ◐ | `modules.skills.enabled=True` | The planner reads the skill library directly without `SkillUseRail`; disabling skills selects action composition |
+| Stepagent skill workflows | ◐ | `modules.skills.enabled=False` | Enabling skills adds `SkillUseRail` and `RobotControlTool` in the single-robot builder |
 | Custom tools/Rails | ✅ | None | Inject through `extra_tools` and `extra_rails` |
-| Parallel tool calls | ◐ | `parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
+| Parallel tool calls | ◐ | `execution.stepagent.parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
 | No-hardware/no-model dry run | ✅ | With `--mock` | `MockArmEnv` + `MockModelClient` (factory `build_mock_model`, Piper only); no CAN, camera, or model endpoint |
 
-The execution mode and field defaults need to be configured together: `fastagent` requires an explicit `model_spec` and
-`enable_skill=True` for planning and `robot_control` action execution. Use `stepagent` when supplying only `model`.
-See the [minimal API configuration](framework-api.md#minimal-fast-path-configuration).
+`fastagent` requires an explicit `model_spec` for planning. Its executor always registers `robot_control`; disabling `modules.skills.enabled` selects action composition. Use `stepagent` when supplying only `model`.
+Built-in skills include `visual_pick`, `visual_place`, and `transport`. See the [minimal API configuration](framework-api.md#minimal-fast-path-configuration) and [complete agent configuration](agent-config.md).
 
 ## 5. Rails, Trace, and feedback matrix
 
@@ -118,14 +118,14 @@ See the [minimal API configuration](framework-api.md#minimal-fast-path-configura
 |---|---|---|---|
 | SafetyRail | ✅ | On | Env has any motion capability (cartesian/joint/base/lift/waist); checks derived from declared capability |
 | RecoveryRail | ✅ | On | Motion, suction, or gripper; attempts Home and release after failure |
-| VisualFeedbackRail | ◐ | On | Also requires `vision.camera`; stages a post-action frame |
-| SkillUseRail | ◐ | Off | `enable_skill=True` |
-| TraceRail | ◐ | Off | `enable_tracing=True`; records tools, observations, Rail events, logs, and optional frames |
-| DiagnosisRail | ◐ | Off | `enable_diagnosis=True` and tracing must also be enabled |
-| WARNING+ logs in Trace | ◐ | With Trace | `trace_capture_loggers` defaults to `jiuwensymbiosis` |
+| VisualFeedbackRail | ◐ | On in stepagent; unsupported in fastagent | Requires `modules.visual_feedback.enabled=True` and `vision.camera`; stages a post-action frame |
+| SkillUseRail | ◐ | Off | Single-robot stepagent with `modules.skills.enabled=True`; never attached by fastagent |
+| TraceRail | ◐ | Off | `modules.tracing.enabled=True`; records tools, observations, Rail events, logs, and optional frames |
+| DiagnosisRail | ◐ | Off | Stepagent only; `modules.diagnosis.enabled=True` and tracing must also be enabled |
+| WARNING+ logs in Trace | ◐ | With Trace | `modules.tracing.capture_loggers` defaults to `jiuwensymbiosis` |
 | Trace HTML/text replay | ✅ | On demand | `jiuwensymbiosis-replay <trace.json>`; default output is self-contained HTML |
 | Offline Trace Feedback | ✅ | On demand | `scripts/analyze_traces.py` clusters failures and produces human-review proposals |
-| Central logging | ✅ | INFO + `./logs` | Console plus rotating file; `log_dir=None` is console-only |
+| Central logging | ✅ | INFO + `./logs` | Console plus rotating file; `logging.dir=None` is console-only |
 
 ## 6. Vision and perception matrix
 

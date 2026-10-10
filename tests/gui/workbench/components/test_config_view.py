@@ -98,3 +98,36 @@ def test_download_sends_editor_text_and_skips_invalid_yaml(page, monkeypatch):
     page.view._yaml.value = "a: ["
     page.view._download_yaml()
     assert len(calls) == 1  # 非法 YAML 不下载
+
+
+def test_execution_mode_refreshes_fields_and_unset_defaults(page):
+    view = page.view
+    mode = "agent.execution.stepagent.mode"
+    skills = "agent.modules.skills.enabled"
+    feedback = "agent.modules.visual_feedback.enabled"
+    assert mode not in view._controls
+    assert view._controls[skills].value is True
+    view._set("agent.execution.mode", "stepagent")
+    assert mode in view._controls
+    assert view._controls[skills].value is False
+    assert view._controls[feedback].value is True
+    view._set(mode, "tool")
+    view._set("agent.execution.mode", "fastagent")
+    assert mode not in view._controls
+    assert feedback not in view._controls
+    view._set("agent.execution.mode", "stepagent")
+    assert view._controls[mode].value == "tool"
+
+
+def test_fast_mode_keeps_explicit_feedback_visible_until_disabled(page):
+    view = page.view
+    feedback = "agent.modules.visual_feedback.enabled"
+    view._set("agent.execution.mode", "stepagent")
+    view._set(feedback, True)
+    view._set("agent.execution.mode", "fastagent")
+    assert feedback in view._controls
+    assert not view._run_button.enabled
+    assert "only supported by stepagent" in view._warn.text
+    view._set(feedback, False)
+    assert feedback not in view._controls
+    assert view._run_button.enabled

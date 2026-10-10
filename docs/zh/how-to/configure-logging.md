@@ -45,7 +45,7 @@ logs/
     └── performance/jiuwen_performance.log
 ```
 
-每次运行的运动产物单独成一个目录（`agent.motion_log_dir` 配置，默认 `./jiuwen_motion_log`）：
+每次运行的运动产物单独成一个目录（`agent.logging.motion_dir` 配置，默认 `./jiuwen_motion_log`）：
 
 ```
 jiuwen_motion_log/<时间戳>/          ← 每次运行一个目录
@@ -70,7 +70,9 @@ jiuwen_motion_log/<时间戳>/          ← 每次运行一个目录
 
 ## 二、通过配置控制日志
 
-日志参数通过 `RobotAgentConfig` 的 `log_level` / `log_dir` 两个字段控制，它们最终传给 `build_robot_agent → configure_logging`。两种设置方式：**YAML `agent:` 块**（声明式，推荐）和 **CLI 参数**（临时覆盖）。两者可叠加，CLI 优先级更高。
+日志参数通过 `RobotAgentConfig` 的 `logging.level` / `logging.dir` 两个字段控制，它们最终传给 `build_robot_agent → configure_logging`。两种设置方式：**YAML `agent:` 块**（声明式，推荐）和 **CLI 参数**（临时覆盖）。两者可叠加，CLI 优先级更高。
+
+规范配置为 `logging.level` / `logging.dir` / `logging.motion_dir`；仅支持分组结构。完整默认值和约束见 [Agent 全量配置](../reference/agent-config.md)。省略目录字段仍写入 `./logs`，只有显式 `null` 才关闭文件日志。
 
 ### 2.1 YAML `agent:` 块（声明式配置）
 
@@ -78,8 +80,9 @@ jiuwen_motion_log/<时间戳>/          ← 每次运行一个目录
 
 ```yaml
 agent:
-  log_level: INFO            # 根 logger 级别：INFO / DEBUG / WARNING / ERROR ...
-  log_dir: ./logs            # 日志文件目录；设为 null（或省略）则仅控制台输出
+  logging:
+    level: INFO
+    dir: ./logs
 ```
 
 加载链路：
@@ -87,47 +90,48 @@ agent:
 ```
 YAML → raw["agent"] → RobotAgentConfig.from_dict(raw["agent"])   # run_task.py / jiuwensymbiosis-run
                       → build_robot_agent(config=...)
-                          → configure_logging(level=config.log_level, log_dir=config.log_dir)
+                          → configure_logging(level=config.logging.level, log_dir=config.logging.dir)
 ```
 
-- `from_dict` 用 `cls(**data)` 原样透传，YAML 里写什么 `log_level`/`log_dir` 就用什么。
-- **未知键会抛 `TypeError`**（[agent/config.py](../../../jiuwensymbiosis/agent/config.py) `RobotAgentConfig.from_dict`）——拼错（如 `enable_trace` 写成 `enable_trace`）会在加载期立刻报错，而不是被静默忽略。
+- `from_dict` 递归合并显式覆盖并校验分组字段和类型。
+- **未知键会抛 `TypeError`**（[agent/config.py](../../../jiuwensymbiosis/agent/config.py) `RobotAgentConfig.from_dict`）——拼错（如 `modules.tracing.enabld`）会在加载期立刻报错，而不是被静默忽略。
 
-`log_level` / `log_dir` 字段：
+`logging.level` / `logging.dir` 字段：
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `log_level` | `"INFO"` | 根 logger 级别（`logging` 的 level 名或 int） |
-| `log_dir` | `"./logs"` | 日志文件目录；`None`/`null` = 仅控制台。默认 `./logs`（openjiuwen 日志因其实现落在 `logs/logs/`，与本目录独立） |
+| `logging.level` | `"INFO"` | 根 logger 级别（`logging` 的 level 名字符串） |
+| `logging.dir` | `"./logs"` | 日志文件目录；`None`/`null` = 仅控制台。默认 `./logs`（openjiuwen 日志因其实现落在 `logs/logs/`，与本目录独立） |
 
 #### 关掉文件落盘（仅控制台）
 
 ```yaml
 agent:
-  log_dir: null      # 或直接省略 agent 块里这行，靠代码里显式 RobotAgentConfig(log_dir=None)
+  logging:
+    dir: null
 ```
 
 #### 调到 DEBUG 抓更详细日志
 
 ```yaml
 agent:
-  log_level: DEBUG
-  log_dir: ./logs
+  logging:
+    level: DEBUG
+    dir: ./logs
 ```
 
 ### 2.2 CLI 参数覆盖（demo 临时调级）
 
-`examples/run_task.py` 提供了 `--debug`，它在 `RobotAgentConfig.from_dict(...)` 之后把 `log_level` 改成 `DEBUG`，**优先级高于 YAML**：
+`examples/run_task.py` 提供了 `--debug`，它通过 `RobotAgentConfig.from_dict(..., overrides=...)` 把 `logging.level` 改成 `DEBUG`，**优先级高于 YAML**：
 
 ```python
-agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"))
-if args.debug:
-    agent_cfg.log_level = "DEBUG"
-agent = build_robot_agent(session, config=agent_cfg)
+overrides = {"logging": {"level": "DEBUG"}} if args.debug else {}
+agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"), overrides=overrides)
+result = run_robot_task(session, args.query, agent_cfg)
 ```
 
 ```bash
-# 临时看 DEBUG 级日志（覆盖 YAML 的 log_level），不必改配置文件
+# 临时看 DEBUG 级日志（覆盖 YAML 的 logging.level），不必改配置文件
 python examples/run_task.py --config configs/piper/piper.yaml --mock --debug
 ```
 
@@ -135,13 +139,14 @@ python examples/run_task.py --config configs/piper/piper.yaml --mock --debug
 
 ### 2.3 与执行轨迹（trace）联动
 
-日志还能进执行轨迹（`enable_tracing` 开启时）。相关配置项在 `agent:` 块里（详见[执行轨迹参考](../reference/tracing.md)）：
+日志还能进执行轨迹（`modules.tracing.enabled` 开启时）。相关配置项在 `agent:` 块里（详见[执行轨迹参考](../reference/tracing.md)）：
 
 ```yaml
 agent:
-  enable_tracing: true                 # 开启 TraceRail，记录每轮工具调用
-  trace_capture_loggers: ["jiuwensymbiosis"]   # 哪些 logger 的 WARNING+ 进 trace
-  # capture_log_level 目前固定 WARNING（见 §三.3），不开放配置
+  modules:
+    tracing:
+      enabled: true
+      capture_loggers: ["jiuwensymbiosis"]
 ```
 
 ---
@@ -233,8 +238,8 @@ root.handlers = [
 |------|------|
 | [jiuwensymbiosis/utils/logging.py](../../../jiuwensymbiosis/utils/logging.py) | 本模块实现 |
 | [jiuwensymbiosis/utils/\_\_init\_\_.py](../../../jiuwensymbiosis/utils/__init__.py) | re-export `configure_logging` / `get_logger` / `TraceLogHandler` / `DEFAULT_FMT` |
-| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.log_level` / `log_dir` 字段 + `from_dict`（YAML 透传） |
+| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.logging.level` / `logging.dir` 字段 + `from_dict`（YAML 透传） |
 | [jiuwensymbiosis/agent/builder.py](../../../jiuwensymbiosis/agent/builder.py) | `build_robot_agent` 调 `configure_logging`；tracing 开启时挂 `TraceLogHandler` |
-| [examples/run_task.py](../../../examples/run_task.py) | `--debug` 覆盖 `log_level`；演示 YAML `agent:` 块加载链路 |
+| [examples/run_task.py](../../../examples/run_task.py) | `--debug` 覆盖 `logging.level`；演示 YAML `agent:` 块加载链路 |
 | [jiuwensymbiosis/adapters/piper/lowlevel.py](../../../jiuwensymbiosis/adapters/piper/lowlevel.py) | Piper `_attach_cmd_log_handler` 复用 `configure_logging` |
 | [执行轨迹参考](../reference/tracing.md) | `TraceLogHandler` 的消费者与数据格式 |

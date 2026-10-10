@@ -14,13 +14,18 @@ ros_backend: auto
 # 预检 move_joint/底盘/lifter/waist 指令；双臂无夹爪故关视觉反馈，几何安全仍靠 IK+自碰撞；
 # RecoveryRail 经 always-safe home() 退避。
 agent:
-  exec_mode: fastagent   # 默认快路径；单步调试用 --stepagent
-  enable_skill: true
-  enable_visual_feedback: false
-  enable_safety: true
-  enable_recovery: true
+  execution:
+    mode: fastagent
+  modules:
+    skills:
+      enabled: true
+    safety:
+      enabled: true
+    recovery:
+      enabled: true
+    visual_feedback:
+      enabled: false
 
-# 编排 LLM 端点（fastagent 用它编译动作序列）。api_key 用 --api-key 覆盖。
 model:
   provider: OpenAI
   api_base: "your own api"
