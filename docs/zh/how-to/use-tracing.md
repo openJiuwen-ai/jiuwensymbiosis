@@ -14,7 +14,7 @@
 | **持久化** | 一次 invoke 写一个 JSON 到 `<workspace>/traces/`，视觉帧到 `frames/{run_token}/` |
 | **可回放** | `jiuwensymbiosis-replay <trace.json>` 纯文本时间线回放，可选弹窗显示帧 |
 | **零侵入** | 不改任何 `@implements`、不改 env、不改其它 rail 的既有行为 |
-| **默认关闭** | `enable_tracing=False`，关闭时零开销，不破坏既有部署 |
+| **默认关闭** | `modules.tracing.enabled=False`，关闭时零开销，不破坏既有部署 |
 | **可控开销** | `max_entries` / `max_frames` 截断；帧落盘按帧限 |
 
 ---
@@ -27,31 +27,27 @@
 
 #### 方式一：配置文件（推荐）
 
-在任务 YAML 里加一个 `agent:` 块即可。它与 `env:`（硬件）、`model:`（模型）、`api_servers:`（检测服务）并列，是 agent 行为的声明式入口；所有字段都可选，缺省即默认关闭：
+在任务 YAML 里加一个 `agent:` 块即可。它与 `env:`（硬件）、`model:`（模型）、`api_servers:`（检测服务）并列，是 agent 行为的声明式入口；所有字段都可选，tracing 缺省关闭：
 
 ```yaml
-# configs/piper/piper.yaml
 agent:
-  enable_tracing: true        # 总开关（默认 False）
-  trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/
-  trace_console: true         # 运行时实时打印逐轮缩略图到 stdout
-  trace_max_entries: 200      # 最多记录步数（超出丢最旧）
-  trace_max_frames: 50        # 每次 invoke 最多保存帧数
-  # log_level: INFO           # 日志级别（见 logging.md）
-  # log_dir: ./logs           # 默认写入 ./logs；设为 null 时仅控制台
-  # trace_dir: ./traces       # 覆盖 trace 目录（默认 <workspace>/traces）
-  # trace_capture_loggers: ["jiuwensymbiosis"]  # TraceLogHandler 捕获哪些 logger 的 WARNING+
-  # enable_diagnosis: true    # 在线诊断：失败步后把「当前参数+相关历史+系统状态」回灌下一轮 LLM（依赖 enable_tracing）
-  # diagnosis_max_chars: 1500 # 诊断消息软上限；超限先丢历史，保当前步+系统状态
-  # diagnosis_history_steps: 3  # 因果链回看步数（同工具或同类 rail 事件）
-  # diagnosis_history_kinds: ["reject", "recover"]  # 视为相关的 rail_events kind
+  modules:
+    tracing:
+      enabled: true
+      save_frames: true
+      console: true
+      max_entries: 200
+      max_frames: 50
+      capture_loggers: ["jiuwensymbiosis"]
 ```
 
-`build_robot_agent` 会读这个块、装配 `TraceRail`、向三个 rail 注入 sink、挂 `TraceLogHandler`，无需手写额外接线。`agent:` 块**全可选、纯增量**——不写它，既有 YAML 照样按默认（全关）运行。
+`build_robot_agent` 会读这个块、装配 `TraceRail`、向三个 rail 注入 sink、挂 `TraceLogHandler`，无需手写额外接线。`agent:` 块**全可选、纯增量**——不写它，未配置 tracing 时不记录轨迹；其他模块采用各自默认值。
 
-> 字段名必须与 `RobotAgentConfig` 严格一致（如 `enable_tracing` 不是 `enable_trace`）。拼错会在加载时抛 `TypeError`，而不是静默忽略——这是有意的，避免「配了不生效」的隐蔽坑。
+> 字段名必须符合配置结构（如 `modules.tracing.enabled`）。拼错会在加载时抛 `TypeError`，而不是静默忽略——这是有意的，避免「配了不生效」的隐蔽坑。
 
 命令行开关（如 `--mode`、`--no-skill`、`--max-iter`、`--workspace`）会覆盖在 `agent:` 块之上，二者不冲突：YAML 定基调、CLI 做临时微调。
+
+完整字段和约束见 [Agent 全量配置](../reference/agent-config.md)。失败诊断需要选择 `execution.mode: stepagent`，并同时开启 `modules.diagnosis.enabled` 与 `modules.tracing.enabled`。
 
 #### 方式二：Python 代码
 
@@ -61,14 +57,13 @@ agent:
 from jiuwensymbiosis.agent.config import RobotAgentConfig
 
 config = RobotAgentConfig(
-    enable_tracing=True,
-    trace_save_frames=True,
-    trace_console=True,
+    execution={"mode": "stepagent"},
+    modules={"tracing": {"enabled": True, "save_frames": True, "console": True}},
 )
 agent = build_robot_agent(session, config)
 ```
 
-`RobotAgentConfig.from_dict(mapping)` 是上述两者的统一底层：它把一个 dict（即 YAML 的 `agent:` 块）喂给 dataclass，自动剥离 `model`/`model_spec`（这两个归 `model:` 块管），未知键抛错。配置文件方式就是 demo 在内部调用它。
+`RobotAgentConfig.from_dict(mapping)` 是上述两者的统一底层：它把一个 dict（即 YAML 的 `agent:` 块）喂给 dataclass，拒绝 `model`/`model_spec`（YAML 中这两个不属于 agent 设置），未知键抛错。配置文件方式就是 demo 在内部调用它。
 
 ### trace 文件在哪
 
@@ -84,7 +79,7 @@ agent = build_robot_agent(session, config)
 最典型的落地路径：`~/.jiuwensymbiosis/<机器人名>_workspace/traces/`。目录里：
 
 - **trace JSON**：`{run_token}.json`，每次 invoke 一个。
-- **帧图片**（仅 `trace_save_frames=True`）：`traces/frames/{run_token}/step_NNN.jpg`，**每次 invoke 独立子目录**，步号跨运行不互相覆盖。
+- **帧图片**（仅 `modules.tracing.save_frames=True`）：`traces/frames/{run_token}/step_NNN.jpg`，**每次 invoke 独立子目录**，步号跨运行不互相覆盖。
 
 `run_token` = `{safe_cid}_{时间戳}_{微秒}_{pid}`，与该次 invoke 的 JSON 文件名完全一致——任意历史 trace 引用的帧都永久有效。
 

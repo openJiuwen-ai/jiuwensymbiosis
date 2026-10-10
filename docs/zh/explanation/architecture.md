@@ -186,33 +186,33 @@ class CruzrApi(BaseRobotApi):
 
 ## 六、Tool 层：三种工具策略可共存
 
-`agent/builder.py` 根据 `mode` 构建工具，再按 `enable_skill` 添加技能入口：
+`agent/builder.py` 根据 `execution.stepagent.mode` 构建逐步工具，再按 `modules.skills.enabled` 添加技能入口：
 
 | 配置或工具 | 行为 |
 |---|---|
-| `mode="tool"` | 使用 `build_robot_tools`，每条可用动作对应一个独立工具 |
-| `mode="code"` | 使用 `InProcessCodeTool`，执行进程内 Python |
-| `mode="hybrid"`（默认） | 同时提供独立动作工具和进程内 Python 工具 |
-| `enable_skill=True` | 额外添加 `RobotControlTool` 和 `SkillUseRail`；与上述 `mode` 分开配置 |
+| `execution.stepagent.mode="tool"` | 使用 `build_robot_tools`，每条可用动作对应一个独立工具 |
+| `execution.stepagent.mode="code"` | 使用 `InProcessCodeTool`，执行进程内 Python |
+| `execution.stepagent.mode="hybrid"`（默认） | 同时提供独立动作工具和进程内 Python 工具 |
+| `modules.skills.enabled=True` | 额外添加 `RobotControlTool` 和 `SkillUseRail`；与上述 `execution.stepagent.mode` 分开配置 |
 
 `RobotControlTool` 通过 `action` / `params` 分派动作。SafetyRail 先读取这两个字段，再检查实际动作及参数，因此独立动作工具和该统一入口可以使用同一套运动检查。
 
-当前 `fastagent` 的普通动作执行器固定调用 `robot_control`。使用内置构建器时，需要设置 `enable_skill=True` 来注册该入口；只设置 `exec_mode="fastagent"` 不会自动注册它。`plan_task` 直接读取技能库，与 `SkillUseRail` 加载说明是不同机制。
+`fastagent` 的普通动作执行器固定调用 `robot_control`，快速构建路径始终注册该入口。`modules.skills.enabled` 只控制规划器是否使用技能知识：开启时 `plan_task` 直接读取技能库，关闭时直接组合动作；快速执行器不挂载 `SkillUseRail`。
 
 Fast path 还要求显式提供 `RobotAgentConfig.model_spec`，用于 HTTP 任务解析和规划；仅注入 `model`
 无法替代它。完整配置见 [API 参考](../reference/framework-api.md#fast-path-最小配置)。
 
 `InProcessCodeTool` 通过 `exec()` 访问注入的 `env`、`api`、`np` 等对象，没有沙盒隔离。其内部直接调用 API/Env 不会逐条经过动作工具的能力过滤、SafetyRail 和记账包装。需要这些检查的操作应使用动作工具路径。
 
-`mode` 决定工具配置；`exec_mode` 决定任务由模型逐步编排还是先编译序列，二者含义不同。
+`execution.stepagent.mode` 决定逐步工具配置；`execution.mode` 决定任务由模型逐步编排还是先编译序列，二者含义不同。
 
 <a id="六-两级自主规划"></a>
 
 <a id="execution-modes"></a>
 
-## 七、两级自主规划（`exec_mode: fastagent`）
+## 七、两级自主规划（`execution.mode: fastagent`）
 
-调用者先用 `with session:` 建立连接，再调用 `run_robot_task(session, query, config)`。Session 管理资源，任务入口根据 `exec_mode` 选择执行方式。下图展开[完整任务主线 B/C 阶段](#task-lifecycle)中两种编排方式的差异：
+调用者先用 `with session:` 建立连接，再调用 `run_robot_task(session, query, config)`。Session 管理资源，任务入口根据 `execution.mode` 选择执行方式。下图展开[完整任务主线 B/C 阶段](#task-lifecycle)中两种编排方式的差异：
 
 ![任务执行：fastagent 先规划后执行，stepagent 由模型逐步选择工具](../../images/architecture-task-sequence.zh.svg)
 
@@ -225,7 +225,7 @@ Fast path 还要求显式提供 `RobotAgentConfig.model_spec`，用于 HTTP 任�
 
 ### 两级规划：先尝试技能，再组合动作
 
-技能库包含可供规划器选择和展开的流程说明及契约，不是直接执行的固定脚本。`fastagent` 直接读取技能库进行编译；`stepagent` 的技能说明则由 `enable_skill=True` 时附加的 `SkillUseRail` 加载。
+技能库包含可供规划器选择和展开的流程说明及契约，不是直接执行的固定脚本。`fastagent` 直接读取技能库进行编译；`stepagent` 的技能说明则由 `modules.skills.enabled=True` 时附加的 `SkillUseRail` 加载。
 
 下图展开[完整任务主线 B 阶段](#task-lifecycle)的 `fastagent` 规划：输入是任务、状态、技能和动作契约，输出是交给执行器的有效序列。
 
@@ -288,7 +288,7 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 
 ## 九、执行轨迹与回放（TraceRail）
 
-`TraceRail` 位于 `agent/trace.py`，由 `enable_tracing` 启用，默认不挂载。它采集执行证据，不承担动作拦截或恢复。
+`TraceRail` 位于 `agent/trace.py`，由 `modules.tracing.enabled` 启用，默认不挂载。它采集执行证据，不承担动作拦截或恢复。
 
 轨迹按配置记录工具调用的动作名、参数、结果摘要、成功或错误、耗时、观测快照以及可选 JPEG 帧，并受条目与帧数上限约束。观测不直接序列化原始 RGB/depth 数组。`TraceEventSink` 收集 Rail 事件；`TraceLogHandler` 收集配置日志源的 `WARNING` 及以上日志。
 

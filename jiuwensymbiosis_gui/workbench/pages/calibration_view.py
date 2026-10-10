@@ -30,7 +30,7 @@ from nicegui import ui
 
 from jiuwensymbiosis.utils.logging import get_logger
 from jiuwensymbiosis_gui.workbench import board_print, registry
-from jiuwensymbiosis_gui.workbench.app_state import AppState
+from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
 from jiuwensymbiosis_gui.workbench.board_print import BoardParams, BoardParamsError
 from jiuwensymbiosis_gui.workbench.calibration_engine import CalibrationEngine, CalibrationSetup
 from jiuwensymbiosis_gui.workbench.maintenance import MaintenanceOwner
@@ -707,7 +707,12 @@ class CalibrationView:
             self._blocker.set_visibility(True)
             return
         self._blocker.set_visibility(False)
-        self._render_hardware(body_key)
+        try:
+            self._render_hardware(body_key)
+        except ConfigLoadError as exc:
+            self._blocker.set_text(str(exc))
+            self._blocker.set_visibility(True)
+            return
         self._on_board_change()
         self._refresh_prepare_gate()
 
@@ -765,8 +770,7 @@ class CalibrationView:
         try:
             return ConfigModel.from_yaml_text(path.read_text(encoding="utf-8")).data
         except (OSError, ValueError) as exc:
-            logger.warning("标定读取本体配置 %s 失败: %s", path, exc)
-            return {}
+            raise ConfigLoadError(path, exc) from exc
 
     def _prepare_ready(self) -> bool:
         return bool(self._ck_board.value and self._ck_estop.value and self._pdf_ok())
@@ -1048,7 +1052,11 @@ class CalibrationView:
             return None
         body = registry.get_body(body_key)
         config_source = self._config_path()
-        config_data = self._config_data(body_key)
+        try:
+            config_data = self._config_data(body_key)
+        except ConfigLoadError as exc:
+            ui.notify(str(exc), type="negative")
+            return None
         workspace = Path(self._state.workspace) / "calibration"
         workspace.mkdir(parents=True, exist_ok=True)
         # 产物落在暂存目录而非 configs/:configs/ 下那份可能正被运行配置指着用,换掉它要等

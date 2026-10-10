@@ -27,7 +27,7 @@ from nicegui import ui
 
 from jiuwensymbiosis.utils.logging import get_logger
 from jiuwensymbiosis_gui.workbench import registry
-from jiuwensymbiosis_gui.workbench.app_state import AppState
+from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
 from jiuwensymbiosis_gui.workbench.hardware_engine import HardwareEngine, HardwareSetup
 from jiuwensymbiosis_gui.workbench.maintenance import MaintenanceOwner
 
@@ -189,7 +189,11 @@ class HardwareView:
             return
         body = registry.get_body(body_key)
         config_source = Path(self._state.current_config_file) if self._state.current_config_file else body.config_path()
-        config_data = self._state.config_for(body_key, task_key).data
+        try:
+            config_data = self._state.config_for(body_key, task_key).data
+        except ConfigLoadError as exc:
+            ui.notify(str(exc), type="negative")
+            return
         admission = MaintenanceOwner(
             self._state.host.runtime(self._state.workspace), config_source, self._state.workspace, adapter=body.adapter
         )

@@ -26,7 +26,7 @@ class Binding:
     resources: tuple = ("device:test",)
 
     def config_data(self):
-        return {"model": {"api_key": "sensitive-key"}, "agent": {"exec_mode": "stepagent"}}
+        return {"model": {"api_key": "sensitive-key"}, "agent": {"execution": {"mode": "stepagent"}}}
 
     def build_session(self):
         return self.session

@@ -12,16 +12,19 @@ tasks:
     description: "把黑色盒子抓起来放到白色盒子上"
     default_query: "把黑色盒子抓起来放到白色盒子上"
     agent_defaults:
-      enable_skill: true
+      modules:
+        skills:
+          enabled: true
 
   # 拾取香蕉:fast + visual_pick 技能。本体无关——任意有"运动+夹爪+视觉"能力的本体
-  # 都能执行;在 so101 上 fast 运行时,run_engine 会按其运动档推导 ServoConfig。
+  # 都能执行；伺服参数来自 agent.execution.fastagent.tracking.servo。
   - key: pick_banana
     display_name: "拾取香蕉"
     description: "把香蕉放到黑色盒子上"
     default_query: "把香蕉放到黑色盒子上"
     agent_defaults:
-      mode: hybrid
-      enable_skill: true
-      exec_mode: fastagent
-      max_iterations: 30
+      execution:
+        mode: fastagent
+      modules:
+        skills:
+          enabled: true

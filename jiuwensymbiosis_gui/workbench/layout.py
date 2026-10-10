@@ -19,7 +19,8 @@ from typing import Any
 from nicegui import app, ui
 
 from jiuwensymbiosis_gui.workbench import ABOUT_TEXT, APP_NAME, registry
-from jiuwensymbiosis_gui.workbench.app_state import AppState
+from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
+from jiuwensymbiosis_gui.workbench.config_model import ConfigModel
 from jiuwensymbiosis_gui.workbench.pages.config_view import ConfigView
 from jiuwensymbiosis_gui.workbench.pages.history_view import HistoryView
 from jiuwensymbiosis_gui.workbench.pages.home_view import HomeView
@@ -138,12 +139,17 @@ class Layout:
         if self._dropped is None:
             return
         name, text = self._dropped
-        model = self._state.current_config()
         body_key = self._state.current_body
-        if model is None or body_key is None:
+        task_key = self._state.current_task
+        if task_key is None or body_key is None:
             ui.notify("请先在主页选择一个本体与任务。", type="warning")
             return
-        model.replace_from_yaml(text)
+        try:
+            model = ConfigModel.from_yaml_text(text)
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        self._state.set_config(body_key, task_key, model)
         self._drop_dialog.close()
         self._dropped = None
         self._sync_config_view()
@@ -282,11 +288,12 @@ class Layout:
         if task_key is None or body_key is None:
             return
         task = registry.get_task(task_key)
-        self._config.load(
-            task.display_name,
-            self._state.config_for(body_key, task_key),
-            body_key=body_key,
-        )
+        try:
+            model = self._state.config_for(body_key, task_key)
+        except ConfigLoadError as exc:
+            self._config.show_load_error(exc)
+            return
+        self._config.load(task.display_name, model, body_key=body_key)
 
     def _run_current_config(self) -> None:
         if self._state.current_task is None:
@@ -304,6 +311,12 @@ class Layout:
             ui.notify("请先在主页选择一个本体。", type="warning")
             self._goto(self._home_tab)
             return
+        try:
+            model = self._state.config_for(body_key, task_key)
+            model.validate_agent()
+        except (TypeError, ValueError) as exc:
+            ui.notify(str(exc), type="negative")
+            return
         # 开始正常运行前,确保工具页已放开相机与机械臂(阻塞等待)。放不开就不开跑:标定的
         # 自动采集阶段中途停不下来,硬上会变成两边同时占相机、同时对机械臂下指令。
         if not self._tools.release_hardware():
@@ -318,7 +331,6 @@ class Layout:
             self._run.show_model_help(missing)
             return
         task = registry.get_task(task_key)
-        model = self._state.config_for(body_key, task_key)
         engine = RunEngine(
             task,
             model.data,
@@ -344,7 +356,12 @@ class Layout:
         engine = self._state.engine
         if engine is None or self._state.is_busy():
             return
-        model = self._state.config_for(engine.body_key, engine.task_key)
+        try:
+            model = self._state.config_for(engine.body_key, engine.task_key)
+            model.validate_agent()
+        except (TypeError, ValueError) as exc:
+            ui.notify(str(exc), type="negative")
+            return
         source = self._state.current_config_file or registry.get_body(engine.body_key).config_path()
         fresh = engine.rerun_with(model.data, config_source=source)
         self._state.engine = fresh

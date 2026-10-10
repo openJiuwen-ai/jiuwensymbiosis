@@ -408,7 +408,7 @@ and acceptance results with the deployment configuration.
 | `detector_unavailable` / `inference_*` | Mode, HTTP endpoint, service readiness, timeout and result age | Follow the error code; never substitute an empty result or enable local models automatically |
 | Projection has a fixed or directional error | Depth units, intrinsics, transform direction, mounting | Recalibrate and ensure the raw seam does not apply correction twice |
 | TIP/FLANGE Z is confused | Public tool semantics and tool offset | Compare Api target to Driver command; use a full transform for a tilted tool |
-| SKILL.md is not loaded | Agent `enable_skill` and resource path | Confirm `RobotControlTool` assembly; this is not a hardware capability |
+| SKILL.md is not loaded | Agent `modules.skills.enabled` and resource path | Confirm `RobotControlTool` assembly; this is not a hardware capability |
 
 For interface and parameter questions, return to the [Robot Adapter Reference](../reference/adapter-reference.md). If
 the mock example itself does not pass, return to [Build Your First Robot Adapter](../tutorial/02-build-first-adapter.md)

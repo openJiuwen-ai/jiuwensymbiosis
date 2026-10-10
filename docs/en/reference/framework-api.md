@@ -45,23 +45,22 @@ ModelSpec(
 
 ## `RobotAgentConfig`
 
+See [Complete Agent Configuration Reference](agent-config.md) for every field, default and dependency.
+
 | Group | Fields and important defaults |
 | --- | --- |
-| Execution | `mode="hybrid"`, `max_iterations=15`, `parallel_tool_calls=False` |
-| Model | `model=None`, `model_spec=None`, `system_prompt=None` |
-| Rails | `enable_visual_feedback=True`, `enable_safety=True`, `enable_recovery=True`, `enable_skill=False` |
+| Execution | `execution.mode="fastagent"`; step settings under `execution.stepagent`, tracking under `execution.fastagent.tracking` |
+| Model | Python injection: `model=None`, `model_spec=None`; step prompt under `execution.stepagent.system_prompt` |
+| Modules | `modules.skills/safety/recovery/visual_feedback/diagnosis/tracing`, each with an `enabled` switch |
 | Extension | `extra_tools=None`, `extra_rails=None`, `workspace=None`, `strict_capabilities=False` |
-| Trace | `enable_tracing=False`, `trace_max_entries=200`, `trace_max_frames=50`, `trace_save_frames=False`, `trace_console=False`, `trace_dir=None`, `trace_capture_loggers=["jiuwensymbiosis"]` |
-| Diagnosis | `enable_diagnosis=False`, `diagnosis_max_chars=1500`, `diagnosis_history_steps=3`, `diagnosis_history_kinds=("reject", "recover")` |
-| Logging | `log_level="INFO"`, `log_dir="./logs"`, `motion_log_dir=None` (resolves to `./jiuwen_motion_log`, the root for each run's `commands.log`/`grasp_debug/`) |
-| Fast path | `exec_mode="fastagent"`, `exec_config=None`, `enable_fast_special_ops=True` (authorizes real-time `track_grasp`/`track_detect` servo ops) |
+| Logging | `logging.level="INFO"`, `logging.dir="./logs"`, `logging.motion_dir=None` |
 
-`RobotAgentConfig.from_dict(data)` consumes the YAML `agent:` mapping. Unknown fields raise `TypeError`.
+`RobotAgentConfig.from_dict(data, overrides=...)` parses the YAML `agent:` mapping with recursive explicit overrides and type validation.
+Only grouped fields are accepted; `to_dict()` emits the same structure. Old fields raise errors.
 `parallel_tool_calls=True` is rejected for motion/grasp hardware and cannot be combined with tracing.
 
-These are field defaults; `RobotAgentConfig()` alone does not satisfy the default `fastagent` runtime requirements.
-The fast path needs an explicit `model_spec` and `enable_skill=True` to register `robot_control` for ordinary action
-execution. See the configuration example below.
+Fastagent defaults enable skills/safety/recovery and disable visual_feedback/diagnosis/tracing.
+The fast path needs an explicit `model_spec`; the action dispatcher is registered regardless of the skills switch.
 
 ## `RobotSession`
 
@@ -117,17 +116,21 @@ build_robot_agent_config(
 `build_robot_agent()` creates an immediately usable Agent instance. `build_robot_agent_config()` returns the openjiuwen
 `SubAgentConfig` for a multi-robot top-level Agent. It supports the subset of `RobotAgentConfig` described below.
 
+Both builders use stepagent defaults when `config` is omitted. Explicit configurations must set `execution.mode="stepagent"`.
+`RobotAgentConfig()` defaults to fastagent, so passing it directly raises `ValueError` before constructing models or tools.
+Builders preserve supplied module switches without recomputing defaults. Use `run_robot_task` for mode-based dispatch.
+
 ### Multi-robot sub-agent configuration scope
 
-`build_robot_agent_config` builds tools from `mode` and `extra_tools`, configures the model, iteration limit and parallel
+`build_robot_agent_config` builds tools from `execution.stepagent.mode` and `extra_tools`, configures the model, iteration limit and parallel
 setting, and attaches capability-gated SafetyRail, RecoveryRail, VisualFeedbackRail and `extra_rails`.
-`enable_skill=True` adds `RobotControlTool`, but does not automatically attach `SkillUseRail`.
+`modules.skills.enabled=True` adds `RobotControlTool`, but does not automatically attach `SkillUseRail`.
 
 This function currently does not generate a default system prompt, resolve or create a workspace, configure logging,
-attach TraceRail/DiagnosisRail, or propagate `config.strict_capabilities` to the Session. It passes `system_prompt`
+attach TraceRail/DiagnosisRail, or propagate `config.strict_capabilities` to the Session. It passes `execution.stepagent.system_prompt`
 unchanged to `SubAgentConfig` (default `None`). The caller constructing the top-level Agent must configure those features
 when needed. Enable strict capability checks through `RobotSession(strict_capabilities=True)` or the Session attribute
-before connecting. Setting the sub-agent's `enable_tracing` or `enable_diagnosis` fields alone does not enable those features.
+before connecting. Setting the sub-agent's `modules.tracing.enabled` or `modules.diagnosis.enabled` fields alone does not enable those features.
 
 Task execution:
 
@@ -153,7 +156,7 @@ run_fast_task(
 
 - `build_robot_agent` builds a single-robot DeepAgent; the Session lifecycle stays the caller's responsibility.
 - `build_robot_agent_config` returns the `SubAgentConfig` used by a multi-robot top-level Agent.
-- `run_robot_task` picks the ordinary Agent or the fast path according to `config.exec_mode`.
+- `run_robot_task` picks the ordinary Agent or the fast path according to `config.execution.mode`.
 - `run_fast_task` requires the configuration to be passed explicitly; when the fast path cannot be built it returns a
   result dictionary carrying `ok=False`.
 - Both execution functions accept an optional `cancel_token`, used by the GUI and other hard-cancel callers.
@@ -166,8 +169,7 @@ This assumes an adapter has constructed `session` and the model service is avail
 
 ```python
 config = RobotAgentConfig(
-    exec_mode="fastagent",
-    enable_skill=True,
+    execution={"mode": "fastagent"},
     model_spec=ModelSpec(
         api_base="http://127.0.0.1:8110/v1",
         api_key="EMPTY",
@@ -180,9 +182,8 @@ with session:
 
 Fast-path task parsing and planning read the HTTP endpoint parameters directly from `model_spec`.
 Providing only `config.model` returns `{"ok": False, "reason": "no_model_spec", ...}`. When injecting a custom or offline
-model through `model` alone, select `exec_mode="stepagent"`. Setting `enable_skill=False` removes the ordinary action
-dispatcher, so a compiled sequence cannot execute those actions through it. This flag does not disable the fast planner's
-direct reading of the built-in skill library.
+model through `model` alone, select `execution.mode="stepagent"`. Setting `modules.skills.enabled=False` selects
+action composition directly without disabling ordinary action execution.
 
 Workspace resolution:
 

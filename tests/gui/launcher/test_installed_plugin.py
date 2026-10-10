@@ -125,7 +125,7 @@ def test_runtime_public_task_flow_uses_mock_session_without_private_registry(
 
     config = tmp_path / "robot.yaml"
     config.write_text(
-        "adapter: installed_plugin_smoke\nname: installed-plugin-smoke\nagent:\n  exec_mode: stepagent\n",
+        "adapter: installed_plugin_smoke\nname: installed-plugin-smoke\nagent:\n  execution:\n    mode: stepagent\n",
         encoding="utf-8",
     )
     runtime = Runtime(tmp_path / "workspace", resource_directory=tmp_path / "resource-locks")

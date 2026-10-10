@@ -4,7 +4,7 @@
 """Structured execution-trace recording for agent invocations.
 
 This module adds a parallel rail (:class:`TraceRail`) that, when enabled via
-``RobotAgentConfig.enable_tracing``, captures each tool call's name / args /
+``RobotAgentConfig.modules.tracing.enabled``, captures each tool call's name / args /
 result / timing / observation snapshot, plus rail events (SafetyRail rejections,
 RecoveryRail recovery, VisualFeedbackRail frame injections) and ``WARNING``+
 log lines — then persists a single JSON trace to the workspace ``traces/``
@@ -417,7 +417,7 @@ def _observation_snapshot(env: Any, *, observation: Any = None) -> dict | None:
 class TraceRail(AgentRail):
     """Parallel rail that records a structured trace of an agent invoke.
 
-    Enabled via ``RobotAgentConfig.enable_tracing``. Placed above the default
+    Enabled via ``RobotAgentConfig.modules.tracing.enabled``. Placed above the default
     rail priority so its ``before_tool_call`` runs first (creates the active
     entry before SafetyRail can reject) and ``after_tool_call`` runs first
     (records post-action observation / timing before later feedback rails).

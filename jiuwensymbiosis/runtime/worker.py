@@ -23,19 +23,21 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _PRIVATE_KEYS = {"api_key", "password", "secret", "token", "access_token", "authorization"}
-_FORBIDDEN_OPTIONS = {"model", "model_spec", "extra_rails", "rails", "workspace", "exec_config"}
+_FORBIDDEN_OPTIONS = {"model", "model_spec", "extra_rails", "rails", "workspace", "extra_tools"}
 
 
 def build_agent_config(binding, options):
     if not isinstance(options, dict):
         raise ValueError("agent_options must be an object")
     data = binding.config_data()
-    agent = dict(data.get("agent") or {})
-    agent.update(options)
-    forbidden = _FORBIDDEN_OPTIONS.intersection(agent)
+    agent = data.get("agent")
+    if agent is not None and not isinstance(agent, dict):
+        raise TypeError("agent must be a mapping")
+    forbidden = _FORBIDDEN_OPTIONS.intersection(set(agent or {}) | set(options))
     if forbidden:
         raise ValueError(f"runtime agent options do not accept {sorted(forbidden)}")
-    config = RobotAgentConfig.from_dict(agent)
+    config = RobotAgentConfig.from_dict(agent, overrides=options)
+    config.validate(for_execution=True)
     config.model_spec = ModelSpec(**(data.get("model") or {}))
     config.workspace = str(binding.workspace)
     return config
@@ -145,15 +147,6 @@ class EventLogHandler(logging.Handler):
         super().close()
 
 
-def _apply_fast_config(session, config):
-    if config.exec_mode == "fastagent" and config.exec_config is None:
-        from jiuwensymbiosis.agent.fast import SkillExecConfig, servo_config_from_session
-
-        servo = servo_config_from_session(session)
-        if servo is not None:
-            config.exec_config = SkillExecConfig(servo=servo)
-
-
 @dataclass(frozen=True)
 class JobRequest:
     """Everything one background task owns: identity, binding, lease and cancel."""
@@ -199,8 +192,7 @@ def run_job(request: JobRequest) -> None:
         config = build_agent_config(binding, options)
         session = binding.build_session()
         session.cancel_token = token
-        session.motion_log_dir = config.motion_log_dir
-        _apply_fast_config(session, config)
+        config.prepare_session(session)
         config.extra_rails = [TaskEventRail(emitter, session, should_stop=token.is_set)]
         runtime.store.update(job_id, {"phase": "connecting"}, event_kind="connecting", event_data={})
         session.connect()
@@ -271,7 +263,11 @@ def run_job(request: JobRequest) -> None:
                     pending_work=token.pending_work, connected=report.connected, errors=report.errors
                 )
             if config is not None:
-                trace_root = Path(config.trace_dir) if config.trace_dir else Path(binding.workspace) / "traces"
+                trace_root = (
+                    Path(config.modules.tracing.dir)
+                    if config.modules.tracing.dir
+                    else Path(binding.workspace) / "traces"
+                )
                 references = [
                     runtime.artifacts.register_trace(job_id, path)
                     for path in sorted(trace_root.glob(f"gui-{job_id}_*.json"))[:128]

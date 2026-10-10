@@ -9,14 +9,19 @@ are defined here, keeping ``builder.py`` focused on pure construction logic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal
+import copy
+import math
+import types
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from jiuwensymbiosis.agent.abstractions import (
     Model,
     ModelClientConfig,
     ModelRequestConfig,
 )
+from jiuwensymbiosis.agent.execution_config import TrackingConfig
 
 Mode = Literal["tool", "code", "hybrid"]
 
@@ -33,6 +38,15 @@ __all__ = [
     "ModelSpec",
     "RailConfig",
     "RobotAgentConfig",
+    "ExecutionConfig",
+    "FastAgentConfig",
+    "StepAgentConfig",
+    "TrackingConfig",
+    "ModulesConfig",
+    "SwitchConfig",
+    "DiagnosisConfig",
+    "TracingConfig",
+    "LoggingConfig",
     "ROBOT_PROMPT_TEMPLATE",
     "build_model",
 ]
@@ -132,137 +146,247 @@ class RailConfig:
 
 
 @dataclass
-class RobotAgentConfig:
-    """Configuration for building a robot agent.
+class SwitchConfig:
+    enabled: bool = False
 
-    Attributes:
-        mode: Operating mode — ``"tool"``, ``"code"``, or ``"hybrid"``.
-        model: Pre-built model instance; takes precedence over ``model_spec``.
-        model_spec: ``ModelSpec`` for automatic model construction.
-        system_prompt: Custom system prompt; defaults to ``ROBOT_PROMPT_TEMPLATE``.
-        enable_visual_feedback: Attach ``VisualFeedbackRail`` if capabilities allow.
-        enable_safety: Attach ``SafetyRail`` if capabilities allow.
-        enable_recovery: Attach ``RecoveryRail`` if capabilities allow.
-        enable_skill: Enable ``SkillUseRail`` and ``RobotControlTool``.
-        extra_tools: Additional tools appended to the tool list.
-        extra_rails: Additional rails appended to the rail list.
-        max_iterations: Maximum agent loop iterations.
-        workspace: Agent workspace directory.
-        strict_capabilities: When True, raise on connect if the api declares
-            capabilities the env do not provide (a config error). Defaults to
-            False (warn only) for backward compatibility.
-        enable_tracing: Attach ``TraceRail`` to record / persist / replay each
-            invoke. Defaults False (zero overhead when off).
-        trace_max_entries / trace_max_frames: Caps on recorded steps / frames.
-        trace_save_frames: Save JPEG frames to ``<workspace>/traces/frames/{run_token}/``.
-        trace_console: Print a one-line per-step dashboard to stdout.
-        trace_dir: Override trace output dir (default ``<workspace>/traces``).
-        trace_capture_loggers: Logger-name prefixes whose WARNING+ records are
-            captured into the trace.
-        enable_diagnosis: Attach ``DiagnosisRail`` to feed a compact diagnosis
-            of a failed step back into the next LLM turn — current params,
-            relevant recent history, and system state (recovery result / pose).
-            Requires ``enable_tracing=True``; auto-disables (with a warning)
-            when tracing is off. Defaults False.
-        diagnosis_max_chars: Soft cap on the rendered diagnosis message; when
-            exceeded the causal-chain history is dropped first, keeping the
-            current step and system state.
-        diagnosis_history_steps: How many recent related entries to include in
-            the causal chain (same tool or matching rail-event kind).
-        diagnosis_history_kinds: Rail-event ``kind`` values that mark a history
-            entry as relevant to the current failure (default: safety reject
-            + recovery).
-        log_level / log_dir: Centralised logging level and file dir
-            (see ``jiuwensymbiosis.utils.logging.configure_logging``).
-            ``log_dir`` defaults to ``"./logs"`` so framework logs land at
-            ``logs/jiuwensymbiosis.log``. openjiuwen's own log backend lands
-            under ``logs/logs/`` due to its implementation (a double-join of
-            the relative ``log_path``); the two are independent — jiuwensymbiosis
-            does not configure openjiuwen's log path. Set ``None`` for
-            console-only.
-        motion_log_dir: Root for the per-run motion log — each run gets its own
-            ``<motion_log_dir>/<stamp>/`` holding ``commands.log`` (piper) and
-            ``grasp_debug/`` (vision). ``None`` → ``"./jiuwen_motion_log"``.
-        parallel_tool_calls: Whether the agent loop may dispatch multiple tool
-            calls concurrently. Defaults **False** (sequential) — robot motion
-            is inherently sequential, and openjiuwen's per-tool ``ctx.extra``
-            is a shared dict, so parallel dispatch races every rail that
-            locates the "current step" via ``ctx.extra`` or
-            ``trace.entries[-1]`` (TraceRail / VisualFeedbackRail). Set True
-            only with non-motion parallel tools after auditing the rail stack.
-        enable_fast_special_ops: Fast path only — authorize the runner-owned
-            real-time servo ops (``track_grasp`` / ``track_detect``). Defaults
-            True. Set False to force the fast compiler onto plain per-op steps
-            (analyze → grasp-info → goto → grasp) with no continuous tracking
-            loop, without dropping any session capability. No effect on the
-            agent path, which never emits special ops.
-    """
 
+@dataclass
+class DiagnosisConfig(SwitchConfig):
+    max_chars: int = 1500
+    history_steps: int = 3
+    history_kinds: tuple[str, ...] = ("reject", "recover")
+
+
+@dataclass
+class TracingConfig(SwitchConfig):
+    max_entries: int = 200
+    max_frames: int = 50
+    save_frames: bool = False
+    console: bool = False
+    dir: str | None = None
+    capture_loggers: list[str] = field(default_factory=lambda: ["jiuwensymbiosis"])
+
+
+@dataclass
+class ModulesConfig:
+    skills: SwitchConfig = field(default_factory=lambda: SwitchConfig(True))
+    safety: SwitchConfig = field(default_factory=lambda: SwitchConfig(True))
+    recovery: SwitchConfig = field(default_factory=lambda: SwitchConfig(True))
+    visual_feedback: SwitchConfig = field(default_factory=SwitchConfig)
+    diagnosis: DiagnosisConfig = field(default_factory=DiagnosisConfig)
+    tracing: TracingConfig = field(default_factory=TracingConfig)
+
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"
+    dir: str | None = "./logs"
+    motion_dir: str | None = None
+
+
+@dataclass
+class StepAgentConfig:
     mode: Mode = "hybrid"
-    model: Any = None
-    model_spec: ModelSpec | None = None
-    system_prompt: str | None = None
-    enable_visual_feedback: bool = True
-    enable_safety: bool = True
-    enable_recovery: bool = True
-    enable_skill: bool = False
-    extra_tools: list[Any] | None = None
-    extra_rails: list[Any] | None = None
     max_iterations: int = 15
-    workspace: str | None = None
-    strict_capabilities: bool = False
-    # -- Execution trace — all default OFF for zero overhead. --
-    enable_tracing: bool = False
-    trace_max_entries: int = 200
-    trace_max_frames: int = 50
-    trace_save_frames: bool = False
-    trace_console: bool = False
-    trace_dir: str | None = None  # default <workspace>/traces
-    trace_capture_loggers: list[str] = field(default_factory=lambda: ["jiuwensymbiosis"])
-    # -- Online diagnosis (DiagnosisRail) — requires enable_tracing. --
-    enable_diagnosis: bool = False
-    diagnosis_max_chars: int = 1500
-    diagnosis_history_steps: int = 3
-    diagnosis_history_kinds: tuple[str, ...] = ("reject", "recover")
-    # -- Centralised logging --
-    log_level: str = "INFO"
-    # Default "./logs" so framework logs land at ``logs/jiuwensymbiosis.log``.
-    # openjiuwen's own log backend lands under ``logs/logs/`` due to its
-    # implementation (double-join of relative log_path) — independent of this
-    # setting; jiuwensymbiosis does not touch openjiuwen's log path. Set None
-    # for console-only; override via env or YAML ``agent.log_dir``.
-    log_dir: str | None = "./logs"
-    # Root for the per-run motion log: each run → ``<motion_log_dir>/<stamp>/``
-    # with ``commands.log`` (piper) + ``grasp_debug/`` (vision). None →
-    # "./jiuwen_motion_log". Override via YAML ``agent.motion_log_dir``.
-    motion_log_dir: str | None = None
+    system_prompt: str | None = None
     parallel_tool_calls: bool = False
 
-    # --- speed switch --- see ExecMode. Default is fastagent (compile once, then run
-    # with no per-step LLM); --mock / --stepagent force stepagent for offline/debug.
-    exec_mode: ExecMode = "fastagent"
-    exec_config: Any = None
-    # Authorize fast-path real-time servo ops (track_grasp / track_detect).
-    # Default on; set False to run the fast path with plain per-op steps only.
-    enable_fast_special_ops: bool = True
+
+@dataclass
+class FastAgentConfig:
+    max_replans: int = 2
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
+
+
+@dataclass
+class ExecutionConfig:
+    mode: ExecMode = "fastagent"
+    stepagent: StepAgentConfig = field(default_factory=StepAgentConfig)
+    fastagent: FastAgentConfig = field(default_factory=FastAgentConfig)
+
+
+def _merge(base: Mapping, override: Mapping) -> dict:
+    """Deep-merge explicit settings; defaults are resolved only by the parser."""
+    result = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, Mapping):
+            result[key] = _merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _typed(value: Any, annotation: Any, path: str) -> Any:
+    origin, args = get_origin(annotation), get_args(annotation)
+    if annotation is Any:
+        return value
+    if origin in (Union, types.UnionType):
+        if value is None and type(None) in args:
+            return None
+        for choice in args:
+            if choice is type(None):
+                continue
+            try:
+                return _typed(value, choice, path)
+            except (TypeError, ValueError):
+                pass
+        raise ValueError(f"{path}: invalid value {value!r}")
+    if origin is Literal:
+        if value not in args or not isinstance(value, str):
+            raise ValueError(f"{path} must be one of {args}")
+        return value
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        return _parse_settings(annotation, value, path)
+    # Only homogeneous collections are part of the configuration schema.
+    # A fixed-length tuple must not be validated using its first item type.
+    is_homogeneous_list = origin is list and len(args) == 1
+    is_variadic_tuple = origin is tuple and len(args) == 2 and args[1] is Ellipsis
+    if is_homogeneous_list or is_variadic_tuple:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError(f"{path} must be a list")
+        items = [_typed(item, args[0], path) for item in value]
+        return tuple(items) if origin is tuple else items
+    if annotation is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{path} must be a finite number")
+        return float(value)
+    if annotation is bool:
+        if not isinstance(value, bool):
+            raise TypeError(f"{path} must be bool")
+        return value
+    if annotation is int:
+        # bool is an int subclass and must not silently pass as int.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{path} must be int")
+        return int(value)
+    if annotation is str:
+        if not isinstance(value, str):
+            raise TypeError(f"{path} must be str")
+        # Preserve the underlying text as plain str, bypassing subclass
+        # overrides of __str__ and __getitem__.
+        return str.__str__(value)
+    raise TypeError(f"{path}: unsupported configuration annotation {annotation!r}")
+
+
+def _parse_settings(cls: type, data: Any, path: str, *, defaults: Any = None) -> Any:
+    if isinstance(data, cls) and is_dataclass(data) and not isinstance(data, type):
+        data = asdict(data)
+    if not isinstance(data, Mapping):
+        raise TypeError(f"{path} must be a mapping or {cls.__name__}")
+    names = {f.name for f in fields(cls)}
+    unknown = set(data) - names
+    if unknown:
+        raise TypeError(f"unknown fields in {path}: {sorted(unknown)}")
+    values = _merge(asdict(defaults or cls()), data)
+    hints = get_type_hints(cls)
+    return cls(**{key: _typed(value, hints[key], f"{path}.{key}") for key, value in values.items()})
+
+
+@dataclass(init=False, slots=True)
+class RobotAgentConfig:
+    """Agent settings shared by Python, YAML, CLI and the workbench.
+
+    YAML fields live in execution/modules/logging; model and extension objects
+    are Python construction dependencies. See docs/zh/reference/agent-config.md.
+    """
+
+    execution: ExecutionConfig
+    modules: ModulesConfig
+    logging: LoggingConfig
+    workspace: str | None
+    strict_capabilities: bool
+    model: Any = field(repr=False)
+    model_spec: ModelSpec | None
+    extra_tools: list[Any] | None = field(repr=False)
+    extra_rails: list[Any] | None = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        execution: ExecutionConfig | Mapping | None = None,
+        modules: ModulesConfig | Mapping | None = None,
+        logging: LoggingConfig | Mapping | None = None,
+        workspace: str | None = None,
+        strict_capabilities: bool = False,
+        model: Any = None,
+        model_spec: ModelSpec | None = None,
+        extra_tools: list[Any] | None = None,
+        extra_rails: list[Any] | None = None,
+    ) -> None:
+        self.execution = _parse_settings(ExecutionConfig, execution if execution is not None else {}, "agent.execution")
+        fast = self.execution.mode == "fastagent"
+        defaults = ModulesConfig(skills=SwitchConfig(fast), visual_feedback=SwitchConfig(not fast))
+        self.modules = _parse_settings(
+            ModulesConfig, modules if modules is not None else {}, "agent.modules", defaults=defaults
+        )
+        self.logging = _parse_settings(LoggingConfig, logging if logging is not None else {}, "agent.logging")
+        self.workspace = _typed(workspace, str | None, "agent.workspace")
+        self.strict_capabilities = _typed(strict_capabilities, bool, "agent.strict_capabilities")
+        self.model, self.model_spec = model, model_spec
+        self.extra_tools, self.extra_rails = extra_tools, extra_rails
+        self.validate()
+
+    def validate(self, *, for_execution: bool = False) -> None:
+        """Recheck mutable Python settings before use; mode rules at task dispatch."""
+        self.strict_capabilities = _typed(self.strict_capabilities, bool, "agent.strict_capabilities")
+        self.workspace = _typed(self.workspace, str | None, "agent.workspace")
+        self.execution = _parse_settings(ExecutionConfig, self.execution, "agent.execution")
+        self.modules = _parse_settings(ModulesConfig, self.modules, "agent.modules")
+        self.logging = _parse_settings(LoggingConfig, self.logging, "agent.logging")
+        limits = {
+            "execution.stepagent.max_iterations": (self.execution.stepagent.max_iterations, 1),
+            "execution.fastagent.max_replans": (self.execution.fastagent.max_replans, 0),
+            "modules.tracing.max_entries": (self.modules.tracing.max_entries, 1),
+            "modules.tracing.max_frames": (self.modules.tracing.max_frames, 0),
+            "modules.diagnosis.max_chars": (self.modules.diagnosis.max_chars, 1),
+            "modules.diagnosis.history_steps": (self.modules.diagnosis.history_steps, 0),
+        }
+        for path, (value, minimum) in limits.items():
+            if value < minimum:
+                raise ValueError(f"agent.{path} must be >= {minimum}")
+        if self.logging.level.upper() not in {
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "WARN",
+            "ERROR",
+            "CRITICAL",
+            "FATAL",
+            "NOTSET",
+        }:
+            raise ValueError("agent.logging.level is not a logging level")
+        if self.modules.diagnosis.enabled and not self.modules.tracing.enabled:
+            raise ValueError("agent.modules.diagnosis.enabled requires modules.tracing.enabled")
+        if for_execution and self.execution.mode == "fastagent":
+            for name in ("visual_feedback", "diagnosis"):
+                if getattr(self.modules, name).enabled:
+                    raise ValueError(
+                        f"agent.modules.{name}.enabled is only supported by stepagent; disable it for fastagent"
+                    )
+
+    def prepare_session(self, session: Any) -> None:
+        """Apply connection-time settings before connect, shared by official hosts."""
+        session.strict_capabilities = self.strict_capabilities
+        session.motion_log_dir = self.logging.motion_dir
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable effective settings; never serialize injected Python objects."""
+        return {
+            "execution": asdict(self.execution),
+            "modules": asdict(self.modules),
+            "logging": asdict(self.logging),
+            "workspace": self.workspace,
+            "strict_capabilities": self.strict_capabilities,
+        }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> RobotAgentConfig:
-        """Build a ``RobotAgentConfig`` from a YAML ``agent:`` mapping.
-
-        Mirrors how ``model:`` maps to ``ModelSpec(**data)`` and ``env.cfg``
-        maps to ``PiperConfig.from_dict`` — the three top-level YAML blocks
-        (``env`` / ``model`` / ``agent``) each drive their own dataclass.
-
-        ``model`` / ``model_spec`` are deliberately popped: they describe a
-        pre-built model instance / spec, owned by the separate ``model:``
-        block (and the demo's ``_build_model_spec``), not declarable here.
-        The caller assigns ``config.model_spec = spec`` after this call.
-
-        Any unknown key raises ``TypeError`` (catches YAML typos at load
-        time rather than silently ignoring them).
-        """
-        data = dict(data or {})
-        data.pop("model", None)
-        data.pop("model_spec", None)
-        return cls(**data)
+    def from_dict(
+        cls, data: Mapping[str, Any] | None, *, overrides: Mapping[str, Any] | None = None
+    ) -> RobotAgentConfig:
+        for source in (data, overrides):
+            if source is not None and not isinstance(source, Mapping):
+                raise TypeError("agent must be a mapping")
+            for name in ("model", "model_spec", "extra_tools", "extra_rails"):
+                if source is not None and name in source:
+                    raise TypeError(f"agent.{name} is Python-only, not a YAML setting")
+        return cls(**_merge(data or {}, overrides or {}))

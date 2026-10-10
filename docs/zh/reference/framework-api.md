@@ -40,24 +40,21 @@ ModelSpec(
 
 ## `RobotAgentConfig`
 
-主要字段按用途分组如下：
+完整字段、默认值和依赖见 [Agent 全量配置参考](agent-config.md)。规范结构如下：
 
 | 分组 | 字段与默认值 |
 | --- | --- |
-| 执行 | `mode="hybrid"`、`max_iterations=15`、`parallel_tool_calls=False` |
-| 模型 | `model=None`、`model_spec=None`、`system_prompt=None` |
-| Rails | `enable_visual_feedback=True`、`enable_safety=True`、`enable_recovery=True`、`enable_skill=False` |
+| 执行 | `execution.mode="fastagent"`；逐步设置在 `execution.stepagent`，跟踪设置在 `execution.fastagent.tracking` |
+| 模型 | Python 注入 `model=None`、`model_spec=None`；逐步提示在 `execution.stepagent.system_prompt` |
+| 模块 | `modules.skills/safety/recovery/visual_feedback/diagnosis/tracing`；每个模块用 `enabled` 控制 |
 | 扩展 | `extra_tools=None`、`extra_rails=None`、`workspace=None`、`strict_capabilities=False` |
-| Trace | `enable_tracing=False`、`trace_max_entries=200`、`trace_max_frames=50`、`trace_save_frames=False`、`trace_console=False`、`trace_dir=None`、`trace_capture_loggers=["jiuwensymbiosis"]` |
-| Diagnosis | `enable_diagnosis=False`、`diagnosis_max_chars=1500`、`diagnosis_history_steps=3`、`diagnosis_history_kinds=("reject", "recover")` |
-| 日志 | `log_level="INFO"`、`log_dir="./logs"`、`motion_log_dir=None`（→ `"./jiuwen_motion_log"`，每 run 的 `commands.log`/`grasp_debug/` 根目录） |
-| Fast path | `exec_mode="fastagent"`、`exec_config=None`、`enable_fast_special_ops=True`（授权实时伺服 op `track_grasp`/`track_detect`） |
+| 日志 | `logging.level="INFO"`、`logging.dir="./logs"`、`logging.motion_dir=None` |
 
-`RobotAgentConfig.from_dict(data)` 从 YAML 的 `agent:` 映射构造配置；未知字段会触发 `TypeError`。
+`RobotAgentConfig.from_dict(data, overrides=...)` 从 YAML 的 `agent:` 映射构造配置，递归合并显式覆盖并校验类型。
+仅接受分组字段，序列化使用 `to_dict()` 输出同一结构；旧字段会报错。
 
-这些是字段默认值；直接使用 `RobotAgentConfig()` 尚不满足默认 `fastagent` 的运行条件。
-Fast path 需要显式提供 `model_spec`，并设置 `enable_skill=True` 注册普通动作执行所需的
-`robot_control`。配置示例见下文。
+默认 fastagent 启用 skills/safety/recovery，关闭 visual_feedback/diagnosis/tracing。
+Fast path 需要提供 `model_spec`；无论 skills 是否开启，均注册动作分派工具。
 
 ## `RobotSession`
 
@@ -119,21 +116,25 @@ run_fast_task(
 
 - `build_robot_agent` 构造单机器人 DeepAgent，Session 生命周期仍由调用方负责。
 - `build_robot_agent_config` 返回用于多机器人顶层 Agent 的 `SubAgentConfig`。
-- `run_robot_task` 根据 `config.exec_mode` 选择普通 Agent 或 fast path。
+- `run_robot_task` 根据 `config.execution.mode` 选择普通 Agent 或 fast path。
 - `run_fast_task` 要求显式传入配置；无法构建 fast path 时返回带 `ok=False` 的结果字典。
 - `cancel_token` 是可选的取消令牌（GUI 强停等场景用）；两个运行函数均接受。
 
+两个 builder 省略 `config` 时均使用 stepagent 默认值；显式配置必须满足 `execution.mode="stepagent"`。
+`RobotAgentConfig()` 默认是 fastagent，直接传给这两个 builder 会在构建模型和工具前抛 `ValueError`。
+模块开关按传入值生效，不会因 builder 的用途而重新计算；需要按模式分发时使用 `run_robot_task`。
+
 ### 多机器人子 Agent 的配置范围
 
-`build_robot_agent_config` 使用 `mode`、`extra_tools` 构建工具，配置模型、迭代上限和并行开关，
+`build_robot_agent_config` 使用 `execution.stepagent.mode`、`extra_tools` 构建工具，配置模型、迭代上限和并行开关，
 并按能力和开关装配 SafetyRail、RecoveryRail、VisualFeedbackRail 及 `extra_rails`。
-`enable_skill=True` 会添加 `RobotControlTool`，但不会自动附加 `SkillUseRail`。
+`modules.skills.enabled=True` 会添加 `RobotControlTool`，但不会自动附加 `SkillUseRail`。
 
 以下单机器人构建行为目前没有在该函数中实现：生成默认系统提示词、解析或创建工作区、
 调用日志配置、装配 TraceRail/DiagnosisRail，以及把 `config.strict_capabilities` 写入 Session。
-`system_prompt` 按原值传给 `SubAgentConfig`（默认 `None`）。需要这些功能时，由顶层 Agent 的调用方
+`execution.stepagent.system_prompt` 按原值传给 `SubAgentConfig`（默认 `None`）。需要这些功能时，由顶层 Agent 的调用方
 负责配置；严格能力检查应在连接前通过 `RobotSession(strict_capabilities=True)` 或 Session 属性启用。
-不能仅设置子 Agent 的 `enable_tracing`、`enable_diagnosis` 等字段就认为对应功能已经开启。
+不能仅设置子 Agent 的 `modules.tracing.enabled`、`modules.diagnosis.enabled` 等字段就认为对应功能已经开启。
 
 ### Fast path 最小配置
 
@@ -141,8 +142,7 @@ run_fast_task(
 
 ```python
 config = RobotAgentConfig(
-    exec_mode="fastagent",
-    enable_skill=True,
+    execution={"mode": "fastagent"},
     model_spec=ModelSpec(
         api_base="http://127.0.0.1:8110/v1",
         api_key="EMPTY",
@@ -155,6 +155,5 @@ with session:
 
 Fast path 的任务解析和规划直接读取 `model_spec` 中的 HTTP 端点参数。
 只提供 `config.model` 会返回 `{"ok": False, "reason": "no_model_spec", ...}`；
-自定义或离线模型仅通过 `model` 注入时，应选择 `exec_mode="stepagent"`。
-`enable_skill=False` 会移除普通动作分派入口，即使序列已编译，也无法通过该入口执行动作。
-它不会关闭 fast planner 对内置技能库的读取。
+自定义或离线模型仅通过 `model` 注入时，应选择 `execution.mode="stepagent"`。
+`modules.skills.enabled=False` 使 fast planner 直接组合动作，不影响普通动作执行。

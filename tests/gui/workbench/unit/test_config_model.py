@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from jiuwensymbiosis_gui.workbench.config_model import (
@@ -26,11 +28,76 @@ def test_get_set_nested_paths():
 
 
 def test_yaml_roundtrip_preserves_values_and_chinese():
-    cm = ConfigModel.from_dict({"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}})
+    cm = ConfigModel.from_dict(
+        {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
+    )
     text = cm.to_yaml()
     back = ConfigModel.from_yaml_text(text)
     assert back.get("env.cfg.prompt") == "把黑盒放到白盒上"
-    assert back.get("agent.mode") == "tool"
+    assert back.get("agent.execution.stepagent.mode") == "tool"
+
+
+def test_agent_edit_serializes_grouped_values():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"tracing": {"enabled": True, "max_frames": 7}}}})
+    cm.set("agent.modules.tracing.max_frames", 4)
+    cm.set("agent.modules.tracing.console", True)
+    back = ConfigModel.from_yaml_text(cm.to_yaml())
+    assert back.data["agent"] == {"modules": {"tracing": {"enabled": True, "max_frames": 4, "console": True}}}
+
+
+def test_grouped_task_defaults_fill_missing_leaves_without_replacing_user_values():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"skills": {"enabled": False}}, "logging": {"dir": None}}})
+    cm.apply_agent_defaults(
+        {"modules": {"tracing": {"enabled": True}, "skills": {"enabled": True}}, "logging": {"dir": "./logs"}}
+    )
+    assert cm.get("agent.modules.skills.enabled") is False
+    assert cm.get("agent.modules.tracing.enabled") is True
+    assert cm.get("agent.logging.dir") is None
+
+
+def test_task_diagnosis_default_uses_tracing_from_existing_agent_config():
+    cm = ConfigModel.from_dict(
+        {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": True}}}}
+    )
+    cm.apply_agent_defaults({"modules": {"diagnosis": {"enabled": True}}})
+    cm.validate_agent()
+    assert cm.get("agent.modules.diagnosis.enabled") is True
+
+
+def test_explicit_disabled_diagnosis_overrides_task_default_without_requiring_tracing():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"diagnosis": {"enabled": False}}}})
+    cm.apply_agent_defaults({"modules": {"diagnosis": {"enabled": True}}})
+    cm.validate_agent()
+    assert cm.get("agent.modules.diagnosis.enabled") is False
+    assert cm.get("agent.modules.tracing.enabled") is None
+
+
+@pytest.mark.parametrize(
+    "defaults",
+    [
+        {"modules": {"diagnosis": {"enabled": True}, "tracing": {"enabled": True}}},
+        {"modules": {"skills": {"enabled": "false"}}},
+        {"modules": {"unknown": {"enabled": True}}},
+        {"execution": {"stepagent": {"max_iterations": 0}}},
+    ],
+    ids=["dependency-conflict", "wrong-type", "unknown-module", "out-of-range"],
+)
+def test_invalid_merged_task_defaults_leave_original_config_unchanged(defaults):
+    cm = ConfigModel.from_dict(
+        {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": False}}}}
+    )
+    before = copy.deepcopy(cm.data)
+    with pytest.raises((TypeError, ValueError)):
+        cm.apply_agent_defaults(defaults)
+    assert cm.data == before
+
+
+@pytest.mark.parametrize("mode, skills, feedback", [("fastagent", True, False), ("stepagent", False, True)])
+def test_agent_form_defaults_match_execution_mode(mode, skills, feedback):
+    cm = ConfigModel.from_dict({"agent": {"execution": {"mode": mode}}})
+    for path, expected in (("skills", skills), ("visual_feedback", feedback)):
+        spec = next(s for s in FIELD_GROUPS if s.path == f"agent.modules.{path}.enabled")
+        assert cm.field_value(spec) is expected
 
 
 @pytest.mark.parametrize("limit", [None, 10.0])
@@ -51,23 +118,28 @@ def test_from_yaml_text_rejects_non_mapping():
         ConfigModel.from_yaml_text("- just\n- a\n- list")
 
 
+def test_from_yaml_text_reports_invalid_agent_mapping_as_edit_error():
+    with pytest.raises(ValueError, match="Agent 配置无效"):
+        ConfigModel.from_yaml_text("agent: [invalid]")
+
+
 def test_from_yaml_text_rejects_invalid_yaml():
     with pytest.raises(ValueError):
         ConfigModel.from_yaml_text("a: [1, 2\nb: broken")
 
 
 def test_replace_from_yaml_keeps_old_data_on_error():
-    cm = ConfigModel.from_dict({"agent": {"mode": "tool"}})
+    cm = ConfigModel.from_dict({"agent": {"execution": {"stepagent": {"mode": "tool"}}}})
     with pytest.raises(ValueError):
         cm.replace_from_yaml("not: [valid")
-    assert cm.get("agent.mode") == "tool"
+    assert cm.get("agent.execution.stepagent.mode") == "tool"
 
 
 def test_field_value_falls_back_to_default():
     cm = ConfigModel.from_dict({})
-    spec = next(s for s in FIELD_GROUPS if s.path == "agent.mode")
+    spec = next(s for s in FIELD_GROUPS if s.path == "agent.execution.stepagent.mode")
     # 未设置时返回 spec.default(此处为 None),设置后返回实际值
-    cm.set("agent.mode", "hybrid")
+    cm.set("agent.execution.stepagent.mode", "hybrid")
     assert cm.field_value(spec) == "hybrid"
 
 

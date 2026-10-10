@@ -36,7 +36,7 @@ class Binding:
     resources: tuple = ("device:fake",)
 
     def config_data(self):
-        return {"agent": {"exec_mode": "stepagent", "enable_tracing": False}}
+        return {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": False}}}}
 
     def build_session(self):
         return self.session
@@ -129,10 +129,10 @@ def test_step_frame_reference_is_rendered(running_engine):
 
 def test_rerun_with_keeps_body_and_task_but_takes_the_given_config(tmp_path):
     task = registry.get_task("pick_box")
-    config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}}
+    config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
     engine = RunEngine(task, config, workspace=str(tmp_path), body_key="piper")
 
-    edited = {"env": {"cfg": {"prompt": "改过的指令"}}, "agent": {"mode": "tool"}}
+    edited = {"env": {"cfg": {"prompt": "改过的指令"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
     twin = engine.rerun_with(edited, config_source=engine.config_source)
 
     assert twin is not engine

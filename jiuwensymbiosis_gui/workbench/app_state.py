@@ -21,7 +21,15 @@ from jiuwensymbiosis_gui.workbench.run_engine import RunEngine, default_workspac
 
 logger = get_logger(__name__)
 
-__all__ = ["AppState"]
+__all__ = ["AppState", "ConfigLoadError"]
+
+
+class ConfigLoadError(ValueError):
+    """A selected configuration could not be loaded; never substitute defaults."""
+
+    def __init__(self, path: Path, cause: Exception) -> None:
+        self.path = path
+        super().__init__(f"配置加载失败 {path}: {cause}")
 
 
 class AppState:
@@ -47,8 +55,8 @@ class AppState:
     def config_for(self, body_key: str, task_key: str) -> ConfigModel:
         """取(本体, 任务)在当前所选配置文件下的配置模型。
 
-        优先缓存,否则从**本体**配置 YAML 载入,套上任务的 agent 默认与默认指令
-        (本体配置缺失则用默认指令起步)。
+        优先缓存,否则从**本体**配置 YAML 载入,套上任务的 agent 默认与默认指令。
+        加载失败时保留错误及源路径,不生成或缓存替代配置。
         """
         cache_key = self._cache_key(body_key, task_key)
         if cache_key in self._configs:
@@ -57,20 +65,11 @@ class AppState:
         task = registry.get_task(task_key)
         config_path = Path(self.current_config_file) if self.current_config_file else body.config_path()
         try:
-            model = ConfigModel.from_yaml_text(config_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.debug("load config %s failed, using default prompt: %s", config_path, exc)
-            model = ConfigModel.from_dict({"env": {"cfg": {"prompt": task.default_query}}})
-        # 任务级默认(如 pick_banana 的 fast/技能/步数):配置未显式设置时填入。
-        for name, val in task.agent_defaults.items():
-            if model.get(f"agent.{name}") is None:
-                model.set(f"agent.{name}", val)
-        # 默认开启轨迹记录,让「历史」页开箱即用。
-        if model.get("agent.enable_tracing") is None:
-            model.set("agent.enable_tracing", True)
-        # 默认用快速模式(fastagent):真机运行更快、可重复。
-        if model.get("agent.exec_mode") is None:
-            model.set("agent.exec_mode", "fastagent")
+            model = ConfigModel.from_yaml_text(
+                config_path.read_text(encoding="utf-8"), agent_defaults=task.agent_defaults
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise ConfigLoadError(config_path, exc) from exc
         # 任务指令:本体配置不含 prompt(与任务无关),用任务默认指令预填「配置 → 任务指令」框
         # (用户可改;不改就用它)。
         if not model.get("env.cfg.prompt"):

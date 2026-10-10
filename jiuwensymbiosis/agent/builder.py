@@ -28,6 +28,7 @@ from jiuwensymbiosis.agent.abstractions import (
 from jiuwensymbiosis.agent.config import (
     ROBOT_PROMPT_TEMPLATE,
     Mode,
+    ModulesConfig,
     RailConfig,
     RobotAgentConfig,
     build_model,
@@ -104,28 +105,35 @@ class _RailRegistry:
     _rails: list[RailConfig] = [
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.visual_feedback.VisualFeedbackRail",
-            required_flags=["enable_visual_feedback"],
+            required_flags=["visual_feedback"],
             required_capabilities=["vision.camera"],
         ),
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.safety.SafetyRail",
-            required_flags=["enable_safety"],
+            required_flags=["safety"],
             # Every capability the rail has a policy for (see _CAPABILITY_WATCH_TOOLS):
             # a body that can only drive or only raise its torso still gets pre-flight checks.
             any_capabilities=[
-                "motion.cartesian", "motion.joint", "motion.base",
-                "motion.lift", "motion.waist",
+                "motion.cartesian",
+                "motion.joint",
+                "motion.base",
+                "motion.lift",
+                "motion.waist",
             ],
         ),
         RailConfig(
             rail_class_path="jiuwensymbiosis.rails.recovery.RecoveryRail",
-            required_flags=["enable_recovery"],
+            required_flags=["recovery"],
             # Any actuated robot benefits from post-failure recovery, not just
             # Cartesian/gripper arms: mobile-base / joint / dual-arm bodies too.
             # The rail retreats via the robot's own (always-safe) ``home()``.
             any_capabilities=[
-                "motion.cartesian", "motion.joint", "motion.base",
-                "grasp.suction", "grasp.parallel", "motion.dual_arm",
+                "motion.cartesian",
+                "motion.joint",
+                "motion.base",
+                "grasp.suction",
+                "grasp.parallel",
+                "motion.dual_arm",
             ],
         ),
     ]
@@ -271,34 +279,12 @@ def _attach_trace_log_handlers(trace_rail: TraceRail, loggers: list[str], level:
 
 def _resolve_rails(
     session: RobotSession,
-    enable_visual_feedback: bool,
-    enable_safety: bool,
-    enable_recovery: bool,
+    modules: ModulesConfig,
     extra_rails: list[Any] | None,
 ) -> list[Any]:
-    """Resolve enabled rails based on session capabilities and flags.
-
-    Args:
-        session: RobotSession instance.
-        enable_visual_feedback: Enable visual feedback rail.
-        enable_safety: Enable safety rail.
-        enable_recovery: Enable recovery rail.
-        extra_rails: Optional additional rails to append.
-
-    Returns:
-        List of enabled rail instances.
-    """
-    flag_states: dict[str, bool] = {
-        "enable_visual_feedback": enable_visual_feedback,
-        "enable_safety": enable_safety,
-        "enable_recovery": enable_recovery,
-    }
-    session_capabilities: set[str] = set(session.env.capabilities)
-    rails: list[Any] = _RailRegistry.get_enabled_rails(
-        flag_states,
-        session_capabilities,
-        session,
-    )
+    """Resolve module switches against session capabilities."""
+    flag_states = {name: getattr(modules, name).enabled for name in ("visual_feedback", "safety", "recovery")}
+    rails = _RailRegistry.get_enabled_rails(flag_states, set(session.env.capabilities), session)
     if extra_rails:
         rails.extend(extra_rails)
     return rails
@@ -317,7 +303,7 @@ def _assert_sequential_for_motion(config: RobotAgentConfig, session: RobotSessio
     keys on the current step (TraceRail, VisualFeedbackRail). Non-motion caps
     (vision / speech) are unaffected.
     """
-    if not config.parallel_tool_calls:
+    if not config.execution.stepagent.parallel_tool_calls:
         return
     caps = set(getattr(session.env, "capabilities", frozenset()) or frozenset())
     conflict = caps & _MOTION_CAPS
@@ -330,16 +316,16 @@ def _assert_sequential_for_motion(config: RobotAgentConfig, session: RobotSessio
 
 
 def _assert_no_tracing_with_parallel(config: RobotAgentConfig) -> None:
-    """Reject ``parallel_tool_calls=True`` together with ``enable_tracing=True``.
+    """Reject ``parallel_tool_calls=True`` together with ``modules.tracing.enabled=True``.
 
     TraceRail keys its current step via the shared ``ctx.extra`` dict and
     ``entries[-1]`` — both race under parallel dispatch, so the trace would
     silently attach events to the wrong step. Tracing + parallel is not
     supported; pick one.
     """
-    if config.parallel_tool_calls and config.enable_tracing:
+    if config.execution.stepagent.parallel_tool_calls and config.modules.tracing.enabled:
         raise ValueError(
-            "enable_tracing=True is not supported with parallel_tool_calls=True: "
+            "modules.tracing.enabled=True is not supported with parallel_tool_calls=True: "
             "TraceRail keys the current step via shared ctx.extra / entries[-1], "
             "which races under parallel dispatch. Disable tracing or use sequential."
         )
@@ -349,7 +335,9 @@ def _build_tools(
     session: RobotSession,
     mode: Mode,
     extra_tools: list[Any] | None,
-    enable_skill: bool = False,
+    skills_enabled: bool = False,
+    *,
+    require_dispatcher: bool = False,
 ) -> list[Any]:
     """Build tool list for the agent based on operating mode and skill flag.
 
@@ -357,7 +345,7 @@ def _build_tools(
         session: RobotSession providing api and globals.
         mode: ``"tool"`` / ``"code"`` / ``"hybrid"``.
         extra_tools: Additional tools to include.
-        enable_skill: Append ``RobotControlTool`` when ``True``.
+        skills_enabled: Append ``RobotControlTool`` when ``True``.
 
     Returns:
         List of openjiuwen ``Tool`` / ``LocalFunction`` instances.
@@ -374,20 +362,20 @@ def _build_tools(
         tools.extend(build_robot_tools(session.api, env=session.env, planner_only=True))
     if mode in ("code", "hybrid"):
         tools.append(make_inproc_code_tool(session.globals_provider))
-    if enable_skill:
+    if skills_enabled or require_dispatcher:
         tools.append(RobotControlTool(session.api, env=session.env))
     if extra_tools:
         tools.extend(extra_tools)
     return tools
 
 
-def _maybe_append_skill_rail(rails: list[Any], enable_skill: bool) -> list[Any]:
-    """Append ``SkillUseRail`` when ``enable_skill`` is set.
+def _maybe_append_skill_rail(rails: list[Any], skills_enabled: bool) -> list[Any]:
+    """Append ``SkillUseRail`` when ``skills_enabled`` is set.
 
     Loads skills from the built-in ``jiuwensymbiosis/skills/`` directory
     without exposing generic tools (bash / code / read_file).
     """
-    if not enable_skill:
+    if not skills_enabled:
         return rails
     rails.append(
         SkillUseRail(
@@ -446,7 +434,10 @@ def build_robot_agent(
 
     Args:
         session: ``RobotSession`` with connected env and api.
-        config: Agent configuration; defaults to ``RobotAgentConfig()``.
+        config: Omit to use the stepagent profile. An explicit configuration
+            must set ``execution.mode="stepagent"``; a default-constructed
+            ``RobotAgentConfig()`` selects fastagent and is rejected here.
+            Use ``run_robot_task`` to dispatch by ``execution.mode``.
 
     Returns:
         An openjiuwen ``DeepAgent`` instance. Invoke with
@@ -455,67 +446,95 @@ def build_robot_agent(
     The session's ``connect()`` / ``disconnect()`` is the caller's
     responsibility (use ``with session:`` for clean teardown).
     """
-    config = config or RobotAgentConfig()
-    _assert_sequential_for_motion(config, session)
-    _assert_no_tracing_with_parallel(config)
+    return _build_agent(session, config or RobotAgentConfig(execution={"mode": "stepagent"}), fast=False)
+
+
+def _assert_stepagent_mode(config: RobotAgentConfig) -> None:
+    if config.execution.mode != "stepagent":
+        raise ValueError(
+            "build_robot_agent and build_robot_agent_config require "
+            f"agent.execution.mode='stepagent'; got {config.execution.mode!r}. "
+            "Construct RobotAgentConfig(execution={'mode': 'stepagent'}) for these builders, "
+            "or use run_robot_task to dispatch by execution.mode."
+        )
+
+
+def _build_fast_agent(session: RobotSession, config: RobotAgentConfig) -> Any:
+    """Build the fast runner's dispatcher and rails without loading skill documents."""
+    return _build_agent(session, config, fast=True)
+
+
+def _build_agent(session: RobotSession, config: RobotAgentConfig, *, fast: bool) -> Any:
+    config.validate()
+    if not fast:
+        _assert_stepagent_mode(config)
+        _assert_sequential_for_motion(config, session)
+        _assert_no_tracing_with_parallel(config)
     # Propagate the strictness flag onto the session BEFORE the caller connects
     # it (typical: ``agent = build_robot_agent(session); with session: ...``).
     # If the session is already connected this is a no-op for this connect cycle.
     session.strict_capabilities = config.strict_capabilities
     # Centralised logging: one uniform format across all modules,
     # optional file output. Idempotent.
-    configure_logging(level=config.log_level, log_dir=config.log_dir)
+    configure_logging(level=config.logging.level, log_dir=config.logging.dir)
     model = config.model or build_model(config.model_spec)
-    tools = _build_tools(session, config.mode, config.extra_tools, enable_skill=config.enable_skill)
-    rails = _resolve_rails(
-        session, config.enable_visual_feedback, config.enable_safety, config.enable_recovery, config.extra_rails
+    tools = _build_tools(
+        session,
+        "tool" if fast else config.execution.stepagent.mode,
+        config.extra_tools,
+        skills_enabled=config.modules.skills.enabled,
+        require_dispatcher=fast,
     )
-    rails = _maybe_append_skill_rail(rails, config.enable_skill)
-    sys_prompt = _build_system_prompt(session, config.system_prompt, mode=config.mode)
+    rails = _resolve_rails(
+        session,
+        config.modules,
+        config.extra_rails,
+    )
+    rails = _maybe_append_skill_rail(rails, config.modules.skills.enabled and not fast)
+    sys_prompt = _build_system_prompt(
+        session, config.execution.stepagent.system_prompt, mode=config.execution.stepagent.mode
+    )
     workspace = _resolve_workspace(session, config.workspace)
 
     # Execution trace: TraceRail has high callback priority so it creates the
     # active step before safety/recovery/feedback rails emit events.
     trace_rail: TraceRail | None = None
-    if config.enable_tracing:
+    if config.modules.tracing.enabled:
         import logging as _logging
 
-        trace_dir = config.trace_dir or str(Path(workspace) / "traces")
+        trace_dir = config.modules.tracing.dir or str(Path(workspace) / "traces")
         trace_rail = TraceRail(
             session,
             workspace=workspace,
-            max_entries=config.trace_max_entries,
-            max_frames=config.trace_max_frames,
-            save_frames=config.trace_save_frames,
-            console=config.trace_console,
-            capture_loggers=tuple(config.trace_capture_loggers),
+            max_entries=config.modules.tracing.max_entries,
+            max_frames=config.modules.tracing.max_frames,
+            save_frames=config.modules.tracing.save_frames,
+            console=config.modules.tracing.console,
+            capture_loggers=tuple(config.modules.tracing.capture_loggers),
             capture_log_level=_logging.WARNING,
             traces_dir=Path(trace_dir),
         )
-        log_handler = _attach_trace_log_handlers(trace_rail, list(config.trace_capture_loggers), _logging.WARNING)
-        trace_rail.attach_log_handler(log_handler, tuple(config.trace_capture_loggers))
+        log_handler = _attach_trace_log_handlers(
+            trace_rail, list(config.modules.tracing.capture_loggers), _logging.WARNING
+        )
+        trace_rail.attach_log_handler(log_handler, tuple(config.modules.tracing.capture_loggers))
         rails.insert(0, trace_rail)
 
         # Online diagnosis: depends on TraceRail (reads its active trace via
-        # ctx.extra["trace_rail"]). Auto-disable with a warning when tracing
-        # is off — only attached here, inside the tracing-on branch.
-        if config.enable_diagnosis:
+        # ctx.extra["trace_rail"]). Config validation rejects diagnosis without
+        # tracing; attach it here after the trace exists.
+        if config.modules.diagnosis.enabled:
             from jiuwensymbiosis.rails.diagnosis import DiagnosisRail
 
             rails.insert(
                 0,
                 DiagnosisRail(
                     session,
-                    max_chars=config.diagnosis_max_chars,
-                    history_steps=config.diagnosis_history_steps,
-                    history_kinds=tuple(config.diagnosis_history_kinds),
+                    max_chars=config.modules.diagnosis.max_chars,
+                    history_steps=config.modules.diagnosis.history_steps,
+                    history_kinds=tuple(config.modules.diagnosis.history_kinds),
                 ),
             )
-    elif config.enable_diagnosis:
-        logger.warning(
-            "enable_diagnosis=True requires enable_tracing=True; "
-            "DiagnosisRail disabled. Enable tracing to use online diagnosis."
-        )
 
     # Reconcile on both paths. In particular, tracing-off must clear builder-
     # owned sinks from reused extra rails instead of leaving stale callbacks.
@@ -527,7 +546,7 @@ def build_robot_agent(
         system_prompt=sys_prompt,
         tools=tools,
         rails=rails,
-        max_iterations=config.max_iterations,
+        max_iterations=config.execution.stepagent.max_iterations,
         workspace=workspace,
         # Built-in skills (visual_pick / visual_place SKILL.md) live in the
         # package source tree, outside the agent workspace. With the default
@@ -536,7 +555,7 @@ def build_robot_agent(
         # (include_tools=False), so widening fs access to load trusted bundled
         # skills is safe.
         restrict_to_work_dir=False,
-        parallel_tool_calls=config.parallel_tool_calls,
+        parallel_tool_calls=False if fast else config.execution.stepagent.parallel_tool_calls,
     )
 
 
@@ -555,20 +574,28 @@ def build_robot_agent_config(
 
     Args:
         session: ``RobotSession`` for this sub-agent.
-        config: Agent configuration.
+        config: Omit to use the stepagent profile. An explicit configuration
+            must set ``execution.mode="stepagent"``; fastagent configurations
+            (including ``RobotAgentConfig()``) raise ``ValueError``.
         name: Override sub-agent name (defaults to ``"robot_{session.name}"``).
         description: Override sub-agent description.
 
     Returns:
         An openjiuwen ``SubAgentConfig`` instance.
     """
-    config = config or RobotAgentConfig()
+    config = config or RobotAgentConfig(execution={"mode": "stepagent"})
+    config.validate()
+    _assert_stepagent_mode(config)
     _assert_sequential_for_motion(config, session)
     _assert_no_tracing_with_parallel(config)
     model = config.model or build_model(config.model_spec)
-    tools = _build_tools(session, config.mode, config.extra_tools, enable_skill=config.enable_skill)
+    tools = _build_tools(
+        session, config.execution.stepagent.mode, config.extra_tools, skills_enabled=config.modules.skills.enabled
+    )
     rails = _resolve_rails(
-        session, config.enable_visual_feedback, config.enable_safety, config.enable_recovery, config.extra_rails
+        session,
+        config.modules,
+        config.extra_rails,
     )
 
     agent_name = name or f"robot_{session.name}"
@@ -577,10 +604,10 @@ def build_robot_agent_config(
             name=agent_name,
             description=description or f"Robot control agent for {session.name}.",
         ),
-        system_prompt=config.system_prompt,
+        system_prompt=config.execution.stepagent.system_prompt,
         tools=tools,
         rails=rails,
         model=model,
-        max_iterations=config.max_iterations,
-        parallel_tool_calls=config.parallel_tool_calls,
+        max_iterations=config.execution.stepagent.max_iterations,
+        parallel_tool_calls=config.execution.stepagent.parallel_tool_calls,
     )

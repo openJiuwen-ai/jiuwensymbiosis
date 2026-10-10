@@ -18,6 +18,8 @@ from typing import Any
 
 import numpy as np
 
+from jiuwensymbiosis.agent.execution_config import MaskTrackingConfig as MaskTrackingConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,87 +33,6 @@ class MaskTrackingState:
     BLIND_LAST_TARGET = "blind_last_target"
     INVALID_OUTLIER = "invalid_outlier"
     LOST = "lost"
-
-
-@dataclass
-class MaskTrackingConfig:
-    """Safety thresholds for fixed-camera mask/depth target filtering.
-
-    Occlusion is intentionally mask-only: when the visible mask becomes
-    meaningfully smaller and remains mostly inside a dilation of the trusted
-    reference mask, the reference target is frozen.  Centroid and depth are
-    still used to distinguish an unchanged full mask from actual movement, but
-    never participate in the occlusion decision.  Actual movement needs two
-    mutually consistent observations before the trusted target is advanced.
-    """
-
-    enabled: bool = True
-    min_score: float = 0.35
-    dilation_px: int = 4
-    static_containment: float = 0.85
-    min_visible_ratio: float = 0.25
-    occlusion_area_ratio: float = 0.98
-    max_static_centroid_shift_px: float = 3.0
-    max_static_depth_delta_mm: float = 10.0
-    max_depth_span_mm: float = 40.0
-    min_valid_depth_ratio: float = 0.50
-    motion_min_area_ratio: float = 0.65
-    motion_confirm_frames: int = 2
-    max_motion_step_mm: float = 35.0
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.enabled, bool):
-            raise ValueError("MaskTrackingConfig.enabled must be bool")
-        if isinstance(self.dilation_px, bool) or not isinstance(self.dilation_px, int) or self.dilation_px < 0:
-            raise ValueError("MaskTrackingConfig.dilation_px must be an integer >= 0")
-        for name in ("motion_confirm_frames",):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"MaskTrackingConfig.{name} must be an integer >= 1")
-        for name in (
-            "min_score",
-            "static_containment",
-            "min_visible_ratio",
-            "occlusion_area_ratio",
-            "min_valid_depth_ratio",
-            "motion_min_area_ratio",
-        ):
-            value = getattr(self, name)
-            if not _is_unit_interval(value):
-                raise ValueError(f"MaskTrackingConfig.{name} must be finite and in [0, 1]")
-        if not 0.0 < self.motion_min_area_ratio <= 1.0:
-            raise ValueError("MaskTrackingConfig.motion_min_area_ratio must be in (0, 1]")
-        if not self.min_visible_ratio <= self.motion_min_area_ratio <= 1.0:
-            raise ValueError("MaskTrackingConfig.motion_min_area_ratio must be in [min_visible_ratio, 1]")
-        if not self.min_visible_ratio <= self.occlusion_area_ratio <= 1.0:
-            raise ValueError("MaskTrackingConfig.occlusion_area_ratio must be in [min_visible_ratio, 1]")
-        for name in (
-            "max_static_centroid_shift_px",
-            "max_static_depth_delta_mm",
-            "max_depth_span_mm",
-            "max_motion_step_mm",
-        ):
-            value = getattr(self, name)
-            if not _is_positive_finite(value):
-                raise ValueError(f"MaskTrackingConfig.{name} must be finite and > 0")
-
-
-def _is_unit_interval(value: Any) -> bool:
-    """True if ``value`` is a finite number in ``[0.0, 1.0]`` (bool rejected)."""
-    if isinstance(value, bool):
-        return False
-    if not isinstance(value, (int, float)):
-        return False
-    return math.isfinite(float(value)) and 0.0 <= float(value) <= 1.0
-
-
-def _is_positive_finite(value: Any) -> bool:
-    """True if ``value`` is finite and ``> 0.0`` (bool rejected)."""
-    if isinstance(value, bool):
-        return False
-    if not isinstance(value, (int, float)):
-        return False
-    return math.isfinite(float(value)) and float(value) > 0.0
 
 
 @dataclass(frozen=True)

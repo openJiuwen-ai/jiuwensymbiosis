@@ -47,10 +47,10 @@ class TestRailConfig:
     def test_basic(self):
         rc = RailConfig(
             rail_class_path="jiuwensymbiosis.rails.safety.SafetyRail",
-            required_flags=["enable_safety"],
+            required_flags=["safety"],
         )
         assert rc.rail_class_path == "jiuwensymbiosis.rails.safety.SafetyRail"
-        assert rc.required_flags == ["enable_safety"]
+        assert rc.required_flags == ["safety"]
 
     def test_empty_capabilities_normalized(self):
         rc = RailConfig(
@@ -66,17 +66,17 @@ class TestRailConfig:
 class TestRobotAgentConfig:
     def test_defaults(self):
         cfg = RobotAgentConfig()
-        assert cfg.mode == "hybrid"
-        assert cfg.enable_visual_feedback is True
-        assert cfg.enable_safety is True
-        assert cfg.enable_recovery is True
-        assert cfg.enable_skill is False
-        assert cfg.max_iterations == 15
+        assert cfg.execution.stepagent.mode == "hybrid"
+        assert cfg.modules.visual_feedback.enabled is False
+        assert cfg.modules.safety.enabled is True
+        assert cfg.modules.recovery.enabled is True
+        assert cfg.modules.skills.enabled is True
+        assert cfg.execution.stepagent.max_iterations == 15
 
     def test_mode_literal(self):
         for mode in ("tool", "code", "hybrid"):
-            cfg = RobotAgentConfig(mode=mode)
-            assert cfg.mode == mode
+            cfg = RobotAgentConfig(execution={"stepagent": {"mode": mode}})
+            assert cfg.execution.stepagent.mode == mode
 
     def test_strict_capabilities_default_false(self):
         cfg = RobotAgentConfig()
@@ -87,13 +87,23 @@ class TestRobotAgentConfig:
         assert cfg.strict_capabilities is True
 
     def test_fast_special_ops_default_on(self):
-        assert RobotAgentConfig().enable_fast_special_ops is True
+        assert RobotAgentConfig().execution.fastagent.tracking.enabled is True
 
     def test_fast_special_ops_settable(self):
-        assert RobotAgentConfig(enable_fast_special_ops=False).enable_fast_special_ops is False
+        assert (
+            RobotAgentConfig(
+                execution={"fastagent": {"tracking": {"enabled": False}}}
+            ).execution.fastagent.tracking.enabled
+            is False
+        )
 
     def test_fast_special_ops_from_dict(self):
-        assert RobotAgentConfig.from_dict({"enable_fast_special_ops": False}).enable_fast_special_ops is False
+        assert (
+            RobotAgentConfig.from_dict(
+                {"execution": {"fastagent": {"tracking": {"enabled": False}}}}
+            ).execution.fastagent.tracking.enabled
+            is False
+        )
 
 
 class TestPromptTemplate:
@@ -104,83 +114,82 @@ class TestPromptTemplate:
 class TestTracingAndLoggingConfig:
     def test_tracing_defaults_off(self):
         cfg = RobotAgentConfig()
-        assert cfg.enable_tracing is False
-        assert cfg.trace_max_entries == 200
-        assert cfg.trace_max_frames == 50
-        assert cfg.trace_save_frames is False
-        assert cfg.trace_console is False
-        assert cfg.trace_dir is None
+        assert cfg.modules.tracing.enabled is False
+        assert cfg.modules.tracing.max_entries == 200
+        assert cfg.modules.tracing.max_frames == 50
+        assert cfg.modules.tracing.save_frames is False
+        assert cfg.modules.tracing.console is False
+        assert cfg.modules.tracing.dir is None
 
     def test_trace_capture_loggers_default(self):
         cfg = RobotAgentConfig()
-        assert cfg.trace_capture_loggers == ["jiuwensymbiosis"]
+        assert cfg.modules.tracing.capture_loggers == ["jiuwensymbiosis"]
 
     def test_logging_defaults(self):
         cfg = RobotAgentConfig()
-        assert cfg.log_level == "INFO"
-        assert cfg.log_dir == "./logs"
+        assert cfg.logging.level == "INFO"
+        assert cfg.logging.dir == "./logs"
 
     def test_tracing_fields_settable(self):
         cfg = RobotAgentConfig(
-            enable_tracing=True,
-            trace_max_entries=10,
-            trace_save_frames=True,
-            trace_console=True,
-            trace_dir="/tmp/x",
-            log_level="DEBUG",
-            log_dir="/tmp/logs",
+            modules={
+                "tracing": {"enabled": True, "max_entries": 10, "save_frames": True, "console": True, "dir": "/tmp/x"}
+            },
+            logging={"level": "DEBUG", "dir": "/tmp/logs"},
         )
-        assert cfg.enable_tracing is True
-        assert cfg.trace_max_entries == 10
-        assert cfg.trace_save_frames is True
-        assert cfg.log_level == "DEBUG"
-        assert cfg.log_dir == "/tmp/logs"
+        assert cfg.modules.tracing.enabled is True
+        assert cfg.modules.tracing.max_entries == 10
+        assert cfg.modules.tracing.save_frames is True
+        assert cfg.logging.level == "DEBUG"
+        assert cfg.logging.dir == "/tmp/logs"
 
     def test_trace_capture_loggers_independent_default(self):
         # mutable default must not be shared across instances
         a = RobotAgentConfig()
         b = RobotAgentConfig()
-        a.trace_capture_loggers.append("custom")
-        assert b.trace_capture_loggers == ["jiuwensymbiosis"]
+        a.modules.tracing.capture_loggers.append("custom")
+        assert b.modules.tracing.capture_loggers == ["jiuwensymbiosis"]
 
 
 class TestRobotAgentConfigFromDict:
     """YAML ``agent:`` block → RobotAgentConfig.from_dict (mirrors ModelSpec/PiperConfig)."""
 
     def test_empty_or_none_returns_defaults(self):
-        assert RobotAgentConfig.from_dict(None).enable_tracing is False
-        assert RobotAgentConfig.from_dict({}).enable_tracing is False
+        assert RobotAgentConfig.from_dict(None).modules.tracing.enabled is False
+        assert RobotAgentConfig.from_dict({}).modules.tracing.enabled is False
 
     def test_applies_trace_and_logging_keys(self):
         cfg = RobotAgentConfig.from_dict(
             {
-                "enable_tracing": True,
-                "trace_save_frames": True,
-                "trace_console": True,
-                "trace_max_entries": 42,
-                "trace_max_frames": 7,
-                "log_level": "DEBUG",
-                "log_dir": "/tmp/logs",
+                "modules": {
+                    "tracing": {
+                        "enabled": True,
+                        "save_frames": True,
+                        "console": True,
+                        "max_entries": 42,
+                        "max_frames": 7,
+                    }
+                },
+                "logging": {"level": "DEBUG", "dir": "/tmp/logs"},
             }
         )
-        assert cfg.enable_tracing is True
-        assert cfg.trace_save_frames is True
-        assert cfg.trace_console is True
-        assert cfg.trace_max_entries == 42
-        assert cfg.trace_max_frames == 7
-        assert cfg.log_level == "DEBUG"
-        assert cfg.log_dir == "/tmp/logs"
+        assert cfg.modules.tracing.enabled is True
+        assert cfg.modules.tracing.save_frames is True
+        assert cfg.modules.tracing.console is True
+        assert cfg.modules.tracing.max_entries == 42
+        assert cfg.modules.tracing.max_frames == 7
+        assert cfg.logging.level == "DEBUG"
+        assert cfg.logging.dir == "/tmp/logs"
 
-    def test_pops_model_keys(self):
-        # model / model_spec are owned by the separate ``model:`` YAML block;
-        # from_dict must drop them so a stray YAML entry doesn't reach __init__
-        # (where ``model`` expects a built instance, not a dict).
-        cfg = RobotAgentConfig.from_dict({"model": {"model_name": "x"}, "model_spec": {"model_name": "x"}})
-        assert cfg.model is None
-        assert cfg.model_spec is None
+    def test_python_model_dependencies_are_not_yaml_settings(self):
+        import pytest
+
+        for key in ("model", "model_spec"):
+            with pytest.raises(TypeError, match="Python-only"):
+                RobotAgentConfig.from_dict({key: {"model_name": "x"}})
 
     def test_unknown_key_raises_typeerror(self):
-        # Catches YAML typos (e.g. ``enable_trace`` vs ``enable_tracing``) at
+        # Catches unknown YAML fields at
         # load time instead of silently ignoring them.
         import pytest
 

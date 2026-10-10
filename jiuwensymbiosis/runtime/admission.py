@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -58,6 +58,7 @@ def admitted_session(
     session: Any | None = None,
     resource_manager: ResourceManager | None = None,
     operation: str = "cli-task",
+    configure_session: Callable[[Any], None] | None = None,
     unsafe_cleanup_errors: tuple[type[BaseException], ...] = (),
 ) -> Iterator[Any]:
     """Acquire a binding's resources before connecting and release only if clean.
@@ -82,6 +83,8 @@ def admitted_session(
     try:
         if active_session is None:
             active_session = binding.build_session()
+        if configure_session is not None:
+            configure_session(active_session)
         active_session.connect()
         yield active_session
     except BaseException as exc:

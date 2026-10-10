@@ -36,6 +36,7 @@ pages follow the same paths and user tasks.
 - [Feature Matrix](reference/feature-matrix.md)
 - [Command-Line Reference](reference/cli.md)
 - [Agent and Framework API Reference](reference/framework-api.md)
+- [Complete Agent Configuration Reference](reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](reference/robot-api.md)
 - [Execution Tracing Reference](reference/tracing.md)
 

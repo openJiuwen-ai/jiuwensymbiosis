@@ -659,6 +659,10 @@ class TestSavingTheResult:
     def wizard(self, tools, tmp_path, monkeypatch):
         monkeypatch.setattr(registry, "configs_dir", lambda: tmp_path / "configs")
         tools._state.current_body = "so101"
+        source = tmp_path / "configs" / "so101" / "so101.yaml"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("env:\n  cfg:\n    low_level:\n      port: /dev/test\n", encoding="utf-8")
+        tools._state.current_config_file = str(source)
         calibration = tools._calibration
         calibration.refresh()
         return calibration
