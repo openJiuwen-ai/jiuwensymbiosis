@@ -18,7 +18,7 @@ from jiuwensymbiosis.calibration.domain.models import ViewDetection
 from jiuwensymbiosis.calibration.domain.solver import _require_cv2
 from jiuwensymbiosis.utils.geometry import make_transform
 
-logger = logging.getLogger("calibrate_hand_eye")
+logger = logging.getLogger("jiuwensymbiosis.calibration.board")
 
 
 @dataclass(frozen=True)

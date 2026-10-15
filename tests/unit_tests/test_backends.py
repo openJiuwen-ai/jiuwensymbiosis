@@ -27,8 +27,7 @@ def test_simulator_discovery_does_not_import_its_client(monkeypatch):
     assert name not in sys.modules
 
 
-def test_existing_robosim_yaml_builds_through_cli_and_gui(monkeypatch, tmp_path):
-    from jiuwensymbiosis.gui import registry
+def test_existing_robosim_yaml_builds_through_cli(monkeypatch, tmp_path):
     from jiuwensymbiosis.introspect import build_session
     from jiuwensymbiosis.simulators.robosim import RobosimApi, RobosimEnv, build_robosim_session
 
@@ -38,12 +37,8 @@ def test_existing_robosim_yaml_builds_through_cli_and_gui(monkeypatch, tmp_path)
     monkeypatch.setattr(RobosimEnv, "connect", forbidden)
     config = tmp_path / "moz1.yaml"
     config.write_text("adapter: robosim\nside: right\nload_robot: false\n", encoding="utf-8")
-    body = registry._body_from_dict({"key": "moz1", "adapter": "robosim"})
-    assert body is not None
-    assert body.adapter_module() == "jiuwensymbiosis.simulators.robosim"
     sessions = [
         build_session(str(config)),
-        body.build_real_session({"adapter": "robosim", "side": "right", "load_robot": False}, include_sidecars=False),
         build_robosim_session.from_yaml(config),
     ]
     for session in sessions:
@@ -54,9 +49,7 @@ def test_existing_robosim_yaml_builds_through_cli_and_gui(monkeypatch, tmp_path)
 
 
 def test_unknown_backend_remains_unavailable():
-    from jiuwensymbiosis.gui import registry
 
-    assert registry._body_from_dict({"key": "missing", "adapter": "does_not_exist"}) is None
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(backend_module_name("does_not_exist"))
 
@@ -64,3 +57,31 @@ def test_unknown_backend_remains_unavailable():
 def test_robosim_is_no_longer_in_the_hardware_namespace():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("jiuwensymbiosis.adapters.robosim")
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8001/", "http://127.0.0.1:8001", "http://[::1]:8001"])
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_runtime_binding_serializes_shared_service(url, side, tmp_path):
+    from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+    config = tmp_path / "robosim.yaml"
+    config.write_text(f"adapter: robosim\nservice_url: '{url}'\nside: {side}\n")
+    binding = prepare_binding(config)
+    assert binding.resources == ("robosim:local:8001",)
+    config.write_text("adapter: does_not_exist\n")
+    assert binding.build_session().env.cfg.side == side
+
+
+def test_shipped_robosim_config_uses_grouped_agent_schema():
+    from pathlib import Path
+
+    import yaml
+
+    from jiuwensymbiosis.agent.config import RobotAgentConfig
+    from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+    source = Path(__file__).resolve().parents[2] / "configs/robosim/moz1.yaml"
+    data = yaml.safe_load(source.read_text())
+    cfg = RobotAgentConfig.from_dict(data["agent"])
+    assert not cfg.modules.visual_feedback.enabled
+    assert prepare_binding(source).resources == ("robosim:local:8001",)

@@ -17,13 +17,17 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 | `--mock` | In-memory dry run for Piper only (MockArmEnv + offline model); implies `--stepagent` |
 | `--stepagent` | Force per-step LLM (single-step debugging); default is `fastagent` (compile once, no per-step LLM) |
 | `--voice` / `--voice-text` / `--voice-audio-file` / `--voice-once` / `--no-wake` / `--tts` / `--asr-device` | Voice mode |
-| `--no-skill` | Disable SkillUseRail + the robot_control dispatcher |
+| `--no-skill` | Disable skill knowledge; fastagent composes actions directly |
 | `--mode` | `tool` / `code` / `hybrid` |
 | `--no-visual-feedback` | Disable VisualFeedbackRail |
 | `--server-url` / `--model` / `--api-key` | Override LLM endpoint/model/key |
 | `--max-iter` / `--workspace` / `--debug` | Iteration cap, workspace, log level |
 
 `--mock` uses an offline model and a Mock environment; `--control-hz`/`--servo-step-mm` tune the fastagent real-time servo.
+
+See the [complete agent configuration](agent-config.md) for fields and shared defaults. Fastagent uses skills by default; `--no-skill` selects action composition and keeps the action dispatcher available.
+The CLI builds `ModelSpec` from the top-level `model:` block and explicit LLM arguments; Python callers must supply `model_spec`.
+`--mode`, `--max-iter`, `--control-hz` and `--servo-step-mm` override YAML only when explicitly supplied.
 
 ## piper-pick-demo
 
@@ -45,12 +49,18 @@ default browser; `--text` outputs a terminal timeline.
 ## jiuwensymbiosis-gui
 
 ```bash
-jiuwensymbiosis-gui
-# equivalent to
-python -m jiuwensymbiosis.gui
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
 ```
 
-Starts the NiceGUI browser UI listening on `127.0.0.1:8770`. When a dependency is missing, the preflight check prompts the user to install `.[gui]`.
+`--gui` selects an installed GUI plugin and defaults to `workbench`; `--list-guis` lists available plugins. `--config`,
+`--workspace`, `--host`, `--port`, and `--no-browser` configure the selected app. `--gui-config` passes plugin-specific
+settings when that plugin supports them. The launcher loads only the selected plugin's application entry point. Install
+that plugin and its documented dependencies in the same Python environment; the `.[gui]` extra supplies the current
+workbench's NiceGUI dependencies.
+
+`python -m jiuwensymbiosis.gui` remains as a temporary compatibility shim and forwards to the unified launcher.
 
 ## Hand-eye calibration
 

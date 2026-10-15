@@ -19,7 +19,7 @@ see the [Tracing reference](../reference/tracing.md); for the implementation mec
 | **Persistence** | One JSON per invoke written to `<workspace>/traces/`, vision frames to `frames/{run_token}/` |
 | **Replayable** | `jiuwensymbiosis-replay <trace.json>` replays a text timeline, optionally showing frames |
 | **Zero intrusion** | Changes no `@implements`, no env, and no existing behavior of any other rail |
-| **Off by default** | `enable_tracing=False`; zero overhead when off, breaking no existing deployment |
+| **Off by default** | `modules.tracing.enabled=False`; zero overhead when off, breaking no existing deployment |
 | **Bounded overhead** | `max_entries` / `max_frames` truncate; frame persistence is capped per frame budget |
 
 ---
@@ -33,36 +33,32 @@ There are two equivalent ways; **the configuration file is recommended** (declar
 #### Option 1: Configuration file (recommended)
 
 Add an `agent:` block to the task YAML. It sits beside `env:` (hardware), `model:` (model) and `api_servers:`
-(detection service) as the declarative entry point for agent behavior; every field is optional and defaults to off:
+(detection service) as the declarative entry point for agent behavior; every field is optional and tracing defaults to off:
 
 ```yaml
-# configs/piper/piper.yaml
 agent:
-  enable_tracing: true        # master switch (default False)
-  trace_save_frames: true     # save JPEG frames to traces/frames/{run_token}/
-  trace_console: true         # print a live per-turn one-liner to stdout
-  trace_max_entries: 200      # max steps recorded (oldest dropped past this)
-  trace_max_frames: 50        # max frames saved per invoke
-  # log_level: INFO           # log level (see logging.md)
-  # log_dir: ./logs           # writes to ./logs by default; null means console only
-  # trace_dir: ./traces       # override the trace directory (default <workspace>/traces)
-  # trace_capture_loggers: ["jiuwensymbiosis"]  # whose WARNING+ TraceLogHandler captures
-  # enable_diagnosis: true    # online diagnosis: after a failed step, feed "current params + relevant history + system state" into the next LLM turn (requires enable_tracing)
-  # diagnosis_max_chars: 1500 # soft cap on the diagnosis message; over the cap history is dropped first, keeping the current step + system state
-  # diagnosis_history_steps: 3  # how many steps of causal chain to look back (same tool or same class of rail event)
-  # diagnosis_history_kinds: ["reject", "recover"]  # rail_events kinds treated as relevant
+  modules:
+    tracing:
+      enabled: true
+      save_frames: true
+      console: true
+      max_entries: 200
+      max_frames: 50
+      capture_loggers: ["jiuwensymbiosis"]
 ```
 
 `build_robot_agent` reads this block, assembles the `TraceRail`, injects the sink into three rails, and attaches
 `TraceLogHandler` — no extra wiring by hand. The `agent:` block is **entirely optional and purely additive**: leave it
-out and an existing YAML still runs on the defaults (everything off).
+out and tracing stays off; other modules use their own defaults.
 
-> Field names must match `RobotAgentConfig` exactly (for instance `enable_tracing`, not `enable_trace`). A misspelling
+> Field names must match the schema (for instance `modules.tracing.enabled`). A misspelling
 > raises `TypeError` at load time instead of being silently ignored — deliberately, to avoid the hidden "configured but
 > not in effect" trap.
 
 Command-line switches (such as `--mode`, `--no-skill`, `--max-iter`, `--workspace`) layer on top of the `agent:` block
 without conflict: YAML sets the baseline, the CLI makes a temporary adjustment.
+
+See [complete agent configuration](../reference/agent-config.md) for all fields and constraints. Diagnosis requires `execution.mode: stepagent` with both `modules.diagnosis.enabled` and `modules.tracing.enabled` enabled.
 
 #### Option 2: Python code
 
@@ -72,15 +68,14 @@ Pass the fields directly when constructing `RobotAgentConfig`; this is equivalen
 from jiuwensymbiosis.agent.config import RobotAgentConfig
 
 config = RobotAgentConfig(
-    enable_tracing=True,
-    trace_save_frames=True,
-    trace_console=True,
+    execution={"mode": "stepagent"},
+    modules={"tracing": {"enabled": True, "save_frames": True, "console": True}},
 )
 agent = build_robot_agent(session, config)
 ```
 
 `RobotAgentConfig.from_dict(mapping)` is the shared foundation under both paths: it feeds a dict (i.e. the YAML
-`agent:` block) into the dataclass, automatically strips `model`/`model_spec` (those belong to the `model:` block), and
+`agent:` block) into the dataclass, rejects Python-only `model`/`model_spec` keys (YAML model settings belong to the top-level `model:` block), and
 raises on unknown keys. The configuration-file path is simply the demo calling it internally.
 
 ### Where Trace files are stored
@@ -107,7 +102,7 @@ traces/
 ```
 
 - **Trace JSON**: `{run_token}.json`, one per invoke.
-- **Frame images** (only with `trace_save_frames=True`): `traces/frames/{run_token}/step_NNN.jpg`, in a **separate
+- **Frame images** (only with `modules.tracing.save_frames=True`): `traces/frames/{run_token}/step_NNN.jpg`, in a **separate
   subdirectory per invoke**, so step numbers never overwrite each other across runs.
 
 `run_token` = `{safe_cid}_{timestamp}_{microseconds}_{pid}`, exactly matching that invoke's JSON filename — so the
@@ -116,10 +111,10 @@ frames referenced by any historical trace stay valid forever.
 `step_000.jpg` is the initial frame. A later step's before-frame is the previous step's after-frame, so tracing does not
 capture two images for every action.
 
-Set `trace_dir` to override only the trace output directory. Set `trace_save_frames: false` when image evidence is not
+Set `modules.tracing.dir` to override only the trace output directory. Set `modules.tracing.save_frames: false` when image evidence is not
 needed or storage is constrained.
 
-With `trace_console: true`, each tool call prints a compact start/result line:
+With `modules.tracing.console: true`, each tool call prints a compact start/result line:
 
 ```text
 [trace] #1 goto_xyzr({'x': 150, 'y': 0, 'z': 80}) …
@@ -186,8 +181,8 @@ Operational constraints:
 
 - Tracing cannot be combined with `parallel_tool_calls=True`; step attribution uses serial Rail context.
 - Motion/grasp sessions reject parallel tool dispatch independently because concurrent physical actions are unsafe.
-- `trace_max_entries` drops the oldest in-memory entries when the cap is exceeded.
-- `trace_max_frames` includes the initial frame.
+- `modules.tracing.max_entries` drops the oldest in-memory entries when the cap is exceeded.
+- `modules.tracing.max_frames` includes the initial frame.
 - Session teardown flushes a pending trace and detaches the warning handler even if normal invoke finalization did not run.
 
 Use the [tracing reference](../reference/tracing.md) for the complete schema and configuration table, and

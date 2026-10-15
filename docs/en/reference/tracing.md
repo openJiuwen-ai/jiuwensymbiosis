@@ -7,21 +7,23 @@ are documented in [design/tracing.md](../../../design/tracing.md).
 
 ## 1. Configuration
 
+Paths in the table are relative to `agent`: `modules.tracing.*`, `modules.diagnosis.*` and `logging.*`; see [complete agent configuration](agent-config.md). Diagnosis is stepagent-only and enabling it without tracing is an error.
+
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `enable_tracing` | `False` | Master Trace switch |
-| `trace_max_entries` | `200` | Maximum retained tool steps |
-| `trace_max_frames` | `50` | Maximum JPEG frames per invoke, including the initial frame |
-| `trace_save_frames` | `False` | Save frames under `frames/<run-token>/` |
-| `trace_console` | `False` | Print the live per-step dashboard |
-| `trace_dir` | `None` | Override `<workspace>/traces` |
-| `trace_capture_loggers` | `["jiuwensymbiosis"]` | Logger namespaces captured by `TraceLogHandler` |
-| `enable_diagnosis` | `False` | Inject online failure evidence; requires tracing |
-| `diagnosis_max_chars` | `1500` | Soft maximum diagnosis length |
-| `diagnosis_history_steps` | `3` | Maximum related historical steps |
-| `diagnosis_history_kinds` | `("reject", "recover")` | Rail event kinds treated as related history |
-| `log_level` | `"INFO"` | Framework logging level |
-| `log_dir` | `"./logs"` | Framework file directory; `None` is console-only |
+| `modules.tracing.enabled` | `False` | Master Trace switch |
+| `modules.tracing.max_entries` | `200` | Maximum retained tool steps |
+| `modules.tracing.max_frames` | `50` | Maximum JPEG frames per invoke, including the initial frame |
+| `modules.tracing.save_frames` | `False` | Save frames under `frames/<run-token>/` |
+| `modules.tracing.console` | `False` | Print the live per-step dashboard |
+| `modules.tracing.dir` | `None` | Override `<workspace>/traces` |
+| `modules.tracing.capture_loggers` | `["jiuwensymbiosis"]` | Logger namespaces captured by `TraceLogHandler` |
+| `modules.diagnosis.enabled` | `False` | Inject online failure evidence; requires tracing |
+| `modules.diagnosis.max_chars` | `1500` | Soft maximum diagnosis length |
+| `modules.diagnosis.history_steps` | `3` | Maximum related historical steps |
+| `modules.diagnosis.history_kinds` | `("reject", "recover")` | Rail event kinds treated as related history |
+| `logging.level` | `"INFO"` | Framework logging level |
+| `logging.dir` | `"./logs"` | Framework file directory; `None` is console-only |
 
 ## 2. Core abstractions
 

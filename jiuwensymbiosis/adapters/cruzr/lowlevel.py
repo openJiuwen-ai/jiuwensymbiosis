@@ -25,6 +25,7 @@ from typing import Any, Optional
 import numpy as np
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.perception.frame import CameraFrame
 from jiuwensymbiosis.ros2 import worker as ros2_worker
 from jiuwensymbiosis.ros2.image_decode import decode_image_msg as decode_image_msg  # re-export
@@ -41,6 +42,16 @@ class CruzrLowLevel:
         self._camera_obj = None  # 懒创建的 CruzrCamera
         self._nav_obj = None  # 懒创建的 CruzrNav
         self._closed = False
+        self._rclpy = None
+        self._owns_rclpy_context = False
+        self._node = None
+        self._publisher = None
+        self._subscription = None
+        self._executor = None
+        self._spin_thread = None
+        self._executor_shutdown = False
+        self._node_added = False
+        self._node_removed = False
         self._latest_joints: dict[str, float] = {}
         self._lock = threading.RLock()
         self._head_fk_cache: Optional[tuple] = None   # (urdf_path, model, data, frame_id), built on first use
@@ -62,33 +73,45 @@ class CruzrLowLevel:
         self._rclpy = rclpy
         self._joint_cmd_cls = JointCmd
         self._robot_command_cls = RobotCommand
+        try:
+            if not rclpy.ok():
+                # Mark ownership before init so a partial init error gets a
+                # matching shutdown attempt in the constructor rollback.
+                self._owns_rclpy_context = True
+                rclpy.init(args=None, domain_id=cfg.ros_domain_id)
+            elif rclpy.get_default_context().get_domain_id() != cfg.ros_domain_id:
+                raise ValueError("Existing ROS context domain does not match the admitted Cruzr configuration")
 
-        if not rclpy.ok():
-            rclpy.init(args=None)
-            self._owns_rclpy_context = True
-        else:
-            self._owns_rclpy_context = False
+            self._node = rclpy.create_node("jiuwensymbiosis_cruzr")
+            self._publisher = self._node.create_publisher(RobotCommand, cfg.command_topic, 10)
 
-        self._node = rclpy.create_node("jiuwensymbiosis_cruzr")
-        self._publisher = self._node.create_publisher(RobotCommand, cfg.command_topic, 10)
+            qos = QoSProfile(depth=10)
+            qos.reliability = ReliabilityPolicy.BEST_EFFORT
+            qos.durability = DurabilityPolicy.VOLATILE
+            qos.history = HistoryPolicy.KEEP_LAST
+            self._subscription = self._node.create_subscription(
+                RobotState,
+                cfg.state_topic,
+                self._on_robot_state,
+                qos,
+            )
+            self._executor = SingleThreadedExecutor()
+            added = self._executor.add_node(self._node)
+            if added is False:
+                raise RuntimeError("Cruzr ROS 2 executor refused its node")
+            self._node_added = True
+            self._spin_thread = threading.Thread(target=self._spin, name="cruzr-ros2-spin", daemon=True)
+            self._spin_thread.start()
 
-        qos = QoSProfile(depth=10)
-        qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        qos.durability = DurabilityPolicy.VOLATILE
-        qos.history = HistoryPolicy.KEEP_LAST
-        self._subscription = self._node.create_subscription(
-            RobotState,
-            cfg.state_topic,
-            self._on_robot_state,
-            qos,
-        )
-        self._executor = SingleThreadedExecutor()
-        self._executor.add_node(self._node)
-        self._spin_thread = threading.Thread(target=self._spin, name="cruzr-ros2-spin", daemon=True)
-        self._spin_thread.start()
-
-        logger.info("[Cruzr] connected command_topic=%s state_topic=%s", cfg.command_topic, cfg.state_topic)
-        self._await_first_state(5.0)
+            logger.info("[Cruzr] connected command_topic=%s state_topic=%s", cfg.command_topic, cfg.state_topic)
+            self._await_first_state(5.0)
+        except BaseException as original:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                cleanup_errors = cleanup.cleanup_errors if isinstance(cleanup, HardwareCleanupError) else (cleanup,)
+                raise HardwareCleanupError("CruzrLowLevel.__init__", original, cleanup_errors) from original
+            raise
 
     def _await_first_state(self, timeout_s: float) -> None:
         """Block until the first joint-state frame arrives, so DDS discovery completes
@@ -274,35 +297,104 @@ class CruzrLowLevel:
 
     # ----------------------------------------------------------------- lifecycle
     def close(self) -> None:
-        """Stop executor and destroy the ROS 2 node. Idempotent."""
+        """Stop workers and release ROS 2 handles, retaining failed steps for retry."""
         if self._closed:
             return
-        self._closed = True
-        for obj in (self._camera_obj, self._nav_obj):   # stop any resident workers first
+        errors: list[BaseException] = []
+
+        # Resident subprocesses are independent of the in-process ROS executor;
+        # attempt each one even if another worker fails and drop only successful
+        # owners so a repeated close never repeats completed work.
+        for attr in ("_camera_obj", "_nav_obj"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
             try:
-                if obj is not None:
-                    obj.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[Cruzr] worker close failed: %s", exc)
-        try:
-            self._executor.shutdown()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[Cruzr] executor shutdown failed: %s", exc)
-        if self._spin_thread.is_alive():
-            self._spin_thread.join(timeout=1.0)
-        try:
-            self._executor.remove_node(self._node)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self._node.destroy_node()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[Cruzr] node destroy failed: %s", exc)
-        if self._owns_rclpy_context:
+                obj.close()
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] %s close failed: %s", attr, exc)
+            else:
+                setattr(self, attr, None)
+
+        executor = self._executor
+        thread = self._spin_thread
+        executor_shutdown = executor is None or self._executor_shutdown
+        if executor is not None and not self._executor_shutdown:
+            try:
+                shutdown_result = executor.shutdown()
+                if shutdown_result is False:
+                    raise TimeoutError("Cruzr ROS 2 executor shutdown did not complete")
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] executor shutdown failed: %s", exc)
+            else:
+                self._executor_shutdown = True
+                executor_shutdown = True
+
+        thread_stopped = thread is None or not thread.is_alive()
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(timeout=1.0)
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] ROS 2 spin thread join failed: %s", exc)
+            thread_stopped = not thread.is_alive()
+            if not thread_stopped:
+                exc = TimeoutError("Cruzr ROS 2 spin thread is still alive after join timeout")
+                errors.append(exc)
+                logger.warning("[Cruzr] %s", exc)
+
+        ros_stopped = executor_shutdown and thread_stopped
+        node_pending = self._node_added and not self._node_removed
+        if ros_stopped and executor is not None and node_pending:
+            try:
+                removed = executor.remove_node(self._node)
+                if removed is False:
+                    raise RuntimeError("Cruzr ROS 2 executor did not remove its node")
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] executor remove_node failed: %s", exc)
+            else:
+                self._node_removed = True
+
+        node_detached = self._node is None or not self._node_added or self._node_removed
+        if ros_stopped and node_detached and self._node is not None:
+            try:
+                self._node.destroy_node()
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] node destroy failed: %s", exc)
+            else:
+                self._node = None
+                self._publisher = None
+                self._subscription = None
+
+        node_destroyed = self._node is None
+        if ros_stopped and node_destroyed and self._owns_rclpy_context:
             try:
                 self._rclpy.shutdown()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[Cruzr] rclpy shutdown failed: %s", exc)
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("[Cruzr] rclpy shutdown failed: %s", exc)
+            else:
+                self._owns_rclpy_context = False
+
+        if thread is not None and not thread.is_alive():
+            self._spin_thread = None
+        if self._executor is not None and self._executor_shutdown and node_destroyed:
+            self._executor = None
+
+        self._closed = (
+            self._camera_obj is None
+            and self._nav_obj is None
+            and self._executor is None
+            and self._spin_thread is None
+            and self._node is None
+            and not self._owns_rclpy_context
+        )
+        if errors:
+            raise HardwareCleanupError("CruzrLowLevel.close", cleanup_errors=errors) from errors[0]
 
     # ---------------------------------------------------------------- callbacks
     def _spin(self) -> None:
@@ -650,7 +742,8 @@ class CruzrCamera:
     def _run_and_read_once(self, build_cmd, reader):
         """One frame-grab attempt: run the worker in a temp dir and, on a valid (ok) result, call
         ``reader(out, meta)`` INSIDE the temp dir (its files vanish on exit) and return that value.
-        Returns None on any subprocess / meta failure. Shared by ``_grab`` (waist/head RGB[D]) and
+        Returns None on ordinary subprocess / meta failure. If stopping a resident worker is
+        unconfirmed, that cleanup error propagates. Shared by ``_grab`` (waist/head RGB[D]) and
         ``grab_head_frame`` (head RGB + point cloud).
         """
         if getattr(self.cfg, "resident_workers", False):
@@ -694,9 +787,9 @@ class CruzrCamera:
 
     def _resident_grab(self, build_cmd, reader):
         """Resident-worker grab: reuse a persistent --serve camera worker (rclpy/TF kept warm) by
-        writing a 'grab <dir>' request and reading back one meta line. Returns None on any failure
-        (dropping the handle so ``_run_and_read``'s retry restarts a fresh worker) — same contract as
-        ``_run_and_read_once``.
+        writing a 'grab <dir>' request and reading back one meta line. Returns None on ordinary
+        failures after the worker is confirmed stopped, so ``_run_and_read`` can retry with a fresh
+        worker. An unconfirmed stop propagates and prevents a blind restart.
         """
         worker = self._ensure_resident(build_cmd)
         with tempfile.TemporaryDirectory(prefix="cruzr_cam_") as tmp:
@@ -733,10 +826,17 @@ class CruzrCamera:
         return worker
 
     def close(self) -> None:
-        """Stop all persistent camera workers. Idempotent."""
-        for worker in list(self._resident.values()):
-            worker.stop()
-        self._resident.clear()
+        """Stop persistent camera workers and retain the ones that failed."""
+        errors: list[BaseException] = []
+        for command, worker in list(self._resident.items()):
+            try:
+                worker.stop()
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._resident.pop(command, None)
+        if errors:
+            raise HardwareCleanupError("CruzrCamera.close", cleanup_errors=errors) from errors[0]
 
     def _worker_env(self, cmd: list) -> dict[str, str]:
         """Use the configured RMW and default Fast DDS transports by default."""
@@ -784,7 +884,33 @@ class CruzrNav:
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
         self._worker = ros2_worker.worker_path("jiuwensymbiosis.adapters.cruzr.ros2.wheel_worker")
-        self._move = ros2_worker.ResidentWorker(self._serve_cmd, label="[CruzrNav] move")
+        self._move = ros2_worker.ResidentWorker(
+            self._serve_cmd, label="[CruzrNav] move", env_fn=self._worker_env)
+        self._cleanup_errors: list[BaseException] = []
+        self._active_workers: dict[subprocess.Popen, str] = {}
+
+    def _check_cleanup(self) -> None:
+        if self._cleanup_errors:
+            raise HardwareCleanupError("CruzrNav", cleanup_errors=self._cleanup_errors)
+
+    def _run_once(
+        self, cmd: list[str], *, timeout_s: float, label: str, reason_prefix: str, env: dict[str, str]
+    ) -> dict:
+        self._check_cleanup()
+        try:
+            return ros2_worker.run_once(
+                cmd, timeout_s=timeout_s, label=label, reason_prefix=reason_prefix, env=env
+            )
+        except BaseException as exc:
+            # Tool/agent code can catch a motion failure. close() must still
+            # report the unconfirmed stop to resource admission afterwards.
+            self._cleanup_errors.append(exc)
+            raise
+
+    def _worker_env(self, _cmd: list[str]) -> dict[str, str]:
+        env = os.environ.copy()
+        env["ROS_DOMAIN_ID"] = str(self.cfg.ros_domain_id)
+        return env
 
     def navigate_relative(self, dx: float, dy: float = 0.0, dyaw: float = 0.0, *,
                           k_rot: Optional[float] = None,
@@ -795,8 +921,9 @@ class CruzrNav:
         k_rot/k_rot_slow_rad/k_fwd 非 None 时覆盖全局 base_k_*(approach 精定位用温和值,搜索大转身用全局快值)。
 
         失败 reason ∈ {no_odom, rotate_timeout, forward_timeout, lidar_blocked,
-        wheel_worker_error, wheel_worker_failed, wheel_no_output, wheel_bad_output}。
+        wheel_worker_error}；worker 超时/异常退出等无法确认停止时抛出清理异常。
         """
+        self._check_cleanup()
         if getattr(self.cfg, "resident_workers", False):
             res = self._resident_move_request(dx, dyaw, k_rot, k_rot_slow_rad, k_fwd)
             if res is not None:
@@ -826,15 +953,17 @@ class CruzrNav:
             "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
             "--timeout", str(timeout_s),
         ]
-        return ros2_worker.run_once(
-            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] wheel", reason_prefix="wheel_")
+        return self._run_once(
+            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] wheel", reason_prefix="wheel_",
+            env=self._worker_env(cmd))
 
     def navigate_arc(self, radius: float, dyaw: float, *, k_fwd: Optional[float] = None) -> dict:
         """沿【定曲率弧】前进(边转边走):半径 radius(m)、总转角 dyaw(rad,有符号,+=左/CCW),
         odom 测瞬时曲率伺服(不需轮径/轮距标定)、按累计转角停。用于抓取精定位把底盘"拐上"面法线线。
         返回 {ok, reason, yaw_turned, dist_traveled}。落点位置误差由随后视觉纠正的直入吸收。
 
-        失败 reason ∈ {no_odom, arc_timeout, arc_len_cap, lidar_blocked, wheel_worker_*}。
+        失败 reason ∈ {no_odom, arc_timeout, arc_len_cap, lidar_blocked, wheel_worker_error}。
+        worker 超时/异常退出等无法确认停止时抛出清理异常。
         """
         c = self.cfg
         timeout_s = float(getattr(c, "base_move_timeout_s", 20.0))
@@ -857,8 +986,9 @@ class CruzrNav:
             "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
             "--timeout", str(timeout_s),
         ]
-        return ros2_worker.run_once(
-            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] arc", reason_prefix="wheel_")
+        return self._run_once(
+            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] arc", reason_prefix="wheel_",
+            env=self._worker_env(cmd))
 
     def _serve_cmd(self) -> list[str]:
         """CLI for a persistent --serve wheel worker. Global base_k_* are the startup defaults; each
@@ -890,22 +1020,50 @@ class CruzrNav:
     def _resident_move_request(self, dx, dyaw, k_rot, k_rot_slow, k_fwd) -> Optional[dict]:
         """Send one 'dx dyaw k_rot k_fwd k_rot_slow' request to the persistent --serve wheel worker and
         read back its JSON result. Returns None (→ caller falls back to the one-shot path) when the
-        worker can't be started or dies mid-request.
+        worker can't be started or a failed request is cleanly stopped. An unconfirmed worker stop
+        propagates so the caller cannot issue a second base command blindly.
         """
         c = self.cfg
         krot = k_rot if k_rot is not None else getattr(c, "base_k_rot", 0.6)
         kfwd = k_fwd if k_fwd is not None else getattr(c, "base_k_fwd", 0.8)
         krot_slow = k_rot_slow if k_rot_slow is not None else getattr(c, "base_k_rot_slow_rad", 0.5)
         timeout_s = float(getattr(c, "base_move_timeout_s", 20.0))
-        return self._move.request_json(
-            f"{dx} {dyaw} {krot} {kfwd} {krot_slow}",
-            timeout_s * 2 + 20.0,
-            bad_output_reason="wheel_bad_output",
-        )
+        try:
+            return self._move.request_json(
+                f"{dx} {dyaw} {krot} {kfwd} {krot_slow}",
+                timeout_s * 2 + 20.0,
+                bad_output_reason="wheel_bad_output",
+            )
+        except BaseException as exc:
+            # Preserve uncertainty across every command strategy, even if the
+            # agent catches this failure and next requests arc/spin/drive.
+            self._cleanup_errors.append(exc)
+            raise
 
     def close(self) -> None:
-        """Stop the persistent move worker. Idempotent."""
-        self._move.stop()
+        """Stop every owned wheel worker; retain unconfirmed physical stops."""
+        errors: list[BaseException] = []
+        try:
+            self._move.stop()
+        except BaseException as exc:
+            errors.append(exc)
+        for proc, kind in tuple(self._active_workers.items()):
+            try:
+                self._stop_worker(proc, kind)
+            except BaseException:
+                pass  # _stop_worker retains the failure and any live handle.
+        if errors or self._cleanup_errors:
+            raise HardwareCleanupError("CruzrNav.close", cleanup_errors=(*errors, *self._cleanup_errors))
+
+    def _stop_worker(self, proc: subprocess.Popen, kind: str) -> dict:
+        try:
+            return ros2_worker.stop_and_collect(proc, label=f"[CruzrNav] {kind}", kind=kind)
+        except BaseException as exc:
+            self._cleanup_errors.append(exc)
+            raise
+        finally:
+            if proc.poll() is not None:
+                self._active_workers.pop(proc, None)
 
     def _spin_cmd(self, direction: float) -> list[str]:
         c = self.cfg
@@ -931,23 +1089,24 @@ class CruzrNav:
         The worker self-bounds (``search_spin_max_rad`` / ``search_spin_timeout_s``) and stops on
         stdin EOF, so a crashed parent can't leave the base spinning.
         """
-        return subprocess.Popen(
-            self._spin_cmd(direction), stdin=subprocess.PIPE,
+        self._check_cleanup()
+        proc = subprocess.Popen(
+            self._spin_cmd(direction), stdin=subprocess.PIPE, env=self._worker_env([]),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self._active_workers[proc] = "spin"
+        return proc
 
     @staticmethod
     def spin_running(proc: subprocess.Popen) -> bool:
         """True while the spin worker is still rotating (has not exited on its own)."""
         return proc.poll() is None
 
-    @staticmethod
-    def stop_spin(proc: subprocess.Popen) -> dict:
+    def stop_spin(self, proc: subprocess.Popen) -> dict:
         """Halt the spin worker and collect its result. Sends the stdin 'stop' sentinel (clean
         wheel stop) when still running, else just drains the completed run. Falls back to
-        SIGTERM (handled → clean stop) then kill, so the base is never left commanded.
+        SIGTERM then kill; unconfirmed actuator stops remain cleanup failures.
         """
-        return ros2_worker.stop_and_collect(
-            proc, label="[CruzrNav] spin", kind="spin", empty_result={"ok": True, "yaw_turned": 0.0})
+        return self._stop_worker(proc, "spin")
 
     def _forward_cmd(self, *, k_fwd: Optional[float] = None, fwd_max_m: Optional[float] = None) -> list[str]:
         c = self.cfg
@@ -980,9 +1139,12 @@ class CruzrNav:
         stdin EOF, so a crashed parent can't leave the base driving. ``k_fwd`` / ``fwd_max_m`` override the
         creep speed / self-bound for the fine grasp servo (slower + a tighter cap); ``None`` = config default.
         """
-        return subprocess.Popen(
-            self._forward_cmd(k_fwd=k_fwd, fwd_max_m=fwd_max_m), stdin=subprocess.PIPE,
+        self._check_cleanup()
+        proc = subprocess.Popen(
+            self._forward_cmd(k_fwd=k_fwd, fwd_max_m=fwd_max_m), stdin=subprocess.PIPE, env=self._worker_env([]),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self._active_workers[proc] = "drive"
+        return proc
 
     @staticmethod
     def drive_running(proc: subprocess.Popen) -> bool:
@@ -1015,11 +1177,9 @@ class CruzrNav:
         except Exception as exc:  # noqa: BLE001 — broken pipe / closed stdin → ignore, drive self-bounds
             logger.debug("[CruzrNav] hold_drive ignored (%s)", exc)
 
-    @staticmethod
-    def stop_drive(proc: subprocess.Popen) -> dict:
+    def stop_drive(self, proc: subprocess.Popen) -> dict:
         """Halt the forward worker and collect its result. Sends the stdin 'stop' sentinel (clean
         wheel stop) when still running, else just drains the completed run. Falls back to SIGTERM
-        (handled → clean stop) then kill, so the base is never left commanded.
+        then kill; unconfirmed actuator stops remain cleanup failures.
         """
-        return ros2_worker.stop_and_collect(
-            proc, label="[CruzrNav] drive", kind="drive", empty_result={"ok": True, "dist_traveled": 0.0})
+        return self._stop_worker(proc, "drive")

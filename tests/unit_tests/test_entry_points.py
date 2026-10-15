@@ -1,12 +1,11 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Every shipped adapter is reachable from every entry point.
+"""The task runner can build a session for every shipped adapter.
 
-The runner and the GUI each keep their own list of bodies, and they drifted:
-SO-101 shipped without a runner entry, Cruzr without a GUI entry — so a body was
-runnable one way and invisible the other. This pins both lists to the set of
-adapters that actually ship a default config.
+SO-101 once shipped without a runner entry, so this pins the runner's adapter
+registry to the set of adapters that actually ship a default config. The
+workbench's corresponding list is covered by its own GUI suite.
 """
 
 from __future__ import annotations
@@ -39,12 +38,3 @@ def test_shipped_adapter_has_a_default_config(adapter):
 @pytest.mark.parametrize("adapter", SHIPPED)
 def test_runner_registers_shipped_adapter(runner, adapter):
     assert adapter in runner._robot_session_builders()
-
-
-@pytest.mark.parametrize("adapter", SHIPPED)
-def test_gui_lists_shipped_adapter(adapter):
-    from jiuwensymbiosis.gui import registry
-
-    body = registry.get_body(adapter)
-    assert body.key == adapter
-    assert body.config_path() == REPO_ROOT / "configs" / adapter / f"{adapter}.yaml"

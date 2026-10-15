@@ -10,4 +10,7 @@ joint_timeout_s: 20.0
 joint_tolerance_rad: 0.01
 position_tolerance_mm: 20.0
 orientation_tolerance_deg: 5.0
-enable_visual_feedback: false
+agent:
+  modules:
+    visual_feedback:
+      enabled: false

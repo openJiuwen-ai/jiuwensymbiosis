@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1300" viewBox="0 0 1280 1300" role="img" aria-labelledby="title desc">
+<title id="title">视觉调用链：从同一帧到机器人三维几何</title>
+<desc id="desc">Agent 采集 CameraFrame，检测客户端只发送 RGB 与文本。服务完成输入校验、排队、GroundingDINO 检测与 SAM2 分割，返回二维检测。Agent 校验结果后使用保留的同帧深度、内参和坐标变换完成三维计算，通过时效与取消检查后发布动作结果。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#475569"/></marker>
+<marker id="blue-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#2563eb"/></marker>
+<style>text {font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;} path {stroke-linecap: round;stroke-linejoin: round;}</style></defs>
+<rect width="1280" height="1300" rx="20" fill="#f5f7fb"/>
+<text x="40" y="52" font-size="32" font-weight="700" fill="#172033" text-anchor="start" data-max-width="1200">视觉调用链：从同一帧到机器人三维几何</text>
+<text x="40" y="89" font-size="20" font-weight="400" fill="#475569" text-anchor="start" data-max-width="1200">RGB 与目标文本跨 HTTP 传输；深度、标定、几何计算与结果发布留在 Agent。</text>
+<rect x="40" y="130" width="584" height="938" rx="14" fill="#eaf2ff" stroke="#aac9f3" stroke-width="1.5"/>
+<rect x="820" y="130" width="420" height="716" rx="14" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="332" y="169" font-size="24" font-weight="700" fill="#1d4ed8" text-anchor="middle" data-max-width="540">Agent · 采集、校验与三维计算</text>
+<text x="1030" y="169" font-size="24" font-weight="700" fill="#047857" text-anchor="middle" data-max-width="380">视觉服务 · 检测与分割</text>
+<rect x="84" y="200" width="512" height="130" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="340.0" y="235" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">1  采集 CameraFrame</text>
+<text x="340.0" y="267" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">RGB · 深度 · 内参 · tf_base_cam</text>
+<text x="340.0" y="295" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">保留帧身份与可用的采集时间</text>
+<rect x="84" y="382" width="512" height="120" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="340.0" y="417" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">2  DetectorClient 编码与关联</text>
+<text x="340.0" y="449" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">JPEG + text_prompt + request_id / frame_id</text>
+<text x="340.0" y="477" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">请求总预算与可选的剩余帧有效期</text>
+<path d="M340 330 L340 382" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="844" y="382" width="372" height="120" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1030.0" y="417" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="344">3  校验输入并排队</text>
+<text x="1030.0" y="449" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">MIME / 图像尺寸 / 字节上限</text>
+<text x="1030.0" y="477" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">单次模型执行 + 有界等待队列</text>
+<path d="M596 434 L844 434" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="720" y="416" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="220">POST /v1/segment</text>
+<rect x="844" y="542" width="372" height="120" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1030.0" y="577" font-size="20" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="344">4  GroundingDINO → SAM2</text>
+<text x="1030.0" y="609" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">文本 → 候选框 → 原图 mask</text>
+<text x="1030.0" y="637" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">裁剪边界、按分数筛选候选</text>
+<path d="M1030 502 L1030 542" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="844" y="702" width="372" height="120" rx="14" fill="#ffffff" stroke="#acd9c6" stroke-width="1.5"/>
+<text x="1030.0" y="737" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="344">5  返回同帧二维检测</text>
+<text x="1030.0" y="769" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">frame_id + width / height</text>
+<text x="1030.0" y="797" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="344">PNG mask · box · score · label</text>
+<path d="M1030 662 L1030 702" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="84" y="702" width="512" height="120" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="340.0" y="737" font-size="22" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">6  响应校验与 mask 解码</text>
+<text x="340.0" y="769" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">请求 / 帧身份 · 原图尺寸 · 二值掩膜</text>
+<text x="340.0" y="797" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">检查取消、图像年龄和结果数</text>
+<path d="M844 762 L596 762" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="720" y="744" font-size="18" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="220">HTTP 结果信封</text>
+<rect x="84" y="926" width="512" height="120" rx="14" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5"/>
+<text x="340.0" y="961" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="484">7  同帧三维几何与发布校验</text>
+<text x="340.0" y="993" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">mask + 深度 + 内参 + 坐标变换</text>
+<text x="340.0" y="1021" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="484">选择对象 / 表面，检查完成条件</text>
+<path d="M340 822 L340 926" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="358" y="879" font-size="18" font-weight="400" fill="#475569" text-anchor="start" data-max-width="230">通过校验的二维结果</text>
+<path d="M84 265 L62 265 L62 986 L84 986" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue-arrow)" stroke-dasharray="6 5"/>
+<rect x="820" y="884" width="420" height="162" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1030.0" y="919" font-size="21" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="392">同一接口，两种进程所有权</text>
+<text x="1030.0" y="951" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="392">remote：部署者管理服务进程</text>
+<text x="1030.0" y="979" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="392">local：Session 托管视觉子进程</text>
+<text x="1030.0" y="1007" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="392">Agent 始终管理自己的 HTTP 客户端</text>
+<path d="M340 1046 L340 1122" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="360" y="1093" font-size="18" font-weight="400" fill="#475569" text-anchor="start" data-max-width="420">时效与取消检查通过后发布</text>
+<rect x="84" y="1122" width="1132" height="114" rx="14" fill="#f4efff" stroke="#c4b5fd" stroke-width="1.5"/>
+<text x="650.0" y="1157" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="1104">locate_for_grasp / locate_for_place / analyze_scene</text>
+<text x="650.0" y="1189" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="1104">基座坐标系中的物体 / 表面几何 → 既有动作、能力门控与护栏</text>
+<text x="650.0" y="1217" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="1104">模型服务不连接本体，也不发送运动指令</text>
+<text x="640" y="1274" font-size="19" font-weight="400" fill="#475569" text-anchor="middle" data-max-width="1190">蓝色虚线：保留在 Agent 内部的同帧深度与标定快照，不经过模型服务。</text>
+</svg>

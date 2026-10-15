@@ -84,9 +84,25 @@ env:
       grasp_min_points: 30           # 点数低于此值回退到旧的质心选点
       grasp_mask_erode_px: 2         # 采样深度前向内腐蚀的像素数（去边缘噪声）
 
-# GroundingDINO+SAM2 sidecar。本机路径可由 GDINO_MODEL_ID/SAM2_MODEL_ID 覆盖。
-api_servers:
-  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
+# GroundingDINO+SAM2 检测服务；本地模型路径在 detector.local 中配置。
+# 检测服务模式：local 由框架启动/关闭本地模型；remote 只连接 HTTP 服务；disabled 禁用检测。
+# 切换 remote 时，用以下示例替换整个 detector 块，删除 local 子块及旧 api_servers 中的检测条目：
+# detector:
+#   mode: remote
+#   endpoint:
+#     url: http://127.0.0.1:8114  # 本机手动启动服务；跨主机时改为服务器 URL
+#     connect_timeout_s: 3
+#     request_timeout_s: 30
+#   max_frame_age_s: null          # 默认不额外限制图像年龄；填写正数（秒）才启用，tracking 原有期限仍生效
+#
+# 可直接部署本项目的 jiuwensymbiosis.serving.grounding_dino_sam2_server。
+# 服务可在本机手动启动，再用 remote + 127.0.0.1 模拟远程 HTTP；框架不会启停该服务。
+# 模型依赖和权重安装在服务运行环境，Agent 可使用独立的精简环境。
+# 部署说明（含视觉/ASR/TTS 安装、启动命令、Compose 和 smoke）：
+# [服务部署 README](../../deploy/inference/README.md)（仓库路径 deploy/inference/README.md）
+detector:
+  mode: local  # 显式选择本地 GPU 模型；远程调用无需本机模型依赖。
+  local:
     device: cuda
     port: 8114
     host: 127.0.0.1
@@ -106,20 +122,32 @@ model:
   temperature: 0.3
   max_tokens: 2048
 
-# 本机实验启用 trace/diagnosis；skill、visual feedback 和运行模式由 CLI 控制。
+# 本机实验启用 tracing；在线诊断仅在切换 stepagent 后显式开启。
+# Agent 全量配置说明：docs/zh/reference/agent-config.md；逐步诊断仅适用于 stepagent。
 agent:
-  log_level: INFO
-  log_dir: ./logs
-  # 每次运行的运动日志根目录:每次运行落到 <motion_log_dir>/<时间戳>/,内含
-  # grasp_debug/(检测调试图)与 commands.log(仅 piper)。留空/不填 = ./jiuwen_motion_log。
-  # motion_log_dir: ./jiuwen_motion_log
-  enable_tracing: true
-  enable_diagnosis: true        # 依赖 enable_tracing
-  diagnosis_max_chars: 1500
-  diagnosis_history_steps: 3
-  diagnosis_history_kinds: ["reject", "recover"]
-  trace_console: true
-  # fast 模式下是否启用实时伺服特殊动作(track_grasp / track_detect)。默认 true;
-  # 设为 false 则 fast 只走逐步动作(analyze→取抓取点→goto→抓),不做连续视觉跟踪伺服。
-  # 对 agent 模式无影响(agent 本就不产生特殊动作)。
-  enable_fast_special_ops: true
+  execution:
+    mode: fastagent
+    fastagent:
+      tracking:
+        enabled: true
+        # 与驱动默认 20 Hz / 60 mm/s 对齐的显式调参，不从硬件配置隐式派生。
+        servo:
+          control_hz: 20.0
+          max_lin_step_mm: 3.0
+  modules:
+    tracing:
+      enabled: true
+      console: true
+    diagnosis:
+      enabled: false
+      max_chars: 1500
+      history_steps: 3
+      history_kinds:
+      - reject
+      - recover
+    visual_feedback:
+      enabled: false
+  logging:
+    level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
+    dir: ./logs

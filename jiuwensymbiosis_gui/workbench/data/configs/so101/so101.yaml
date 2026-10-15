@@ -1,0 +1,59 @@
+# Safe, generic workbench default shipped in the wheel.
+# Fill the serial device, validate the home pose and joint limits on the real
+# arm, then configure the model endpoint/key before running a task.
+adapter: so101
+
+env:
+  cfg:
+    low_level:
+      name: so101
+      port: "/dev/REPLACE_WITH_SO101_SERIAL_DEVICE"
+      robot_id: "REPLACE_WITH_SO101_ROBOT_ID"
+      home_use_init_pose: false
+      safety_validated: false
+      home_joints_deg: [0.0, 0.0, 0.0, 0.0, 0.0]
+      joint_limits:
+        shoulder_pan: [-90.0, 90.0]
+        shoulder_lift: [-90.0, 90.0]
+        elbow_flex: [-90.0, 90.0]
+        wrist_flex: [-90.0, 90.0]
+        wrist_roll: [-150.0, 150.0]
+      camera_serial: null
+      calib_path: null
+
+# 无本地模型启动；可在配置页切换到远程 HTTP。
+detector:
+  mode: disabled
+
+model:
+  provider: OpenAI
+  api_base: "https://model-endpoint.invalid/v1"
+  api_key: ""
+  model_name: "REPLACE_WITH_MODEL_NAME"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  logging:
+    level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
+  execution:
+    mode: fastagent
+    fastagent:
+      tracking:
+        # Match the source SO-101 config; driver limits remain independent.
+        servo:
+          control_hz: 20.0
+          max_lin_step_mm: 3.0
+    stepagent:
+      mode: hybrid
+      max_iterations: 15
+  modules:
+    skills:
+      enabled: true
+    safety:
+      enabled: true
+    recovery:
+      enabled: true
+    visual_feedback:
+      enabled: false

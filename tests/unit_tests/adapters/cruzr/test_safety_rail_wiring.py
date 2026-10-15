@@ -35,13 +35,14 @@ def rail():
 def test_config_enables_the_rail():
     root = Path(__file__).resolve().parents[4]
     cfg = yaml.safe_load((root / "configs" / "cruzr" / "cruzr.yaml").read_text(encoding="utf-8"))
-    assert cfg["agent"]["enable_safety"] is True
+    assert cfg["agent"]["modules"]["safety"]["enabled"] is True
 
 
 def test_capability_gate_lets_the_rail_attach():
     from jiuwensymbiosis.agent.builder import _resolve_rails
+    from jiuwensymbiosis.agent.config import ModulesConfig, SwitchConfig
 
-    rails = _resolve_rails(_Session(CruzrEnv(CruzrConfig())), False, True, False, None)
+    rails = _resolve_rails(_Session(CruzrEnv(CruzrConfig())), ModulesConfig(recovery=SwitchConfig(False)), None)
     assert [type(r).__name__ for r in rails] == ["SafetyRail"]
 
 

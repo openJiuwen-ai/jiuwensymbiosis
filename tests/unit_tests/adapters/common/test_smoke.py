@@ -15,6 +15,8 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -36,6 +38,84 @@ def _load_smoke_module():
 @pytest.fixture(scope="module")
 def smoke():
     return _load_smoke_module()
+
+
+@pytest.mark.parametrize(
+    "keys, physical_id, accepted",
+    [
+        ((), None, False),
+        (("can:can0",), None, True),
+        ((), "robot-1", True),
+        ("can:can0", None, False),
+    ],
+)
+def test_admission_is_checked_before_session_build(smoke, tmp_path, keys, physical_id, accepted):
+    source = tmp_path / "robot.yaml"
+    source.write_text(json.dumps({"physical_device_id": physical_id}), encoding="utf-8")
+    cfg = SimpleNamespace()
+    builder = Mock()
+    builder.config_factory = SimpleNamespace(from_dict=lambda _: cfg)
+    builder.resource_keys = lambda _: keys
+    if accepted:
+        smoke._build_session(builder, "example.robot", str(source))
+        builder.assert_called_once_with(cfg)
+    else:
+        with pytest.raises((TypeError, ValueError)):
+            smoke._build_session(builder, "example.robot", str(source))
+        builder.assert_not_called()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "adapter, fields, extra",
+    [
+        ("piper", ("calib_path",), {}),
+        (
+            "so101",
+            ("calib_path", "urdf_path", "calibration_dir"),
+            {
+                "port": "/dev/test-arm",
+                "home_use_init_pose": True,
+                "joint_limits": {
+                    name: [-90, 90]
+                    for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+                },
+            },
+        ),
+        (
+            "cruzr",
+            ("camera_calib_path", "urdf_path", "urdf_package_dir", "ros_workspace", "camera_fastdds_profiles_file"),
+            {},
+        ),
+    ],
+)
+def test_yaml_runtime_and_smoke_share_source_relative_paths(
+    smoke, tmp_path, monkeypatch, adapter, fields, extra, nested
+):
+    """Every admission/validation path must use the config directory, not cwd."""
+    from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+    monkeypatch.delenv("CAMERA_SERIAL", raising=False)
+    source_dir = tmp_path / "config"
+    source_dir.mkdir()
+    work_dir = tmp_path / "elsewhere"
+    work_dir.mkdir()
+    monkeypatch.chdir(work_dir)
+    low_level = {**extra, **{name: f"missing/{name}" for name in fields}}
+    data = {"adapter": adapter, **({"env": {"cfg": {"low_level": low_level}}} if nested else low_level)}
+    source = source_dir / "robot.yaml"
+    source.write_text(json.dumps(data), encoding="utf-8")
+    module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+    builder = getattr(module, f"build_{adapter}_session")
+    sessions = [
+        builder.from_yaml(source, include_sidecars=False),
+        prepare_binding(source, include_sidecars=False).build_session(),
+        smoke._build_session(builder, module.__name__, str(source)),
+    ]
+    for session in sessions:
+        for name in fields:
+            assert getattr(session.env.cfg, name) == str(source_dir / "missing" / name)
+        assert session.cleanup_report().released
 
 
 class TestSmokeTestApi:

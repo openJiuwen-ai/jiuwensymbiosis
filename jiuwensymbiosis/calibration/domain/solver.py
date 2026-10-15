@@ -22,7 +22,6 @@ old eye-to-hand wrapper dropped exactly those fields.
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,8 +48,9 @@ from jiuwensymbiosis.utils.geometry import (
     orthonormalize,
     rotation_angle_deg,
 )
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.solver")
+logger = get_logger("jiuwensymbiosis.calibration.solver")
 
 MIN_STATIONS = 3  # calibrateHandEye hard lower bound (10~15 recommended)
 

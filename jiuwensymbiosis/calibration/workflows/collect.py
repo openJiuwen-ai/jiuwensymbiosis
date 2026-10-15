@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,8 +18,9 @@ from jiuwensymbiosis.calibration.workflows.preflight import (
 )
 from jiuwensymbiosis.calibration.workflows.profile import load_profile, resolve_space
 from jiuwensymbiosis.calibration.workflows.workflows import CalibrationRunOptions
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.collect")
+logger = get_logger("jiuwensymbiosis.calibration.collect")
 
 
 def collect_waypoints(

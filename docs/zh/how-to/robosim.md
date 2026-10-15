@@ -36,9 +36,11 @@ finally:
 通用入口可直接读取 YAML。示例配置的 `load_robot: true` 允许会话连接时在空服务中加载 MOZ1；只连接已有机器人时设置为 `false`。
 
 ```python
-from jiuwensymbiosis.introspect import build_session
+from jiuwensymbiosis.introspect import prepare_binding
+from jiuwensymbiosis.runtime.admission import admitted_session
 
-with build_session("configs/robosim/moz1.yaml") as session:
+binding = prepare_binding("configs/robosim/moz1.yaml")
+with admitted_session(binding) as session:
     print(session.env.get_observation())
 ```
 
@@ -53,7 +55,7 @@ with build_session("configs/robosim/moz1.yaml") as session:
 
 HTTP 仅允许 loopback，禁用代理与重定向，不自动重试失败请求。写入超时、损坏响应或中断造成结果未知后，同进程内同端口的后续写入被阻断，查询仍可进行；清空客户端不会解除保护。只有已识别后台换成新服务实例才可恢复。
 
-本阶段协调器是进程内状态，不是跨进程或跨重启锁。运行时保持单操作者，不通过重启 Agent 绕过未知状态；先核对现场，再显式重启自有后台。不要将本地 `completed` 视为独立物理验收。
+官方 CLI 的运行时准入锁按服务端口串行化本机调用，同一服务的左右臂和 loopback 别名共用资源标识。该锁不替代 RoboSim 的结果未知保护：本阶段操作协调器仍是进程内状态，不能跨进程或跨重启保存未知操作。运行时保持单操作者，不通过重启 Agent 绕过未知状态；先核对现场，再显式重启自有后台。不要将本地 `completed` 视为独立物理验收。
 
 RobotControlTool、直接执行器和 ability executor 保留 `outcome_unknown` 与 `skip_recovery`，序列在失败处停止，不追加自动回零或松爪。
 

@@ -8,21 +8,23 @@
 
 `RobotAgentConfig` 的 trace 相关字段（全部默认关闭/保守值）：
 
+下表使用相对 `agent` 的字段路径： `modules.tracing.*`、`modules.diagnosis.*` 和 `logging.*`，见 [Agent 全量配置](agent-config.md)。诊断仅支持 stepagent，未开启 tracing 时启用诊断会报错。
+
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `enable_tracing` | `False` | 总开关 |
-| `trace_max_entries` | `200` | 最多记录步数（超则丢最旧） |
-| `trace_max_frames` | `50` | 每次 invoke 最多保存帧数 |
-| `trace_save_frames` | `False` | 是否保存 JPEG 帧到 `frames/{run_token}/` |
-| `trace_console` | `False` | 是否打印逐轮 dashboard 到 stdout |
-| `trace_dir` | `None` | 覆盖 trace 目录（默认 `<workspace>/traces`） |
-| `trace_capture_loggers` | `["jiuwensymbiosis"]` | `TraceLogHandler` 挂哪些 logger 前缀 |
-| `enable_diagnosis` | `False` | 在线诊断开关；失败步后向下一轮 LLM 注入诊断消息（依赖 `enable_tracing`，关 tracing 时自动禁用并 warning） |
-| `diagnosis_max_chars` | `1500` | 诊断消息软上限；超限按「历史→系统状态」顺序丢弃，保当前步 |
-| `diagnosis_history_steps` | `3` | 因果链回看步数（同工具名或 rail 事件 kind 命中） |
-| `diagnosis_history_kinds` | `("reject","recover")` | 视为与当前失败相关的 `rail_events` kind |
-| `log_level` | `"INFO"` | 日志级别（见[日志指南](../how-to/configure-logging.md)） |
-| `log_dir` | `"./logs"` | 日志文件目录；`None` 时仅控制台（见[日志指南](../how-to/configure-logging.md)） |
+| `modules.tracing.enabled` | `False` | 总开关 |
+| `modules.tracing.max_entries` | `200` | 最多记录步数（超则丢最旧） |
+| `modules.tracing.max_frames` | `50` | 每次 invoke 最多保存帧数 |
+| `modules.tracing.save_frames` | `False` | 是否保存 JPEG 帧到 `frames/{run_token}/` |
+| `modules.tracing.console` | `False` | 是否打印逐轮 dashboard 到 stdout |
+| `modules.tracing.dir` | `None` | 覆盖 trace 目录（默认 `<workspace>/traces`） |
+| `modules.tracing.capture_loggers` | `["jiuwensymbiosis"]` | `TraceLogHandler` 挂哪些 logger 前缀 |
+| `modules.diagnosis.enabled` | `False` | 在线诊断开关；失败步后向下一轮 LLM 注入诊断消息（依赖 `modules.tracing.enabled`，关 tracing 时配置报错） |
+| `modules.diagnosis.max_chars` | `1500` | 诊断消息软上限；超限按「历史→系统状态」顺序丢弃，保当前步 |
+| `modules.diagnosis.history_steps` | `3` | 因果链回看步数（同工具名或 rail 事件 kind 命中） |
+| `modules.diagnosis.history_kinds` | `("reject","recover")` | 视为与当前失败相关的 `rail_events` kind |
+| `logging.level` | `"INFO"` | 日志级别（见[日志指南](../how-to/configure-logging.md)） |
+| `logging.dir` | `"./logs"` | 日志文件目录；`None` 时仅控制台（见[日志指南](../how-to/configure-logging.md)） |
 
 ---
 

@@ -23,6 +23,7 @@ import numpy as np
 
 from jiuwensymbiosis.adapters.so101.config import So101Config
 from jiuwensymbiosis.adapters.so101.geometry import So101Pose
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.env.protocol import HandGuidingDriver
 
@@ -51,9 +52,7 @@ class So101Env(BaseRobotEnv):
             "vision.eye_to_hand",
         }
     )
-    _BASE_CAPABILITIES = frozenset(
-        {"motion.cartesian", "motion.joint", "grasp.parallel", "motion.servo"}
-    )
+    _BASE_CAPABILITIES = frozenset({"motion.cartesian", "motion.joint", "grasp.parallel", "motion.servo"})
     name = "so101"
     # Native SOFollower units: joints in degrees (see lowlevel: "Joints in degrees,
     # gripper in 0..100 %"), which is what ``home_joints_deg`` / ``joint_limits`` carry.
@@ -204,8 +203,8 @@ class So101Env(BaseRobotEnv):
     def connect(self) -> None:
         """Instantiate the driver from config and connect it atomically.
 
-        On any failure the env stays disconnected (``_inner`` left None) and
-        the driver's idempotent close is invoked so no partial state leaks.
+        A normal connect failure leaves no bound driver. If rollback reports
+        uncertain cleanup, retain the driver so session shutdown can retry it.
         """
         if self._connected:
             return
@@ -214,14 +213,10 @@ class So101Env(BaseRobotEnv):
         driver = So101Driver(self.cfg)
         try:
             driver.connect()
-        except Exception:
-            # Idempotent teardown; do not leak a partially-connected driver.
-            try:
-                driver.close()
-            except Exception as exc:  # noqa: BLE001 - best-effort
-                logger.warning("So101Env: driver.close() after failed connect raised %s", exc)
-            self._inner = None
-            self._connected = False
+        except HardwareCleanupError:
+            self._inner = driver
+            self._connected = True
+            self.capabilities = self._capabilities_for_driver(driver)
             raise
         self._inner = driver
         self._connected = True
@@ -229,14 +224,15 @@ class So101Env(BaseRobotEnv):
         logger.info("So101Env connected (port=%s)", self.cfg.port)
 
     def disconnect(self) -> None:
-        """Idempotent, best-effort driver teardown."""
-        if not self._connected:
+        """Idempotently close the driver and retain it if cleanup fails."""
+        if self._inner is None:
+            self._connected = False
+            self.capabilities = self._capabilities_for_config()
             return
-        try:
-            # `_inner` is non-None here: set True only after assignment in connect().
-            self._inner.close()  # type: ignore[union-attr]
-        except Exception as exc:  # noqa: BLE001 - disconnect is best-effort
-            logger.warning("So101Env disconnect failed: %s", exc)
+        # Keep the driver and capability state if a camera or serial close fails.
+        # A later disconnect can retry the remaining resources through the driver's
+        # idempotent teardown.
+        self._inner.close()
         self._inner = None
         self._connected = False
         self.capabilities = self._capabilities_for_config()

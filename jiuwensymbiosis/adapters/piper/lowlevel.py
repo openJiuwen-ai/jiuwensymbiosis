@@ -17,25 +17,32 @@ import time
 from dataclasses import astuple, dataclass
 from pathlib import Path
 from typing import Any
+from weakref import WeakSet
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.safety import WorkspaceBounds
 from jiuwensymbiosis.adapters.piper._calibration import load_calibration
-from jiuwensymbiosis.adapters.piper.geometry import FlangePose
+from jiuwensymbiosis.adapters.piper.geometry import FlangePose, normalize_flange_pose, tip_offset_in_base
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
+from jiuwensymbiosis.errors import SafetyViolationError
 from jiuwensymbiosis.perception.camera import RealSenseCamera
 
 logger = logging.getLogger(__name__)
 
 # SDK boundary scale: piper speaks 0.001 mm and 0.001 deg.
 _FACTOR = 1000.0
+# Numerical roundoff only, far below the SDK's 0.001 mm command resolution.
+_GEOMETRY_EPS_MM = 1e-9
 
 # MotionCtrl_2 move modes.
 _MOVE_P = 0x00  # point-to-point (reach-friendly; used for transit / home)
 _MOVE_J = 0x01  # joint
-_MOVE_L = 0x02  # linear cartesian (straight line; used for pick/place strokes)
 _CTRL_CAN = 0x01
 _GRIPPER_ENABLE = 0x01
+
+# SocketCAN link pre-check (see _require_can_interface).
+_NET_SYSFS = "/sys/class/net"
+_ARPHRD_CAN = "280"  # linux/if_arp.h ARPHRD_CAN, as reported by <link>/type
 
 
 # =============================================================================
@@ -46,50 +53,75 @@ _GRIPPER_ENABLE = 0x01
 # =============================================================================
 _CMD_LOG_PATH: Path | None = None
 _CMD_LOG_HANDLER: logging.Handler | None = None
+_CMD_LOG_PREVIOUS_LEVEL: int | None = None
+_CMD_LOG_OWNERS: WeakSet[PiperLowLevel] = WeakSet()
 
 
-def _attach_cmd_log_handler() -> Path | None:
+def _detach_cmd_log_handler() -> None:
+    """Stop routing immediately; retain a failed close for a later retry."""
+    global _CMD_LOG_PATH, _CMD_LOG_HANDLER, _CMD_LOG_PREVIOUS_LEVEL
+    if _CMD_LOG_HANDLER is not None:
+        logger.removeHandler(_CMD_LOG_HANDLER)
+    _CMD_LOG_PATH = None
+    if _CMD_LOG_PREVIOUS_LEVEL is not None:
+        if logger.level == logging.DEBUG:
+            logger.setLevel(_CMD_LOG_PREVIOUS_LEVEL)
+        _CMD_LOG_PREVIOUS_LEVEL = None
+    if _CMD_LOG_HANDLER is not None:
+        _CMD_LOG_HANDLER.close()
+        _CMD_LOG_HANDLER = None
+
+
+def _release_cmd_log_handler(owner: PiperLowLevel) -> None:
+    if owner not in _CMD_LOG_OWNERS:
+        return
+    if len(_CMD_LOG_OWNERS) == 1:
+        _detach_cmd_log_handler()
+    _CMD_LOG_OWNERS.remove(owner)
+
+
+def _attach_cmd_log_handler(*, owner: PiperLowLevel | None = None) -> Path | None:
     """Point the Piper command log at the current per-run directory.
 
     Called from the driver ctor on each ``connect()``; re-targets the file
     handler when the run directory changed (the GUI reconnects per task) so every
-    run's motion lines land in that run's ``commands.log``. Best-effort.
+    run's motion lines land in that run's ``commands.log``. Opening is best-effort;
+    failures closing an existing file propagate so cleanup can be retried.
     """
-    global _CMD_LOG_PATH, _CMD_LOG_HANDLER
+    global _CMD_LOG_PATH, _CMD_LOG_HANDLER, _CMD_LOG_PREVIOUS_LEVEL
     if os.environ.get("JIUWEN_PIPER_CMD_LOG", "") == "0":
+        _detach_cmd_log_handler()
         return None
     from jiuwensymbiosis.utils.logging import (
         _OWNED_TAG,
         DEFAULT_FMT,
-        configure_logging,
         current_run_dir,
     )
 
+    path = current_run_dir() / "commands.log"
+    if _CMD_LOG_HANDLER is not None and _CMD_LOG_PATH == path:
+        if owner is not None:
+            _CMD_LOG_OWNERS.add(owner)
+        return path
+    # A failed new attachment must never keep writing to the previous run.
+    _detach_cmd_log_handler()
     try:
-        path = current_run_dir() / "commands.log"
-        if _CMD_LOG_HANDLER is not None and _CMD_LOG_PATH == path:
-            return path  # already pointed at this run's dir
-        # Run dir changed (or first attach): drop the previous handler.
-        if _CMD_LOG_HANDLER is not None:
-            logger.removeHandler(_CMD_LOG_HANDLER)
-            try:
-                _CMD_LOG_HANDLER.close()
-            except OSError:
-                pass
-            _CMD_LOG_HANDLER = None
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Centralised logging: uniform format + console, DEBUG so motion lines land.
-        configure_logging(level="DEBUG", log_dir=None)
-        # Per-run Piper file handler (same uniform format), tagged as owned.
-        handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+        # DEBUG belongs to this command file; never reconfigure the root logger.
+        # Main console/file handlers enforce the user's own severity threshold.
+        # Reconnecting without a new run directory must retain earlier commands.
+        handler = logging.FileHandler(path, mode="a", encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter(DEFAULT_FMT, datefmt="%H:%M:%S"))
         setattr(handler, _OWNED_TAG, True)
         logger.addHandler(handler)
         if logger.level == logging.NOTSET or logger.level > logging.DEBUG:
+            _CMD_LOG_PREVIOUS_LEVEL = logger.level
             logger.setLevel(logging.DEBUG)
         _CMD_LOG_PATH = path
         _CMD_LOG_HANDLER = handler
+        if owner is not None:
+            _CMD_LOG_OWNERS.add(owner)
         logger.info("[Piper] cmd log started: pid=%d log=%s", os.getpid(), path)
         return path
     except Exception as exc:
@@ -100,6 +132,71 @@ def _attach_cmd_log_handler() -> Path | None:
 def _ang_diff_deg(a: float, b: float) -> float:
     """Shortest signed angular difference a-b in degrees, wrapped to [-180,180]."""
     return (a - b + 180.0) % 360.0 - 180.0
+
+
+def _out_of_bounds(value: float, lo: float | None, hi: float | None) -> bool:
+    """Check one axis against the enabled sides of an EPS-tolerant [lo, hi] box."""
+    if lo is not None and value < lo - _GEOMETRY_EPS_MM:
+        return True
+    return hi is not None and value > hi + _GEOMETRY_EPS_MM
+
+
+def _is_can_interface(name: str) -> bool | None:
+    """Identify SocketCAN links; None means the link type could not be read."""
+    try:
+        return (Path(_NET_SYSFS) / name / "type").read_text().strip() == _ARPHRD_CAN
+    except OSError:
+        return None
+
+
+def _require_can_interface(can_port: str) -> None:
+    """Reject an unusable ``can_port`` before the vendor SDK touches the bus.
+
+    A wrong interface name is a configuration error, not an uncertain hardware
+    state. Failing here keeps it an ordinary exception, so the caller's rollback
+    stays *confirmed* and the resource records are released. Letting the SDK
+    constructor raise instead yields no CAN handle to close, which can only be
+    reported as cleanup-unconfirmed and blocks the device records until an
+    operator reconciles them.
+
+    A condition this cannot observe is never reported as a failure: without a
+    readable sysfs view the verdict is left to the SDK.
+    """
+    try:
+        interfaces = sorted(os.listdir(_NET_SYSFS))
+    except OSError:
+        return
+    if can_port not in interfaces:
+        available = [name for name in interfaces if _is_can_interface(name)]
+        if available:
+            raise RuntimeError(
+                f"[Piper] CAN interface {can_port!r} does not exist. Available CAN interfaces: "
+                f"{', '.join(available)}. Set `can_port` in the runtime YAML to one of these."
+            )
+        raise RuntimeError(
+            f"[Piper] CAN interface {can_port!r} does not exist and no CAN interface is present. "
+            "Check that the USB-CAN adapter is connected, then bring it up: "
+            "`sudo ip link set can0 up type can bitrate 1000000`."
+        )
+    is_can = _is_can_interface(can_port)
+    if is_can is None:
+        return
+    if not is_can:
+        raise RuntimeError(
+            f"[Piper] Network interface {can_port!r} exists but is not a CAN interface. "
+            "Check `can_port` in the runtime YAML."
+        )
+    try:
+        operstate = (Path(_NET_SYSFS) / can_port / "operstate").read_text().strip()
+    except OSError:
+        return
+    # Linux UNKNOWN also covers drivers that do not implement operstate;
+    # only a known unusable state is grounds to reject before SDK validation.
+    if operstate not in {"up", "unknown"}:
+        raise RuntimeError(
+            f"[Piper] CAN interface {can_port!r} is {operstate!r}, not up. Bring it up first: "
+            f"`sudo ip link set {can_port} up type can bitrate 1000000`."
+        )
 
 
 # =============================================================================
@@ -140,11 +237,12 @@ class PiperLowLevel:
     """CAN wrapper around an AgileX Piper (6-DoF) + parallel gripper + RealSense.
 
     Frame conventions:
-      - When calibration is loaded, ``home_pose`` / ``calib_object_pose`` /
-        ``z_min_safe`` are in TIP frame.
-      - ``move_to_pose_blocking`` always speaks FLANGE frame.
-      - ``flange_z = tip_z + tool_offset_mm`` (tool extends along base -Z).
-      - Without calibration, poses stay in flange frame.
+      - ``get_pose`` / ``home_pose`` / ``move_to_pose_blocking`` speak FLANGE frame.
+      - An object anchor supplies legacy home coordinates and safety limits;
+        its home Z is converted once with ``flange_z = home_z + tool_offset_mm``
+        to preserve the configured physical target. Without an anchor, home
+        configuration is already in FLANGE frame.
+      - The API rotates the tool extension to report current/home TIP poses.
     """
 
     def __init__(
@@ -187,7 +285,6 @@ class PiperLowLevel:
         unreachable_grace_s: float = 2.0,
     ) -> None:
         """Connect to CAN, enable arm/gripper, load calibration or fallback, init camera."""
-        self._cmd_log_path = _attach_cmd_log_handler()
         self._lock = threading.RLock()
         self._move_speed = max(1, min(100, int(move_speed)))
         self._gripper_open_mm = float(gripper_open_mm)
@@ -199,6 +296,15 @@ class PiperLowLevel:
         self._move_timeout_s = float(move_timeout_s)
         self._unreachable_grace_s = float(unreachable_grace_s)
         self._xy_box = (x_min_mm, x_max_mm, y_min_mm, y_max_mm, z_max_mm)
+        self._tool_offset_mm = float(tool_offset_mm)
+        if not math.isfinite(self._tool_offset_mm) or self._tool_offset_mm < 0:
+            raise ValueError("[Piper] tool_offset_mm must be finite and non-negative")
+        for bound in self._xy_box:
+            if bound is not None and not math.isfinite(bound):
+                raise ValueError("[Piper] workspace bounds must be finite or None")
+        for axis, lo, hi in (("x", x_min_mm, x_max_mm), ("y", y_min_mm, y_max_mm)):
+            if lo is not None and hi is not None and lo > hi:
+                raise ValueError(f"[Piper] {axis}_min_mm must be <= {axis}_max_mm; got {lo} > {hi}")
 
         # --- connect + enable
         try:
@@ -209,8 +315,136 @@ class PiperLowLevel:
                 "(and bring the CAN interface up) to use the real arm."
             ) from exc
 
+        self._camera: RealSenseCamera | None = None
+        self._arm: Any | None = None
+        self._can_may_be_open = False
+        self._closed = False
+        self._cmd_log_path: Path | None = None
+        try:
+            self._cmd_log_path = _attach_cmd_log_handler(owner=self)
+            self._initialize_connected_driver(locals(), C_PiperInterface_V2)
+        except BaseException as original:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                cleanup_errors = cleanup.cleanup_errors if isinstance(cleanup, HardwareCleanupError) else (cleanup,)
+                raise HardwareCleanupError("PiperLowLevel.__init__", original, cleanup_errors) from original
+            raise
+
+    def _initialize_connected_driver(self, params: dict[str, Any], arm_factory: Any) -> None:
+        """Validate workspace configuration before opening CAN, then capture live state."""
+        can_port = params["can_port"]
+        tool_offset_mm = params["tool_offset_mm"]
+        calib_path = params["calib_path"]
+        home_lift_mm = params["home_lift_mm"]
+        z_safe_margin_mm = params["z_safe_margin_mm"]
+        home_pose_xyzrxryrz_mm_deg = params["home_pose_xyzrxryrz_mm_deg"]
+        calib_object_xyzrxryrz_mm_deg = params["calib_object_xyzrxryrz_mm_deg"]
+        z_min_safe_mm = params["z_min_safe_mm"]
+        home_use_init_pose = params["home_use_init_pose"]
+        camera_serial = params["camera_serial"]
+        camera_resolution = params["camera_resolution"]
+        camera_fps = params["camera_fps"]
+        enable_timeout_s = params["enable_timeout_s"]
+        # --- calibration / workspace anchor
+        # A calibration JSON always carries the camera geometry; its base-frame
+        # ``object`` anchor is optional (schema-2 publications omit it). Legacy
+        # home settings and z_min_safe follow the ANCHOR, not the file: without
+        # one they come from config, and the camera transform still loads.
+        # Normalize home to FLANGE and validate every effective workspace value
+        # before constructing the SDK or enabling hardware.
+        self._calib: dict[str, Any] | None = None
+        self._tf_flange_cam: np.ndarray | None = None
+        calib_object_xyz: Any | None = None
+        if calib_path is not None:
+            self._calib = load_calibration(calib_path)
+            self._tf_flange_cam = self._calib["T_flange_cam"]["matrix_4x4"]
+            anchor = self._calib.get("object")
+            calib_object_xyz = None if anchor is None else anchor["xyz_base_mm"]
+            if calib_object_xyz is None:
+                logger.warning(
+                    "[Piper] calibration %s carries no object anchor: home and z_min_safe come from "
+                    "config (home coordinates are FLANGE-frame). Check "
+                    "home_pose_xyzrxryrz_mm_deg / z_min_safe_mm / tool_offset_mm.",
+                    calib_path,
+                )
+        if calib_object_xyz is not None:
+            if len(calib_object_xyz) != 3:
+                raise ValueError("[Piper] calibration object.xyz_base_mm must contain 3 coordinates")
+            self._calib_object_pose = PiperPose(
+                x=float(calib_object_xyz[0]),
+                y=float(calib_object_xyz[1]),
+                z=float(calib_object_xyz[2]),
+            )
+            # Preserve the legacy physical FLANGE home target, including its
+            # original vertical tool offset. Orientation comes from live state.
+            self._home_pose = (
+                PiperPose()
+                if home_use_init_pose
+                else PiperPose(
+                    x=self._calib_object_pose.x,
+                    y=self._calib_object_pose.y,
+                    z=self._calib_object_pose.z + float(home_lift_mm) + self.tool_offset_mm,
+                )
+            )
+            z_min_safe = float(calib_object_xyz[2]) + float(z_safe_margin_mm)
+            logger.debug(
+                "[Piper] loaded calibration from %s: object_tip=%s, home_lift=%smm, "
+                "z_safe_margin=%smm, tool_offset=%smm",
+                calib_path,
+                np.asarray(calib_object_xyz).round(2).tolist(),
+                home_lift_mm,
+                z_safe_margin_mm,
+                tool_offset_mm,
+            )
+        else:
+            if home_use_init_pose:
+                self._home_pose = PiperPose()  # replaced by the live snapshot after connect
+            else:
+                if home_pose_xyzrxryrz_mm_deg is None or len(home_pose_xyzrxryrz_mm_deg) != 6:
+                    raise ValueError(
+                        "[Piper] no calibration object anchor is available and home_use_init_pose=False: "
+                        "set home_pose_xyzrxryrz_mm_deg (6-tuple), set home_use_init_pose=True to use "
+                        "the connection-time flange pose, or point calib_path at a calibration JSON "
+                        "carrying object.xyz_base_mm."
+                    )
+                self._home_pose = PiperPose(*[float(v) for v in home_pose_xyzrxryrz_mm_deg])
+            if z_min_safe_mm is None:
+                z_min_safe_mm = 50.0
+            if calib_object_xyzrxryrz_mm_deg is not None:
+                if len(calib_object_xyzrxryrz_mm_deg) != 6:
+                    raise ValueError("[Piper] calib_object_xyzrxryrz_mm_deg must be 6-tuple if given")
+                self._calib_object_pose = PiperPose(*[float(v) for v in calib_object_xyzrxryrz_mm_deg])
+            else:
+                self._calib_object_pose = PiperPose()
+            z_min_safe = float(z_min_safe_mm)
+        self._z_min_safe = z_min_safe
+        if not math.isfinite(self._z_min_safe):
+            raise ValueError("[Piper] z_min_safe must be finite")
+        for name, pose in (("home", self._home_pose), ("calibration object", self._calib_object_pose)):
+            if not all(math.isfinite(value) for value in pose.as_tuple()):
+                raise ValueError(f"[Piper] {name} pose must contain finite coordinates and angles")
+
+        if calib_object_xyz is not None and self._calib_object_pose.z < self.z_min_safe:
+            raise ValueError(
+                f"[Piper] calibration object z ({self._calib_object_pose.z:.2f}) is below "
+                f"z_min_safe ({self.z_min_safe:.2f}); refusing to start."
+            )
+
+        home_needs_live_pose = calib_object_xyz is not None or home_use_init_pose
+        if not home_needs_live_pose:
+            self._warn_if_home_uncommandable("configured")
+
+        # Pre-check first: a bad interface name must fail as a plain configuration
+        # error, before the SDK can leave the bus in an unconfirmable state.
+        _require_can_interface(can_port)
         logger.info("[Piper] Connecting CAN %s ...", can_port)
-        self._arm = C_PiperInterface_V2(can_port)
+        try:
+            self._arm = arm_factory(can_port)
+        except BaseException as original:
+            unknown = RuntimeError("Piper SDK construction failed before returning a CAN handle")
+            raise HardwareCleanupError("PiperLowLevel.__init__", original, (unknown,)) from original
+        self._can_may_be_open = True
         self._arm.ConnectPort()
         t0 = time.time()
         while not self._arm.EnablePiper():
@@ -234,81 +468,6 @@ class PiperLowLevel:
         # Enable the gripper driver.
         self._arm.GripperCtrl(0, self._gripper_effort, _GRIPPER_ENABLE, 0)
         logger.info("[Piper] CAN %s connected + arm/gripper enabled.", can_port)
-
-        # --- calibration / workspace anchor
-        # A calibration JSON always carries the camera geometry; its base-frame
-        # ``object`` anchor is optional (schema-2 publications omit it). Home,
-        # z_min_safe and the tip-vs-flange pose convention follow the ANCHOR, not
-        # the file: without one they come from config, and the camera transform
-        # still loads.
-        self._calib: dict[str, Any] | None = None
-        self._tf_flange_cam: np.ndarray | None = None
-        calib_object_xyz: Any | None = None
-        if calib_path is not None:
-            self._calib = load_calibration(calib_path)
-            self._tf_flange_cam = self._calib["T_flange_cam"]["matrix_4x4"]
-            anchor = self._calib.get("object")
-            calib_object_xyz = None if anchor is None else anchor["xyz_base_mm"]
-            if calib_object_xyz is None:
-                logger.warning(
-                    "[Piper] calibration %s carries no object anchor: home and z_min_safe come from "
-                    "config, and poses are FLANGE-frame (an anchored calibration would make them "
-                    "TIP-frame). Check home_pose_xyzrxryrz_mm_deg / z_min_safe_mm / tool_offset_mm.",
-                    calib_path,
-                )
-        if calib_object_xyz is not None:
-            self._calib_object_pose = PiperPose(
-                x=float(calib_object_xyz[0]),
-                y=float(calib_object_xyz[1]),
-                z=float(calib_object_xyz[2]),
-            )
-            self._home_pose = PiperPose(
-                x=float(calib_object_xyz[0]),
-                y=float(calib_object_xyz[1]),
-                z=float(calib_object_xyz[2]) + float(home_lift_mm),
-            )
-            z_min_safe = float(calib_object_xyz[2]) + float(z_safe_margin_mm)
-            poses_are_tip_frame = True
-            logger.info(
-                "[Piper] loaded calibration from %s: object_tip=%s, home_lift=%smm, "
-                "z_safe_margin=%smm, tool_offset=%smm",
-                calib_path,
-                np.asarray(calib_object_xyz).round(2).tolist(),
-                home_lift_mm,
-                z_safe_margin_mm,
-                tool_offset_mm,
-            )
-        else:
-            if home_pose_xyzrxryrz_mm_deg is None or len(home_pose_xyzrxryrz_mm_deg) != 6:
-                raise ValueError(
-                    "[Piper] no calibration object anchor is available, so home must come from "
-                    "config: set home_pose_xyzrxryrz_mm_deg (6-tuple), or point calib_path at a "
-                    "calibration JSON carrying object.xyz_base_mm."
-                )
-            if z_min_safe_mm is None:
-                z_min_safe_mm = 50.0
-            self._home_pose = PiperPose(*[float(v) for v in home_pose_xyzrxryrz_mm_deg])
-            if calib_object_xyzrxryrz_mm_deg is not None:
-                if len(calib_object_xyzrxryrz_mm_deg) != 6:
-                    raise ValueError("[Piper] calib_object_xyzrxryrz_mm_deg must be 6-tuple if given")
-                self._calib_object_pose = PiperPose(*[float(v) for v in calib_object_xyzrxryrz_mm_deg])
-            else:
-                self._calib_object_pose = PiperPose()
-            z_min_safe = float(z_min_safe_mm)
-            poses_are_tip_frame = False
-
-        self._bounds = WorkspaceBounds(
-            z_min_safe=z_min_safe,
-            tool_offset_mm=float(tool_offset_mm),
-            poses_are_tip_frame=poses_are_tip_frame,
-            log_prefix="[Piper]",
-        )
-
-        if poses_are_tip_frame and self._calib_object_pose.z < self._bounds.z_min_safe:
-            raise ValueError(
-                f"[Piper] calibration object z ({self._calib_object_pose.z:.2f}) is below "
-                f"z_min_safe ({self._bounds.z_min_safe:.2f}); refusing to start."
-            )
 
         # --- snapshot starting pose
         init_pose = self._read_pose()
@@ -335,28 +494,19 @@ class PiperLowLevel:
                 init_pose.rz,
             )
         if home_use_init_pose:
-            home_z_local = (
-                init_pose.z - self._bounds.tool_offset_mm if self._bounds.poses_are_tip_frame else init_pose.z
-            )
-            self._home_pose = PiperPose(
-                init_pose.x,
-                init_pose.y,
-                home_z_local,
-                init_pose.rx,
-                init_pose.ry,
-                init_pose.rz,
-            )
-            logger.info("[Piper] home_use_init_pose=True; home=%s", self._home_pose.as_tuple())
-        logger.info(
+            self._home_pose = PiperPose(*init_pose.as_tuple())
+            logger.debug("[Piper] home_use_init_pose=True; home=%s", self._home_pose.as_tuple())
+        if home_needs_live_pose:
+            self._warn_if_home_uncommandable("startup" if home_use_init_pose else "anchor-derived")
+        logger.debug(
             "[Piper] init=%s home=%s z_min_safe=%.2fmm",
             init_pose.as_tuple(),
             self._home_pose.as_tuple(),
-            self._bounds.z_min_safe,
+            self.z_min_safe,
         )
 
         # --- camera (optional)
         self._camera_serial = camera_serial
-        self._camera: RealSenseCamera | None = None
         if camera_serial:
             self._camera = RealSenseCamera(
                 serial=camera_serial,
@@ -365,8 +515,6 @@ class PiperLowLevel:
                 log_prefix="[Piper]",
             )
             self._camera.start()
-
-        self._closed = False
 
     # ============================================================== special methods
     def __del__(self) -> None:
@@ -379,7 +527,7 @@ class PiperLowLevel:
     # ============================================================== properties
     @property
     def home_pose(self) -> PiperPose:
-        """Configured home pose (TIP or flange frame depending on calibration)."""
+        """Physical home target in FLANGE coordinates, independent of calibration."""
         return self._home_pose
 
     @property
@@ -394,18 +542,23 @@ class PiperLowLevel:
 
     @property
     def z_min_safe(self) -> float:
-        """Lowest allowed TIP Z in mm (from WorkspaceBounds)."""
-        return self._bounds.z_min_safe
+        """Lowest allowed target TIP Z in mm, not a whole-robot collision constraint."""
+        return self._z_min_safe
 
     @property
     def flange_z_min_safe(self) -> float:
-        """Lowest allowed flange Z in mm (TIP Z + tool_offset)."""
-        return self._bounds.flange_z_min_safe
+        """Full-length flange Z reference satisfying the TIP floor at any orientation.
+
+        Commands use the actual target orientation to check TIP Z; a tilted
+        tool may command below this reference. It does not model flange/tool
+        geometry or guarantee collision-free motion.
+        """
+        return self.z_min_safe + self.tool_offset_mm
 
     @property
     def tool_offset_mm(self) -> float:
-        """Flange-to-tip offset along base -Z in mm."""
-        return self._bounds.tool_offset_mm
+        """Tool-tip extension along flange-local +Z (mm)."""
+        return self._tool_offset_mm
 
     @property
     def tf_flange_cam(self) -> np.ndarray | None:
@@ -465,33 +618,24 @@ class PiperLowLevel:
     ) -> None:
         """Move to absolute pose in mm/deg (FLANGE) via EndPoseCtrl.
 
-        ``joint=False`` → MOVE L (straight line, for short pick/place strokes).
-        ``joint=True``  → MOVE P (point-to-point, reach-friendly, for transit/home).
+        Always uses MOVE P (point-to-point); this does not promise a straight
+        Cartesian path. ``joint`` is a deprecated compatibility parameter and
+        does not select the motion mode.
         Blocks (polls GetArmEndPoseMsgs) until within tolerance or timeout.
         """
-        x, y, z = pose.x_mm, pose.y_mm, pose.z_mm
-        rx, ry, rz = pose.rx_deg, pose.ry_deg, pose.rz_deg
-        x, y, z = self._clamp_xy_box(x, y, z)
-        self._bounds.check_flange_z(z)
-        for v, name in ((x, "x"), (y, "y"), (z, "z"), (rx, "rx"), (ry, "ry"), (rz, "rz")):
-            if not math.isfinite(v):
-                raise ValueError(f"[Piper] non-finite {name}={v}")
-        x_int, y_int, z_int = round(x * _FACTOR), round(y * _FACTOR), round(z * _FACTOR)
-        rx_int, ry_int, rz_int = round(rx * _FACTOR), round(ry * _FACTOR), round(rz * _FACTOR)
+        del joint
+        command = self._prepare_flange_command(pose)
+        x, y, z, rx, ry, rz = (value / _FACTOR for value in command)
+        target = (x, y, z, rx, ry, rz)
         with self._lock:
-            logger.info(
+            logger.debug(
                 "[Piper] EndPoseCtrl(MOVE_P, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f) ...",
-                x,
-                y,
-                z,
-                rx,
-                ry,
-                rz,
+                *target,
             )
             self._arm.MotionCtrl_2(_CTRL_CAN, _MOVE_P, self._move_speed, 0x00)
-            self._arm.EndPoseCtrl(x_int, y_int, z_int, rx_int, ry_int, rz_int)
+            self._arm.EndPoseCtrl(*command)
         self._wait_pose_reached(
-            (x, y, z, rx, ry, rz),
+            target,
             sync_timeout_s or self._move_timeout_s,
             label="EndPose",
         )
@@ -502,41 +646,20 @@ class PiperLowLevel:
         Sends one ``EndPoseCtrl`` (MOVE_P) toward the target and returns
         immediately — no ``_wait_pose_reached`` poll. The control loop is
         responsible for slew-limiting and for re-issuing toward the latest
-        target each tick. Workspace clamp + Z floor are still enforced (a servo
-        loop must not be able to drive the tip through the floor).
+        target each tick. The driver rejects targets outside the TIP/FLANGE
+        workspace or below the TIP Z floor before sending a command.
 
-        ``pose`` is a mapping (``x/y/z`` mm + optional ``rx/ry/rz`` deg) or any
-        object exposing those attributes; missing orientation falls back to the
-        live flange orientation.
+        ``pose`` is a native FlangePose, a mapping, or an attribute object.
+        Mappings/attribute objects require x/y/z (mm); optional rx/ry/rz (deg,
+        with r as a yaw alias) default to the live flange orientation. Missing
+        position fields are rejected before readback or dispatch. An incomplete
+        orientation requires a successful readback for the TIP safety check.
         """
-
-        def _get(key: str, default: float) -> float:
-            if isinstance(pose, dict):
-                v = pose.get(key)
-            else:
-                v = getattr(pose, key, None)
-            return float(v) if v is not None else float(default)
-
-        cur = self._read_pose()
-        rx0, ry0, rz0 = (cur.rx, cur.ry, cur.rz) if cur is not None else (0.0, 0.0, 0.0)
-        x = _get("x", cur.x if cur is not None else 0.0)
-        y = _get("y", cur.y if cur is not None else 0.0)
-        z = _get("z", cur.z if cur is not None else 0.0)
-        rx = _get("rx", rx0)
-        ry = _get("ry", ry0)
-        # accept either rz or r for the wrist angle
-        rz = _get("rz", _get("r", rz0))
-
-        x, y, z = self._clamp_xy_box(x, y, z)
-        self._bounds.check_flange_z(z)
-        for v, name in ((x, "x"), (y, "y"), (z, "z"), (rx, "rx"), (ry, "ry"), (rz, "rz")):
-            if not math.isfinite(v):
-                raise ValueError(f"[Piper] servo non-finite {name}={v}")
-        x_int, y_int, z_int = round(x * _FACTOR), round(y * _FACTOR), round(z * _FACTOR)
-        rx_int, ry_int, rz_int = round(rx * _FACTOR), round(ry * _FACTOR), round(rz * _FACTOR)
+        flange = normalize_flange_pose(pose, read_pose=self.get_pose)
+        command = self._prepare_flange_command(flange)
         with self._lock:
             self._arm.MotionCtrl_2(_CTRL_CAN, _MOVE_P, self._move_speed, 0x00)
-            self._arm.EndPoseCtrl(x_int, y_int, z_int, rx_int, ry_int, rz_int)
+            self._arm.EndPoseCtrl(*command)
         # Intentionally NO wait: return immediately so the servo loop keeps its rate.
 
     def move_joint_blocking(
@@ -552,18 +675,28 @@ class PiperLowLevel:
                 raise ValueError(f"[Piper] non-finite q[{i}]={v}")
         q_int = [round(float(v) * _FACTOR) for v in q]
         with self._lock:
-            logger.info("[Piper] JointCtrl(%s) ...", [round(v, 2) for v in q])
+            logger.debug("[Piper] JointCtrl(%s) ...", [round(v, 2) for v in q])
             self._arm.MotionCtrl_2(_CTRL_CAN, _MOVE_J, self._move_speed, 0x00)
             self._arm.JointCtrl(*q_int)
         self._wait_joints_reached(q, sync_timeout_s or self._move_timeout_s)
 
     def home(self) -> None:
-        """Move to the configured home pose (TIP→FLANGE Z conversion when needed),
-        via MOVE P (point-to-point) for a reach-friendly path.
-        """
+        """Move to the stored FLANGE home target via MOVE P (point-to-point)."""
         p = self._home_pose
-        flange_z = p.z + self._bounds.tool_offset_mm if self._bounds.poses_are_tip_frame else p.z
-        self.move_to_pose_blocking(FlangePose(p.x, p.y, flange_z, p.rx, p.ry, p.rz), joint=True)
+        self.move_to_pose_blocking(FlangePose(*p.as_tuple()))
+
+    def _warn_if_home_uncommandable(self, source: str) -> None:
+        """Diagnose home limits without preventing observation or joint calibration."""
+        try:
+            self._prepare_flange_command(FlangePose(*self._home_pose.as_tuple()))
+        except SafetyViolationError as exc:
+            logger.warning(
+                "[Piper] %s home target %s cannot be commanded: %s. "
+                "Connection remains available; home() and automatic recovery homing will be rejected.",
+                source,
+                self._home_pose.as_tuple(),
+                exc,
+            )
 
     # ================================================================ gripper
     def set_gripper(self, closed: bool) -> None:
@@ -576,31 +709,47 @@ class PiperLowLevel:
         width_int = max(0, round(float(width_mm) * _FACTOR))
         eff = int(effort) if effort is not None else self._gripper_effort
         with self._lock:
-            logger.info("[Piper] GripperCtrl(width=%.1fmm, effort=%d)", width_mm, eff)
+            logger.debug("[Piper] GripperCtrl(width=%.1fmm, effort=%d)", width_mm, eff)
             self._arm.GripperCtrl(width_int, eff, _GRIPPER_ENABLE, 0)
         time.sleep(self._gripper_settle_s)
 
     # ============================================================== teardown
     def close(self) -> None:
-        """Stop camera, disconnect CAN; leave arm energized holding pose."""
+        """Stop camera and disconnect CAN, retaining failed resources for retry."""
         if self._closed:
             return
-        try:
-            if self._camera is not None:
+        errors: list[BaseException] = []
+        if self._camera is not None:
+            try:
                 self._camera.stop()
-        except Exception:  # noqa: BLE001 - best-effort camera teardown
-            pass
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._camera = None
         # Leave the arm ENERGIZED and holding its pose: do NOT DisableArm
         # (that makes it go limp and drop whatever it is holding) and do NOT
         # force standby. Just drop the CAN connection — the firmware keeps the
         # last enabled state, so the arm holds position until power-cycled or
         # explicitly disabled.
-        try:
-            self._arm.DisconnectPort()
-        except Exception:  # noqa: BLE001 - best-effort CAN disconnect
-            pass
-        self._closed = True
-        logger.info("[Piper] Closed.")
+        if self._can_may_be_open and self._arm is not None:
+            try:
+                self._arm.DisconnectPort()
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._can_may_be_open = False
+
+        hardware_closed = self._camera is None and not self._can_may_be_open
+        if hardware_closed:
+            self._arm = None
+            logger.info("[Piper] Closed.")
+            try:
+                _release_cmd_log_handler(self)
+            except BaseException as exc:
+                errors.append(exc)
+        self._closed = hardware_closed and self not in _CMD_LOG_OWNERS
+        if errors:
+            raise HardwareCleanupError("PiperLowLevel.close", cleanup_errors=errors) from errors[0]
 
     # ============================================================== private helpers
     def _read_pose(self) -> PiperPose | None:
@@ -637,42 +786,41 @@ class PiperLowLevel:
             logger.warning("[Piper] GetArmJointMsgs failed: %s", exc)
             return None
 
-    def _clamp_xy_box(self, x: float, y: float, z: float) -> tuple[float, float, float]:
-        """Clamp a FLANGE target into the configured XY box + Z ceiling (warn on clamp).
-
-        The Z floor is enforced separately (and hard) by ``check_flange_z``. X/Y are
-        frame-invariant to the Z tool offset, so the same box applies to tip/flange.
-        """
-        x_min, x_max, y_min, y_max, z_max = self._xy_box
-        cx, cy, cz = x, y, z
-        reasons = []
-        if x_min is not None and cx < x_min:
-            reasons.append(f"x<{x_min}")
-            cx = x_min
-        if x_max is not None and cx > x_max:
-            reasons.append(f"x>{x_max}")
-            cx = x_max
-        if y_min is not None and cy < y_min:
-            reasons.append(f"y<{y_min}")
-            cy = y_min
-        if y_max is not None and cy > y_max:
-            reasons.append(f"y>{y_max}")
-            cy = y_max
-        if z_max is not None and cz > z_max:
-            reasons.append(f"z>{z_max}")
-            cz = z_max
-        if reasons:
-            logger.warning(
-                "[Piper] target (%.1f,%.1f,%.1f) clamped to (%.1f,%.1f,%.1f) [%s]",
-                x,
-                y,
-                z,
-                cx,
-                cy,
-                cz,
-                ", ".join(reasons),
+    def _validate_flange_target(self, pose: FlangePose) -> None:
+        """Check a complete target: TIP floor, both XY positions, FLANGE ceiling."""
+        for name, value in zip(("x", "y", "z", "rx", "ry", "rz"), pose.as_tuple(), strict=True):
+            if not math.isfinite(value):
+                raise SafetyViolationError(f"[Piper] non-finite FLANGE {name}={value}")
+        offset = tip_offset_in_base(pose.rx_deg, pose.ry_deg, pose.rz_deg, self.tool_offset_mm)
+        tx, ty, tz = pose.x_mm + offset[0], pose.y_mm + offset[1], pose.z_mm + offset[2]
+        if tz < self.z_min_safe - _GEOMETRY_EPS_MM:
+            raise SafetyViolationError(
+                f"[Piper] TIP z={tz:.6f}mm below z_min_safe={self.z_min_safe:.6f}mm "
+                f"(FLANGE z={pose.z_mm:.6f}mm, "
+                f"target RPY=({pose.rx_deg:.6f}, {pose.ry_deg:.6f}, {pose.rz_deg:.6f}))"
             )
-        return cx, cy, cz
+        x_min, x_max, y_min, y_max, z_max = self._xy_box
+        for frame, x, y in (("FLANGE", pose.x_mm, pose.y_mm), ("TIP", tx, ty)):
+            for axis, value, lo, hi in (("x", x, x_min, x_max), ("y", y, y_min, y_max)):
+                if _out_of_bounds(value, lo, hi):
+                    raise SafetyViolationError(f"[Piper] {frame} {axis}={value:.6f}mm out of bounds [{lo}, {hi}]")
+        if z_max is not None and pose.z_mm > z_max + _GEOMETRY_EPS_MM:
+            raise SafetyViolationError(f"[Piper] FLANGE z={pose.z_mm:.6f}mm above z_max={z_max}mm")
+
+    def _prepare_flange_command(self, pose: FlangePose) -> tuple[int, int, int, int, int, int]:
+        """Reject unsafe requests and validate the actual SDK-quantized target.
+
+        Z rounds upward when needed at the TIP floor, using the quantized RPY.
+        This only compensates command resolution; an unsafe original request
+        is rejected first, and any resulting workspace violation is rejected.
+        """
+        self._validate_flange_target(pose)
+        x, y, z, rx, ry, rz = (round(value * _FACTOR) for value in pose.as_tuple())
+        offset_z = float(tip_offset_in_base(rx / _FACTOR, ry / _FACTOR, rz / _FACTOR, self.tool_offset_mm)[2])
+        z = max(z, math.ceil((self.z_min_safe - offset_z) * _FACTOR))
+        command = (x, y, z, rx, ry, rz)
+        self._validate_flange_target(FlangePose(*(value / _FACTOR for value in command)))
+        return command
 
     def _wait_pose_reached(
         self,

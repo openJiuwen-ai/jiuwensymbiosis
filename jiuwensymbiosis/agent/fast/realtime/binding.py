@@ -64,14 +64,14 @@ class ServoBinding:
         self.frames = StreamingFrameSource(self._grab_frame, max_hz=frame_max_hz, name="servo")
 
     def make_tick_logger(self, phase: str) -> Callable[[dict], None] | None:
-        """Return an INFO tick callback for adapters that explicitly opt in."""
+        """Return a DEBUG tick callback for adapters that explicitly opt in."""
         if not self._log_servo_ticks:
             return None
 
         def log_tick(info: dict) -> None:
             pose = info.get("pose")
             target = info.get("target")
-            logger.info(
+            logger.debug(
                 "[servo-tick] phase=%s tick=%d live=%s target=%s pos_err_mm=%s ang_err_deg=%s in_tol=%d",
                 phase,
                 int(info["tick"]),

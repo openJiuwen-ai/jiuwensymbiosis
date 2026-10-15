@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,8 +36,9 @@ from jiuwensymbiosis.calibration.workflows.preflight import (
 from jiuwensymbiosis.calibration.workflows.profile import load_profile, resolve_out_path, resolve_space
 from jiuwensymbiosis.calibration.workflows.publication import solve_and_publish
 from jiuwensymbiosis.calibration.workflows.workflows import CalibrationRunOptions, RunOutcome, WorkflowDependencies
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.execute")
+logger = get_logger("jiuwensymbiosis.calibration.execute")
 
 
 @dataclass(frozen=True)

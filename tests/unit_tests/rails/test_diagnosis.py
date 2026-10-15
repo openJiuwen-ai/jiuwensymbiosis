@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import pytest
@@ -421,38 +420,19 @@ class TestDiagnosisBuilderWiring:
 
         monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create)
         cfg = RobotAgentConfig(
-            enable_tracing=True,
-            enable_diagnosis=True,
             workspace=str(tmp_path),
             model=object(),
-            log_dir=None,
+            execution={"mode": "stepagent"},
+            modules={"tracing": {"enabled": True}, "diagnosis": {"enabled": True}},
+            logging={"dir": None},
         )
         builder_mod.build_robot_agent(mock_session, cfg)
         rails = captured["rails"]
         assert any(isinstance(r, DiagnosisRail) for r in rails)
         assert any(isinstance(r, TraceRail) for r in rails)
 
-    def test_disabled_when_tracing_off(self, mock_session, tmp_path, monkeypatch, caplog):
-        from jiuwensymbiosis.agent import builder as builder_mod
+    def test_rejected_when_tracing_off(self):
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
-        captured: dict[str, Any] = {}
-
-        def _fake_create(**kwargs):
-            captured.update(kwargs)
-            return kwargs
-
-        monkeypatch.setattr(builder_mod, "create_deep_agent", _fake_create)
-        cfg = RobotAgentConfig(
-            enable_tracing=False,
-            enable_diagnosis=True,
-            workspace=str(tmp_path),
-            model=object(),
-            log_dir=None,
-        )
-        with caplog.at_level(logging.WARNING):
-            builder_mod.build_robot_agent(mock_session, cfg)
-        rails = captured["rails"]
-        assert not any(isinstance(r, DiagnosisRail) for r in rails)
-        assert not any(isinstance(r, TraceRail) for r in rails)
-        assert any("enable_diagnosis=True requires enable_tracing" in rec.message for rec in caplog.records)
+        with pytest.raises(ValueError, match="diagnosis.enabled requires modules.tracing.enabled"):
+            RobotAgentConfig(modules={"tracing": {"enabled": False}, "diagnosis": {"enabled": True}})

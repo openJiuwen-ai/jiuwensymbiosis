@@ -23,7 +23,6 @@ by :func:`_sanitize_config_digest` before the digest is archived.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -33,8 +32,9 @@ import numpy as np
 
 from jiuwensymbiosis.calibration._mount import MOUNT_VALUES, Mount, canonical_mount
 from jiuwensymbiosis.calibration.domain.models import Station, ViewDetection, require_se3_mm
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.archives")
+logger = get_logger("jiuwensymbiosis.calibration.archives")
 
 # Archive kinds — loaders reject the wrong kind for a mode.
 KIND_WAYPOINTS = "eye_to_hand_waypoints"

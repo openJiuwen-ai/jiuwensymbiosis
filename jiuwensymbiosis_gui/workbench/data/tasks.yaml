@@ -1,0 +1,30 @@
+# 内置任务清单 —— GUI 内部资产,随包发布、只读。用户「另存为新任务」写到
+# ~/.jiuwensymbiosis/gui/tasks.yaml,启动时与本文件合并(用户可覆盖同 key)。
+#
+# 任务是**本体无关**的意图:只描述"做什么",配置由所选本体提供。同一张卡片可在任意
+# 机械臂上执行(如"视觉拾取"既能跑 piper 也能跑 so101),不为每种本体重复一份。
+#
+# 字段:key(唯一)/ display_name / description / default_query(配置无 prompt 时的兜底)/
+#       bodies(可选;省略=适用所有本体,列出则限定)/ agent_defaults(缺省 agent.* 项)。
+tasks:
+  - key: pick_box
+    display_name: "拾取盒子"
+    description: "把黑色盒子抓起来放到白色盒子上"
+    default_query: "把黑色盒子抓起来放到白色盒子上"
+    agent_defaults:
+      modules:
+        skills:
+          enabled: true
+
+  # 拾取香蕉:fast + visual_pick 技能。本体无关——任意有"运动+夹爪+视觉"能力的本体
+  # 都能执行；伺服参数来自 agent.execution.fastagent.tracking.servo。
+  - key: pick_banana
+    display_name: "拾取香蕉"
+    description: "把香蕉放到黑色盒子上"
+    default_query: "把香蕉放到黑色盒子上"
+    agent_defaults:
+      execution:
+        mode: fastagent
+      modules:
+        skills:
+          enabled: true

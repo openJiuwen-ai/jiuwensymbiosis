@@ -67,22 +67,29 @@ def test_camera_defaults():
     assert cfg.waist_camera_info_topic == "/sensor/camera/waist_front_rgbd/color/info"
     assert cfg.color_msg_type == "shm_msgs/msg/Image1m"
     assert cfg.depth_scale == 0.001
-    assert cfg.detector.url == "http://127.0.0.1:8114"
+    assert cfg.detector.url is None
+    assert cfg.detector.mode == "disabled"
 
 
 def test_detector_parsed_from_api_servers():
     from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 
-    cfg = CruzrConfig.from_dict({
-        "name": "cruzr_vis",
-        "api_servers": [
-            {"_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
-             "host": "10.0.0.5", "port": 9000, "use_sam2": False},
-        ],
-    })
-    assert cfg.detector.host == "10.0.0.5"
+    cfg = CruzrConfig.from_dict(
+        {
+            "name": "cruzr_vis",
+            "api_servers": [
+                {
+                    "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
+                    "host": "127.0.0.1",
+                    "port": 9000,
+                    "use_sam2": False,
+                },
+            ],
+        }
+    )
+    assert cfg.detector.host == "127.0.0.1"
     assert cfg.detector.port == 9000
-    assert cfg.detector.url == "http://10.0.0.5:9000"
+    assert cfg.detector.url == "http://127.0.0.1:9000"
     assert cfg.detector.use_sam2 is False
 
 
@@ -100,6 +107,7 @@ def test_cruzr_yaml_loads():
 
     root = Path(__file__).resolve().parents[4]
     cfg = CruzrConfig.from_yaml(root / "configs" / "cruzr" / "cruzr.yaml")
+    assert cfg.camera_calib_path == str(root / "configs" / "cruzr" / "cruzr_camera_calib.json")
     assert cfg.urdf_path.endswith("cruzr_s2_v1.urdf")
     assert cfg.left_arm_leaf == "L_sixforce_link"
     assert cfg.right_arm_leaf == "R_sixforce_link"

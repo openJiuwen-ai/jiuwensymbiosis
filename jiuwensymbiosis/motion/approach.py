@@ -30,10 +30,18 @@ from __future__ import annotations
 
 import logging
 import math
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
+from functools import partial
 from typing import Any, NamedTuple
 
+from jiuwensymbiosis.errors import InferenceServiceError, is_inference_service_failure
 from jiuwensymbiosis.motion.base_goal import plan_base_goal_for_grasp, plan_grasp_right_angle
+from jiuwensymbiosis.perception.detector_client import DetectorClient, segment_image
+from jiuwensymbiosis.perception.frame import CameraFrame
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +157,17 @@ def _seg_fn(api: Any) -> Any:
     return override() if override else getattr(api, "_seg_fn", None)
 
 
+def _checked_detect(fn: Any, *args: Any, **kwargs: Any) -> dict:
+    result = fn(*args, **kwargs)
+    if is_inference_service_failure(result):
+        raise InferenceServiceError(
+            "Detection service failed during approach",
+            service="vision",
+            code=result.get("error_code") or "inference_unavailable",
+        )
+    return result
+
+
 def _viz(api: Any, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
     """Debug-overlay hook; no-op unless the body provides a viewer."""
     override = getattr(api, "viz_update", None)
@@ -157,7 +176,7 @@ def _viz(api: Any, camera: str, prompt: str, rgb: Any, best: dict | None) -> Non
 
 
 def _search_frames(api: Any, camera: str | None = None) -> Any:
-    """One raw frame tuple (rgb first) from ``camera``, or None if it cannot be read.
+    """One CameraFrame or legacy raw tuple from ``camera``, or None when unavailable.
 
     Used for the LOOK-AROUND pass, which only ever reports a bearing — so any camera will
     do, RGBD included. The default reads the body's single camera through the Env verb; a
@@ -167,8 +186,7 @@ def _search_frames(api: Any, camera: str | None = None) -> Any:
     override = getattr(api, "search_frames", None)
     if override:
         return override(camera)
-    frame = api.env.grab_calibrated_frame(camera)
-    return None if frame is None else (frame.rgb, frame.depth_m)
+    return api.env.grab_calibrated_frame(camera)
 
 
 def _reset_search_sensor(api: Any) -> None:
@@ -213,8 +231,12 @@ def _sweep_for_bearing(api: Any, object_name: str, on: str | None = None) -> dic
         for camera in cameras:
             hit = look_once(api, object_name, on, camera=camera)
             if hit.get("found"):
-                return {"found": True, "total_bearing": float(hit.get("bearing_rad", 0.0)),
-                        "turned_rad": turned, "exhaustive": True}
+                return {
+                    "found": True,
+                    "total_bearing": float(hit.get("bearing_rad", 0.0)),
+                    "turned_rad": turned,
+                    "exhaustive": True,
+                }
         if not can_turn or turned + step >= 2.0 * math.pi:
             break
         nav = api.rotate_base(step)
@@ -272,14 +294,20 @@ class Footprint(NamedTuple):
     short_mm: float
 
     @classmethod
-    def from_detection(cls, det: Any) -> "Footprint":
+    def from_detection(cls, det: Any) -> Footprint:
         """Read the footprint out of a detection/surface dict (callers gate on ``yaw_rad``)."""
-        return cls(det["center_mm"], float(det.get("yaw_rad", 0.0)),
-                   float(det.get("long_mm", 0.0)), float(det.get("short_mm", 0.0)))
+        return cls(
+            det["center_mm"],
+            float(det.get("yaw_rad", 0.0)),
+            float(det.get("long_mm", 0.0)),
+            float(det.get("short_mm", 0.0)),
+        )
 
 
 def near_face_normal(
-    fp: Footprint, tuning: Any, prev_normal: tuple[float, float] | None = None,
+    fp: Footprint,
+    tuning: Any,
+    prev_normal: tuple[float, float] | None = None,
 ) -> tuple[float, float] | None:
     """Robot-facing outward normal of ONE of the object's vertical faces from its ground **footprint**
     yaw, for squaring the base to that face before a grasp or a place.
@@ -308,14 +336,14 @@ def near_face_normal(
     rng = math.hypot(cx, cy)
     if rng < 1e-6 or min(long_mm, short_mm) <= 1e-6:
         return None
-    u = (math.cos(yaw_rad), math.sin(yaw_rad))          # long axis
-    v = (-math.sin(yaw_rad), math.cos(yaw_rad))         # short axis
+    u = (math.cos(yaw_rad), math.sin(yaw_rad))  # long axis
+    v = (-math.sin(yaw_rad), math.cos(yaw_rad))  # short axis
     cands = ((u[0], u[1]), (-u[0], -u[1]), (v[0], v[1]), (-v[0], -v[1]))
     if prev_normal is None:
-        gx, gy = -cx / rng, -cy / rng                   # unit centre → robot; face nearest to facing us
+        gx, gy = -cx / rng, -cy / rng  # unit centre → robot; face nearest to facing us
         return max(cands, key=lambda n: n[0] * gx + n[1] * gy)
     px, py = float(prev_normal[0]), float(prev_normal[1])
-    return max(cands, key=lambda n: n[0] * px + n[1] * py)   # hysteresis: stay on the locked face
+    return max(cands, key=lambda n: n[0] * px + n[1] * py)  # hysteresis: stay on the locked face
 
 
 def select_grasp_normal(
@@ -330,15 +358,18 @@ def select_grasp_normal(
     """
     n: tuple[float, float] | None = None
     fn = det.get("face_normal")
-    if fn and math.hypot(float(fn[0]), float(fn[1])) > 0.5 \
-            and float(det.get("face_flatness", 1.0)) <= float(getattr(tuning, "grasp_face_flatness_max", 0.15)):
+    if (
+        fn
+        and math.hypot(float(fn[0]), float(fn[1])) > 0.5
+        and float(det.get("face_flatness", 1.0)) <= float(getattr(tuning, "grasp_face_flatness_max", 0.15))
+    ):
         n = (float(fn[0]), float(fn[1]))
     elif "yaw_rad" in det:
         n = near_face_normal(Footprint.from_detection(det), tuning, prev_normal=prev_normal)
     if n is None:
         return None
-    cx, cy = float(det["center_mm"][0]), float(det["center_mm"][1])   # mm; only the sign of the dot matters
-    if n[0] * (-cx) + n[1] * (-cy) < 0.0:                             # flip toward the robot (viewer)
+    cx, cy = float(det["center_mm"][0]), float(det["center_mm"][1])  # mm; only the sign of the dot matters
+    if n[0] * (-cx) + n[1] * (-cy) < 0.0:  # flip toward the robot (viewer)
         n = (-n[0], -n[1])
     return n
 
@@ -355,17 +386,16 @@ def select_surface_square_normal(
     """
     en = s.get("edge_normal")
     n: tuple[float, float] | None = None
-    edge_trustworthy = (
-        float(s.get("edge_quality", 1.0)) <= float(getattr(tuning, "place_edge_quality_max", 0.25))
-        and float(s.get("edge_len_mm", 0.0)) >= float(getattr(tuning, "place_edge_min_len_mm", 150.0))
-    )
+    edge_trustworthy = float(s.get("edge_quality", 1.0)) <= float(
+        getattr(tuning, "place_edge_quality_max", 0.25)
+    ) and float(s.get("edge_len_mm", 0.0)) >= float(getattr(tuning, "place_edge_min_len_mm", 150.0))
     if en and math.hypot(float(en[0]), float(en[1])) > 0.5 and edge_trustworthy:
         n = (float(en[0]), float(en[1]))
     elif "yaw_rad" in s:
         n = near_face_normal(Footprint.from_detection(s), tuning, prev_normal=prev_normal)
     if n is None:
         return None
-    cx, cy = float(s["center_mm"][0]), float(s["center_mm"][1])   # sign-fix toward the robot (defensive)
+    cx, cy = float(s["center_mm"][0]), float(s["center_mm"][1])  # sign-fix toward the robot (defensive)
     if n[0] * (-cx) + n[1] * (-cy) < 0.0:
         n = (-n[0], -n[1])
     return n
@@ -376,10 +406,16 @@ def select_surface_square_normal(
 # --------------------------------------------------------------------------------------
 
 
-def drive_base(api: Any, forward: float, turn: float, *, invalidate: Any,
-               k_rot: float | None = None,
-               k_rot_slow_rad: float | None = None,
-               k_fwd: float | None = None) -> dict:
+def drive_base(
+    api: Any,
+    forward: float,
+    turn: float,
+    *,
+    invalidate: Any,
+    k_rot: float | None = None,
+    k_rot_slow_rad: float | None = None,
+    k_fwd: float | None = None,
+) -> dict:
     """One-shot base approach shared by :func:`approach_for_grasp` / :func:`approach_for_place`: advance
     ``forward`` m (+``turn`` rad) when past the position tolerance, else just rotate to centre.
     ``k_rot``/``k_rot_slow_rad``/``k_fwd`` (when given) override the global base steering gains with
@@ -388,8 +424,7 @@ def drive_base(api: Any, forward: float, turn: float, *, invalidate: Any,
     to clear the now-stale cached detection/surface (base moved → re-sense before grasp/place).
     """
     if forward > float(_tuning(api).base_pos_tol_m):
-        res = _nav_relative(api, forward, 0.0, turn,
-                                k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd)
+        res = _nav_relative(api, forward, 0.0, turn, k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd)
     else:
         # In-place turn (rotate_base equivalent, inlined to thread the gentle gains without widening the
         # rotate_base tool schema); k_fwd is irrelevant with no forward component.
@@ -398,8 +433,7 @@ def drive_base(api: Any, forward: float, turn: float, *, invalidate: Any,
     if res.get("ok"):
         invalidate()
         return {"ok": True, "turn_rad": turn, "forward_m": forward, "move": res}
-    return {"ok": False, "reason": res.get("reason", "nav_failed"),
-            "turn_rad": turn, "forward_m": forward, "move": res}
+    return {"ok": False, "reason": res.get("reason", "nav_failed"), "turn_rad": turn, "forward_m": forward, "move": res}
 
 
 def redetect(api: Any, obj: str, reference: str | None, relation: str = "on") -> dict:
@@ -411,9 +445,9 @@ def redetect(api: Any, obj: str, reference: str | None, relation: str = "on") ->
     Returns the detection dict — possibly not-ok if the target is truly lost (caller aborts). When
     ``reference`` is falsy this is a plain re-detect with no fallback.
     """
-    det = api.locate_for_grasp(obj, reference=reference, relation=relation)
+    det = _checked_detect(api.locate_for_grasp, obj, reference=reference, relation=relation)
     if not det.get("ok") and reference:
-        plain = api.locate_for_grasp(obj)
+        plain = _checked_detect(api.locate_for_grasp, obj)
         if plain.get("ok"):
             plain["reference"], plain["relation"] = reference, relation
             det = plain
@@ -425,8 +459,9 @@ def redetect(api: Any, obj: str, reference: str | None, relation: str = "on") ->
 # --------------------------------------------------------------------------------------
 
 
-def coarse_bearing(api: Any, rgb: Any, seg_fn: Any, object_name: str, tuning: Any,
-                   *, label: str = "camera", note: str | None = None) -> dict:
+def coarse_bearing(
+    api: Any, rgb: Any, seg_fn: Any, object_name: str, tuning: Any, *, label: str = "camera", note: str | None = None
+) -> dict:
     """Top-1 coarse-sensor detection → in-image bearing only (no depth). Shared by the plain coarse search
     and the grounded-search DEGRADE fallback. ``rgb`` must be 3-channel; ``note`` (when set) is attached so
     the caller can see a degrade happened.
@@ -437,8 +472,15 @@ def coarse_bearing(api: Any, rgb: Any, seg_fn: Any, object_name: str, tuning: An
     best = _run_detect_pick_best(rgb, seg_fn, object_name, 0.05, "[approach-search]")
     _viz(api, label, object_name, rgb, best)
     if best.get("ok") is False:
-        out = {"ok": True, "found": False, "reason": best.get("reason", "no_detection"),
-               "camera": label, "object": object_name, "image_w": w, "image_h": h}
+        out = {
+            "ok": True,
+            "found": False,
+            "reason": best.get("reason", "no_detection"),
+            "camera": label,
+            "object": object_name,
+            "image_w": w,
+            "image_h": h,
+        }
         if note:
             out["note"] = note
         return out
@@ -449,19 +491,31 @@ def coarse_bearing(api: Any, rgb: Any, seg_fn: Any, object_name: str, tuning: An
     u_error_frac = (u - w / 2.0) / float(w)
     hfov = float(getattr(tuning, "head_hfov_rad", 1.2))
     bearing_rad = -u_error_frac * hfov
-    logger.info("[approach] search_target %s: box=%s u_err=%.3f bearing=%.3f",
-                object_name, box, u_error_frac, bearing_rad)
-    out = {"ok": True, "found": True, "object": object_name, "camera": label,
-           "bbox": box, "score": float(best["score"]),
-           "u_center": u, "v_center": v, "image_w": w, "image_h": h,
-           "u_error_frac": u_error_frac, "bearing_rad": bearing_rad}
+    logger.info(
+        "[approach] search_target %s: box=%s u_err=%.3f bearing=%.3f", object_name, box, u_error_frac, bearing_rad
+    )
+    out = {
+        "ok": True,
+        "found": True,
+        "object": object_name,
+        "camera": label,
+        "bbox": box,
+        "score": float(best["score"]),
+        "u_center": u,
+        "v_center": v,
+        "image_w": w,
+        "image_h": h,
+        "u_error_frac": u_error_frac,
+        "bearing_rad": bearing_rad,
+    }
     if note:
         out["note"] = note
     return out
 
 
-def coarse_detect_on_reference_2d(api: Any, rgb: Any, seg_fn: Any, object_name: str, on: str,
-                                  *, tuning: Any, label: str = "camera") -> dict | None:
+def coarse_detect_on_reference_2d(
+    api: Any, rgb: Any, seg_fn: Any, object_name: str, on: str, *, tuning: Any, label: str = "camera"
+) -> dict | None:
     """Coarse-sensor 2-D grounding (NO depth/cloud/TF): detect the ``on`` reference and the ``object_name``
     target in the same image, then judge "target ON reference" purely by 2-D BBOX OVERLAP — the fraction of
     the target's bounding box that lies inside the reference's bounding box (``|t∩r| / |t|``, boxes not
@@ -506,12 +560,12 @@ def coarse_detect_on_reference_2d(api: Any, rgb: Any, seg_fn: Any, object_name: 
             ref_score = s
             ref_box = [float(b) for b in r["box"][:4]]
     if ref_box is None or (ref_box[2] - ref_box[0]) <= 0 or (ref_box[3] - ref_box[1]) <= 0:
-        return None   # reference not resolvable in 2-D → degrade (fail-open)
+        return None  # reference not resolvable in 2-D → degrade (fail-open)
 
     # Target candidates (colour-verified); keep those whose bbox overlaps the reference enough.
     cw = extract_color_word(object_name)
-    picks = []   # (overlap, bearing, box, score, mask)
-    seen_bearing = None   # best colour-verified target bearing, even if it fails the overlap gate
+    picks = []  # (overlap, bearing, box, score, mask)
+    seen_bearing = None  # best colour-verified target bearing, even if it fails the overlap gate
     seen_score = -1.0
     for r in seg_fn(rgb, text_prompt=object_name):
         if float(r.get("score", 0.0)) < 0.05:
@@ -519,43 +573,74 @@ def coarse_detect_on_reference_2d(api: Any, rgb: Any, seg_fn: Any, object_name: 
         m = np.asarray(r["mask"]).astype(bool)
         if int(m.sum()) == 0:
             continue
-        if cw and not region_color_matches(rgb, m, cw):   # wrong colour → skip
+        if cw and not region_color_matches(rgb, m, cw):  # wrong colour → skip
             continue
         box = [float(b) for b in r["box"][:4]]
         u = 0.5 * (box[0] + box[2])
         bearing = -((u - w / 2.0) / float(w)) * hfov
         sc = float(r.get("score", 0.0))
-        if sc > seen_score:               # remember where the target IS, overlap or not, so the
-            seen_score = sc               # caller can re-aim the sensor toward an off-reference target
+        if sc > seen_score:  # remember where the target IS, overlap or not, so the
+            seen_score = sc  # caller can re-aim the sensor toward an off-reference target
             seen_bearing = bearing
-        overlap = _bbox_overlap_over_target(box, ref_box)   # fraction of target box over reference
+        overlap = _bbox_overlap_over_target(box, ref_box)  # fraction of target box over reference
         if overlap < thr:
             continue
         picks.append((overlap, bearing, box, sc, m))
     if not picks:
         _viz(api, label, f"{object_name} on {on}", rgb, None)
-        logger.info("[approach] coarse 2-D %r on %r: reference found, no target overlaps it "
-                    "(thr=%.2f seen_bearing=%s)", object_name, on, thr,
-                    None if seen_bearing is None else round(seen_bearing, 3))
-        out = {"ok": True, "found": False, "verified": True, "reason": "no_target_on_reference",
-               "object": object_name, "reference": on, "camera": label,
-               "image_w": w, "image_h": h}
+        logger.info(
+            "[approach] coarse 2-D %r on %r: reference found, no target overlaps it (thr=%.2f seen_bearing=%s)",
+            object_name,
+            on,
+            thr,
+            None if seen_bearing is None else round(seen_bearing, 3),
+        )
+        out = {
+            "ok": True,
+            "found": False,
+            "verified": True,
+            "reason": "no_target_on_reference",
+            "object": object_name,
+            "reference": on,
+            "camera": label,
+            "image_w": w,
+            "image_h": h,
+        }
         if seen_bearing is not None:
-            out["seen_bearing_rad"] = seen_bearing   # sensor can re-aim here to recover overlap
+            out["seen_bearing_rad"] = seen_bearing  # sensor can re-aim here to recover overlap
         return out
-    picks.sort(key=lambda p: p[0], reverse=True)   # most-overlapping target wins
+    picks.sort(key=lambda p: p[0], reverse=True)  # most-overlapping target wins
     overlap, bearing, box, score, mask = picks[0]
-    _viz(api, label, f"{object_name} on {on}", rgb,
-                    {"ok": True, "mask": mask, "box": box, "score": score})
-    logger.info("[approach] coarse 2-D %r on %r: overlap=%.2f bearing=%.3f",
-                object_name, on, overlap, bearing)
-    return {"ok": True, "found": True, "verified": True, "object": object_name, "reference": on,
-            "camera": label, "bbox": box, "score": score, "overlap": overlap,
-            "bearing_rad": bearing, "image_w": w, "image_h": h}
+    _viz(api, label, f"{object_name} on {on}", rgb, {"ok": True, "mask": mask, "box": box, "score": score})
+    logger.info("[approach] coarse 2-D %r on %r: overlap=%.2f bearing=%.3f", object_name, on, overlap, bearing)
+    return {
+        "ok": True,
+        "found": True,
+        "verified": True,
+        "object": object_name,
+        "reference": on,
+        "camera": label,
+        "bbox": box,
+        "score": score,
+        "overlap": overlap,
+        "bearing_rad": bearing,
+        "image_w": w,
+        "image_h": h,
+    }
 
 
-def look_once(api: Any, object_name: str = "box", on: str | None = None,
-                  camera: str | None = None) -> dict:
+@contextmanager
+def _frame_detector(seg_fn: Any, captured: float, frame_id: str) -> Iterator[Any]:
+    """Share one capture deadline across all prompts and the local bearing calculation."""
+    if isinstance(seg_fn, DetectorClient):
+        seg_fn.check_frame_age(captured, frame_id)
+        yield partial(segment_image, seg_fn, captured_monotonic_s=captured, frame_id=frame_id)
+        seg_fn.check_frame_age(captured, frame_id)
+    else:
+        yield seg_fn
+
+
+def look_once(api: Any, object_name: str = "box", on: str | None = None, camera: str | None = None) -> dict:
     """Detect ``object_name`` in one camera's raw image; return a bearing only.
 
     Deliberately 2-D: it reads the picture and reports WHERE TO TURN, so any camera serves —
@@ -576,10 +661,19 @@ def look_once(api: Any, object_name: str = "box", on: str | None = None,
     # report a bearing "hit" so the caller does NOT advance on bearing alone.
     strict = grounded and bool(getattr(tuning, "head_grounded_strict", False))
 
+    captured = time.monotonic()
     frames = _search_frames(api, camera)
     if frames is None:
         return {"ok": False, "found": False, "reason": "no_camera", "camera": label, "object": object_name}
-    rgb = frames[0]
+    if isinstance(frames, CameraFrame):
+        rgb = frames.rgb
+        if frames.captured_monotonic_s is not None:
+            captured = frames.captured_monotonic_s
+        frame_id = frames.frame_id or uuid.uuid4().hex
+    else:
+        # Legacy adapter hooks cannot carry timestamps: conservatively include capture time.
+        rgb = frames[0]
+        frame_id = uuid.uuid4().hex
     if rgb is None:
         return {"ok": False, "found": False, "reason": "no_image", "camera": label, "object": object_name}
     if rgb.ndim == 2:  # mono coarse frame → 3-channel for the detector
@@ -588,27 +682,37 @@ def look_once(api: Any, object_name: str = "box", on: str | None = None,
     if seg_fn is None:
         return {"ok": False, "found": False, "reason": "no_detector", "camera": label, "object": object_name}
 
-    if grounded:
-        res = coarse_detect_on_reference_2d(api, rgb, seg_fn, object_name, on,
-                                            tuning=tuning, label=label)
-        if res is not None:
-            return res
-        # Reference undetected this frame → the on-reference overlap could NOT be checked. Make it LOUD
-        # (silently this looks like "found target → drove forward" with no on-check). strict → not-found
-        # (no blind advance); else fail-open to the plain coarse bearing.
-        logger.warning(
-            "[approach] coarse 2-D grounded verify %r on %r DEGRADED%s: reference %r was not "
-            "detected this frame; the on-reference overlap was NOT checked.",
-            object_name, on, " (strict → not-found)" if strict else " to bearing-only", on)
-        if strict:
-            return {"ok": True, "found": False, "verified": False,
+    with _frame_detector(seg_fn, captured, frame_id) as seg_fn:
+        if grounded and on is not None:
+            res = coarse_detect_on_reference_2d(api, rgb, seg_fn, object_name, on, tuning=tuning, label=label)
+            if res is not None:
+                return res
+            # Reference undetected this frame → the on-reference overlap could NOT be checked. Make it LOUD
+            # (silently this looks like "found target → drove forward" with no on-check). strict → not-found
+            # (no blind advance); else fail-open to the plain coarse bearing.
+            logger.warning(
+                "[approach] coarse 2-D grounded verify %r on %r DEGRADED%s: reference %r was not "
+                "detected this frame; the on-reference overlap was NOT checked.",
+                object_name,
+                on,
+                " (strict → not-found)" if strict else " to bearing-only",
+                on,
+            )
+            if strict:
+                return {
+                    "ok": True,
+                    "found": False,
+                    "verified": False,
                     "reason": "head_reference_undetected_strict",
                     "note": "head_reference_undetected_degraded",
-                    "camera": label, "object": object_name}
-        return coarse_bearing(api, rgb, seg_fn, object_name, tuning, label=label,
-                              note="head_reference_undetected_degraded")
+                    "camera": label,
+                    "object": object_name,
+                }
+            return coarse_bearing(
+                api, rgb, seg_fn, object_name, tuning, label=label, note="head_reference_undetected_degraded"
+            )
 
-    return coarse_bearing(api, rgb, seg_fn, object_name, tuning, label=label)
+        return coarse_bearing(api, rgb, seg_fn, object_name, tuning, label=label)
 
 
 # --------------------------------------------------------------------------------------
@@ -616,9 +720,17 @@ def look_once(api: Any, object_name: str = "box", on: str | None = None,
 # --------------------------------------------------------------------------------------
 
 
-def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str,
-                  not_found_reason: str, head_name: str | None = None,
-                  head_on: str | None = None, ground_ref: str | None = None) -> dict:
+def face_by_sweep(
+    api: Any,
+    detect_fn: Any,
+    object_name: str,
+    *,
+    result_key: str,
+    not_found_reason: str,
+    head_name: str | None = None,
+    head_on: str | None = None,
+    ground_ref: str | None = None,
+) -> dict:
     """Face ``object_name`` by its PERCEIVED bearing, choosing what to do next by WHAT THE
     CAMERAS COULD ANSWER rather than by which camera was asked.
 
@@ -665,8 +777,7 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
         # reported for info only.
         cx, cy = float(det["center_mm"][0]), float(det["center_mm"][1])
         bearing = math.atan2(cy, cx)
-        return {"ok": True, "status": "acquired", "bearing_rad": bearing,
-                "turned_rad": turned, result_key: det}
+        return {"ok": True, "status": "acquired", "bearing_rad": bearing, "turned_rad": turned, result_key: det}
 
     def _handoff(bearing: float, turned: float) -> dict:
         """Coarse-approach toward a coarse bearing until the precise sensor acquires, then align.
@@ -675,7 +786,7 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
         got = coarse_approach(api, detect_fn, object_name, float(bearing))
         if got is None:
             return {}
-        fresh = detect_fn(object_name)   # detect_fn cached its own result for downstream use
+        fresh = _checked_detect(detect_fn, object_name)  # detect_fn cached its own result for downstream use
         chosen = fresh if fresh.get("ok") else got
         # Grounded handoff: the post-stop grounded re-detect can still miss at hand-off range — re-cache
         # the chosen (grounded) detection so the downstream approach reads it and finishes the grounding up
@@ -688,7 +799,7 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
         return _align(chosen, turned)
 
     # 1) Current precise view first — a near/front target aligns with no motion.
-    d = detect_fn(object_name)
+    d = _checked_detect(detect_fn, object_name)
     if d.get("ok"):
         return _align(d, 0.0)
 
@@ -703,7 +814,7 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
         # needed at all. A body that only aimed a camera (swept == 0) is still pointing
         # wherever it was, so there is nothing new to measure and this costs it nothing.
         if swept:
-            measured = detect_fn(object_name)
+            measured = _checked_detect(detect_fn, object_name)
             if measured.get("ok"):
                 return _align(measured, swept)
         res = _handoff(acq["total_bearing"], swept)
@@ -712,8 +823,7 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
         # Drove toward the bearing but no camera with depth ever acquired → don't blind-grasp.
         _reset_search_sensor(api)
         logger.info("[approach] look-around for %r: seen, metric sensing never acquired", object_name)
-        return {"ok": False, "reason": not_found_reason, "turned_rad": swept,
-                "note": "head_seen_no_waist_acquire"}
+        return {"ok": False, "reason": not_found_reason, "turned_rad": swept, "note": "head_seen_no_waist_acquire"}
 
     # 3) Nothing found. A sweep that already covered the circle has nothing left to show us,
     #    so only a body whose look-around is limited to its own facing gets the 180° re-scan.
@@ -724,8 +834,13 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
     nav = api.rotate_base(math.pi)
     if not nav.get("ok"):
         _reset_search_sensor(api)
-        return {"ok": False, "reason": not_found_reason, "turned_rad": 0.0,
-                "note": "rotate_base_failed", "nav_reason": nav.get("reason")}
+        return {
+            "ok": False,
+            "reason": not_found_reason,
+            "turned_rad": 0.0,
+            "note": "rotate_base_failed",
+            "nav_reason": nav.get("reason"),
+        }
     acq2 = _sweep_for_bearing(api, head_name, on=head_on)
     if acq2["found"]:
         res = _handoff(acq2["total_bearing"], math.pi)
@@ -733,18 +848,15 @@ def face_by_sweep(api: Any, detect_fn: Any, object_name: str, *, result_key: str
             return res
         _reset_search_sensor(api)
         logger.info("[approach] coarse scan for %r: back seen, precise never acquired", object_name)
-        return {"ok": False, "reason": not_found_reason, "turned_rad": math.pi,
-                "note": "head_seen_no_waist_acquire"}
+        return {"ok": False, "reason": not_found_reason, "turned_rad": math.pi, "note": "head_seen_no_waist_acquire"}
 
     # 4) Neither facing resolved it → fail safe; caller must NOT grasp/place blind.
     _reset_search_sensor(api)
     logger.info("[approach] coarse scan for %r: not found front+back (turned≈π)", object_name)
-    return {"ok": False, "reason": not_found_reason, "turned_rad": math.pi,
-            "note": "panscan_exhausted"}
+    return {"ok": False, "reason": not_found_reason, "turned_rad": math.pi, "note": "panscan_exhausted"}
 
 
-def coarse_approach(api: Any, detect_fn: Any, object_name: str,
-                    initial_bearing: float) -> dict | None:
+def coarse_approach(api: Any, detect_fn: Any, object_name: str, initial_bearing: float) -> dict | None:
     """Precise-sensor-only coarse approach: turn to ``initial_bearing`` ONCE (the direction the coarse
     search already found), then DRIVE FORWARD continuously while polling ONLY the precise ``detect_fn`` for
     the handoff — no per-poll coarse detection.
@@ -782,27 +894,34 @@ def coarse_approach(api: Any, detect_fn: Any, object_name: str,
     #    trigger) so its poll rate isn't throttled by the coarse sensor's extra inferences.
     drv = _base_driver(api)
     handle = drv.start_base_drive()
-    polls = 0                                            # precise detect attempts (each ~a subprocess grab)
+    polls = 0  # precise detect attempts (each ~a subprocess grab)
     got: dict | None = None
-    while drv.base_drive_running(handle):
-        polls += 1
-        det = detect_fn(object_name)                     # base-frame coords yet? (grounded on-surface)
-        if det.get("ok"):
-            got = det
-            break
-        # No coarse re-detect/steer — the forward worker keeps driving straight on the initial bearing;
-        # just keep polling until it acquires or the worker self-stops.
-    res = drv.stop_base_drive(handle) or {}
+    try:
+        while drv.base_drive_running(handle):
+            polls += 1
+            det = _checked_detect(detect_fn, object_name)  # base-frame coords yet? (grounded on-surface)
+            if det.get("ok"):
+                got = det
+                break
+            # No coarse re-detect/steer — the forward worker keeps driving straight on the initial bearing;
+            # just keep polling until it acquires or the worker self-stops.
+    finally:
+        res = drv.stop_base_drive(handle) or {}
     # The worker self-stopped (lidar standoff / generous safety cap); the base may have closed the last
     # stretch after the final in-loop poll → give the now-closer precise sensor ONE last look.
     if got is None:
-        det = detect_fn(object_name)
+        det = _checked_detect(detect_fn, object_name)
         if det.get("ok"):
             got = det
     _reset_search_sensor(api)
-    logger.info("[approach] coarse-approach %r: %s after %d polls; drive reason=%s dist=%.2fm",
-                object_name, "acquired" if got is not None else "MISS",
-                polls, res.get("reason", "?"), float(res.get("dist_traveled", 0.0) or 0.0))
+    logger.info(
+        "[approach] coarse-approach %r: %s after %d polls; drive reason=%s dist=%.2fm",
+        object_name,
+        "acquired" if got is not None else "MISS",
+        polls,
+        res.get("reason", "?"),
+        float(res.get("dist_traveled", 0.0) or 0.0),
+    )
     return got
 
 
@@ -856,10 +975,15 @@ def approach_for_grasp(api: Any, box: dict | None = None) -> dict:
         # drive toward a target not verified on its reference (the face_object handoff can fall back to a
         # plain, ungrounded detection while far).
         if on:
-            det = api.locate_for_grasp(obj, reference=on, relation=rel)
+            det = _checked_detect(api.locate_for_grasp, obj, reference=on, relation=rel)
             if not det.get("ok"):
-                return {"ok": False, "reason": det.get("reason", "not_confirmed_on_reference"),
-                        "object": obj, "reference": on, "relation": rel}
+                return {
+                    "ok": False,
+                    "reason": det.get("reason", "not_confirmed_on_reference"),
+                    "object": obj,
+                    "reference": on,
+                    "relation": rel,
+                }
         out = approach_single_shot(api, det, obj, on, rel)
         if out is not None:
             return out
@@ -874,16 +998,21 @@ def approach_for_grasp(api: Any, box: dict | None = None) -> dict:
     # 90°-flip the squared face; re-picked near this lock and frame-compensated after each turn.
     lock: tuple[float, float] | None = None
     for i in range(1, max_iters + 1):
-        turn, forward, status = plan_base_goal_for_grasp(det["center_mm"], tuning)   # radial goal
+        turn, forward, status = plan_base_goal_for_grasp(det["center_mm"], tuning)  # radial goal
         if status == "too_close":
             return {"ok": False, "reason": "too_close", "turn_rad": turn, "forward_m": forward, "iters": i}
         # Footprint face normal with hysteresis. None only when the frame has no footprint yaw.
-        n = (near_face_normal(Footprint.from_detection(det), tuning, prev_normal=lock)
-             if "yaw_rad" in det else None)
+        n = near_face_normal(Footprint.from_detection(det), tuning, prev_normal=lock) if "yaw_rad" in det else None
         if n is None:
             # No footprint this frame → plain radial centre+advance; a held lock is kept + compensated.
-            logger.info("[approach] approach_for_grasp iter %d/%d turn=%.3f forward=%.3f status=%s square=n/a",
-                        i, max_iters, turn, forward, status)
+            logger.info(
+                "[approach] approach_for_grasp iter %d/%d turn=%.3f forward=%.3f status=%s square=n/a",
+                i,
+                max_iters,
+                turn,
+                forward,
+                status,
+            )
             if status == "in_band":
                 api.last_detection = det
                 return {"ok": True, "status": "in_band", "turn_rad": turn, "forward_m": forward, "iters": i}
@@ -891,36 +1020,51 @@ def approach_for_grasp(api: Any, box: dict | None = None) -> dict:
             # the decel ramp; non-positive/bearing-only steps pass through.
             step = forward_step(forward, tuning)
             cmd_turn = turn
-            res = drive_base(api, step, turn, invalidate=lambda: None,
-                                  k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
+            res = drive_base(
+                api, step, turn, invalidate=lambda: None, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+            )
         else:
             # Lock onto this face, square to it first, then advance straight in (turn=0) to preserve it.
             lock = n
             square_turn = math.atan2(-n[1], -n[0])
-            logger.info("[approach] approach_for_grasp iter %d/%d status=%s forward=%.3f square=%.3f",
-                        i, max_iters, status, forward, square_turn)
-            if abs(square_turn) > square_tol:            # not facing the face → rotate IN PLACE (forward=0)
+            logger.info(
+                "[approach] approach_for_grasp iter %d/%d status=%s forward=%.3f square=%.3f",
+                i,
+                max_iters,
+                status,
+                forward,
+                square_turn,
+            )
+            if abs(square_turn) > square_tol:  # not facing the face → rotate IN PLACE (forward=0)
                 cmd_turn = square_turn
-                res = drive_base(api, 0.0, square_turn, invalidate=lambda: None,
-                                      k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
-            elif forward > pos_tol:                       # facing the face, still far → STRAIGHT in (turn=0)
+                res = drive_base(
+                    api, 0.0, square_turn, invalidate=lambda: None, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+                )
+            elif forward > pos_tol:  # facing the face, still far → STRAIGHT in (turn=0)
                 cmd_turn = 0.0
                 # Squared + straight → drive the whole leg to the standoff in one continuous move
                 # (reserve strategy, ≤2 moves), not the per-0.25 m stop-and-redetect stutter.
                 step = grasp_forward_step(forward, tuning)
-                res = drive_base(api, step, 0.0, invalidate=lambda: None,
-                                      k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
-            else:                                         # square + at work distance → the grasp consumes it
+                res = drive_base(
+                    api, step, 0.0, invalidate=lambda: None, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+                )
+            else:  # square + at work distance → the grasp consumes it
                 api.last_detection = det
-                return {"ok": True, "status": "in_band", "turn_rad": turn, "forward_m": forward,
-                        "square_rad": square_turn, "iters": i}
+                return {
+                    "ok": True,
+                    "status": "in_band",
+                    "turn_rad": turn,
+                    "forward_m": forward,
+                    "square_rad": square_turn,
+                    "iters": i,
+                }
         if not res.get("ok"):
             return {**res, "iters": i}
         if lock is not None and cmd_turn:
             # Base yawed +cmd_turn ⇒ rotate the base-frame lock by −cmd_turn to keep it in the new frame.
             c, s = math.cos(-cmd_turn), math.sin(-cmd_turn)
             lock = (lock[0] * c - lock[1] * s, lock[0] * s + lock[1] * c)
-        det = redetect(api, obj, on, rel)   # fresh, post-move; grounded (degrades to plain while far)
+        det = redetect(api, obj, on, rel)  # fresh, post-move; grounded (degrades to plain while far)
         if not det.get("ok"):
             return {"ok": False, "reason": det.get("reason", "lost_after_move"), "iters": i}
     # Out of iterations without landing square+in_band: keep the last fresh detection + report residual.
@@ -956,28 +1100,33 @@ def approach_single_shot(api: Any, det: dict, obj: str, on: str | None, rel: str
     ak_fwd = tuning.approach_k_fwd
 
     def _drive(forward: float, turn: float) -> dict:
-        return drive_base(api, forward, turn, invalidate=lambda: None,
-                               k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
+        return drive_base(
+            api, forward, turn, invalidate=lambda: None, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+        )
 
     _t, _f, status = plan_base_goal_for_grasp(det["center_mm"], tuning)
     if status == "too_close":
         return {"ok": False, "reason": "too_close", "turn_rad": _t, "forward_m": _f, "iters": 0}
-    n = select_grasp_normal(det, tuning)         # point-cloud face_normal preferred, else footprint
+    n = select_grasp_normal(det, tuning)  # point-cloud face_normal preferred, else footprint
     if n is None:
-        return None                              # untrustworthy → DECLINE (discrete loop closes it)
+        return None  # untrustworthy → DECLINE (discrete loop closes it)
 
     # 1) Route: right-angle L onto the face-normal line, open-loop (no re-detect between the legs).
     plan = plan_grasp_right_angle(det["center_mm"], n, tuning)
     if plan["mode"] == "reject":
         return None
     heading = 0.0
-    if plan["lat_dist"] > 0.0:                    # lateral leg — turn ⊥ to the normal, drive onto the line
+    if plan["lat_dist"] > 0.0:  # lateral leg — turn ⊥ to the normal, drive onto the line
         # Scale the geometric perpendicular offset by grasp_lat_gain (default 1.0): odom under-travel /
         # wheel slip / a y-biased centroid leave the real lateral move short of the line; a gain > 1
         # compensates. Overshoot is absorbed by the final re-detect + align below.
         lat_dist = plan["lat_dist"] * float(tuning.grasp_lat_gain)
-        logger.info("[approach] approach_for_grasp SINGLE-SHOT L lateral turn=%.3f dist=%.3f (geom=%.3f)",
-                    plan["lat_turn"], lat_dist, plan["lat_dist"])
+        logger.info(
+            "[approach] approach_for_grasp SINGLE-SHOT L lateral turn=%.3f dist=%.3f (geom=%.3f)",
+            plan["lat_turn"],
+            lat_dist,
+            plan["lat_dist"],
+        )
         res = _drive(lat_dist, plan["lat_turn"])
         if not res.get("ok"):
             return {"ok": False, "reason": res.get("reason", "nav_failed"), "iters": 0, "move": res}
@@ -988,7 +1137,7 @@ def approach_single_shot(api: Any, det: dict, obj: str, on: str | None, rel: str
     # drive so there is no discrete approach-leg stop before the servo — the near-distance "stop then go".
     servo_on = bool(tuning.grasp_servo_enabled)
     app_dist = 0.0 if servo_on else plan["app_dist"]
-    if app_dist > 0.0 or abs(app_turn) > 1e-3:   # approach leg — face the target; servo owns the forward
+    if app_dist > 0.0 or abs(app_turn) > 1e-3:  # approach leg — face the target; servo owns the forward
         logger.info("[approach] approach_for_grasp SINGLE-SHOT L approach turn=%.3f dist=%.3f", app_turn, app_dist)
         res = _drive(app_dist, app_turn)
         if not res.get("ok"):
@@ -1008,14 +1157,20 @@ def approach_single_shot(api: Any, det: dict, obj: str, on: str | None, rel: str
     # 3) Final alignment from this frame: square to −n2 (residual — we are ON the line, so it does not
     #    throw the target off-centre) + straight-in to the work distance, in ONE move.
     turn2, fwd2, status2 = plan_base_goal_for_grasp(det["center_mm"], tuning)
-    if status2 == "too_close":   # route overshot inside the band despite the standoff → don't grasp blind
+    if status2 == "too_close":  # route overshot inside the band despite the standoff → don't grasp blind
         return {"ok": False, "reason": "too_close", "turn_rad": turn2, "forward_m": fwd2, "iters": 1}
     n2 = select_grasp_normal(det, tuning)
     square2 = math.atan2(-n2[1], -n2[0]) if n2 is not None else turn2
     if status2 == "in_band" and abs(square2) <= square_tol and abs(turn2) <= yaw_tol:
-        api.last_detection = det                # already at the work pose → cache, no extra move
-        return {"ok": True, "status": "in_band", "turn_rad": turn2, "forward_m": fwd2,
-                "square_rad": square2, "iters": 1}
+        api.last_detection = det  # already at the work pose → cache, no extra move
+        return {
+            "ok": True,
+            "status": "in_band",
+            "turn_rad": turn2,
+            "forward_m": fwd2,
+            "square_rad": square2,
+            "iters": 1,
+        }
     logger.info("[approach] approach_for_grasp SINGLE-SHOT align square=%.3f forward=%.3f", square2, fwd2)
     res = _drive(forward_step(fwd2, tuning), square2)
     if not res.get("ok"):
@@ -1066,37 +1221,42 @@ def approach_continuous_servo(api: Any, det: dict, obj: str, on: str | None, rel
     reserve = float(tuning.grasp_approach_forward_reserve_m)
     fwd_cap = min(max(0.0, fwd0) + reserve, float(tuning.grasp_servo_fwd_max_m))
     handle = drv.start_base_drive(k_fwd=float(tuning.grasp_servo_creep_k_fwd), fwd_max_m=fwd_cap)
-    last_good: dict | None = None    # only ever a FRESH in-loop detection — never the stale seed
+    last_good: dict | None = None  # only ever a FRESH in-loop detection — never the stale seed
     polls = 0
     reached_band = False
-    while drv.base_drive_running(handle) and polls < max_polls:
-        polls += 1
-        d = redetect(api, obj, on, rel)      # blocking grab+detect WHILE the base keeps creeping
-        if d.get("ok"):
-            turn, _fwd, status = plan_base_goal_for_grasp(d["center_mm"], tuning)
-            if status == "too_close":   # crept inside the band from too close → never grasp blind
-                drv.stop_base_drive(handle)
-                return {"ok": False, "reason": "too_close", "iters": polls}
-            last_good = d
-            if status == "in_band" and abs(turn) <= yaw_tol:
-                reached_band = True
-                break                   # at the work pose + centred → one clean stop below
-            drv.steer_base_drive(handle, turn)   # curve toward the LATEST target direction
-        elif last_good is None:
-            continue                    # not acquired yet → keep creeping straight (like coarse approach)
-        else:
-            _t, fwd_rem, _s = plan_base_goal_for_grasp(last_good["center_mm"], tuning)
-            if not lost_hold or fwd_rem <= commit:
-                break                   # had a lock, now lost within commit → commit final segment below
-            drv.hold_base_drive(handle)  # had a lock, lost while still far → pause wheels, keep polling
-    res = drv.stop_base_drive(handle) or {}
-    if last_good is None:               # never acquired during the creep → one last look at the closest point
+    try:
+        while drv.base_drive_running(handle) and polls < max_polls:
+            polls += 1
+            d = redetect(api, obj, on, rel)  # blocking grab+detect WHILE the base keeps creeping
+            if d.get("ok"):
+                turn, _fwd, status = plan_base_goal_for_grasp(d["center_mm"], tuning)
+                if status == "too_close":  # crept inside the band from too close → never grasp blind
+                    return {"ok": False, "reason": "too_close", "iters": polls}
+                last_good = d
+                if status == "in_band" and abs(turn) <= yaw_tol:
+                    reached_band = True
+                    break  # at the work pose + centred → one clean stop below
+                drv.steer_base_drive(handle, turn)  # curve toward the LATEST target direction
+            elif last_good is None:
+                continue  # not acquired yet → keep creeping straight (like coarse approach)
+            else:
+                _t, fwd_rem, _s = plan_base_goal_for_grasp(last_good["center_mm"], tuning)
+                if not lost_hold or fwd_rem <= commit:
+                    break  # had a lock, now lost within commit → commit final segment below
+                drv.hold_base_drive(handle)  # had a lock, lost while still far → pause wheels, keep polling
+    finally:
+        res = drv.stop_base_drive(handle) or {}
+    if last_good is None:  # never acquired during the creep → one last look at the closest point
         d = redetect(api, obj, on, rel)
         if d.get("ok"):
             last_good = d
-    logger.info("[approach] approach_for_grasp SERVO %s after %d polls; drive reason=%s dist=%.2fm",
-                "in_band" if reached_band else "terminal", polls,
-                res.get("reason", "?"), float(res.get("dist_traveled", 0.0) or 0.0))
+    logger.info(
+        "[approach] approach_for_grasp SERVO %s after %d polls; drive reason=%s dist=%.2fm",
+        "in_band" if reached_band else "terminal",
+        polls,
+        res.get("reason", "?"),
+        float(res.get("dist_traveled", 0.0) or 0.0),
+    )
     if last_good is None:
         return {"ok": False, "reason": "servo_never_acquired", "iters": polls}
 
@@ -1113,13 +1273,19 @@ def approach_continuous_servo(api: Any, det: dict, obj: str, on: str | None, rel
             return {"ok": False, "reason": fresh.get("reason", "lost_at_rest"), "iters": polls}
         api.last_detection = fresh
         t2, f2, _s = plan_base_goal_for_grasp(fresh["center_mm"], tuning)
-        return {"ok": True, "status": "in_band", "turn_rad": t2, "forward_m": f2,
-                "square_rad": square, "iters": polls}
+        return {"ok": True, "status": "in_band", "turn_rad": t2, "forward_m": f2, "square_rad": square, "iters": polls}
     # Residual square and/or an un-closed final segment (commit / worker self-stop): ONE combined move,
     # then a refresh re-detect so the cache reflects the moved pose — abort rather than act on a stale one.
     logger.info("[approach] approach_for_grasp SERVO align square=%.3f forward=%.3f", square, forward)
-    move = drive_base(api, grasp_forward_step(forward, tuning), square, invalidate=lambda: None,
-                           k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
+    move = drive_base(
+        api,
+        grasp_forward_step(forward, tuning),
+        square,
+        invalidate=lambda: None,
+        k_rot=ak_rot,
+        k_rot_slow_rad=ak_slow,
+        k_fwd=ak_fwd,
+    )
     if not move.get("ok"):
         return {**move, "iters": polls}
     d = redetect(api, obj, on, rel)
@@ -1135,8 +1301,9 @@ def approach_continuous_servo(api: Any, det: dict, obj: str, on: str | None, rel
 # --------------------------------------------------------------------------------------
 
 
-def approach_for_place(api: Any, object_name: str = "table", reference: str | None = None,
-                     relation: str = "on") -> dict:
+def approach_for_place(
+    api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on"
+) -> dict:
     """Drive the base so the support surface's near edge sits ``place_approach_edge_m`` ahead (within arm
     reach) AND squarely faced — but ONLY if it's out of range / off-square; no-op when already there
     (``status="in_range"``).
@@ -1156,7 +1323,7 @@ def approach_for_place(api: Any, object_name: str = "table", reference: str | No
     pos_tol = float(tuning.base_pos_tol_m)
     yaw_tol = float(tuning.base_yaw_tol_rad)
     square_tol = float(tuning.place_square_tol_rad)
-    max_turn = float(tuning.place_max_turn_step_rad)   # per-step base-turn cap (fail-safe)
+    max_turn = float(tuning.place_max_turn_step_rad)  # per-step base-turn cap (fail-safe)
     max_iters = int(tuning.approach_converge_iters)
 
     def _invalidate() -> None:
@@ -1176,11 +1343,11 @@ def approach_for_place(api: Any, object_name: str = "table", reference: str | No
     # footprint can't 90°-flip the edge we square to.
     lock: tuple[float, float] | None = None
     for i in range(1, max_iters + 1):
-        s = api.locate_for_place(object_name, reference=reference, relation=relation)
+        s = _checked_detect(api.locate_for_place, object_name, reference=reference, relation=relation)
         if not s.get("ok") and reference:
             # A grounded relation resolves only up close; while still far, keep converging on a PLAIN
             # re-sense (carry the reference so the next, closer iteration re-attempts the grounding).
-            plain = api.locate_for_place(object_name)
+            plain = _checked_detect(api.locate_for_place, object_name)
             if plain.get("ok"):
                 plain["reference"], plain["relation"] = reference, relation
                 s = plain
@@ -1195,16 +1362,25 @@ def approach_for_place(api: Any, object_name: str = "table", reference: str | No
         # → nothing to square to, so treat as squared (no aspect gate — near-square surfaces square too).
         n = select_surface_square_normal(s, tuning, prev_normal=lock)
         square_turn = math.atan2(-n[1], -n[0]) if n is not None else 0.0
-        logger.info("[approach] approach_for_place %s iter %d/%d front_x=%.3f forward=%.3f "
-                    "bearing=%.3f square=%.3f%s", object_name, i, max_iters, front_x, forward,
-                    bearing, square_turn, "" if n is not None else "(n/a)")
+        logger.info(
+            "[approach] approach_for_place %s iter %d/%d front_x=%.3f forward=%.3f bearing=%.3f square=%.3f%s",
+            object_name,
+            i,
+            max_iters,
+            front_x,
+            forward,
+            bearing,
+            square_turn,
+            "" if n is not None else "(n/a)",
+        )
         if n is not None:
-            lock = n                                          # commit to this face; hysteresis holds it
-            if abs(square_turn) > square_tol:                 # not squared → rotate IN PLACE (forward=0)
-                cmd_turn = max(-max_turn, min(max_turn, square_turn))   # cap per-step swing (no fling)
-                res = drive_base(api, 0.0, cmd_turn, invalidate=_invalidate,
-                                      k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
-            elif forward > pos_tol:                           # squared, still far → STRAIGHT in (turn=0)
+            lock = n  # commit to this face; hysteresis holds it
+            if abs(square_turn) > square_tol:  # not squared → rotate IN PLACE (forward=0)
+                cmd_turn = max(-max_turn, min(max_turn, square_turn))  # cap per-step swing (no fling)
+                res = drive_base(
+                    api, 0.0, cmd_turn, invalidate=_invalidate, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+                )
+            elif forward > pos_tol:  # squared, still far → STRAIGHT in (turn=0)
                 if bool(tuning.place_servo_enabled):
                     # Base is squared to the near edge; hand the whole straight-in advance to a continuous
                     # creep so it never stops-to-look between legs. It drives STRAIGHT with NO steer —
@@ -1212,31 +1388,60 @@ def approach_for_place(api: Any, object_name: str = "table", reference: str | No
                     return approach_for_place_continuous_servo(api, object_name, reference, relation, tuning)
                 cmd_turn = 0.0
                 step = place_forward_step(forward, tuning)
-                res = drive_base(api, max(step, 0.0), 0.0, invalidate=_invalidate,
-                                      k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
-            else:                                             # squared + at the edge → reachable
-                return {"ok": True, "status": "in_range", "front_x_m": front_x, "forward_m": forward,
-                        "bearing_rad": bearing, "square_rad": square_turn, "iters": i}
-        elif forward > pos_tol or abs(bearing) > yaw_tol:     # no footprint/normal → plain radial approach
-            cmd_turn = max(-max_turn, min(max_turn, bearing))          # cap per-step swing (no fling)
+                res = drive_base(
+                    api, max(step, 0.0), 0.0, invalidate=_invalidate, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+                )
+            else:  # squared + at the edge → reachable
+                return {
+                    "ok": True,
+                    "status": "in_range",
+                    "front_x_m": front_x,
+                    "forward_m": forward,
+                    "bearing_rad": bearing,
+                    "square_rad": square_turn,
+                    "iters": i,
+                }
+        elif forward > pos_tol or abs(bearing) > yaw_tol:  # no footprint/normal → plain radial approach
+            cmd_turn = max(-max_turn, min(max_turn, bearing))  # cap per-step swing (no fling)
             step = forward_step(forward, tuning)
-            res = drive_base(api, max(step, 0.0), cmd_turn, invalidate=_invalidate,
-                                  k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
-        else:                                                # no normal, positioned → reachable
-            return {"ok": True, "status": "in_range", "front_x_m": front_x, "forward_m": forward,
-                    "bearing_rad": bearing, "square_rad": square_turn, "iters": i}
+            res = drive_base(
+                api,
+                max(step, 0.0),
+                cmd_turn,
+                invalidate=_invalidate,
+                k_rot=ak_rot,
+                k_rot_slow_rad=ak_slow,
+                k_fwd=ak_fwd,
+            )
+        else:  # no normal, positioned → reachable
+            return {
+                "ok": True,
+                "status": "in_range",
+                "front_x_m": front_x,
+                "forward_m": forward,
+                "bearing_rad": bearing,
+                "square_rad": square_turn,
+                "iters": i,
+            }
         if not res.get("ok"):
             return {**res, "iters": i}
         if lock is not None and cmd_turn:
             # Base yawed +cmd_turn ⇒ rotate the base-frame lock by −cmd_turn to keep it in the new frame.
             c, s2 = math.cos(-cmd_turn), math.sin(-cmd_turn)
             lock = (lock[0] * c - lock[1] * s2, lock[0] * s2 + lock[1] * c)
-    return {"ok": True, "status": "max_iters", "iters": max_iters,
-            "front_x_m": front_x, "bearing_rad": bearing, "square_rad": square_turn}
+    return {
+        "ok": True,
+        "status": "max_iters",
+        "iters": max_iters,
+        "front_x_m": front_x,
+        "bearing_rad": bearing,
+        "square_rad": square_turn,
+    }
 
 
-def approach_for_place_continuous_servo(api: Any, object_name: str, reference: str | None,
-                                     relation: str, tuning: Any) -> dict:
+def approach_for_place_continuous_servo(
+    api: Any, object_name: str, reference: str | None, relation: str, tuning: Any
+) -> dict:
     """Continuous straight-in creep to the placement edge (opt-in via ``place_servo_enabled``), replacing
     :func:`approach_for_place`'s discrete freeze-inch-freeze straight-in tail. Called ONLY once the base is
     already SQUARED to the near edge, so it creeps STRAIGHT with NO turn: a real turn would rotate the
@@ -1263,9 +1468,9 @@ def approach_for_place_continuous_servo(api: Any, object_name: str, reference: s
     ak_fwd = tuning.approach_k_fwd
 
     def _resense() -> dict:
-        s = api.locate_for_place(object_name, reference=reference, relation=relation)
+        s = _checked_detect(api.locate_for_place, object_name, reference=reference, relation=relation)
         if not s.get("ok") and reference:
-            plain = api.locate_for_place(object_name)     # grounded resolves only up close → degrade
+            plain = _checked_detect(api.locate_for_place, object_name)  # grounded resolves only up close → degrade
             if plain.get("ok"):
                 plain["reference"], plain["relation"] = reference, relation
                 s = plain
@@ -1275,10 +1480,15 @@ def approach_for_place_continuous_servo(api: Any, object_name: str, reference: s
     if not s0.get("ok"):
         return {"ok": False, "reason": s0.get("reason", "no_surface"), "object": object_name, "iters": 0}
     forward0 = float(s0["front_x_mm"]) / 1000.0 - edge_m
-    if forward0 <= pos_tol:                               # already at the edge → no creep
-        return {"ok": True, "status": "in_range", "front_x_m": float(s0["front_x_mm"]) / 1000.0,
-                "forward_m": forward0, "iters": 0}
-    api.last_surface = None                              # about to move → the place tool must re-sense
+    if forward0 <= pos_tol:  # already at the edge → no creep
+        return {
+            "ok": True,
+            "status": "in_range",
+            "front_x_m": float(s0["front_x_mm"]) / 1000.0,
+            "forward_m": forward0,
+            "iters": 0,
+        }
+    api.last_surface = None  # about to move → the place tool must re-sense
 
     drv = _base_driver(api)
     fwd_cap = min(max(0.0, forward0) + reserve, float(tuning.grasp_servo_fwd_max_m))
@@ -1287,38 +1497,46 @@ def approach_for_place_continuous_servo(api: Any, object_name: str, reference: s
     polls = 0
     reached = False
     held = False
-    while drv.base_drive_running(handle) and polls < max_polls:
-        polls += 1
-        s = _resense()                                    # blocking grab+detect WHILE the base creeps
-        if s.get("ok"):
-            last_good = s
-            if float(s["front_x_mm"]) / 1000.0 - edge_m <= pos_tol:
-                reached = True
-                break                                     # near edge at the place gap → one clean stop
-            if held:                                      # re-acquired after a pause → resume STRAIGHT
-                drv.steer_base_drive(handle, 0.0)         # bearing 0 = keep going straight (not a turn)
-                held = False
-            # else: keep creeping straight; NO turn feed keeps the payload square to the edge
-        else:
-            forward_rem = float(last_good["front_x_mm"]) / 1000.0 - edge_m
-            if not lost_hold or forward_rem <= commit:
-                break                                     # lost within commit → finish open-loop below
-            drv.hold_base_drive(handle)                   # lost while still far → pause wheels, keep polling
-            held = True
-    worker_alive = drv.base_drive_running(handle)         # True → we interrupted a live creep (commit/cap)
-    res = drv.stop_base_drive(handle) or {}
+    try:
+        while drv.base_drive_running(handle) and polls < max_polls:
+            polls += 1
+            s = _resense()  # blocking grab+detect WHILE the base creeps
+            if s.get("ok"):
+                last_good = s
+                if float(s["front_x_mm"]) / 1000.0 - edge_m <= pos_tol:
+                    reached = True
+                    break  # near edge at the place gap → one clean stop
+                if held:  # re-acquired after a pause → resume STRAIGHT
+                    drv.steer_base_drive(handle, 0.0)  # bearing 0 = keep going straight (not a turn)
+                    held = False
+                # else: keep creeping straight; NO turn feed keeps the payload square to the edge
+            else:
+                forward_rem = float(last_good["front_x_mm"]) / 1000.0 - edge_m
+                if not lost_hold or forward_rem <= commit:
+                    break  # lost within commit → finish open-loop below
+                drv.hold_base_drive(handle)  # lost while still far → pause wheels, keep polling
+                held = True
+        worker_alive = drv.base_drive_running(handle)  # True → we interrupted a live creep (commit/cap)
+    finally:
+        res = drv.stop_base_drive(handle) or {}
     front_x = float(last_good["front_x_mm"]) / 1000.0
     forward = front_x - edge_m
-    api.last_surface = None                              # moved → the place tool re-senses fresh
-    logger.info("[approach] approach_for_place SERVO %s after %d polls; drive reason=%s dist=%.2fm front_x=%.3f",
-                "in_range" if reached else "terminal", polls,
-                res.get("reason", "?"), float(res.get("dist_traveled", 0.0) or 0.0), front_x)
+    api.last_surface = None  # moved → the place tool re-senses fresh
+    logger.info(
+        "[approach] approach_for_place SERVO %s after %d polls; drive reason=%s dist=%.2fm front_x=%.3f",
+        "in_range" if reached else "terminal",
+        polls,
+        res.get("reason", "?"),
+        float(res.get("dist_traveled", 0.0) or 0.0),
+        front_x,
+    )
     if not reached and worker_alive and forward > pos_tol:
         # We stopped a still-running creep short of the edge (surface lost, or poll cap) → finish the
         # remaining gap open-loop STRAIGHT (turn=0, no fling); the runner re-senses before placing. A
         # self-completed worker (worker_alive False = crept its full fwd_cap) is already at the edge.
-        move = drive_base(api, forward, 0.0, invalidate=lambda: None,
-                               k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd)
+        move = drive_base(
+            api, forward, 0.0, invalidate=lambda: None, k_rot=ak_rot, k_rot_slow_rad=ak_slow, k_fwd=ak_fwd
+        )
         if not move.get("ok"):
             return {**move, "iters": polls}
     return {"ok": True, "status": "in_range", "front_x_m": front_x, "forward_m": forward, "iters": polls}
@@ -1347,22 +1565,24 @@ def _screen_ref_2d(reference: str | None, relation: str) -> str | None:
     return reference if reference and relation == "on" else None
 
 
-def _face_object(api: Any, object_name: str = "box", reference: str | None = None,
-                 relation: str = "on") -> dict:
+def _face_object(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Face a grasp target by its perceived bearing; coarse-search if not in view.
 
     On success ``locate_for_grasp`` has cached the detection so the approach / grasp steps
     reuse it; on ``object_not_found`` the caller must NOT grasp.
     """
     if reference:
+
         def detect(name: str) -> dict:
-            return api.locate_for_grasp(name, reference=reference, relation=relation)
+            return _checked_detect(api.locate_for_grasp, name, reference=reference, relation=relation)
     else:
         detect = api.locate_for_grasp
     # Grounded grasp: the coarse sensor searches the REAL target and, for an ON relation,
     # 2-D-verifies it on the reference; the precise sensor does the final grounding up close.
     return face_by_sweep(
-        api, detect, object_name,
+        api,
+        detect,
+        object_name,
         result_key="detection",
         not_found_reason="object_not_found",
         head_name=object_name,
@@ -1371,8 +1591,7 @@ def _face_object(api: Any, object_name: str = "box", reference: str | None = Non
     )
 
 
-def _face_surface(api: Any, object_name: str = "table", reference: str | None = None,
-                  relation: str = "on") -> dict:
+def _face_surface(api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on") -> dict:
     """Face a support surface by its perceived bearing; coarse-search if not in view.
 
     Sensor-guided replacement for a hard-coded ``rotate_base(pi)``. On success
@@ -1380,8 +1599,9 @@ def _face_surface(api: Any, object_name: str = "table", reference: str | None = 
     ``surface_not_found`` the caller must NOT place blindly.
     """
     if reference:
+
         def sense(name: str) -> dict:
-            return api.locate_for_place(name, reference=reference, relation=relation)
+            return _checked_detect(api.locate_for_place, name, reference=reference, relation=relation)
     else:
         sense = api.locate_for_place
     # Grounded place under an UNDER relation: the coarse sensor searches the reference OBJECT
@@ -1389,7 +1609,9 @@ def _face_surface(api: Any, object_name: str = "table", reference: str | None = 
     # 2-D-verifies it rests on the surface. Symmetric to _face_object.
     coarse_on_surface = bool(reference) and relation == "under"
     return face_by_sweep(
-        api, sense, object_name,
+        api,
+        sense,
+        object_name,
         result_key="surface",
         not_found_reason="surface_not_found",
         head_name=reference if coarse_on_surface else object_name,
@@ -1398,8 +1620,7 @@ def _face_surface(api: Any, object_name: str = "table", reference: str | None = 
     )
 
 
-def search_target(api: Any, object_name: str = "box", reference: str | None = None,
-                  relation: str = "on") -> dict:
+def search_target(api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on") -> dict:
     """Look through EVERY camera at the current heading and report the first bearing found.
 
     All of them, because which camera happens to see a thing is not something a plan can
@@ -1416,8 +1637,9 @@ def search_target(api: Any, object_name: str = "box", reference: str | None = No
     return miss
 
 
-def approach_target_for_grasp(api: Any, object_name: str = "box", reference: str | None = None,
-                              relation: str = "on") -> dict:
+def approach_target_for_grasp(
+    api: Any, object_name: str = "box", reference: str | None = None, relation: str = "on"
+) -> dict:
     """Search for the target, face it, then drive the base square to its face at the work distance.
 
     The search pass is skipped when a usable detection is already cached — the same cache
@@ -1433,8 +1655,9 @@ def approach_target_for_grasp(api: Any, object_name: str = "box", reference: str
     return approach_for_grasp(api, None)
 
 
-def approach_target_for_place(api: Any, object_name: str = "table", reference: str | None = None,
-                              relation: str = "on") -> dict:
+def approach_target_for_place(
+    api: Any, object_name: str = "table", reference: str | None = None, relation: str = "on"
+) -> dict:
     """Search for the surface, face it, then drive to its near edge at placing distance.
 
     Mirror of :func:`approach_target_for_grasp`: the search pass is skipped when a surface is

@@ -45,7 +45,7 @@
   <rect x="48" y="210" width="510" height="32" rx="3" fill="#eaf3ff"/>
   <text id="text-11" x="52" y="236" font-size="23" font-weight="700" fill="#2563eb" text-anchor="start" data-max-width="1076">A. 提交任务（Session 已连接）</text>
   <rect x="48" y="356" width="570" height="32" rx="3" fill="#ecf9f4"/>
-  <text id="text-12" x="52" y="382" font-size="23" font-weight="700" fill="#047857" text-anchor="start" data-max-width="1076">B. 按 exec_mode 选择一个分支</text>
+  <text id="text-12" x="52" y="382" font-size="23" font-weight="700" fill="#047857" text-anchor="start" data-max-width="1076">B. 按 execution.mode 选择一个分支</text>
   <rect x="64" y="410" width="296" height="30" rx="3" fill="#ecf9f4"/>
   <text id="text-13" x="68" y="434" font-size="21" font-weight="700" fill="#7c3aed" text-anchor="start" data-max-width="1000">alt  fastagent（默认）</text>
   <rect x="64" y="650" width="208" height="30" rx="3" fill="#ecf9f4"/>
@@ -81,7 +81,7 @@
   <text id="text-26" x="228" y="970" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="910">API 按动作需要调用共享算法、Env 和 Driver；Rails 按事件触发。</text>
   <rect x="32" y="1036" width="1136" height="84" rx="10" fill="#f0f4f9" stroke="#bac9da" stroke-width="1.5"/>
   <text id="text-27" x="52" y="1066" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">实时追踪使用专用伺服路径；Python 内部直接调用不逐条经过动作工具检查。</text>
-  <text id="text-28" x="52" y="1096" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">退出会话：Trace 收尾 → Env / Driver 释放 → sidecar 退出。</text>
+  <text id="text-28" x="52" y="1096" font-size="20" font-weight="400" fill="#526174" text-anchor="start" data-max-width="1096">退出会话：Trace 收尾 → Env / Driver 释放 → 自有资源清理。</text>
   <path d="M696 1152 L744 1152" fill="none" stroke="#334e68" stroke-width="2.3" marker-end="url(#arrow)"/>
   <text id="text-29" x="756" y="1159" font-size="19" font-weight="400" fill="#526174" text-anchor="start" data-max-width="100">调用</text>
   <path d="M900 1152 L948 1152" fill="none" stroke="#b45309" stroke-width="2.3" stroke-dasharray="7 5" marker-end="url(#input-arrow)"/>

@@ -147,6 +147,22 @@ def test_generated_adapter_passes_checks(spec, generated_presets):
     s = checks.run_smoke(module)
     assert s.ok, f"smoke failed:\n{s.detail}"
 
+    # The generated adapter must work through the same admission preparation
+    # as installed GUIs/official CLI, without connecting the mock or hardware.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from jiuwensymbiosis.runtime import prepare_binding; "
+            "import sys; b = prepare_binding(sys.argv[1]); assert 'can:can0' in b.resources",
+            str(REPO_ROOT / "configs" / spec.name / "default.yaml"),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
 
 @pytest.mark.parametrize("spec", PRESETS, ids=lambda s: s.name)
 def test_capabilities_aligned_in_env(spec, generated_presets):

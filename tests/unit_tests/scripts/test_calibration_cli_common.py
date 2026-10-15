@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_framework_logging")
+
 
 def test_unified_main_clears_proxy_before_workflow(monkeypatch, tmp_path):
     import scripts.calibrate.hand_eye_calib as cli
@@ -30,32 +34,14 @@ def test_configure_logging_uses_framework_handler_once():
     from jiuwensymbiosis.utils.logging import _OWNED_TAG
 
     root = logging.getLogger()
-    level_before = root.level
-    owned_before = [handler for handler in root.handlers if getattr(handler, _OWNED_TAG, False)]
-    logger_names = (
-        "hand_eye_calib",
-        "scripts.calibrate.hand_eye_calib",
-        "calibrate.cli_common",
-        "scripts.calibrate._cli_common",
-    )
-    logger_state = {name: (logging.getLogger(name).level, logging.getLogger(name).propagate) for name in logger_names}
-    try:
-        cli_common.configure_logging(debug=True)
-        count_after_first = sum(getattr(handler, _OWNED_TAG, False) for handler in root.handlers)
-        cli_common.configure_logging(debug=True)
-        count_after_second = sum(getattr(handler, _OWNED_TAG, False) for handler in root.handlers)
-
-        assert count_after_second == count_after_first
-        assert count_after_first >= len(owned_before)
-        assert logging.getLogger("hand_eye_calib").propagate is True
-        assert logging.getLogger("hand_eye_calib").level == logging.DEBUG
-    finally:
-        for handler in list(root.handlers):
-            if getattr(handler, _OWNED_TAG, False) and handler not in owned_before:
-                root.removeHandler(handler)
-                handler.close()
-        root.setLevel(level_before)
-        for name, (level, propagate) in logger_state.items():
-            logger = logging.getLogger(name)
-            logger.setLevel(level)
-            logger.propagate = propagate
+    root_handlers, root_level = root.handlers[:], root.level
+    cli_common.configure_logging(debug=True)
+    logger = logging.getLogger("jiuwensymbiosis")
+    owned = [h for h in logger.handlers if getattr(h, _OWNED_TAG, False)]
+    cli_common.configure_logging(debug=True)
+    assert [h for h in logger.handlers if getattr(h, _OWNED_TAG, False)] == owned
+    assert len(owned) == 1
+    assert not logger.propagate
+    assert root.handlers == root_handlers
+    assert root.level == root_level
+    assert logging.getLogger("jiuwensymbiosis.calibration.cli").getEffectiveLevel() == logging.DEBUG

@@ -4,7 +4,7 @@
 """Structured execution-trace recording for agent invocations.
 
 This module adds a parallel rail (:class:`TraceRail`) that, when enabled via
-``RobotAgentConfig.enable_tracing``, captures each tool call's name / args /
+``RobotAgentConfig.modules.tracing.enabled``, captures each tool call's name / args /
 result / timing / observation snapshot, plus rail events (SafetyRail rejections,
 RecoveryRail recovery, VisualFeedbackRail frame injections) and ``WARNING``+
 log lines — then persists a single JSON trace to the workspace ``traces/``
@@ -394,10 +394,10 @@ def _encode_jpeg(rgb: Any, quality: int = 80) -> bytes | None:
         return None
 
 
-def _observation_snapshot(env: Any) -> dict | None:
+def _observation_snapshot(env: Any, *, observation: Any = None) -> dict | None:
     """Capture pose/joints/extra from the env, dropping raw rgb/depth arrays."""
     try:
-        obs = env.get_observation()
+        obs = env.get_observation() if observation is None else observation
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
         logger.warning("TraceRail: get_observation failed: %s", exc)
         return None
@@ -417,7 +417,7 @@ def _observation_snapshot(env: Any) -> dict | None:
 class TraceRail(AgentRail):
     """Parallel rail that records a structured trace of an agent invoke.
 
-    Enabled via ``RobotAgentConfig.enable_tracing``. Placed above the default
+    Enabled via ``RobotAgentConfig.modules.tracing.enabled``. Placed above the default
     rail priority so its ``before_tool_call`` runs first (creates the active
     entry before SafetyRail can reject) and ``after_tool_call`` runs first
     (records post-action observation / timing before later feedback rails).
@@ -628,6 +628,9 @@ class TraceRail(AgentRail):
 
     # -------------------------------------------------------------- tool hooks
     async def before_tool_call(self, ctx: Any) -> None:
+        from jiuwensymbiosis.agent.observation import begin_action_observation
+
+        begin_action_observation(ctx)
         if self._trace is None:
             return
         inputs = getattr(ctx, "inputs", None)
@@ -641,8 +644,8 @@ class TraceRail(AgentRail):
         )
         ctx.extra[_TRACE_CURRENT_KEY] = entry
         if self.console:
-            params = entry.input_params
-            print(f"[trace] #{entry.step} {effective_name}({params}) …", flush=True)
+            logger.info("[trace] #%d %s started", entry.step, effective_name)
+            logger.debug("[trace] #%d params: %s", entry.step, entry.input_params)
 
     async def after_tool_call(self, ctx: Any) -> None:
         if self._trace is None:
@@ -675,10 +678,18 @@ class TraceRail(AgentRail):
                 if er:
                     entry.error = str(er)
         # Observation snapshot (best-effort).
-        entry.observation = _observation_snapshot(getattr(self.session, "env", None))
+        from jiuwensymbiosis.agent.observation import action_observation
+
+        observation = None
+        try:
+            observation = action_observation(ctx, self.session.env)
+        except (RuntimeError, OSError, AttributeError, ValueError) as exc:
+            logger.warning("TraceRail: get_observation failed: %s", exc)
+        entry.observation = _observation_snapshot(None, observation=observation) if observation is not None else None
         # Frame save (best-effort, capped).
-        if self.save_frames and self._frames_saved < self.max_frames:
-            frame_path = self._maybe_save_frame(entry.step)
+        if self.save_frames and self._frames_saved < self.max_frames and observation is not None:
+            rgb = getattr(observation, "rgb", None)
+            frame_path = self._save_frame(rgb, entry.step) if rgb is not None else None
             if frame_path is not None:
                 entry.frame_path = str(frame_path)
         # Enforce max_entries: drop oldest beyond cap.
@@ -687,12 +698,15 @@ class TraceRail(AgentRail):
             self._trace.entries = self._trace.entries[-cap:]
         ctx.extra.pop(_TRACE_CURRENT_KEY, None)
         if self.console:
-            mark = "✅" if entry.success else "❌"
-            print(
-                f"[trace]   └ {mark} {entry.duration_s:.2f}s"
-                + (f" | {entry.output_summary[:80]}" if entry.output_summary else ""),
-                flush=True,
+            log = logger.info if entry.success else logger.warning
+            log(
+                "[trace] #%d %s %s in %.2fs",
+                entry.step,
+                entry.tool_name,
+                "succeeded" if entry.success else "failed",
+                entry.duration_s,
             )
+            logger.debug("[trace] #%d output: %s", entry.step, entry.output_summary)
 
     async def on_tool_exception(self, ctx: Any) -> None:
         if self._trace is None:
@@ -708,7 +722,7 @@ class TraceRail(AgentRail):
         # this hook sees it; the rail event itself is pushed by SafetyRail via
         # the trace_sink (more precise than parsing the message here).
         if self.console:
-            print(f"[trace]   └ ❌ {entry.error}", flush=True)
+            logger.warning("[trace] #%d %s failed: %s", entry.step, entry.tool_name, entry.error)
 
     # ------------------------------------------------------------------ finalize
     def finalize(self) -> Path | None:

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +20,9 @@ from jiuwensymbiosis.calibration.workflows.preflight import (
 from jiuwensymbiosis.calibration.workflows.profile import resolve_out_path
 from jiuwensymbiosis.calibration.workflows.publication import publish_with_reload, solve_stations
 from jiuwensymbiosis.calibration.workflows.workflows import CalibrationRunOptions, RunOutcome, WorkflowDependencies
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.replay")
+logger = get_logger("jiuwensymbiosis.calibration.replay")
 
 
 def replay_calibration(

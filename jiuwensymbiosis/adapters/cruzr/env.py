@@ -201,17 +201,30 @@ class CruzrEnv(BaseRobotEnv):
         self._warm_camera_thread.start()
 
     def disconnect(self) -> None:
-        """Close ROS 2 resources."""
-        if not self._connected:
+        """Close ROS 2 resources, retaining unresolved handles for retry."""
+        if self._inner is None:
+            self._connected = False
             return
-        try:
-            close = getattr(self._inner, "close", None)
-            if callable(close):
-                close()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("CruzrEnv disconnect failed: %s", exc)
+        self._join_camera_warmup()
+        close = getattr(self._inner, "close", None)
+        if not callable(close):
+            raise AttributeError("Cruzr driver does not expose close()")
+        close()
         self._inner = None
         self._connected = False
+
+    def _join_camera_warmup(self) -> None:
+        """Ensure the asynchronous camera starter cannot outlive driver cleanup."""
+        thread = self._warm_camera_thread
+        if thread is None:
+            return
+        timeout_s = max(1.0, float(getattr(self.cfg, "camera_grab_timeout_s", 8.0)) * 2 + 20.0)
+        thread.join(timeout_s)
+        if thread.is_alive():
+            raise TimeoutError(
+                f"Cruzr camera warm-up is still running after {timeout_s:g}s; driver cleanup is deferred"
+            )
+        self._warm_camera_thread = None
 
     def get_observation(self) -> RobotObservation:
         """Return latest known joint positions, if the state topic is available."""

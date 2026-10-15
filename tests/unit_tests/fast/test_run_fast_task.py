@@ -49,13 +49,13 @@ def _install_fast_agent_doubles(monkeypatch, session):
 
     def _build_robot_agent(_session, config):
         trace = None
-        if config.enable_tracing:
+        if config.modules.tracing.enabled:
             trace = TraceRail(
                 _session,
                 workspace=config.workspace,
-                max_entries=config.trace_max_entries,
-                max_frames=config.trace_max_frames,
-                save_frames=config.trace_save_frames,
+                max_entries=config.modules.tracing.max_entries,
+                max_frames=config.modules.tracing.max_frames,
+                save_frames=config.modules.tracing.save_frames,
             )
             _session._trace_rail = trace
         state.agent = SimpleNamespace(trace_rail=trace)
@@ -96,7 +96,7 @@ def _install_fast_agent_doubles(monkeypatch, session):
 
         return _run
 
-    monkeypatch.setattr("jiuwensymbiosis.agent.run.build_robot_agent", _build_robot_agent)
+    monkeypatch.setattr("jiuwensymbiosis.agent.run._build_fast_agent", _build_robot_agent)
     monkeypatch.setattr("jiuwensymbiosis.agent.run._prime_fast_agent", _prime_fast_agent)
     monkeypatch.setattr("jiuwensymbiosis.agent.run._fire_invoke_event", _fire_invoke_event)
     monkeypatch.setattr(
@@ -109,11 +109,31 @@ def _install_fast_agent_doubles(monkeypatch, session):
 def _patched_run_fast_task(monkeypatch, session, cfg, query, conv_id):
     """Call run_fast_task with plan_task stubbed and DeepAgent faked."""
     _install_fast_agent_doubles(monkeypatch, session)
+    monkeypatch.setattr("jiuwensymbiosis.agent.fast.planner.parse_task", lambda *args, **kw: {"targets": []})
     with mock.patch(
         "jiuwensymbiosis.agent.fast.plan_task",
         return_value=PlanResult(sequence=_FIXED_SEQUENCE, tier="skill", skills=("visual_pick",)),
     ):
         return run_fast_task(session, query, cfg, conversation_id=conv_id)
+
+
+def test_skills_disabled_changes_planning_without_disabling_execution(monkeypatch, tmp_path):
+    session = _make_session()
+    cfg = RobotAgentConfig(
+        model_spec=ModelSpec(),
+        workspace=str(tmp_path),
+        execution={"fastagent": {"max_replans": 0}},
+        modules={"skills": {"enabled": False}},
+    )
+    _install_fast_agent_doubles(monkeypatch, session)
+    monkeypatch.setattr("jiuwensymbiosis.agent.fast.planner.parse_task", lambda *a, **kw: {"targets": []})
+    with mock.patch(
+        "jiuwensymbiosis.agent.fast.plan_task", return_value=PlanResult(sequence=[{"op": "home"}], tier="action")
+    ) as plan:
+        with session:
+            result = run_fast_task(session, "home", cfg)
+    assert result["ok"] is True
+    assert plan.call_args.kwargs["skills_md"] == []
 
 
 class TestFastTracePersistence:
@@ -123,11 +143,11 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()  # non-None so run_fast_task proceeds past the spec check
-        cfg.exec_mode = "fastagent"
-        cfg.enable_tracing = True
+        cfg.execution.mode = "fastagent"
+        cfg.modules.tracing.enabled = True
         cfg.workspace = str(tmp_path)
-        cfg.enable_visual_feedback = False
-        cfg.enable_skill = True  # robot_control tool — ability_exec dispatches via it
+        cfg.modules.visual_feedback.enabled = False
+        cfg.modules.skills.enabled = True  # robot_control tool — ability_exec dispatches via it
 
         conv_id = "fast-trace-test"
         with session:
@@ -154,11 +174,11 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()
-        cfg.exec_mode = "fastagent"
-        cfg.enable_tracing = False  # default — zero overhead, no trace file
+        cfg.execution.mode = "fastagent"
+        cfg.modules.tracing.enabled = False  # default — zero overhead, no trace file
         cfg.workspace = str(tmp_path)
-        cfg.enable_visual_feedback = False
-        cfg.enable_skill = True
+        cfg.modules.visual_feedback.enabled = False
+        cfg.modules.skills.enabled = True
 
         with session:
             result = _patched_run_fast_task(monkeypatch, session, cfg, "noop", "fast-off")
@@ -172,11 +192,11 @@ class TestFastTracePersistence:
         session = _make_session()
         cfg = RobotAgentConfig()
         cfg.model_spec = ModelSpec()
-        cfg.exec_mode = "fastagent"
-        cfg.enable_tracing = True
+        cfg.execution.mode = "fastagent"
+        cfg.modules.tracing.enabled = True
         cfg.workspace = str(tmp_path)
-        cfg.enable_visual_feedback = False
-        cfg.enable_skill = True
+        cfg.modules.visual_feedback.enabled = False
+        cfg.modules.skills.enabled = True
 
         conv_id = "lookup-me-123"
         with session:

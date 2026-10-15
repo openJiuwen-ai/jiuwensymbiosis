@@ -36,18 +36,25 @@ Seeing this, the LLM can change parameters or strategy instead of retrying blind
 
 ### 2.2 Enable it in configuration (recommended)
 
-Add two fields to the `agent:` block of the task YAML:
+Select stepagent and enable tracing and diagnosis in the task YAML:
 
 ```yaml
 agent:
-  enable_tracing: true        # prerequisite: DiagnosisRail depends on trace
-  enable_diagnosis: true      # turn on online diagnosis
-  diagnosis_max_chars: 1500   # optional: soft cap on the diagnosis message
-  diagnosis_history_steps: 3  # optional: how many steps of causal chain to look back
-  diagnosis_history_kinds: ["reject", "recover"]  # optional: rail kinds treated as relevant
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+      max_chars: 1500
+      history_steps: 3
+      history_kinds:
+      - reject
+      - recover
+  execution:
+    mode: stepagent
 ```
 
-`enable_diagnosis` depends on `enable_tracing`; with tracing off, DiagnosisRail is disabled automatically with a warning.
+`modules.diagnosis.enabled` depends on `modules.tracing.enabled`; enabling diagnosis with tracing off raises an error. Diagnosis requires stepagent.
 
 ### 2.3 Enable it in code
 
@@ -55,9 +62,8 @@ agent:
 from jiuwensymbiosis.agent import RobotAgentConfig
 
 config = RobotAgentConfig(
-    enable_tracing=True,
-    enable_diagnosis=True,
-    # remaining fields as above
+    modules={'tracing': {'enabled': True}, 'diagnosis': {'enabled': True}},
+    execution={'mode': 'stepagent'},
 )
 ```
 
@@ -72,7 +78,7 @@ The same step is never injected twice (a per-step idempotency marker).
 
 ### 2.5 Fast-path behavior
 
-The fast path (`run_fast_task`) has no per-step LLM, so a diagnosis message **does not change the current fast run**. But the fast path still makes TraceRail persist trace JSON — and those traces can be taken into the same corpus by offline analysis.
+The fast path (`run_fast_task`) has no per-step LLM and rejects `modules.diagnosis.enabled=true`. It supports tracing, and its trace JSON can be included in offline analysis.
 
 ### 2.6 Diagnosis-message shape
 
@@ -232,10 +238,14 @@ Suggest a pre-check, or raising z and retrying after a failure.
 ### 4.1 Development: use online and offline modes together
 
 ```yaml
-# Task YAML
 agent:
-  enable_tracing: true
-  enable_diagnosis: true
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+  execution:
+    mode: stepagent
 ```
 
 Run the task a few times (`--mock` or on hardware); traces land in `<workspace>/traces/`. Then:
@@ -252,15 +262,20 @@ Read `failure_report.md` for recurring failure patterns, take the suggestions fr
 
 ```yaml
 agent:
-  enable_tracing: true
-  enable_diagnosis: true
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+  execution:
+    mode: stepagent
 ```
 
 The LLM automatically receives a diagnosis message on failure and self-corrects within the run. Traces still persist, for offline analysis later.
 
 ### 4.3 Post-incident review: run offline analysis only
 
-You already have trace JSON (whether or not online mode was enabled — `enable_tracing=true` is enough), so simply:
+You already have trace JSON (whether or not online mode was enabled — `modules.tracing.enabled=true` is enough), so simply:
 
 ```bash
 python scripts/analyze_traces.py --trace-dir <trace directory>

@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 | 定位 | 内存 4-DoF 仿真臂 | AgileX Piper 6-DoF CAN 机械臂 | LeRobot SO-101 5-DoF 欠驱动机械臂 | Cruzr 移动双臂（底盘 + 升降 + 腰部） |
 | 会话入口 | `MockArmEnv` + Mock Api/Model | `build_piper_session` | `build_so101_session` | `build_cruzr_session` |
-| 笛卡尔运动 | ✅ 内存位姿 | ✅ XYZ/R + 完整 `goto_pose` | ✅ XYZ + 最佳努力姿态 IK | — |
+| 笛卡尔运动 | ✅ 内存位姿 | ✅ `goto_xyzr`（工具尖端 XYZ/R，标定倾角） | ✅ XYZ + 最佳努力姿态 IK | — |
 | 关节运动 | — | ✅ 六关节 | ✅ 五个机械臂关节 | ✅ 双臂（named joint，弧度） |
 | 实时伺服 | ✅ 仿真 sink | ✅ `servo_to_tip`/`servo_to_flange`（fast path 伺服 op 驱动） | ✅ `servo_to_tip`/`servo_to_flange`（fast path 伺服 op 驱动） | — |
 | 移动底盘 | — | — | — | ✅ `navigate_relative`/`rotate_base`/`drive_arc`；连续 `base_servo` |
@@ -38,15 +38,26 @@
 | 相机安装模型 | 合成场景 | eye-in-hand | eye-to-hand | eye-to-hand（腰部 + 头部随动） |
 | 手眼变换 | 测试几何 | `T_base_flange(live) @ T_flange_cam` | 固定 `T_base_cam` | 实时 `T_base_cam`（TF 查找，静态标定回退；头部按关节实时算） |
 | 可达性（URDF） | — | — | — | ✅ `planning.reachability`（双臂 + 自适应升降判据） |
-| 检测 sidecar | — | ◐ `detector.spawn=true` | ◐ `detector.spawn=true` | ◐（`api_servers`） |
-| 主要可选依赖 | `dev`（测试） | `piper`；视觉再加 `full` | Python 3.12 + `so101`；视觉再加 `full` | `cruzr`；视觉再加 `full`；运行时需 source ROS 工作区 |
+| HTTP 检测服务 | — | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` |
+| 本地托管检测子进程（sidecar） | — | ◐ 仅 `mode: local` | ◐ 仅 `mode: local` | ◐ 仅 `mode: local` |
+| 主要可选依赖 | `dev`（测试） | `piper`；HTTP 客户端 `remote`；RealSense `camera` | Python 3.12 + `so101`；HTTP 客户端 `remote`；RealSense `camera` | `cruzr`；HTTP 客户端 `remote`；运行时需 source ROS 工作区 |
 | 配置目录 | 测试或示例内构造 | `configs/piper/` | `configs/so101/` | `configs/cruzr/` |
 
 视觉条件有一处实现差异：
 
 - Piper Env 的类级能力包含视觉，`camera_serial` 未配置时不会创建相机；运行视觉任务仍必须提供相机、标定和检测服务。
 - SO-101 根据 `camera_serial` 生成实例能力；未配置相机时不会声明视觉能力，已连接 Driver 若报告相机不可用还会进一步收窄能力。配置了相机但启动失败时，连接按 fail-closed 处理。
-- Cruzr 声明腰部 + 头部双路相机与深度；视觉服务经 `api_servers` 提供，检测不可达时共享客户端返回空结果并转换为 `{"ok": false, "reason": "no_detection"}`。
+- Cruzr 声明腰部 + 头部双路相机与深度；与其他正式适配器共用 `detector.mode` 和 HTTP 客户端。
+
+三个适配器的检测配置缺省为 `disabled`。`local` 表示由 Session 管理的本地托管子进程
+（sidecar）；`remote` 表示外部管理的 HTTP 推理服务，包含独立运行在 `localhost` 的服务。
+Session 退出只关闭 remote 客户端，不停止外部服务。模型依赖安装在实际运行模型的环境，
+Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Torch。
+配置与兼容迁移见[远程推理指南](../how-to/remote-inference.md)。
+
+客户端通过 `InferenceServiceError` 和 `inference_*` 错误码报告连接、超时、协议或
+结果过期；感知动作保留 `error_code` 并返回 `reason="detector_unavailable"`。
+服务错误不转换为空结果或 `no_detection`，后者只表示成功推理没有目标。
 
 ## 3. 框架 Capability 矩阵
 
@@ -75,21 +86,27 @@
 | `sorting.command` | 词表和适配器扩展点 | —（无内置通用工具） | — | — | — | — |
 | `speech.tts` | 词表标记；语音前端独立提供 TTS | —（无内置机器人动作） | — | — | — | — |
 
+能力列的 ✅ 表示提供该能力下的动作，不表示实现动作列中的全部动作。Piper 的笛卡尔动作包括 `goto_xyzr`、`move_direction`、`get_pose` 和 `get_home_pose`，其中 `goto_xyzr` 使用标定倾角；完整姿态动作 `goto_pose` 当前由 SO-101 实现。
+
 `grasp.suction` 已有完整框架契约，但当前仓库没有内置吸盘真机适配器；Tutorial 中的 SCARA + 吸盘是教学实现，不应视为经过真机验收的内置硬件支持。
 
 ## 4. 执行与工具策略矩阵
 
 | 特性 | 状态 | 默认 | 启用或约束 |
 |---|---|---|---|
-| fastagent 编译一次执行 | ✅ | `exec_mode="fastagent"` | 一次模型规划（技能组合 + 动作组合两级）后顺序执行，无逐 step LLM；`--stepagent` 强制逐步 |
-| 运行时重规划 | ✅ | 每步前 | 世界反驳下一步前置条件时重新规划，上限 `max_replans` |
-| 独立工具模式 | ✅ | 可选 | `mode="tool"`，每个 `@implements` 方法成为一个工具 |
-| 代码模式 | ✅ | 可选 | `mode="code"`，提供 `InProcessCodeTool` |
-| Hybrid 模式 | ✅ | `mode="hybrid"` | 同时提供独立工具和代码工具 |
-| Skill 工作流 | ◐ | `enable_skill=False` | 启用 `SkillUseRail` 和 `RobotControlTool`；内置 `visual_pick`/`visual_place`/`transport` |
+| fastagent 编译一次执行 | ✅ | `execution.mode="fastagent"` | 一次模型规划（技能组合 + 动作组合两级）后顺序执行，无逐 step LLM；`--stepagent` 强制逐步 |
+| 运行时重规划 | ✅ | 每步前 | 世界反驳下一步前置条件时重新规划，上限 `execution.fastagent.max_replans` |
+| 独立工具模式 | ✅ | 可选 | stepagent 下设置 `execution.stepagent.mode="tool"`，每个 `@implements` 方法成为一个工具 |
+| 代码模式 | ✅ | 可选 | stepagent 下设置 `execution.stepagent.mode="code"`，提供 `InProcessCodeTool` |
+| Hybrid 模式 | ✅ | `execution.stepagent.mode="hybrid"` | stepagent 同时提供独立工具和代码工具 |
+| fastagent 技能规划 | ◐ | `modules.skills.enabled=True` | 规划器直接读取技能库，不挂载 `SkillUseRail`；关闭后直接组合动作 |
+| stepagent 技能工作流 | ◐ | `modules.skills.enabled=False` | 单机器人 builder 开启技能后添加 `SkillUseRail` 和 `RobotControlTool` |
 | 自定义工具/Rail | ✅ | 无 | 通过 `extra_tools`、`extra_rails` 注入 |
-| 并行工具调用 | ◐ | `parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
+| 并行工具调用 | ◐ | `execution.stepagent.parallel_tool_calls=False` | 仅适合审计后的非运动工具；运动/抓取会拒绝，且不能与 Trace 同开 |
 | 无硬件/无模型干跑 | ✅ | `--mock` 时 | `MockArmEnv` + `MockModelClient`（工厂 `build_mock_model`，仅 Piper），不访问 CAN、相机或模型端点 |
+
+`fastagent` 要求显式 `model_spec` 用于模型规划。`robot_control` 始终注册；关闭 `modules.skills.enabled` 后直接组合动作。仅提供 `model` 时应使用 `stepagent`。
+内置技能包括 `visual_pick`、`visual_place`、`transport`。见 [API 最小配置](framework-api.md#fast-path-最小配置)及 [Agent 全量配置](agent-config.md)。
 
 ## 5. Rails、Trace 与反馈矩阵
 
@@ -97,23 +114,24 @@
 |---|---|---|---|
 | SafetyRail | ✅ | 开 | Env 具有任一运动能力（cartesian/joint/base/lift/waist）；按声明能力派生检查 |
 | RecoveryRail | ✅ | 开 | Env 具有运动、吸盘或夹爪；失败后尝试 Home 与释放 |
-| VisualFeedbackRail | ◐ | 开 | 还需 `vision.camera`；动作后帧进入下一轮上下文 |
-| SkillUseRail | ◐ | 关 | `enable_skill=True` |
-| TraceRail | ◐ | 关 | `enable_tracing=True`；记录工具、观测、Rail 事件、日志和可选帧 |
-| DiagnosisRail | ◐ | 关 | `enable_diagnosis=True` 且必须同时开启 Trace |
-| WARNING+ 日志入 Trace | ◐ | 随 Trace | `trace_capture_loggers` 默认 `jiuwensymbiosis` |
+| VisualFeedbackRail | ◐ | stepagent 开；fastagent 不支持 | `modules.visual_feedback.enabled=True` 且具有 `vision.camera`；动作后帧进入下一轮上下文 |
+| SkillUseRail | ◐ | 关 | 单机器人 stepagent 下 `modules.skills.enabled=True`；fastagent 不挂载 |
+| TraceRail | ◐ | 关 | `modules.tracing.enabled=True`；记录工具、观测、Rail 事件、日志和可选帧 |
+| DiagnosisRail | ◐ | 关 | 仅 stepagent；`modules.diagnosis.enabled=True` 且必须同时开启 Trace |
+| WARNING+ 日志入 Trace | ◐ | 随 Trace | `modules.tracing.capture_loggers` 默认 `jiuwensymbiosis` |
 | Trace HTML/文本回放 | ✅ | 按需 | `jiuwensymbiosis-replay <trace.json>`，默认生成自包含 HTML |
 | 离线 Trace Feedback | ✅ | 按需 | `scripts/analyze_traces.py` 聚类失败并生成需人工审核的建议 |
-| 中央日志 | ✅ | INFO + `./logs` | 控制台和轮转文件；`log_dir=None` 时仅控制台 |
+| 中央日志 | ✅ | INFO + `./logs` | 控制台和轮转文件；`logging.dir=None` 时仅控制台 |
 
 ## 6. 视觉与感知矩阵
 
 | 特性 | 状态 | 实现或条件 |
 |---|---|---|
 | RGB + 对齐深度 | ◐ | RealSense/适配器 Driver；深度边界统一为米 |
-| GroundingDINO 文本检测 | ◐ | 安装 `full` 并启动或连接检测服务 |
-| SAM2 mask | ◐ | 检测配置 `use_sam2=true` |
-| 检测 sidecar 生命周期 | ✅ | `make_detector_sidecar()` 随 Session 启停 |
+| GroundingDINO 文本检测 | ◐ | Agent 安装 `remote` 连接 HTTP 推理服务；模型环境按需安装 `vision-server` |
+| SAM2 mask | ◐ | 推理服务端启用 SAM2；local 对应 `detector.local.use_sam2=true` |
+| HTTP 客户端生命周期 | ✅ | `managed_detector=True` 时由 Session 注入并关闭；remote 服务由外部管理 |
+| 本地托管子进程生命周期 | ✅ | `mode: local` 时 `make_detector_sidecar()` 随 Session 启停 |
 | mask 质心与中值深度 | ✅ | `scene3d.locate_for_grasp`/`analyze_scene` |
 | eye-in-hand 投影 | ✅ | Piper 提供实现；需要 `T_flange_cam` 与实时法兰位姿 |
 | eye-to-hand 投影 | ✅ | SO-101 使用固定 `T_base_cam`；Cruzr 优先使用实时 TF，静态标定回退 |
@@ -132,13 +150,20 @@
 | Piper Adapter | ◐ | `pip install -e ".[piper]"` |
 | SO-101 Adapter | ◐ | Python 3.12；`pip install -e ".[so101]"` |
 | Cruzr Adapter | ◐ | `pip install -e ".[cruzr]"`；运行时需 source ROS 工作区 |
-| 视觉/GPU | ◐ | `pip install -e ".[full]"` 并使用 CUDA 12.8 PyTorch 源 |
-| 浏览器 GUI | ◐ | `pip install -e ".[gui]"`；`jiuwensymbiosis-gui`，默认 `127.0.0.1:8770` |
-| 语音前端 | ◐ | `pip install -e ".[voice]"`；FunASR/录音可选，默认 `NullTTS` |
+| 远程 HTTP 推理客户端 | ◐ | `pip install -e ".[remote]"`；不安装视觉/语音模型 |
+| 可选视觉模型服务 | ◐ | 在模型主机安装 `.[vision-server]`，选择匹配的 Torch/CUDA；Agent 仅在 `mode: local` 时托管子进程 |
+| 浏览器 GUI | ◐ | `pip install -e ".[gui]"`；`jiuwensymbiosis-gui --gui workbench`，默认 `127.0.0.1:8770`；`--list-guis` 列出已安装插件 |
+| 语音前端 | ◐ | 远程使用 `.[remote,voice-io]`；ASR 默认 disabled，TTS 默认 null；本地 FunASR/ChatTTS 显式可选 |
 | 手眼标定 | ◐ | `pip install -e ".[calib,piper]"` 或 `.[calib,so101]` |
 | 动作/技能/状态自省 | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace 回放 | ✅ | `jiuwensymbiosis-replay` |
-| 单元测试 | ✅ | `pip install -e ".[dev]"`；`pytest tests/unit_tests/` |
+| 核心测试 | ✅ | `pip install -e ".[dev]"`；`make test-core` |
+| GUI 测试 | ◐ | `pip install -e ".[dev,gui]"`；`make test-gui` |
+
+`make test` 默认只运行核心测试，仅需 `.[dev]`。运行两套无硬件测试时，安装
+`.[dev,gui]` 后执行 `make test test-gui`。`make test-all` 还会包含集成测试，
+需准备相应依赖及运行环境。
+`.[gui]` 提供工作台的界面依赖；其它已安装的 GUI 插件各自提供所需的界面依赖。
 
 矩阵维护时应同时核对以下权威源：
 

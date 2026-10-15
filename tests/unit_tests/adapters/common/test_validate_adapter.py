@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import scripts.validate_adapter as va
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import GET_HOME_POSE, GOTO_XYZR, ActionSpec, implements
@@ -69,6 +71,15 @@ class TestCheckToolTags:
         # substring — `get_home_pose` also contains "home" and IS legitimately flagged.
         assert any("'do_aligned'" in w for w in warnings)
         assert all("'home'" not in w for w in warnings)
+
+
+@pytest.mark.parametrize("attribute", ["resource_keys", "config_factory"])
+def test_missing_admission_metadata_is_reported(attribute, monkeypatch):
+    from jiuwensymbiosis.adapters.piper import build_piper_session
+
+    monkeypatch.setattr(build_piper_session, attribute, None)
+    results = va.run_checks("jiuwensymbiosis.adapters.piper")
+    assert any(code == "S-17" and severity == "ERROR" for code, severity, _ in results)
 
 
 class TestKnownCapabilitiesSingleSource:

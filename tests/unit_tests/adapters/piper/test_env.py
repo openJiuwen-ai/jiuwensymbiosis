@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jiuwensymbiosis.adapters.piper.config import PiperConfig
+from jiuwensymbiosis.adapters.piper.geometry import FlangePose
 
 
 class _MockLowLevel:
@@ -178,3 +181,34 @@ class TestConnectForwardsConfigFallbacks:
 
         assert "calib_path" not in kwargs
         assert kwargs["z_min_safe_mm"] == 61.0
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param(FlangePose(210, 25, 250, 180, 30, 90), id="native"),
+        pytest.param(SimpleNamespace(x=210, y=25, z=250, rx=180, ry=30, rz=90), id="attributes"),
+    ],
+)
+def test_move_to_flange_normalizes_complete_poses(piper_factory, target):
+    robot = piper_factory(tool_offset_mm=95)
+    robot.env.move_to_flange(target)
+    assert robot.arm.commands == [(210000, 25000, 250000, 180000, 30000, 90000)]
+
+
+@pytest.mark.parametrize("field", ["x", "y", "z", "rx", "ry", "rz"])
+def test_move_to_flange_rejects_missing_fields_without_can(piper_factory, field):
+    robot = piper_factory()
+    values = {"x": 200, "y": 20, "z": 300, "rx": 180, "ry": 30, "rz": 90}
+    del values[field]
+    robot.arm.calls.clear()
+    with pytest.raises(TypeError, match=f"missing required fields: {field}"):
+        robot.env.move_to_flange(SimpleNamespace(**values))
+    assert robot.arm.calls == []
+
+
+@pytest.mark.parametrize("joint", [False, True])
+def test_compatibility_joint_parameter_keeps_move_p(piper_factory, joint):
+    robot = piper_factory(tool_offset_mm=95)
+    robot.env.low_level.move_to_pose_blocking(FlangePose(200, 20, 300, 180, 30, 0), joint=joint)
+    assert robot.arm.motion_modes[-1][1] == 0x00  # MOVE_P for both compatibility values

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import sys
 
-logger = logging.getLogger("eye_in_hand_calib")
+logger = logging.getLogger("jiuwensymbiosis.calibration.eye_in_hand_cli")
 
 _LEGACY_NOTICE = (
     "[calib] compatibility mode: this invocation uses the legacy Piper eye-in-hand wizard. "

@@ -59,10 +59,8 @@ class _FakeProc:
 
 
 def _nav(cfg):
-    nav = CruzrNav.__new__(CruzrNav)
-    nav.cfg = cfg
+    nav = CruzrNav(cfg)
     nav._worker = Path("/tmp/wheel_worker.py")
-    nav._resident_move = None
     return nav
 
 

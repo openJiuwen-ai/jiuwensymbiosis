@@ -19,30 +19,37 @@ def mock_session():
 class TestRailRegistry:
     def test_declared_conditions(self):
         visual_feedback, safety, recovery = _RailRegistry._rails[:3]
-        assert visual_feedback.required_flags == ["enable_visual_feedback"]
+        assert visual_feedback.required_flags == ["visual_feedback"]
         assert visual_feedback.required_capabilities == ["vision.camera"]
-        assert safety.required_flags == ["enable_safety"]
+        assert safety.required_flags == ["safety"]
         assert safety.any_capabilities == [
-            "motion.cartesian", "motion.joint", "motion.base",
-            "motion.lift", "motion.waist",
+            "motion.cartesian",
+            "motion.joint",
+            "motion.base",
+            "motion.lift",
+            "motion.waist",
         ]
         assert safety.required_capabilities is None
-        assert recovery.required_flags == ["enable_recovery"]
+        assert recovery.required_flags == ["recovery"]
         assert recovery.any_capabilities == [
-            "motion.cartesian", "motion.joint", "motion.base",
-            "grasp.suction", "grasp.parallel", "motion.dual_arm",
+            "motion.cartesian",
+            "motion.joint",
+            "motion.base",
+            "grasp.suction",
+            "grasp.parallel",
+            "motion.dual_arm",
         ]
 
     @pytest.mark.parametrize(
         ("rail_index", "flags", "caps", "expected"),
         [
-            (0, {"enable_visual_feedback": True, "enable_safety": True}, {"vision.camera", "motion.cartesian"}, True),
-            (0, {"enable_visual_feedback": True, "enable_safety": True}, {"motion.cartesian"}, False),
-            (1, {"enable_safety": True}, {"motion.cartesian"}, True),
-            (1, {"enable_safety": True}, {"motion.joint"}, True),
-            (1, {"enable_safety": True}, {"motion.base"}, True),
-            (1, {"enable_safety": True}, {"grasp.parallel"}, False),
-            (2, {"enable_recovery": True, "enable_safety": True}, {"grasp.parallel"}, True),
+            (0, {"visual_feedback": True, "safety": True}, {"vision.camera", "motion.cartesian"}, True),
+            (0, {"visual_feedback": True, "safety": True}, {"motion.cartesian"}, False),
+            (1, {"safety": True}, {"motion.cartesian"}, True),
+            (1, {"safety": True}, {"motion.joint"}, True),
+            (1, {"safety": True}, {"motion.base"}, True),
+            (1, {"safety": True}, {"grasp.parallel"}, False),
+            (2, {"recovery": True, "safety": True}, {"grasp.parallel"}, True),
         ],
         ids=[
             "visual-feedback-enabled",
@@ -62,17 +69,17 @@ class TestRailRegistry:
 class TestTracingBuild:
     """build_robot_agent wiring of TraceRail + sinks."""
 
-    def _build(self, mock_session, *, save_frames=False, **cfg_kwargs):
+    def _build(self, mock_session, *, save_frames=False, **switches):
         from jiuwensymbiosis.agent.builder import _inject_trace_sinks, _resolve_rails
         from jiuwensymbiosis.agent.config import RobotAgentConfig
         from jiuwensymbiosis.agent.trace import TraceRail
 
-        cfg = RobotAgentConfig(enable_tracing=True, **cfg_kwargs)
+        cfg = RobotAgentConfig(
+            modules={"tracing": {"enabled": True}, **{name: {"enabled": value} for name, value in switches.items()}}
+        )
         rails = _resolve_rails(
             mock_session,
-            cfg.enable_visual_feedback,
-            cfg.enable_safety,
-            cfg.enable_recovery,
+            cfg.modules,
             cfg.extra_rails,
         )
         trace_rail = TraceRail(mock_session, workspace="/tmp/trace_test", save_frames=save_frames)
@@ -84,7 +91,9 @@ class TestTracingBuild:
         from jiuwensymbiosis.agent.config import RobotAgentConfig
         from jiuwensymbiosis.agent.trace import TraceRail
 
-        cfg = RobotAgentConfig(enable_tracing=True, workspace=str(tmp_path))
+        cfg = RobotAgentConfig(
+            workspace=str(tmp_path), execution={"mode": "stepagent"}, modules={"tracing": {"enabled": True}}
+        )
         build_robot_agent(mock_session, cfg)
         assert isinstance(mock_session._trace_rail, TraceRail)
         mock_session.disconnect()
@@ -100,15 +109,17 @@ class TestTracingBuild:
         from jiuwensymbiosis.agent.builder import build_robot_agent
         from jiuwensymbiosis.agent.config import RobotAgentConfig
 
-        cfg = RobotAgentConfig(enable_tracing=False, workspace=str(tmp_path))
+        cfg = RobotAgentConfig(
+            workspace=str(tmp_path), execution={"mode": "stepagent"}, modules={"tracing": {"enabled": False}}
+        )
         build_robot_agent(mock_session, cfg)
         assert mock_session._trace_rail is None
 
     @pytest.mark.parametrize(
         ("rail_cls_path", "flag"),
         [
-            ("jiuwensymbiosis.rails.safety.SafetyRail", "enable_safety"),
-            ("jiuwensymbiosis.rails.recovery.RecoveryRail", "enable_recovery"),
+            ("jiuwensymbiosis.rails.safety.SafetyRail", "safety"),
+            ("jiuwensymbiosis.rails.recovery.RecoveryRail", "recovery"),
         ],
         ids=["safety", "recovery"],
     )
@@ -125,12 +136,12 @@ class TestTracingBuild:
         """``frame_sink`` is installed only when ``trace_save_frames=True``."""
         from jiuwensymbiosis.rails.visual_feedback import VisualFeedbackRail
 
-        trace_rail, rails = self._build(mock_session, enable_visual_feedback=True)
+        trace_rail, rails = self._build(mock_session, visual_feedback=True)
         vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
         assert vf.trace_sink is trace_rail
         assert vf.frame_sink is None
 
-        trace_rail, rails = self._build(mock_session, enable_visual_feedback=True, save_frames=True)
+        trace_rail, rails = self._build(mock_session, visual_feedback=True, save_frames=True)
         vf = next(r for r in rails if isinstance(r, VisualFeedbackRail))
         assert vf.trace_sink is trace_rail
         assert vf.frame_sink is not None
@@ -145,15 +156,15 @@ class TestTracingBuild:
         monkeypatch.setattr(builder_mod, "create_deep_agent", lambda **kwargs: kwargs)
         common = {
             "model": object(),
+            "execution": {"mode": "stepagent"},
             "workspace": str(tmp_path),
-            "log_dir": None,
-            "enable_visual_feedback": False,
+            "logging": {"dir": None},
             "extra_rails": [vf],
         }
 
         builder_mod.build_robot_agent(
             mock_session,
-            RobotAgentConfig(enable_tracing=True, trace_save_frames=True, **common),
+            RobotAgentConfig(modules={"tracing": {"enabled": True, "save_frames": True}}, **common),
         )
         assert vf.trace_sink is not None
         assert vf.frame_sink is not None
@@ -161,7 +172,7 @@ class TestTracingBuild:
 
         builder_mod.build_robot_agent(
             mock_session,
-            RobotAgentConfig(enable_tracing=False, **common),
+            RobotAgentConfig(modules={"tracing": {"enabled": False}}, **common),
         )
         assert vf.trace_sink is None
         assert vf.frame_sink is None
@@ -176,7 +187,7 @@ class TestTracingBuild:
         vf.frame_sink = custom_frame_sink
         builder_mod.build_robot_agent(
             mock_session,
-            RobotAgentConfig(enable_tracing=False, **common),
+            RobotAgentConfig(modules={"tracing": {"enabled": False}}, **common),
         )
         assert vf.trace_sink is custom_trace_sink
         assert vf.frame_sink is custom_frame_sink

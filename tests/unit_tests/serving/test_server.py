@@ -5,37 +5,25 @@
 
 from __future__ import annotations
 
-import base64
-
 import numpy as np
 import pytest
 
 try:
     from jiuwensymbiosis.serving.grounding_dino_sam2_server import (
-        SegmentRequest,
         _box_to_mask,
-        _encode_mask,
         _normalize_prompt,
         app,
     )
 
-    HAS_TORCH = True
+    HAS_SERVER_DEPS = True
 except ImportError:
-    HAS_TORCH = False
+    HAS_SERVER_DEPS = False
 
 
-skip_no_torch = pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
+skip_no_server_deps = pytest.mark.skipif(not HAS_SERVER_DEPS, reason="server dependencies not installed")
 
 
-@skip_no_torch
-class TestSchemas:
-    def test_segment_request(self):
-        req = SegmentRequest(image_base64="abc", text_prompt="a box")
-        assert req.image_base64 == "abc"
-        assert req.text_prompt == "a box"
-
-
-@skip_no_torch
+@skip_no_server_deps
 class TestNormalizePrompt:
     def test_lowercase(self):
         assert _normalize_prompt("A Box") == "a box ."
@@ -48,17 +36,7 @@ class TestNormalizePrompt:
         assert result.endswith(".")
 
 
-@skip_no_torch
-class TestEncodeMask:
-    def test_bool_mask(self):
-        mask = np.zeros((10, 10), dtype=bool)
-        mask[2:5, 3:7] = True
-        result = _encode_mask(mask)
-        decoded = base64.b64decode(result)
-        assert len(decoded) == 10 * 10
-
-
-@skip_no_torch
+@skip_no_server_deps
 class TestBoxToMask:
     def test_basic(self):
         mask = _box_to_mask(np.array([10.0, 20.0, 50.0, 60.0]), 100, 100)
@@ -66,7 +44,7 @@ class TestBoxToMask:
         assert mask[20:60, 10:50].any()
 
 
-@skip_no_torch
+@skip_no_server_deps
 class TestEndpoints:
     @pytest.mark.asyncio
     async def test_health(self):
@@ -74,10 +52,13 @@ class TestEndpoints:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.get("/health")
+            resp = await ac.get("/v1/health", headers={"X-Request-ID": "health-check"})
             assert resp.status_code == 200
             data = resp.json()
-            assert "status" in data
+            assert data["schema_version"] == 1
+            assert data["request_id"] == "health-check"
+            assert data["result"]["service"] == "vision"
+            assert data["result"]["status"] in {"ready", "loading"}
 
     @pytest.mark.asyncio
     async def test_segment_missing_fields(self):
@@ -85,5 +66,5 @@ class TestEndpoints:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/segment", json={})
+            resp = await ac.post("/v1/segment", json={})
             assert resp.status_code == 422

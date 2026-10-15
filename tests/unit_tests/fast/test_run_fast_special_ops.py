@@ -99,7 +99,7 @@ def test_eye_to_hand_missing_grasp_disables_track_grasp():
     assert _resolve_fast_special_ops(caps, api, env) == frozenset()
 
 
-# ----------------------------------------- enable_fast_special_ops master switch
+# ----------------------------------------- tracking.enabled master switch
 def test_disabled_switch_withholds_track_grasp():
     api = _api(has_servo_to_tip=True)
     env = _env(caps=_EYE_TO_HAND_CAPS)

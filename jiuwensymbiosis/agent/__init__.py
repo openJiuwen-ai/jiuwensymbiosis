@@ -29,8 +29,17 @@ from jiuwensymbiosis.agent.builder import (
 )
 from jiuwensymbiosis.agent.config import (
     ROBOT_PROMPT_TEMPLATE,
+    DiagnosisConfig,
+    ExecutionConfig,
+    FastAgentConfig,
+    LoggingConfig,
     ModelSpec,
+    ModulesConfig,
     RobotAgentConfig,
+    StepAgentConfig,
+    SwitchConfig,
+    TracingConfig,
+    TrackingConfig,
     build_model,
 )
 from jiuwensymbiosis.agent.run import run_fast_task, run_robot_task
@@ -64,6 +73,15 @@ __all__ = [
     "run_robot_task",
     "run_fast_task",
     "RobotAgentConfig",
+    "ExecutionConfig",
+    "FastAgentConfig",
+    "StepAgentConfig",
+    "TrackingConfig",
+    "ModulesConfig",
+    "SwitchConfig",
+    "DiagnosisConfig",
+    "TracingConfig",
+    "LoggingConfig",
     "RobotSession",
     "ROBOT_PROMPT_TEMPLATE",
     "clear_proxy_env",

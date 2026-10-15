@@ -12,7 +12,7 @@ JiuwenSymbiosis 是基于 openjiuwen 的具身智能体框架，让一套安全�
 - **执行记忆**：规划器实时掌握已知信息（目标位置、本体状态），依托动作契约自动维护 —— 感知即入账、移动即作废，无需手写缓存；已执行动作产生的状态会沉淀下来，被后续步骤继承引用。
 - **实时追踪伺服**：边感知边执行——持续跟踪目标，以高频向本体发伺服指令；用于抓取/放置等关键动作，可支持实时跟随物体移动抓取。
 - **主动搜索**：目标不在视野时原地扫视、报方位并逐步逼近；够不着时先规划可达位姿。
-- **可达性推理**：当任务将目标描述为 "在抽屉里"" 在箱子下 " 等空间关系时，规划器基于空间关系判定目标是否真正可达；若目标被遮挡或包裹，则先行规划使目标变得可达。
+- **可达性推理**：规划器使用“在抽屉里”“在箱子下”等空间关系约束目标选择，并结合本体提供的可达性判据规划动作。序列校验器将声明 `payload.held` 效果的抓取动作视为清除被抓取的障碍；开门等专用操作需要对应动作声明 `opens_access`，当前内置动作尚未声明该效果。
 - **动作契约**：每个动作声明前置条件、效果与结果形状；契约不编码顺序，只拒绝前置条件不满足的排列。
 - **安全闭环**：运动边界检查、异常恢复、视觉反馈、执行诊断共同保护物理执行。
 - **通用视觉感知**：开箱即用的可复用感知管线——取帧、深度、开放词汇检测与分割、质心与深度估计、像素到基座反投影、标定、坐标变换与校正等；eye-in-hand 与 eye-to-hand 只差一个投影函数。
@@ -60,13 +60,25 @@ python -m pip install -e ".[piper]"     # Piper SDK
 python -m pip install -e ".[so101]"     # SO-101 / LeRobot；Python 3.12
 python -m pip install -e ".[cruzr]"     # Cruzr 双臂（pinocchio 臂 IK；rclpy 由 ROS 工作区提供，非 pip 依赖）
 python -m pip install -e ".[voice]"     # ASR 与录音
-python -m pip install -e ".[gui]"       # 浏览器 GUI
+python -m pip install -e ".[gui]"       # 现有工作台 GUI（NiceGUI 浏览器界面）
 python -m pip install -e ".[calib]"     # 手眼标定
 python -m pip install -e ".[full]" \
   --extra-index-url https://download.pytorch.org/whl/cu128  # 视觉/GPU 栈
 ```
 
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
+
+统一启动器通过 GUI 插件 key 选择界面；本仓库当前提供 `workbench`：
+
+```bash
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench
+# 等价模块入口
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+`.[gui]` 安装现有工作台的依赖。单独发布的 GUI 插件按各自说明安装到同一 Python
+环境，再通过 `--gui <key>` 选择。
 
 ## 内置适配器
 

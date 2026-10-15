@@ -26,7 +26,19 @@ from jiuwensymbiosis.adapters._common.builder import make_builder
 # Uncomment the advanced version below if you need sidecars or api kwargs.
 # ============================================================================
 
-build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi)
+
+def _resource_keys(cfg: XxxConfig) -> tuple[str, ...]:
+    """Identify the actual command endpoint without connecting hardware.
+
+    Replace this CAN example when changing the template's connection type:
+    serial devices use Path(cfg.port).expanduser().resolve(); ROS devices use
+    the captured domain and command topic. Configuration aliases for the same
+    device must yield identical keys. Camera/detector keys are added centrally.
+    """
+    return (f"can:{cfg.can_port}",)
+
+
+build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi, resource_keys=_resource_keys)
 
 
 # ============================================================================
@@ -39,7 +51,7 @@ build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi)
 # def _api_kwargs_from_cfg(cfg: XxxConfig) -> dict:
 #     """Extract Api.__init__ kwargs from config."""
 #     return {
-#         # "detector_service_url": cfg.detector_url,
+#         # "detector_service_url": cfg.detector.url,
 #         # "z_correction_mm": cfg.z_correction_mm,
 #     }
 #
@@ -55,5 +67,7 @@ build_xxx_session = make_builder(XxxConfig, XxxEnv, XxxApi)
 #     XxxApi,
 #     api_kwargs_from_cfg=_api_kwargs_from_cfg,
 #     # sidecar_builders=[_detector_sidecar],
+#     # managed_detector=True,  # API __init__ 接收 detector_client；由 session 管理关闭
 #     decorate=_decorate,
+#     resource_keys=_resource_keys,  # required command-endpoint admission wiring
 # )

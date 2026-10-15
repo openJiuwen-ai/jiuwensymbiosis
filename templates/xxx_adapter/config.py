@@ -16,9 +16,10 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-import yaml
+from jiuwensymbiosis.adapters._common.config import load_yaml_config
+from jiuwensymbiosis.perception.config import DetectorConfig, parse_detector_config
 
 
 @dataclass
@@ -28,6 +29,9 @@ class XxxConfig:
     Use ``from_yaml(path)`` to load from a YAML file, or construct directly
     with keyword arguments.
     """
+
+    path_fields: ClassVar[tuple[str, ...]] = ("calib_path",)
+    path_or_id_fields: ClassVar[tuple[str, ...]] = ("gdino_model_id", "sam2_model_id")
 
     # ==================== 基本信息 [必填] ====================
     name: str = "xxx"
@@ -70,10 +74,7 @@ class XxxConfig:
     place_z_offset_mm: float = 75.0  # 堆叠放置偏移 (被放置物体的 tip→bottom 距离)
 
     # ==================== 检测服务 [选填-仅 vision.detection] ====================
-    detector_spawn: bool = True  # 是否自动启动检测子进程
-    detector_url: str = "http://127.0.0.1:8114"
-    detector_host: str = "127.0.0.1"
-    detector_port: int = 8114
+    detector: DetectorConfig = field(default_factory=DetectorConfig)
 
     # ==================== 标定 [选填-仅 vision.detection] ====================
     calib_path: str | None = None  # 手眼标定文件路径 (JSON)
@@ -94,6 +95,7 @@ class XxxConfig:
         """
         valid = {f.name for f in dataclasses.fields(cls)}
         clean: dict[str, Any] = {k: v for k, v in data.items() if k in valid}
+        clean["detector"] = parse_detector_config(data)
         if "camera_resolution" in clean and isinstance(clean["camera_resolution"], list):
             clean["camera_resolution"] = tuple(clean["camera_resolution"])
         if "joint_limits" in clean:
@@ -115,13 +117,4 @@ class XxxConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> XxxConfig:
         """Load config from a YAML file."""
-        path = Path(path).resolve()
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        cfg = cls.from_dict(data)
-        # Resolve relative calib_path
-        if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
-            candidate = (path.parent / cfg.calib_path).resolve()
-            if candidate.exists():
-                cfg.calib_path = str(candidate)
-        return cfg
+        return load_yaml_config(cls, path)

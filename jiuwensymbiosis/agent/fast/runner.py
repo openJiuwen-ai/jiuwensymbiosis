@@ -26,12 +26,13 @@ import logging
 import math
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
 from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled, cancellable_call, sleep_cancellable
+from jiuwensymbiosis.agent.execution_config import TrackingConfig as TrackingConfig
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
-from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter, MaskTrackingConfig
+from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, ServoResult
 from jiuwensymbiosis.agent.fast.realtime.tracking import BackgroundTracker
 from jiuwensymbiosis.agent.fast.sequence import (
@@ -47,7 +48,14 @@ from jiuwensymbiosis.api.decorators import ToolMeta
 from jiuwensymbiosis.api.memory import ExecutionMemory
 from jiuwensymbiosis.api.state import contradicted_requirements
 from jiuwensymbiosis.api.world_state import WorldState, current_tokens
-from jiuwensymbiosis.errors import DetectionError, GraspNotConfirmedError, JiuwenSymbiosisError, error_code
+from jiuwensymbiosis.errors import (
+    DetectionError,
+    GraspNotConfirmedError,
+    InferenceServiceError,
+    JiuwenSymbiosisError,
+    error_code,
+    is_inference_service_failure,
+)
 from jiuwensymbiosis.rails.recovery import read_holding_payload, recover_session
 from jiuwensymbiosis.tools.robot_control_tool import _build_action_index, record_action
 
@@ -63,58 +71,6 @@ _GRIP_OPEN_OPS = frozenset({"open_gripper", "deactivate_suction"})
 # Internal safety policy: tracking never drives from an image older than this.
 # Independent of user-facing timeout tuning so it cannot be widened by accident.
 _MAX_TRACKING_IMAGE_AGE_S = 8.0
-
-
-@dataclass
-class SkillExecConfig:
-    """Tuning for the fast-path runner (servo / detection only).
-
-    No motion-offset knobs (approach/lift): like the agent path, all working
-    heights come from the detection's ``grasp_z`` / ``place_z`` (which already
-    embed the calibration offsets ``grasp_z_offset`` / ``chip_thickness``). The
-    workflow descends straight to those — no extra hover/lift offset, so there is
-    nothing to tune here for motion geometry.
-    """
-
-    detect_hz: float = 5.0  # background detection rate cap
-    first_target_timeout_s: float = 8.0  # wait this long for the first detection
-    settle_grip_s: float = 0.5  # pause after a gripper command (let it actuate)
-    # Cap on post-descend re-align passes before fail-closing (bounds re-servoing
-    # when the object keeps moving between detections).
-    max_re_align_iters: int = 1
-    # A gripper adapter may expose a private ``is_grasp_confirmed`` hook.  When
-    # it reports an empty close after ``track_grasp``, return home and run the
-    # complete perception/approach/close attempt once more.
-    max_grasp_retries: int = 1
-    servo: ServoConfig = field(default_factory=ServoConfig)  # track-loop tuning
-    # Opt-in at the adapter boundary: only an API exposing the private
-    # get_grasp_tracking_sample() hook uses this filter. Other robots keep the
-    # original get_grasp_info_simple() tracking path.
-    mask_tracking: MaskTrackingConfig = field(default_factory=MaskTrackingConfig)
-
-    def __post_init__(self) -> None:
-        for name, value in (
-            ("detect_hz", self.detect_hz),
-            ("first_target_timeout_s", self.first_target_timeout_s),
-        ):
-            if not (isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value) > 0):
-                raise ValueError(f"SkillExecConfig.{name} must be finite and > 0, got {value!r}.")
-        if not (
-            isinstance(self.settle_grip_s, (int, float))
-            and math.isfinite(float(self.settle_grip_s))
-            and float(self.settle_grip_s) >= 0
-        ):
-            raise ValueError(f"SkillExecConfig.settle_grip_s must be finite and >= 0, got {self.settle_grip_s!r}.")
-        for name in ("max_re_align_iters", "max_grasp_retries"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"SkillExecConfig.{name} must be int, got {value!r}.")
-            if value < 0:
-                raise ValueError(f"SkillExecConfig.{name} must be >= 0, got {value}.")
-        if not isinstance(self.mask_tracking, MaskTrackingConfig):
-            raise ValueError(
-                f"SkillExecConfig.mask_tracking must be a MaskTrackingConfig, got {type(self.mask_tracking).__name__}."
-            )
 
 
 def _grasp_alignment_error_mm(cur: Mapping[str, Any], detection: Mapping[str, Any]) -> float:
@@ -182,9 +138,12 @@ def _detect_once(api: Any, object_name: str, *, require_grasp: bool = False) -> 
     """One detection → normalized binding dict, or ``None`` if not detected."""
     try:
         gi = api.get_grasp_info_simple(object_name)
+    except (RunCancelled, InferenceServiceError):
+        raise
     except Exception as exc:  # noqa: BLE001 - detection may raise; treat as miss
         logger.debug("[runner] detection raised for %r: %s", object_name, exc)
         return None
+    _raise_detection_service_failure(gi)
     if not isinstance(gi, dict) or not gi.get("ok"):
         return None
     if require_grasp:
@@ -204,9 +163,12 @@ def _detect_mask_tracking_once(
     """One private adapter sample through the fixed-camera mask filter."""
     try:
         gi = provider(object_name)
+    except (RunCancelled, InferenceServiceError):
+        raise
     except Exception as exc:  # noqa: BLE001 - detection may raise; treat as miss
         logger.debug("[runner] mask tracking detection raised for %r: %s", object_name, exc)
         return target_filter.miss(type(exc).__name__)
+    _raise_detection_service_failure(gi)
     if not isinstance(gi, dict) or not gi.get("ok"):
         reason = gi.get("reason", "not_detected") if isinstance(gi, dict) else "invalid_result"
         return target_filter.miss(str(reason))
@@ -220,7 +182,14 @@ def _detect_mask_tracking_once(
     return target_filter.update(sample)
 
 
-def _prescan(session: Any, steps: list[ActionStep]) -> dict[str, dict[str, Any]]:
+def _raise_detection_service_failure(result: Any) -> None:
+    if is_inference_service_failure(result):
+        raise InferenceServiceError(
+            "Detection service failed", service="vision", code=result.get("error_code") or "inference_unavailable"
+        )
+
+
+def _prescan(session: Any, steps: list[ActionStep | LoopStep]) -> dict[str, dict[str, Any]]:
     """At the home pose, detect every tracking target once and cache it.
 
     Eye-in-hand: a target grasped later occludes the wrist camera, so its
@@ -259,7 +228,7 @@ def _prescan(session: Any, steps: list[ActionStep]) -> dict[str, dict[str, Any]]
         if det is not None:
             cache[n] = det
             record_action(api, api.get_grasp_info_simple, {"object_name": n}, det)
-            logger.info("[runner] pre-scan cached %r at home: pos=%s", n, det.get("position"))
+            logger.debug("[runner] pre-scan cached %r at home: pos=%s", n, det.get("position"))
         else:
             logger.warning("[runner] pre-scan: %r not detected at home (will retry live)", n)
     return cache
@@ -294,7 +263,7 @@ def _track_miss_error(session: Any, object_name: str) -> DetectionError:
 def _track_detect(
     session: Any,
     object_name: str,
-    cfg: SkillExecConfig,
+    cfg: TrackingConfig,
     cache: Mapping[str, dict[str, Any]],
     *,
     occluded: bool,
@@ -317,7 +286,10 @@ def _track_detect(
 
     binding = ServoBinding(session)
     pose0 = binding.read_pose()
-    r0 = float(pose0.get("r", pose0.get("rz", 0.0)))
+    # Use the readback's yaw key so slew limiting and reached checks compare
+    # the same channel. Mixing target r with live rz loses the locked yaw.
+    yaw_key = "rz" if "rz" in pose0 else "r"
+    r0 = float(pose0.get(yaw_key, 0.0))
     obs_x, obs_y, obs_z = float(pose0["x"]), float(pose0["y"]), float(pose0["z"])
 
     api = session.api
@@ -327,8 +299,10 @@ def _track_detect(
         max_hz=cfg.detect_hz,
         staleness_s=_MAX_TRACKING_IMAGE_AGE_S,
         name=object_name,
+        cancel_token=token,
     )
     tracker.start()
+    failed = False
     try:
         if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             cached = cache.get(object_name)
@@ -355,7 +329,7 @@ def _track_detect(
                 "x": obs_x + (float(latest["x"]) - obj0x),
                 "y": obs_y + (float(latest["y"]) - obj0y),
                 "z": obs_z,
-                "r": r0,
+                yaw_key: r0,
             }
 
         res = _run_servo_phase(
@@ -378,15 +352,21 @@ def _track_detect(
             raise _servo_failure("track_detect", res)
         latest = tracker.latest_target()
         return dict(latest) if latest is not None else None
+    except BaseException:
+        # Keep the action's failure or interruption as the primary cause.
+        failed = True
+        raise
     finally:
         tracker.stop()
+        if not failed:
+            tracker.raise_if_failed()
 
 
 def _track_grasp(
     session: Any,
     object_name: str,
     approach_mm: float,
-    cfg: SkillExecConfig,
+    cfg: TrackingConfig,
 ) -> dict[str, Any] | None:
     """Eye-to-hand absolute approach + descend servo for a visual pick.
 
@@ -424,8 +404,10 @@ def _track_grasp(
         max_hz=cfg.detect_hz,
         staleness_s=_MAX_TRACKING_IMAGE_AGE_S,
         name=f"grasp-{object_name}",
+        cancel_token=token,
     )
     tracker.start()
+    failed = False
     try:
         if not tracker.wait_first(cfg.first_target_timeout_s, cancel_token=token):
             return None
@@ -553,7 +535,7 @@ def _track_grasp(
                     f"track_grasp tip {err:.1f} mm off final target after re-align; aborting before close"
                 )
 
-        logger.info(
+        logger.debug(
             "[runner] track_grasp %r final target: position=%s grasp_z=%s state=%s detections=%d",
             object_name,
             latest.get("position"),
@@ -562,8 +544,14 @@ def _track_grasp(
             tracker.detections,
         )
         return dict(latest)
+    except BaseException:
+        # Keep the action's failure or interruption as the primary cause.
+        failed = True
+        raise
     finally:
         tracker.stop()
+        if not failed:
+            tracker.raise_if_failed()
 
 
 def _wait_post_descend_target(
@@ -628,10 +616,12 @@ def _raise_executor_failure(
     message = str(response.get("reason") or fallback)
     if context is not None:
         message = f"{context}: {message}"
+    result = response.get("result")
+    nested_code = result.get("error_code", "") if isinstance(result, dict) else ""
     raise _StepExecutionError(
         message,
         recovery_managed=response.get("recovery_managed") is True,
-        code=str(response.get("error_code") or ""),
+        code=str(response.get("error_code") or nested_code),
         outcome_unknown=response.get("outcome_unknown") is True,
         skip_recovery=response.get("skip_recovery") is True,
     )
@@ -656,6 +646,8 @@ def direct_executor(api_or_index: Any) -> Executor:
             return {"ok": False, "reason": f"op {op!r} not available on this robot"}
         try:
             result = fn(**params)
+        except RunCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - convert op failure to structured result
             return {
                 "ok": False,
@@ -697,7 +689,7 @@ def _grasp_confirmation(api: Any, result: Any) -> bool | None:
 def _retry_unconfirmed_grasp(
     session: Any,
     context: _TrackedGraspContext,
-    cfg: SkillExecConfig,
+    cfg: TrackingConfig,
     run_op: Executor,
 ) -> tuple[dict[str, Any], Any, int]:
     """Home, re-detect, and repeat a grasp after an adapter reports no contact."""
@@ -793,10 +785,11 @@ class _RunContext:
     env: dict
     run_op: Executor
     session: Any
-    cfg: SkillExecConfig
+    cfg: TrackingConfig
     cache: dict
     out: list[dict]
     state: dict
+    recovery_enabled: bool = True
 
 
 def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
@@ -854,6 +847,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
             if not res.get("ok"):
                 _raise_executor_failure(res, f"{step.op} failed")
             result = res.get("result")
+            _raise_detection_service_failure(result)
             if step.bind:
                 # A bind step must yield a usable detection; a detection that
                 # ran but returned ok=False (e.g. no valid depth at the target)
@@ -900,7 +894,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 tracked_grasp = None
                 sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
         out.append({"i": i, "op": step.op, "ok": True, "result": result})
-        logger.info("[runner] step %d ok: %s(%s)", i, step.op, params)
+        logger.info("[runner] step %d ok: %s", i, step.op)
+        logger.debug("[runner] step %d params: %s", i, params)
         state["i"] = i + 1
         state["holding"] = holding
         state["tracked_grasp"] = tracked_grasp
@@ -911,10 +906,15 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         # GUI, which finalizes the run as "已停止".
         raise
     except Exception as exc:  # noqa: BLE001 - surface as structured failure
-        logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
+        # A concurrent cancellation wins over action/cleanup failures: recovery
+        # would otherwise issue fresh motion after the user requested a stop.
+        if token is not None:
+            token.raise_if_set()
+        logger.warning("[runner] step %d failed: %s: %s", i, step.op, exc)
+        logger.debug("[runner] step %d params: %s", i, step.params)
         if getattr(exc, "skip_recovery", False) or isinstance(exc, _StepExecutionError) and exc.recovery_managed:
             logger.info("[runner] automatic retreat skipped or owned by the ability rail stack")
-        else:
+        elif ctx.recovery_enabled:
             _safe_retreat(session)
         # ``reason`` is the human/LLM-facing text; ``error_code`` is the machine
         # one the GUI looks up directly instead of re-deriving it from that text.
@@ -939,24 +939,58 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
     each pass (robust to objects moving); stops cleanly when detect finds no target.
     """
     env, run_op, session, out, state = ctx.env, ctx.run_op, ctx.session, ctx.out, ctx.state
+    token = getattr(session, "cancel_token", None)
     cap = loop.max_iters if loop.max_iters else _LOOP_HARD_CAP
     for _ in range(cap):
+        if token is not None:
+            token.raise_if_set()
         i = state["i"]
-        # 1. detect ONE target (single-target detector; ok=False ⇒ none left)
+        # Only a successful observation explicitly reporting no detection ends the loop.
         try:
             det_res = run_op(loop.detect_op, resolve_params(loop.detect_params, env))
         except RunCancelled:
             raise  # user cancellation: no failed step, no _safe_retreat (see _run_action)
         except Exception as exc:  # noqa: BLE001
-            _safe_retreat(session)
-            out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": False, "reason": f"{type(exc).__name__}: {exc}"})
+            if token is not None:
+                token.raise_if_set()
+            if ctx.recovery_enabled and not (isinstance(exc, _StepExecutionError) and exc.recovery_managed):
+                _safe_retreat(session)
+            out.append(
+                {
+                    "i": i,
+                    "op": f"loop:{loop.detect_op}",
+                    "ok": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "error_code": error_code(exc),
+                }
+            )
             state["i"] = i + 1
             return False
+        if token is not None:
+            token.raise_if_set()
         det = det_res.get("result")
+        if isinstance(det, dict) and not det.get("ok") and det.get("reason") == "no_detection":
+            if not det.get("error_code") and not det_res.get("error_code") and not det_res.get("recovery_managed"):
+                out.append(
+                    {"i": i, "op": f"loop:{loop.detect_op}", "ok": True, "result": {"terminated": "no_more_target"}}
+                )
+                state["i"] = i + 1
+                return True  # clean termination — the scene is clear
         if not det_res.get("ok") or not (isinstance(det, dict) and det.get("ok")):
-            out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True, "result": {"terminated": "no_more_target"}})
+            if ctx.recovery_enabled and not det_res.get("recovery_managed"):
+                _safe_retreat(session)
+            failure = det if isinstance(det, dict) else det_res
+            out.append(
+                {
+                    "i": i,
+                    "op": f"loop:{loop.detect_op}",
+                    "ok": False,
+                    "reason": failure.get("reason", "invalid_detection"),
+                    "error_code": failure.get("error_code", ""),
+                }
+            )
             state["i"] = i + 1
-            return True  # clean termination — the scene is clear
+            return False
         env[loop.bind] = normalize_detection(det)
         out.append(
             {
@@ -1078,11 +1112,12 @@ def run_sequence(
     session: Any,
     steps: list[ActionStep | LoopStep],
     *,
-    config: SkillExecConfig | None = None,
+    config: TrackingConfig | None = None,
     executor: Executor | None = None,
     action_index: Mapping[str, Callable[..., Any]] | None = None,
     replan: Replanner | None = None,
     max_replans: int = 2,
+    recovery_enabled: bool = True,
 ) -> dict:
     """Execute an action sequence in order, with no per-step LLM.
 
@@ -1108,7 +1143,7 @@ def run_sequence(
         (rails/RecoveryRail already handled any safe retreat for real runs). A
         re-plan appears as an ``op: "<replan>"`` record carrying its reason.
     """
-    cfg = config or SkillExecConfig()
+    cfg = config or TrackingConfig()
     base_run_op: Executor = executor or direct_executor(action_index or session.api)
     # Cancellation (GUI-only): wrap the executor once so EVERY op — here and in
     # helpers that receive run_op (e.g. _retry_unconfirmed_grasp) — yields the
@@ -1126,7 +1161,16 @@ def run_sequence(
 
     out: list[dict] = []
     state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
-    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg, cache=cache, out=out, state=state)
+    ctx = _RunContext(
+        env=env,
+        run_op=run_op,
+        session=session,
+        cfg=cfg,
+        cache=cache,
+        out=out,
+        state=state,
+        recovery_enabled=recovery_enabled,
+    )
     # Empty without a replanner, which makes _drift a dict lookup that always misses.
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)

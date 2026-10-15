@@ -30,7 +30,7 @@ env:
       z_safe_margin_mm: -10.0
       home_use_init_pose: true         # 启动位姿 = 观察位（由操作者摆放）
 
-      # --- cartesian 安全盒（mm；EndPoseCtrl 前钳制）
+      # --- cartesian 安全盒（mm；TIP/FLANGE 的 XY 均检查，z_max 为法兰上限；越界拒绝）
       x_min_mm: 0.0
       x_max_mm: 700.0
       y_min_mm: -500.0
@@ -49,8 +49,24 @@ env:
 
     # 无 prompt/任务字段：任务不进 config，一律由 --query 或 --voice 在运行时给出。
 
-api_servers:
-  - _target_: jiuwensymbiosis.serving.grounding_dino_sam2_server.main
+# 检测服务模式：local 由框架启动/关闭本地模型；remote 只连接 HTTP 服务；disabled 禁用检测。
+# 切换 remote 时，用以下示例替换整个 detector 块，删除 local 子块及旧 api_servers 中的检测条目：
+# detector:
+#   mode: remote
+#   endpoint:
+#     url: http://127.0.0.1:8114  # 本机手动启动服务；跨主机时改为服务器 URL
+#     connect_timeout_s: 3
+#     request_timeout_s: 30
+#   max_frame_age_s: null          # 默认不额外限制图像年龄；填写正数（秒）才启用，tracking 原有期限仍生效
+#
+# 可直接部署本项目的 jiuwensymbiosis.serving.grounding_dino_sam2_server。
+# 服务可在本机手动启动，再用 remote + 127.0.0.1 模拟远程 HTTP；框架不会启停该服务。
+# 模型依赖和权重安装在服务运行环境，Agent 可使用独立的精简环境。
+# 部署说明（含视觉/ASR/TTS 安装、启动命令、Compose 和 smoke）：
+# [服务部署 README](../../deploy/inference/README.md)（仓库路径 deploy/inference/README.md）
+detector:
+  mode: local  # 显式选择本地 GPU 模型；远程调用无需本机模型依赖。
+  local:
     device: cuda
     port: 8114
     host: 127.0.0.1
@@ -70,20 +86,22 @@ model:
   temperature: 0.3
   max_tokens: 2048
 
-# agent（可选）：agent 行为开关，全部缺省即维持现状（trace/日志默认关闭）。
-# 这里默认整段注释掉；想记录执行轨迹时，取消注释相关行即可，CLI 参数仍可覆盖。
+# Agent 使用统一默认值；本实验显式保留原 CLI 的 10 Hz / 5 mm 伺服设置。
+# 全量字段说明：docs/zh/reference/agent-config.md；CLI 仅覆盖显式传入的参数。
 agent:
-  # log_level / log_dir: 由 build_robot_agent → configure_logging 统一接管。
-  # log_dir 默认 "./logs"，框架日志落 logs/jiuwensymbiosis.log；
-  log_level: INFO
-  log_dir: ./logs
-  exec_mode: fastagent   # 默认快路径；单步调试用 --stepagent，--mock 自动切 stepagent
-  enable_skill: true
-  # enable_tracing: true        # 开启 TraceRail，记录每轮工具调用到 traces/{run_token}.json
-  # trace_save_frames: true     # 保存 JPEG 帧到 traces/frames/{run_token}/step_NNN.jpg
-  # trace_console: true         # 运行时实时打印逐轮缩略图到 stderr
-  # trace_max_entries: 200      # 最多记录步数（超出丢最旧）
-  # trace_max_frames: 50        # 每次 invoke 最多保存帧数
-  # # trace_dir: ./traces       # 覆盖 trace 目录（默认 <workspace>/traces）
-  # # trace_capture_loggers: ["jiuwensymbiosis"]  # TraceLogHandler 捕获哪些 logger 的 WARNING+
-
+  execution:
+    mode: fastagent
+    fastagent:
+      tracking:
+        servo:
+          control_hz: 10.0
+          max_lin_step_mm: 5.0
+  modules:
+    skills:
+      enabled: true
+    visual_feedback:
+      enabled: false
+  logging:
+    level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
+    dir: ./logs

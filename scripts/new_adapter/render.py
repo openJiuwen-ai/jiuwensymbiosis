@@ -368,18 +368,6 @@ def _camera_resolution_fix() -> str:
     )
 
 
-def _calib_path_fix() -> str:
-    return _indent(
-        """
-        if cfg.calib_path and not Path(cfg.calib_path).is_absolute():
-            candidate = (path.parent / cfg.calib_path).resolve()
-            if candidate.exists():
-                cfg.calib_path = str(candidate)
-        """,
-        8,
-    )
-
-
 def _config_optional_fields(spec: Spec) -> str:
     blocks: list[str] = []
     if spec.joint:
@@ -435,7 +423,7 @@ def render_config(spec: Spec) -> str:
             """,
             8,
         )
-    calib_path_fix = _calib_path_fix() if spec.detection else ""
+    path_fields = ("calib_path",) if spec.detection else ()
 
     return _render(
         f'''
@@ -450,14 +438,16 @@ def render_config(spec: Spec) -> str:
         import dataclasses
         from dataclasses import dataclass, field
         from pathlib import Path
-        from typing import Any, Optional
+        from typing import Any, ClassVar, Optional
 
-        import yaml
+        from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
         @dataclass
         class {spec.config_cls}:
             """Hardware configuration for the {spec.name} robot."""
+
+            path_fields: ClassVar[tuple[str, ...]] = {path_fields!r}
 
             # ==================== 基本信息 [必填] ====================
             name: str = "{spec.name}"
@@ -497,18 +487,12 @@ def render_config(spec: Spec) -> str:
             @classmethod
             def from_yaml(cls, path: str | Path) -> "{spec.config_cls}":
                 """Load config from a YAML file."""
-                path = Path(path).resolve()
-                with path.open("r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {{}}
-                cfg = cls.from_dict(data)
-        __CALIB_PATH_FIX__
-                return cfg
+                return load_yaml_config(cls, path)
         ''',
         CONNECTION_FIELDS=_connection_config_fields(spec),
         OPTIONAL_FIELDS=_config_optional_fields(spec),
         CAMERA_RESOLUTION_FIX=camera_resolution_fix,
         JOINT_LIMITS_FIX=joint_limits_fix,
-        CALIB_PATH_FIX=calib_path_fix,
     )
 
 
@@ -1179,6 +1163,21 @@ def render_api(spec: Spec) -> str:
 
 
 def render_session(spec: Spec) -> str:
+    device_keys = {
+        "can": '(f"can:{cfg.can_port}",)',
+        "serial": '(f"serial:{Path(cfg.serial_port).expanduser().resolve()}",)',
+        "tcp": '(f"tcp:{cfg.host.strip().lower()}:{cfg.port}",)',
+        "usb": '(f"usb:{cfg.device_serial}",) if cfg.device_serial else ()',
+    }.get(spec.connection, "()")
+    path_import = "from pathlib import Path" if spec.connection == "serial" else ""
+    resource_callback = f"""
+        def _resource_keys(cfg: {spec.config_cls}) -> tuple[str, ...]:
+            # Keep this in sync with the real driver endpoint and normalize aliases.
+            # ROS/custom placeholders must derive keys from the effective config
+            # (ROS: captured domain + command endpoint), or require an explicit
+            # top-level physical_device_id. Empty keys alone cannot admit motion.
+            return {device_keys}
+    """
     if spec.detection:
         body = f'''
         """{spec.builder_name} — one call from YAML to a ready-to-connect session.
@@ -1188,16 +1187,20 @@ def render_session(spec: Spec) -> str:
 
         from __future__ import annotations
 
+        {path_import}
         from jiuwensymbiosis.adapters._common.builder import make_builder
         from jiuwensymbiosis.adapters.{spec.name}.config import {spec.config_cls}
         from jiuwensymbiosis.adapters.{spec.name}.env import {spec.env_cls}
         from jiuwensymbiosis.adapters.{spec.name}.api import {spec.api_cls}
 
 
+        {resource_callback.strip()}
+
         {spec.builder_name} = make_builder(
             {spec.config_cls},
             {spec.env_cls},
             {spec.api_cls},
+            resource_keys=_resource_keys,
             api_kwargs_from_cfg=[
                 "detector_url:detector_service_url",
                 "z_correction_mm",
@@ -1220,13 +1223,18 @@ def render_session(spec: Spec) -> str:
 
         from __future__ import annotations
 
+        {path_import}
         from jiuwensymbiosis.adapters._common.builder import make_builder
         from jiuwensymbiosis.adapters.{spec.name}.config import {spec.config_cls}
         from jiuwensymbiosis.adapters.{spec.name}.env import {spec.env_cls}
         from jiuwensymbiosis.adapters.{spec.name}.api import {spec.api_cls}
 
 
-        {spec.builder_name} = make_builder({spec.config_cls}, {spec.env_cls}, {spec.api_cls})
+        {resource_callback.strip()}
+
+        {spec.builder_name} = make_builder(
+            {spec.config_cls}, {spec.env_cls}, {spec.api_cls}, resource_keys=_resource_keys,
+        )
         '''
     return _render(body)
 
@@ -1268,6 +1276,7 @@ def render_yaml(spec: Spec) -> str:
         f"# 连接方式: {spec.connection}。{_connection_future_note(spec)}",
         "",
         f'name: "{spec.name}"',
+        f'adapter: "{spec.name}"',
         "",
         "# ---- 硬件连接 [必填] ----",
         f'connection: "{spec.connection}"',
@@ -1415,7 +1424,7 @@ def _joint_ik_optional_config_fields(spec: Spec) -> str:
 
 def render_config_joint_ik(spec: Spec) -> str:
     camera_resolution_fix = _camera_resolution_fix() if spec.has_camera else ""
-    calib_path_fix = _calib_path_fix() if spec.detection else ""
+    path_fields = ("urdf_path", "calib_path") if spec.detection else ("urdf_path",)
     return _render(
         f'''
         """{spec.config_cls} — joint-level (URDF FK/IK) hardware configuration.
@@ -1429,14 +1438,16 @@ def render_config_joint_ik(spec: Spec) -> str:
         import dataclasses
         from dataclasses import dataclass, field
         from pathlib import Path
-        from typing import Any, Optional
+        from typing import Any, ClassVar, Optional
 
-        import yaml
+        from jiuwensymbiosis.adapters._common.config import load_yaml_config
 
 
         @dataclass
         class {spec.config_cls}:
             """Configuration for the {spec.name} joint-level arm."""
+
+            path_fields: ClassVar[tuple[str, ...]] = {path_fields!r}
 
             # ==================== 基本信息 / 连接 [必填] ====================
             name: str = "{spec.name}"
@@ -1499,19 +1510,11 @@ def render_config_joint_ik(spec: Spec) -> str:
             @classmethod
             def from_yaml(cls, path: str | Path) -> "{spec.config_cls}":
                 """Load config from a YAML file; resolve a relative urdf_path."""
-                path = Path(path).resolve()
-                with path.open("r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {{}}
-                cfg = cls.from_dict(data)
-                if cfg.urdf_path and not Path(cfg.urdf_path).is_absolute():
-                    cfg.urdf_path = str((path.parent / cfg.urdf_path).resolve())
-        __CALIB_PATH_FIX__
-                return cfg
+                return load_yaml_config(cls, path)
         ''',
         CONNECTION_FIELDS=_connection_config_fields(spec),
         OPTIONAL_FIELDS=_joint_ik_optional_config_fields(spec),
         CAMERA_RESOLUTION_FIX=camera_resolution_fix,
-        CALIB_PATH_FIX=calib_path_fix,
     )
 
 
@@ -1991,6 +1994,7 @@ def render_yaml_joint_ik(spec: Spec) -> str:
         "# 关节级 SDK + 本地 URDF FK/IK；填 urdf_path/关节名/home/限位即可。",
         "",
         f'name: "{spec.name}"',
+        f'adapter: "{spec.name}"',
         "",
         "# ---- 硬件连接 [必填] ----",
         f'connection: "{spec.connection}"',

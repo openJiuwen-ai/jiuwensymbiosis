@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+from jiuwensymbiosis.agent.observation import action_observation, begin_action_observation
 from jiuwensymbiosis.agent.trace import _TRACE_RAIL_KEY, TraceEventSink
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,9 @@ class VisualFeedbackRail(AgentRail):
         self.frame_sink = frame_sink
 
     # ----------------------------------------------------------- rail callbacks
+    async def before_tool_call(self, ctx: Any) -> None:
+        begin_action_observation(ctx)
+
     async def after_tool_call(self, ctx: Any) -> None:
         """Stage a frame after a motion/grasp tool call — do NOT inject yet.
 
@@ -147,7 +151,11 @@ class VisualFeedbackRail(AgentRail):
         n_so_far = len(pending) + len(ctx.extra.get(_INJECTED_KEY, []))
         if n_so_far >= self.max_frames_per_invoke:
             return
-        rgb = self._grab_frame_rgb()
+        try:
+            rgb = getattr(action_observation(ctx, self.session.env), "rgb", None)
+        except (RuntimeError, OSError, AttributeError, ValueError) as exc:
+            logger.warning("VisualFeedbackRail: frame grab failed: %s", exc)
+            return
         if rgb is None:
             return
         frame_path: str | None = None

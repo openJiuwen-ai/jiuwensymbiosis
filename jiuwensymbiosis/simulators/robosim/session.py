@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from jiuwensymbiosis.adapters._common.builder import make_builder
 from jiuwensymbiosis.agent.session import RobotSession
@@ -19,7 +20,13 @@ if TYPE_CHECKING:
 
 __all__ = ["build_robosim_session", "bind_robosim_session"]
 
-build_robosim_session = make_builder(RobosimConfig, RobosimEnv, RobosimApi)
+
+def _resource_keys(cfg: RobosimConfig) -> tuple[str, ...]:
+    """Serialize both arms and all loopback aliases of one service endpoint."""
+    return (f"robosim:local:{urlsplit(cfg.service_url).port or 80}",)
+
+
+build_robosim_session = make_builder(RobosimConfig, RobosimEnv, RobosimApi, resource_keys=_resource_keys)
 
 
 def bind_robosim_session(workspace: RobosimWorkspace, snapshot: dict) -> tuple[RobotSession, list[Any]]:

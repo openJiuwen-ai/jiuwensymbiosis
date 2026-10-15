@@ -38,14 +38,21 @@ LLM 看到这些就能换参数 / 换策略，而不是盲目重试。诊断消�
 
 ```yaml
 agent:
-  enable_tracing: true        # 前置：DiagnosisRail 依赖 trace
-  enable_diagnosis: true      # 开启在线诊断
-  diagnosis_max_chars: 1500   # 可选：诊断消息软上限
-  diagnosis_history_steps: 3  # 可选：因果链回看步数
-  diagnosis_history_kinds: ["reject", "recover"]  # 可选：视为相关的 rail kind
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+      max_chars: 1500
+      history_steps: 3
+      history_kinds:
+      - reject
+      - recover
+  execution:
+    mode: stepagent
 ```
 
-`enable_diagnosis` 依赖 `enable_tracing`；tracing 关闭时 DiagnosisRail 自动禁用并 warning。
+`modules.diagnosis.enabled` 依赖 `modules.tracing.enabled`；tracing 关闭时启用诊断会报错。诊断仅支持 stepagent。
 
 ### 2.3 开启（代码）
 
@@ -53,9 +60,8 @@ agent:
 from jiuwensymbiosis.agent import RobotAgentConfig
 
 config = RobotAgentConfig(
-    enable_tracing=True,
-    enable_diagnosis=True,
-    # 其余字段同上
+    modules={'tracing': {'enabled': True}, 'diagnosis': {'enabled': True}},
+    execution={'mode': 'stepagent'},
 )
 ```
 
@@ -70,7 +76,7 @@ config = RobotAgentConfig(
 
 ### 2.5 fast path 行为
 
-fast path（`run_fast_task`）没有 per-step LLM，所以诊断消息**不改变当次 fast 执行**。但 fast path 仍会触发 TraceRail 落盘 trace JSON——这些 trace 可以被离线分析纳入同一个 corpus。
+fast path（`run_fast_task`）没有逐步 LLM 调用，不允许启用 `modules.diagnosis.enabled`。fast path 支持 TraceRail 落盘，其 trace JSON 可以纳入离线分析。
 
 ### 2.6 诊断消息长什么样
 
@@ -230,10 +236,14 @@ python scripts/analyze_traces.py --trace path/to/one_trace.json --out /tmp/out
 ### 4.1 开发期：在线 + 离线一起用
 
 ```yaml
-# 任务 YAML
 agent:
-  enable_tracing: true
-  enable_diagnosis: true
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+  execution:
+    mode: stepagent
 ```
 
 跑几次任务（`--mock` 或真机），trace 落盘到 `<workspace>/traces/`。然后：
@@ -250,15 +260,20 @@ python scripts/analyze_traces.py \
 
 ```yaml
 agent:
-  enable_tracing: true
-  enable_diagnosis: true
+  modules:
+    tracing:
+      enabled: true
+    diagnosis:
+      enabled: true
+  execution:
+    mode: stepagent
 ```
 
 LLM 失败时自动收到诊断消息，当次自纠正。trace 仍落盘，供事后离线分析。
 
 ### 4.3 事后复盘：只跑离线
 
-已有 trace JSON（不论在线模式是否开启，只要 `enable_tracing=true` 就有），直接：
+已有 trace JSON（不论在线模式是否开启，只要 `modules.tracing.enabled=true` 就有），直接：
 
 ```bash
 python scripts/analyze_traces.py --trace-dir <trace 目录>

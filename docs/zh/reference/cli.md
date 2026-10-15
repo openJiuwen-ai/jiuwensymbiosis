@@ -17,13 +17,17 @@ jiuwensymbiosis-run --config configs/piper/piper.yaml   --query "把瓶子放到
 | `--mock` | 仅 Piper 内存干跑：MockArmEnv + 离线模型；隐含 `--stepagent` |
 | `--stepagent` | 强制逐 step LLM（单步调试）；默认 `fastagent`（编译一次、无逐 step LLM） |
 | `--voice` / `--voice-text` / `--voice-audio-file` / `--voice-once` / `--no-wake` / `--tts` / `--asr-device` | 语音模式 |
-| `--no-skill` | 关闭 SkillUseRail + robot_control 分派器 |
+| `--no-skill` | 关闭技能知识；fastagent 直接组合动作 |
 | `--mode` | `tool` / `code` / `hybrid` |
 | `--no-visual-feedback` | 关闭 VisualFeedbackRail |
 | `--server-url` / `--model` / `--api-key` | 覆盖 LLM 端点/模型/key |
 | `--max-iter` / `--workspace` / `--debug` | 迭代上限、工作区、日志级别 |
 
 `--mock` 使用离线模型和 Mock 环境；`--control-hz`/`--servo-step-mm` 调 fastagent 实时伺服。
+
+Agent 字段与默认值见 [全量配置参考](agent-config.md)。fastagent 默认开启技能规划；`--no-skill` 改为直接组合动作，动作分派器始终保留。
+CLI 从顶层 `model:` 和显式 LLM 参数构造 `ModelSpec`；Python 调用者需自行提供 `model_spec`。
+`--mode`、`--max-iter`、`--control-hz`、`--servo-step-mm` 仅在显式传入时覆盖 YAML。
 
 ## piper-pick-demo
 
@@ -44,12 +48,17 @@ jiuwensymbiosis-replay TRACE_JSON [--open] [--text]
 ## jiuwensymbiosis-gui
 
 ```bash
-jiuwensymbiosis-gui
-# 等价于
-python -m jiuwensymbiosis.gui
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
 ```
 
-启动监听 `127.0.0.1:8770` 的 NiceGUI 浏览器界面。依赖缺失时，启动前检查会提示安装 `.[gui]`。
+`--gui` 选择已安装的 GUI 插件，默认值为 `workbench`；`--list-guis` 列出可用插件。`--config`、
+`--workspace`、`--host`、`--port` 和 `--no-browser` 用于配置所选界面；`--gui-config` 用于传入插件专属配置，
+是否支持取决于所选插件。启动器只加载所选插件的应用入口。插件及其依赖需安装在同一 Python 环境；
+`.[gui]` 提供当前工作台使用的 NiceGUI 依赖。
+
+`python -m jiuwensymbiosis.gui` 暂时作为兼容转发入口保留，转发到统一启动器。
 
 ## 手眼标定
 

@@ -8,10 +8,10 @@ the 3x3 intrinsics matrix needed by ``utils.geometry``.
 Lazy import of ``pyrealsense2`` — if the package isn't installed, ``start()``
 logs a warning and returns False, and ``grab_frames()`` returns None.
 
-Construction never raises; failure modes (missing package, device not
-found, pipeline start error) all yield ``grab_frames() -> None``. Callers
-treat "no camera" the same as "no frames", which keeps the "ok=False,
-reason=no_camera" fallback chain intact.
+Construction never raises. Ordinary start failures (missing package, device
+not found, pipeline start error) yield ``grab_frames() -> None``. If the SDK
+cannot confirm rollback, ``start()`` raises ``HardwareCleanupError`` and keeps
+the pipeline handle so its owner can retry cleanup.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +78,9 @@ class RealSenseCamera:
     def start(self) -> bool:
         """Open the camera pipeline.
 
-        Idempotent. Returns True on success, False on any failure (with a
-        warning logged).
+        Idempotent. Returns True on success, False on ordinary startup failure
+        (with a warning logged). Raises ``HardwareCleanupError`` only when an
+        unsuccessful startup cannot be rolled back.
         """
         if self._pipeline is not None:
             return True
@@ -91,6 +94,10 @@ class RealSenseCamera:
             return False
         try:
             pipeline = rs.pipeline()
+            # Keep the handle as soon as it exists. ``pipeline.start`` and the
+            # metadata queries below can fail after the SDK has opened the
+            # device, and the exception path must still be able to stop it.
+            self._pipeline = pipeline
             config = rs.config()
             config.enable_device(self.serial)
             config.enable_stream(
@@ -130,7 +137,6 @@ class RealSenseCamera:
                         self._log_prefix,
                         e,
                     )
-            self._pipeline = pipeline
             logger.info(
                 "%s Camera SN=%s ready (%dx%d@%d). K=[fx=%.1f, fy=%.1f, ppx=%.1f, ppy=%.1f], depth_scale=%.5fm/unit.",
                 self._log_prefix,
@@ -145,23 +151,39 @@ class RealSenseCamera:
                 self._depth_scale,
             )
             return True
-        except Exception as e:  # noqa: BLE001
+        except BaseException as e:  # noqa: BLE001 - rollback even on interruption
+            cleanup_errors = []
+            if self._pipeline is not None:
+                try:
+                    self._pipeline.stop()
+                except BaseException as cleanup_exc:  # noqa: BLE001 - retain an unclosed handle for retry
+                    cleanup_errors.append(cleanup_exc)
+                else:
+                    self._pipeline = None
+                    self._align = None
+                    self._intrinsics = None
+            if cleanup_errors:
+                raise HardwareCleanupError("RealSenseCamera.start", e, cleanup_errors) from e
+            if not isinstance(e, Exception):
+                raise
             logger.warning(
                 "%s Camera init failed (%s); continuing without camera.",
                 self._log_prefix,
                 e,
             )
-            self._pipeline = None
             return False
 
     def stop(self) -> None:
         """Stop the pipeline. Safe to call multiple times or when never started."""
-        if self._pipeline is not None:
-            try:
-                self._pipeline.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            self._pipeline = None
+        if self._pipeline is None:
+            return
+        # Do not drop the only SDK handle until stop confirms success. Callers
+        # retain this camera object on error so a later disconnect can retry.
+        self._pipeline.stop()
+        self._pipeline = None
+        self._align = None
+        self._intrinsics = None
+        self._depth_scale = 1.0
 
     # -------------------------------------------------------------- frame grab
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:

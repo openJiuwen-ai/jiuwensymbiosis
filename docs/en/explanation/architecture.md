@@ -11,7 +11,7 @@ Start with three questions: **who owns each responsibility, which actions are av
 | Responsibility | Main implementation | Inputs and outputs |
 |---|---|---|
 | Task orchestration | `run_robot_task`, `plan_task`, `run_sequence`, Agent | Task and configuration → plan, tool calls, and execution results |
-| Lifecycle | `RobotSession` | Env, API, and auxiliary service (sidecar) launchers → connections and resource cleanup |
+| Lifecycle | `RobotSession` | Env, API, clients, and optional local processes → connections and resource cleanup |
 | Action tools | `build_robot_tools`, `RobotControlTool` | Action name and parameters → bound adapter method call |
 | Action implementation | `BaseRobotApi`, adapter API, `api/defaults.py` | Action contract → shared algorithms and hardware operations |
 | Hardware interface | `BaseRobotEnv`, adapter Driver | Common operations → vendor protocols; device readings → `RobotObservation` |
@@ -186,30 +186,34 @@ For example, if the hardware does not declare `grasp.parallel`, the individual-t
 
 ## 6. Tool layer: three strategies can coexist
 
-`agent/builder.py` builds tools according to `mode`, then adds the skill entry point according to `enable_skill`:
+`agent/builder.py` builds tools according to `execution.stepagent.mode`, then adds the skill entry point according to `modules.skills.enabled`:
 
 | Configuration or tool | Behavior |
 |---|---|
-| `mode="tool"` | Uses `build_robot_tools`, with one individual tool per available action |
-| `mode="code"` | Uses `InProcessCodeTool` for in-process Python execution |
-| `mode="hybrid"` (default) | Provides both individual action tools and the in-process Python tool |
-| `enable_skill=True` | Adds `RobotControlTool` and `SkillUseRail`; configured independently of `mode` |
+| `execution.stepagent.mode="tool"` | Uses `build_robot_tools`, with one individual tool per available action |
+| `execution.stepagent.mode="code"` | Uses `InProcessCodeTool` for in-process Python execution |
+| `execution.stepagent.mode="hybrid"` (default) | Provides both individual action tools and the in-process Python tool |
+| `modules.skills.enabled=True` | Adds `RobotControlTool` and `SkillUseRail`; configured independently of `execution.stepagent.mode` |
 
 `RobotControlTool` dispatches through `action` / `params`. SafetyRail reads those fields before checking the actual action and parameters, so individual action tools and this unified entry point can share the same motion checks.
 
-The current `fastagent` executor dispatches ordinary actions through `robot_control`. With the built-in builder, set `enable_skill=True` to register that entry point; setting only `exec_mode="fastagent"` does not register it automatically. `plan_task` reads the skill library directly, a separate mechanism from loading descriptions through `SkillUseRail`.
+The `fastagent` executor dispatches ordinary actions through `robot_control`, which its builder always registers. `modules.skills.enabled` only controls whether `plan_task` reads skill knowledge; disabling it selects action composition. The fast executor does not attach `SkillUseRail`.
+
+The fast path also requires an explicit `RobotAgentConfig.model_spec` for HTTP task parsing and planning; injecting only
+`model` does not replace it. See the complete configuration in the
+[API reference](../reference/framework-api.md#minimal-fast-path-configuration).
 
 `InProcessCodeTool` uses `exec()` with injected objects such as `env`, `api`, and `np`, without sandbox isolation. Its direct API/Env calls do not individually pass through action-tool capability gating, SafetyRail, or recording wrappers. Operations that need those checks should use the action-tool path.
 
-`mode` controls tool configuration; `exec_mode` controls whether the model orchestrates a task step by step or a sequence is compiled first. They are separate settings.
+`mode` controls tool configuration; `execution.mode` controls whether the model orchestrates a task step by step or a sequence is compiled first. They are separate settings.
 
 <a id="6-two-tier-autonomous-planning"></a>
 
 <a id="execution-modes"></a>
 
-## 7. Two-tier autonomous planning (`exec_mode: fastagent`)
+## 7. Two-tier autonomous planning (`execution.mode: fastagent`)
 
-The caller first connects with `with session:`, then calls `run_robot_task(session, query, config)`. Session manages resources; the task entry point selects execution according to `exec_mode`. This diagram expands the two orchestration modes in [stages B/C of the complete task lifecycle](#task-lifecycle):
+The caller first connects with `with session:`, then calls `run_robot_task(session, query, config)`. Session manages resources; the task entry point selects execution according to `execution.mode`. This diagram expands the two orchestration modes in [stages B/C of the complete task lifecycle](#task-lifecycle):
 
 ![Task execution: fastagent plans before execution; stepagent lets the model choose tools step by step](../../images/architecture-task-sequence.en.svg)
 
@@ -222,7 +226,7 @@ Both paths obtain Rails through the same Agent assembly. `fastagent` explicitly 
 
 ### Two-tier planning: try skills, then compose actions
 
-The skill library contains workflow descriptions and contracts for the planner to select and expand, not fixed executable scripts. `fastagent` reads the library directly for compilation; in `stepagent`, `SkillUseRail` loads skill descriptions when attached through `enable_skill=True`.
+The skill library contains workflow descriptions and contracts for the planner to select and expand, not fixed executable scripts. `fastagent` reads the library directly for compilation; in `stepagent`, `SkillUseRail` loads skill descriptions when attached through `modules.skills.enabled=True`.
 
 This diagram expands `fastagent` planning in [stage B of the complete task lifecycle](#task-lifecycle). Inputs are the task, state, skills, and action contracts; the output is a valid sequence passed to the executor.
 
@@ -273,11 +277,11 @@ Configuration and applicable capabilities determine which Rails are enabled. Eac
 
 `SafetyRail` checks the Z floor, XY workspace, joint soft limits, per-command base translation/rotation limits, lift range, and waist rotation according to motion capabilities. Exceeding a limit raises `ValueError`. `stepagent` can feed tool exceptions back to the model; `fastagent` follows the executor's failure policy and does not guarantee model correction at each step.
 
-Coverage also depends on the action name and parameter format. For example, Piper's `goto_pose` uses flange coordinates `x_mm` / `y_mm` / `z_mm`. Its driver performs the corresponding Z-floor check; SafetyRail's tool-tip Z/XY checks are not applied directly to those fields.
+Coverage also depends on the action name and parameter format. For example, SO-101's `goto_pose` places `x` / `y` / `z` inside a nested `pose` object; SafetyRail extracts these fields for Z/XY checks. Piper currently accepts tool-tip XYZ/R targets through `goto_xyzr` with a calibrated tilt and does not implement `goto_pose`.
 
 `RecoveryRail` uses action tags and payload state to decide whether to release the end-effector and attempt homing. A motion failure with a confirmed payload preserves the grasp. Recovery prefers `recovery_home()`, falling back to `home()` when unavailable. A homing failure does not trigger another homing attempt. Recovery is best effort and cannot guarantee that the device ends in a safe state.
 
-`VisualFeedbackRail` requires camera capability and injects images before the next model call. Since `fastagent` does not call the model at every step, this does not automatically provide per-step VLM verification. `DiagnosisRail` requires Trace to be enabled; see [Trace Feedback Loop](../how-to/use-trace-feedback.md).
+`VisualFeedbackRail` requires camera capability and injects images before the next model call. `fastagent` rejects this module because it has no per-step model call. `DiagnosisRail` requires Trace to be enabled; see [Trace Feedback Loop](../how-to/use-trace-feedback.md).
 
 `parallel_tool_calls` is disabled by default. The current builder rejects it when Env declares any of `motion.cartesian`, `motion.joint`, `grasp.suction`, or `grasp.parallel`; combining it with Trace is also rejected. This check does not yet cover every motion and grasp capability, so its acceptance does not establish that other capabilities are safe to run concurrently. Software boundary checks do not replace device emergency stops or hardware protection.
 
@@ -285,7 +289,7 @@ Coverage also depends on the action name and parameter format. For example, Pipe
 
 ## 9. Execution trace and replay (TraceRail)
 
-`TraceRail` lives in `agent/trace.py` and is attached through `enable_tracing`, which is off by default. It collects execution evidence rather than intercepting actions or performing recovery.
+`TraceRail` lives in `agent/trace.py` and is attached through `modules.tracing.enabled`, which is off by default. It collects execution evidence rather than intercepting actions or performing recovery.
 
 Depending on configuration, traces record action names, parameters, result summaries, success or error, duration, observation snapshots, and optional JPEG frames, subject to entry and frame limits. Observations do not directly serialize raw RGB/depth arrays. `TraceEventSink` collects Rail events; `TraceLogHandler` collects `WARNING` and higher records from configured loggers.
 
@@ -299,34 +303,55 @@ See the [execution trace reference](../reference/tracing.md) for fields, configu
 
 ## 10. RobotSession: lifecycle ownership
 
-`RobotSession` is a context manager holding an Env instance, an API instance, sidecar launchers, and a `globals_provider` for code-tool globals. Env holds the low-level driver; Session does not determine action order.
+`RobotSession` is a context manager holding Env, API, client resource contexts, optional local-process launchers, and a `globals_provider` for code-tool globals. Env holds the low-level driver; Session does not determine action order.
 
 | Stage | Order |
 |---|---|
-| Enter `with session:` | Start configured sidecars → connect Env → check capability consistency |
+| Enter `with session:` | Open registered resource contexts (start local processes when configured) → connect Env → check capability consistency |
 | Run a task within the session | The caller invokes `run_robot_task`, which builds the Agent and selects the execution mode |
-| Exit `with session:` | Attempt Trace finalization → disconnect Env and release drivers → exit sidecar contexts |
+| Exit `with session:` | Attempt Trace finalization → disconnect Env and release drivers → close owned clients and local processes |
 
 Connection and disconnection are idempotent. Ordinary capabilities declared by the API but unsupported by Env cause startup failure when `strict_capabilities=True`; Env-only capabilities generate warnings. Derived capabilities may be asymmetric and are not treated as ordinary capability mismatches. `describe()` reports effective capabilities using the intersection of both sides.
 
 `globals_provider` returns `env`, `api`, `np`, and adapter-specific objects. During Agent construction, descriptions of available objects are added to the code-tool prompt context.
 
+The Session cleanup stack also owns one HTTP detector client per session. Construction and opening perform no network request.
+An external deployment owns its server process; Session closes only its client connections. Only explicit `detector.mode: local` starts a model subprocess.
+The internal name `sidecar_starters` is retained for compatibility and also accepts client contexts or cleanup callbacks; registering an HTTP client does not transfer ownership of its server process.
+Maintenance sessions with `include_sidecars=False` neither start models nor resolve detector credentials or probe endpoints; a later explicit inference call still uses a session-owned client.
+
 <a id="perception-pipeline"></a>
 
-## 11. Visual perception: detector as a subprocess
+## 11. Visual perception: HTTP inference and optional local models
 
-The detection service runs GroundingDINO and SAM2. The client sends images and target text over HTTP and receives masks, boxes, and scores. Depth and calibration transforms are used for 3D computation in the main process.
+The Agent host connects to robot bodies and peripherals through existing serial, USB, HTTP, and other adapter interfaces, and calls model services through a separate HTTP interface.
+The inference server runs GroundingDINO and SAM2. The Agent sends RGB and target text and receives masks, boxes, and scores; depth, calibration, and 3D computation remain in the Agent process.
+The Agent need not run on the robot. Remote mode neither loads nor downloads visual models and never starts a local model when the service fails.
 
 This diagram expands the internals of vision actions in [stage C of the complete task lifecycle](#task-lifecycle). Inputs are a calibrated frame and target text; outputs follow each action's contract and return to the tool caller for recording and subsequent orchestration.
 
-![Vision pipeline: acquire a calibrated frame, detect over HTTP, then compute 3D geometry in the main process](../../images/architecture-perception.en.svg)
+```mermaid
+flowchart LR
+    B[Body and camera] -->|Existing serial / USB / HTTP interfaces| A[Agent acquires RGB and calibrated frame]
+    A -->|HTTP: RGB + target text| S[External inference server\nor optional local model process]
+    S -->|mask / box / score| G[Agent 3D geometry and action result]
+    A -->|Same-frame depth / intrinsics / transform| G
+```
 
 1. **Acquisition**: the adapter supplies a `CameraFrame` with RGB, depth, camera intrinsics, and the camera-to-base transform.
-2. **Detection**: `detector_client` sends RGB and target text to `/segment`, then decodes masks and other returned results.
+2. **Detection**: the session-owned `DetectorClient` sends RGB and target text to `/v1/segment`, validates request/frame identity, dimensions, payload bounds, and age, and decodes lossless PNG masks. Local and remote deployments share this interface, including migrated configurations and Python entry points; no version selection is required.
 3. **3D computation**: `scene3d` passes masks, depth, intrinsics, and coordinate transforms to shared geometry algorithms, producing positions and object/surface geometry in the base frame.
 4. **Action return**: `locate_for_grasp`, `locate_for_place`, and `analyze_scene` return results or failure reasons according to their own contracts; there is no single result-field set shared by all actions.
 
-Session manages the lifecycle of a local detection sidecar. An existing detection service can also be configured; `spawn` determines whether a local process starts. Adapters still need correct camera, calibration, and detection configuration.
+“HTTP inference service” is the general term: HTTP describes communication; sidecar refers only to a local subprocess whose lifecycle is owned by the Session.
+`perception/config.py` normalizes `detector.mode` for every adapter: `remote` connects to an externally managed HTTP service, `local` explicitly starts a managed local subprocess (sidecar), and `disabled` is the default.
+A manually started localhost service also uses `remote`; a `127.0.0.1` URL does not transfer its process ownership to the Session.
+A local port conflict fails explicitly; select `remote` even for an existing localhost service. Startup uses application health rather than treating an open TCP port as model readiness.
+Legacy `api_servers` and Python `DetectorServerConfig` are supported for one migration version; explicit `spawn: false` maps to the remote legacy protocol.
+
+A successful empty observation differs from service failure. Network, protocol, and deadline failures retain `inference_*` codes and cannot mean a cleared scene or tolerated occlusion.
+Expired results do not update location caches. Tracking errors abort control, and an active base approach stops its drive. Frame-age limits do not replace action-driven location invalidation.
+See [remote inference services](../how-to/remote-inference.md) for deployment, installation groups, HTTP speech backends, and migration examples.
 
 `pixel_to_base_xyz` is a single-point projection action, not a mandatory internal action call in this shared pipeline. `api/defaults.py` delegates to shared functions; vision and approach logic enter the tool list through explicit action bindings.
 
@@ -334,13 +359,14 @@ Session manages the lifecycle of a local detection sidecar. An existing detectio
 
 ## 12. `make_builder`: removing boilerplate
 
-`make_builder` in `adapters/_common/builder.py` encapsulates configuration parsing, Env/API construction, sidecar launcher collection, and Session assembly, with an optional `decorate` callback:
+`make_builder` in `adapters/_common/builder.py` encapsulates configuration parsing, Env/API construction, registration of clients and optional local processes, and Session assembly, with an optional `decorate` callback:
 
 ```python
 build_xxx_session = make_builder(
     XxxConfig, XxxEnv, XxxApi,
-    api_kwargs_from_cfg=["z_correction_mm", "detector.url:detector_service_url"],
+    api_kwargs_from_cfg=["z_correction_mm"],
     sidecar_builders=[make_detector_sidecar()],
+    managed_detector=True,
     decorate=_set_extra_globals,
 )
 # build_xxx_session(cfg)
@@ -348,7 +374,9 @@ build_xxx_session = make_builder(
 # build_xxx_session.from_dict({...})
 ```
 
-`api_kwargs_from_cfg` supports same-name fields, `cfg:api` renaming, and nested dotted paths; complex transformations can use a callback. `make_detector_sidecar()` reads detection configuration and uses `spawn` to decide whether to start a local service. Constructing a Session and connecting hardware are separate stages.
+`api_kwargs_from_cfg` supports same-name fields, `cfg:api` renaming, and nested dotted paths; complex transformations can use a callback.
+`managed_detector=True` creates and injects a `detector_client` into the API and registers cleanup. `make_detector_sidecar()` supplies a model process only in local mode.
+Both resources use the existing Session lifecycle, with no second owner. Constructing a Session and connecting hardware are separate stages.
 
 ## 13. File responsibilities for new hardware
 
@@ -362,7 +390,7 @@ build_xxx_session = make_builder(
 | `lowlevel.py` | Vendor SDK or communication protocol; implement supported Driver protocols |
 | `env.py` | Lifecycle, observations, capability declarations, units, geometry, and safety properties |
 | `api.py` | Action bindings; reuse shared functions or implement device-specific semantics |
-| `session.py` | Assemble configuration, Env, API, and sidecars with `make_builder` |
+| `session.py` | Assemble configuration, Env, API, clients, and optional local processes with `make_builder` |
 | `calibration.py` (optional template) | Calibration adapter wrapper; follow the template instructions to place it in `calibration/adapters/<body>.py` and expose `CALIBRATION_ADAPTER_SPEC` |
 
 Actions that satisfy shared implementation assumptions can delegate directly to `defaults`. Actions with different coordinate, sensor, end-effector, or recovery semantics need adapter implementations and validation. If the existing vocabulary cannot express a new requirement, design the shared contract before adding an implementation.
@@ -406,4 +434,4 @@ This page covers the main responsibilities and execution mechanisms. Detailed in
 - [Execution trace module design](../../../design/tracing.md): Trace lifecycle, event ownership, persistence, and resource boundaries.
 - [Trace Feedback Loop module design](../../../design/trace-feedback-loop.md): online diagnosis and offline failure clustering.
 - [Logging module design](../../../design/logging.md): handler ownership, output isolation, and forwarding logs to Trace.
-- [Voice control integration design](../../../design/voice-control-integration.md): connecting voice input to the text task executor.
+- [External HTTP inference services: vision and speech](../../../design/remote-vision-and-speech.md): service boundaries, vision/voice flows, resource ownership, and acceptance criteria (Chinese).

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="940" viewBox="0 0 1200 940" role="img" aria-labelledby="title desc">
   <title id="title">Visual perception: from camera frames to 3D geometry</title>
-  <desc id="desc">The main process acquires a CameraFrame and sends RGB and target text to the detection service over HTTP. After masks and other results return, it uses depth and calibration to compute base-frame 3D geometry and returns results according to each action contract.</desc>
+  <desc id="desc">The Agent process acquires a CameraFrame and sends RGB and target text over HTTP to a managed local subprocess or an externally managed inference service. After masks and other results return, it uses depth and calibration to compute base-frame 3D geometry and returns results according to each action contract.</desc>
   <defs>
     <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#334e68"/></marker>
     <marker id="input-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="#b45309"/></marker>
@@ -17,7 +17,7 @@
   <rect x="652" y="132" width="508" height="596" rx="18" fill="#ecf9f4" stroke="#acd9c6" stroke-width="1.5"/>
   <rect x="652" y="132" width="508" height="54" rx="18" fill="#047857"/>
   <rect x="652" y="168" width="508" height="18" rx="0" fill="#047857"/>
-  <text id="text-4" x="906.0" y="167" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="484">Detection service · Separate process</text>
+  <text id="text-4" x="906.0" y="167" font-size="23" font-weight="700" fill="#ffffff" text-anchor="middle" data-max-width="484">HTTP inference service</text>
   <rect x="66" y="222" width="474" height="138" rx="11" fill="#ffffff" stroke="#aac9f3" stroke-width="1.5" filter="url(#shadow)"/>
   <text id="text-5" x="303.0" y="256" font-size="23" font-weight="700" fill="#172033" text-anchor="middle" data-max-width="442">Calibrated CameraFrame</text>
   <text id="text-6" x="303.0" y="288" font-size="20" font-weight="400" fill="#526174" text-anchor="middle" data-max-width="442">RGB · Depth · Camera intrinsics</text>

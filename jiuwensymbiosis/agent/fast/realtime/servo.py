@@ -32,9 +32,10 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from scipy.spatial.transform import Rotation
+
+from jiuwensymbiosis.agent.execution_config import ServoConfig as ServoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,94 +48,6 @@ _ANGULAR_KEYS = ("r", "rx", "ry", "rz")
 def _ang_diff_deg(a: float, b: float) -> float:
     """Shortest signed angular difference ``a-b`` in degrees, wrapped to [-180,180]."""
     return (a - b + 180.0) % 360.0 - 180.0
-
-
-@dataclass
-class ServoConfig:
-    """Servo-loop tuning. Conservative defaults are safe for first bring-up."""
-
-    control_hz: float = 30.0  # control-loop rate
-    max_lin_step_mm: float = 6.0  # max linear move per tick (slew limit)
-    max_ang_step_deg: float = 5.0  # max angular move per tick (slew limit)
-    pos_tol_mm: float = 4.0  # "reached" position tolerance
-    ang_tol_deg: float = 3.0  # "reached" angular tolerance
-    settle_ticks: int = 3  # consecutive in-tolerance ticks to finish
-    # Continuous no-progress timeout. This is deliberately not a total move
-    # deadline: a long approach may run past it while the live pose is still
-    # measurably approaching the latest target.
-    timeout_s: float = 20.0
-    # Final safety ceiling for a moving target that can keep a servo phase alive
-    # indefinitely. None disables the ceiling.
-    absolute_timeout_s: float | None = 60.0
-    # Minimum accumulated live-pose improvement that refreshes timeout_s.
-    progress_pos_epsilon_mm: float = 0.5
-    progress_ang_epsilon_deg: float = 0.5
-    lost_target_grace_s: float = 3.0  # abort if no target this long
-
-    def __post_init__(self) -> None:
-        # Reject non-finite / non-positive tuning; clamp control_hz to the
-        # hardware-validated band (<=0 would busy-loop with period=0).
-        for name, val in (
-            ("control_hz", self.control_hz),
-            ("max_lin_step_mm", self.max_lin_step_mm),
-            ("max_ang_step_deg", self.max_ang_step_deg),
-            ("pos_tol_mm", self.pos_tol_mm),
-            ("ang_tol_deg", self.ang_tol_deg),
-            ("timeout_s", self.timeout_s),
-            ("progress_pos_epsilon_mm", self.progress_pos_epsilon_mm),
-            ("progress_ang_epsilon_deg", self.progress_ang_epsilon_deg),
-            ("lost_target_grace_s", self.lost_target_grace_s),
-        ):
-            if isinstance(val, bool) or not (
-                isinstance(val, (int, float)) and math.isfinite(float(val)) and float(val) > 0
-            ):
-                raise ValueError(f"ServoConfig.{name} must be finite and > 0, got {val!r}.")
-        if self.absolute_timeout_s is not None and (
-            isinstance(self.absolute_timeout_s, bool)
-            or not (
-                isinstance(self.absolute_timeout_s, (int, float))
-                and math.isfinite(float(self.absolute_timeout_s))
-                and float(self.absolute_timeout_s) > 0
-            )
-        ):
-            raise ValueError(
-                f"ServoConfig.absolute_timeout_s must be None or finite and > 0, got {self.absolute_timeout_s!r}."
-            )
-        if isinstance(self.settle_ticks, bool) or not isinstance(self.settle_ticks, int):
-            raise ValueError(f"ServoConfig.settle_ticks must be int, got {self.settle_ticks!r}.")
-        if self.settle_ticks < 1:
-            raise ValueError(f"ServoConfig.settle_ticks must be >= 1, got {self.settle_ticks}.")
-        if not (1.0 <= float(self.control_hz) <= 200.0):
-            raise ValueError(f"ServoConfig.control_hz must be in [1, 200] (hardware-validated), got {self.control_hz}.")
-
-
-def servo_config_from_session(session: Any) -> ServoConfig | None:
-    """Derive a real-time ``ServoConfig`` from a session's motion-profile config, or None.
-
-    Duck-typed and adapter-agnostic: reads ``session.env.cfg.trajectory_hz`` (control-loop
-    rate) and ``session.env.cfg.motion_runtime.max_cartesian_vel_mm_s`` (Cartesian velocity).
-    When both are present and positive, returns ``ServoConfig(control_hz=hz,
-    max_lin_step_mm=vel/hz)`` so the fast Cartesian loop matches the arm's motion profile
-    (e.g. SO-101 ``safe`` → 10 Hz / 3 mm-per-tick, slower and safer than the flat default).
-    Sessions whose config lacks these attributes (e.g. piper) return None → callers fall back
-    to the framework default ``ServoConfig()``. Never raises: an out-of-band derivation yields
-    None rather than propagating.
-    """
-    cfg = getattr(getattr(session, "env", None), "cfg", None)
-    hz = getattr(cfg, "trajectory_hz", None)
-    runtime = getattr(cfg, "motion_runtime", None)
-    vel = getattr(runtime, "max_cartesian_vel_mm_s", None)
-    if not _is_positive_number(hz) or not _is_positive_number(vel):
-        return None
-    try:
-        return ServoConfig(control_hz=float(hz), max_lin_step_mm=float(vel) / float(hz))
-    except ValueError:
-        return None
-
-
-def _is_positive_number(value: Any) -> bool:
-    """True only for a real, finite, strictly-positive number (excludes bool)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and value > 0
 
 
 @dataclass

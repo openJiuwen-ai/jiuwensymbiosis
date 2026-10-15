@@ -6,7 +6,7 @@
 
 ## 通用任务运行器
 
-`examples/run_task.py` 是所有机器人和任务的统一入口：用 `--config` 选机器人（YAML 顶层 `adapter:` 字段从注册表选中），用 `--query`（或 `--voice`）给任务，任务不在 config 里。执行模式取 YAML `agent.exec_mode`，默认 `fastagent`（编译一次、无逐步 LLM）；单步调试加 `--stepagent`。
+`examples/run_task.py` 是所有机器人和任务的统一入口：用 `--config` 选机器人（YAML 顶层 `adapter:` 字段从注册表选中），用 `--query`（或 `--voice`）给任务，任务不在 config 里。执行模式取 YAML `agent.execution.mode`，默认 `fastagent`（编译一次、无逐步 LLM）；单步调试加 `--stepagent`。
 
 下面两个示例都在真机上验证过。运行前必须完成硬件、标定、检测服务和安全边界验收，不要在未验证的工作空间无人值守运行。
 

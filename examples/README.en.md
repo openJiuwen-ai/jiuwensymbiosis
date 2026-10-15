@@ -6,7 +6,7 @@ These examples run directly from the repository root. Install dependencies using
 
 ## Generic task runner
 
-`examples/run_task.py` is the single entry point for every robot and task: `--config` picks the robot (the YAML's top-level `adapter:` field selects it from the registry), and `--query` (or `--voice`) supplies the task, which is not in the config. The execution mode comes from the YAML's `agent.exec_mode`, defaulting to `fastagent` (compile once, no per-step LLM); add `--stepagent` for single-step debugging.
+`examples/run_task.py` is the single entry point for every robot and task: `--config` picks the robot (the YAML's top-level `adapter:` field selects it from the registry), and `--query` (or `--voice`) supplies the task, which is not in the config. The execution mode comes from the YAML's `agent.execution.mode`, defaulting to `fastagent` (compile once, no per-step LLM); add `--stepagent` for single-step debugging.
 
 Both examples below are verified on real hardware. Before running you must complete hardware, calibration, detector-service, and safety-boundary acceptance. Do not run unattended in an unvalidated workspace.
 

@@ -26,7 +26,7 @@ thresholds, or reviewing the result.
 If this is your first calibration, use the graphical wizard instead of the CLI below:
 
 ```bash
-python -m jiuwensymbiosis.gui    # then open 「工具 → 手眼标定」
+python -m jiuwensymbiosis_gui --gui workbench    # then open 「工具 → 手眼标定」
 ```
 
 The wizard folds every step of this guide into four, and adds three things the CLI has no place for:
@@ -66,8 +66,11 @@ The SO-101 adapter requires Python 3.12. Install the calibration and SO-101 depe
 environment:
 
 ```bash
-python -m pip install -e ".[calib,so101]"
+python -m pip install -e ".[gui,calib,so101]"
 ```
+
+The `gui` extra installs NiceGUI for the existing workbench. If you only run the headless CLI workflow below,
+install `.[calib,so101]` instead.
 
 To run the calibration subsystem tests:
 

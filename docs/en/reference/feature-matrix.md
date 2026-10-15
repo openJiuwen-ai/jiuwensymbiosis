@@ -21,7 +21,7 @@ Support means that a code path and interface exist; it does not certify every ro
 |---|---|---|---|---|
 | Positioning | In-memory 4-DoF simulated arm | AgileX Piper 6-DoF CAN arm | LeRobot SO-101 underactuated 5-DoF arm | Cruzr mobile dual-arm (base + lift + waist) |
 | Session entry | `MockArmEnv` + Mock Api/Model | `build_piper_session` | `build_so101_session` | `build_cruzr_session` |
-| Cartesian motion | ✅ In-memory pose | ✅ XYZ/R plus full `goto_pose` | ✅ XYZ plus best-effort orientation IK | — |
+| Cartesian motion | ✅ In-memory pose | ✅ `goto_xyzr` (tool-tip XYZ/R, calibrated tilt) | ✅ XYZ plus best-effort orientation IK | — |
 | Joint motion | — | ✅ Six joints | ✅ Five arm joints | ✅ Dual arms (named joint, radians) |
 | Real-time servo | ✅ Simulated sink | ✅ `servo_to_tip`/`servo_to_flange` (driven by fast-path servo ops) | ✅ `servo_to_tip`/`servo_to_flange` (driven by fast-path servo ops) | — |
 | Mobile base | — | — | — | ✅ `navigate_relative`/`rotate_base`/`drive_arc`; continuous `base_servo` |
@@ -38,15 +38,30 @@ Support means that a code path and interface exist; it does not certify every ro
 | Camera mounting | Synthetic scene | Eye-in-hand | Eye-to-hand | Eye-to-hand (waist + moving head) |
 | Hand-eye transform | Test geometry | `T_base_flange(live) @ T_flange_cam` | Fixed `T_base_cam` | Live `T_base_cam` (TF lookup with static-calibration fallback; head computed from live joints) |
 | Reachability (URDF) | — | — | — | ✅ `planning.reachability` (dual-arm + adaptive-lift judge) |
-| Detector sidecar | — | ◐ `detector.spawn=true` | ◐ `detector.spawn=true` | ◐ (`api_servers`) |
-| Main optional dependency | `dev` for tests | `piper`; add `full` for vision | Python 3.12 + `so101`; add `full` for vision | `cruzr`; add `full` for vision; source the ROS workspace at runtime |
+| HTTP detector service | — | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` | ◐ `detector.mode: remote/local` |
+| Owned local detector subprocess (sidecar) | — | ◐ Only `mode: local` | ◐ Only `mode: local` | ◐ Only `mode: local` |
+| Main optional dependency | `dev` for tests | `piper`; HTTP client `remote`; RealSense `camera` | Python 3.12 + `so101`; HTTP client `remote`; RealSense `camera` | `cruzr`; HTTP client `remote`; source the ROS workspace at runtime |
 | Configuration directory | Tests or examples | `configs/piper/` | `configs/so101/` | `configs/cruzr/` |
 
 Visual capability activation differs:
 
 - Piper's class-level capability set includes vision. With no `camera_serial`, no camera is created; a visual task still requires camera hardware, calibration, and a detector.
 - SO-101 derives instance capabilities from `camera_serial`. With no configured camera it does not advertise vision, and a connected Driver can narrow capabilities further when it reports no camera. A configured camera that fails to start makes connection fail closed.
-- Cruzr declares waist + head cameras and depth. Vision is served via `api_servers`; when the detector is unreachable the shared client returns empty results, converted to `{"ok": false, "reason": "no_detection"}`.
+- Cruzr declares waist + head cameras and depth and shares `detector.mode` and the HTTP client with the other official adapters.
+
+Detector configuration defaults to `disabled` for all three adapters. `local` means
+an owned local subprocess (sidecar) managed by Session. `remote` means an externally
+managed HTTP inference service, including one running independently on `localhost`.
+Session closes its remote client without stopping the external service. Install model
+dependencies only in the environment that runs the model; hardware connections from
+the Agent host remain unchanged. SO-101's LeRobot dependency may still bring in Torch.
+See [remote inference](../how-to/remote-inference.md) for configuration and migration.
+
+The client reports connection, timeout, protocol and expired-result
+failures through `InferenceServiceError` and `inference_*` codes. Perception actions
+retain `error_code` and return `reason="detector_unavailable"`. Service errors never
+become an empty result or `no_detection`; that reason means successful inference
+found no target.
 
 ## 3. Framework Capability matrix
 
@@ -75,21 +90,27 @@ Capability axes are **orthogonal and freely combinable**: motion (cartesian/join
 | `sorting.command` | Vocabulary and adapter extension point | — (no built-in generic tool) | — | — | — | — |
 | `speech.tts` | Vocabulary marker; voice front end provides TTS separately | — (no built-in robot action) | — | — | — | — |
 
+A ✅ capability entry means the body provides actions under that capability, not every action in the action column. Piper's Cartesian actions are `goto_xyzr`, `move_direction`, `get_pose`, and `get_home_pose`; `goto_xyzr` uses the calibrated tilt. SO-101 currently implements the full-pose action `goto_pose`.
+
 The framework fully defines `grasp.suction`, but this repository has no built-in real suction adapter. The Tutorial's SCARA-with-suction implementation is educational and is not hardware-accepted built-in support.
 
 ## 4. Execution and tool strategy matrix
 
 | Feature | Status | Default | Activation or constraint |
 |---|---|---|---|
-| fastagent compile-once | ✅ | `exec_mode="fastagent"` | One model plan (tiered skill + action composition) then execute sequentially, no per-step LLM; `--stepagent` forces per-step |
-| Runtime re-planning | ✅ | Before each step | Re-plan when the world contradicts the next step's pre-conditions, capped by `max_replans` |
-| Individual tool mode | ✅ | Optional | `mode="tool"`; each `@implements` method becomes one tool |
-| Code mode | ✅ | Optional | `mode="code"`; provides `InProcessCodeTool` |
-| Hybrid mode | ✅ | `mode="hybrid"` | Provides individual and code tools together |
-| Skill workflows | ◐ | `enable_skill=False` | Enables `SkillUseRail` and `RobotControlTool`; built-in `visual_pick`/`visual_place`/`transport` |
+| fastagent compile-once | ✅ | `execution.mode="fastagent"` | One model plan (tiered skill + action composition) then execute sequentially, no per-step LLM; `--stepagent` forces per-step |
+| Runtime re-planning | ✅ | Before each step | Re-plan when the world contradicts the next step's pre-conditions, capped by `execution.fastagent.max_replans` |
+| Individual tool mode | ✅ | Optional | Set `execution.stepagent.mode="tool"` in stepagent; each `@implements` method becomes one tool |
+| Code mode | ✅ | Optional | Set `execution.stepagent.mode="code"` in stepagent; provides `InProcessCodeTool` |
+| Hybrid mode | ✅ | `execution.stepagent.mode="hybrid"` | Stepagent provides individual and code tools together |
+| Fastagent skill planning | ◐ | `modules.skills.enabled=True` | The planner reads the skill library directly without `SkillUseRail`; disabling skills selects action composition |
+| Stepagent skill workflows | ◐ | `modules.skills.enabled=False` | Enabling skills adds `SkillUseRail` and `RobotControlTool` in the single-robot builder |
 | Custom tools/Rails | ✅ | None | Inject through `extra_tools` and `extra_rails` |
-| Parallel tool calls | ◐ | `parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
+| Parallel tool calls | ◐ | `execution.stepagent.parallel_tool_calls=False` | Only for audited non-motion tools; motion/grasp rejects it, and it cannot run with Trace |
 | No-hardware/no-model dry run | ✅ | With `--mock` | `MockArmEnv` + `MockModelClient` (factory `build_mock_model`, Piper only); no CAN, camera, or model endpoint |
+
+`fastagent` requires an explicit `model_spec` for planning. Its executor always registers `robot_control`; disabling `modules.skills.enabled` selects action composition. Use `stepagent` when supplying only `model`.
+Built-in skills include `visual_pick`, `visual_place`, and `transport`. See the [minimal API configuration](framework-api.md#minimal-fast-path-configuration) and [complete agent configuration](agent-config.md).
 
 ## 5. Rails, Trace, and feedback matrix
 
@@ -97,23 +118,24 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 |---|---|---|---|
 | SafetyRail | ✅ | On | Env has any motion capability (cartesian/joint/base/lift/waist); checks derived from declared capability |
 | RecoveryRail | ✅ | On | Motion, suction, or gripper; attempts Home and release after failure |
-| VisualFeedbackRail | ◐ | On | Also requires `vision.camera`; stages a post-action frame |
-| SkillUseRail | ◐ | Off | `enable_skill=True` |
-| TraceRail | ◐ | Off | `enable_tracing=True`; records tools, observations, Rail events, logs, and optional frames |
-| DiagnosisRail | ◐ | Off | `enable_diagnosis=True` and tracing must also be enabled |
-| WARNING+ logs in Trace | ◐ | With Trace | `trace_capture_loggers` defaults to `jiuwensymbiosis` |
+| VisualFeedbackRail | ◐ | On in stepagent; unsupported in fastagent | Requires `modules.visual_feedback.enabled=True` and `vision.camera`; stages a post-action frame |
+| SkillUseRail | ◐ | Off | Single-robot stepagent with `modules.skills.enabled=True`; never attached by fastagent |
+| TraceRail | ◐ | Off | `modules.tracing.enabled=True`; records tools, observations, Rail events, logs, and optional frames |
+| DiagnosisRail | ◐ | Off | Stepagent only; `modules.diagnosis.enabled=True` and tracing must also be enabled |
+| WARNING+ logs in Trace | ◐ | With Trace | `modules.tracing.capture_loggers` defaults to `jiuwensymbiosis` |
 | Trace HTML/text replay | ✅ | On demand | `jiuwensymbiosis-replay <trace.json>`; default output is self-contained HTML |
 | Offline Trace Feedback | ✅ | On demand | `scripts/analyze_traces.py` clusters failures and produces human-review proposals |
-| Central logging | ✅ | INFO + `./logs` | Console plus rotating file; `log_dir=None` is console-only |
+| Central logging | ✅ | INFO + `./logs` | Console plus rotating file; `logging.dir=None` is console-only |
 
 ## 6. Vision and perception matrix
 
 | Feature | Status | Implementation or condition |
 |---|---|---|
 | RGB plus aligned depth | ◐ | RealSense/adapter Driver; depth boundary is meters |
-| GroundingDINO text detection | ◐ | Install `full` and start or connect the detector service |
-| SAM2 masks | ◐ | Detector configuration `use_sam2=true` |
-| Detector sidecar lifecycle | ✅ | `make_detector_sidecar()` follows Session lifecycle |
+| GroundingDINO text detection | ◐ | Agent installs `remote` to call HTTP inference; the model environment installs `vision-server` |
+| SAM2 masks | ◐ | Enabled on the inference server; local configuration uses `detector.local.use_sam2=true` |
+| HTTP client lifecycle | ✅ | Session injects and closes clients with `managed_detector=True`; remote servers are externally managed |
+| Owned local subprocess lifecycle | ✅ | `make_detector_sidecar()` starts/stops with Session only in `mode: local` |
 | Mask centroid and median depth | ✅ | `scene3d.locate_for_grasp`/`analyze_scene` |
 | Eye-in-hand projection | ✅ | Piper implementation; needs `T_flange_cam` and live flange pose |
 | Eye-to-hand projection | ✅ | SO-101 uses fixed `T_base_cam`; Cruzr prefers live TF with static-calibration fallback |
@@ -132,13 +154,20 @@ The framework fully defines `grasp.suction`, but this repository has no built-in
 | Piper adapter | ◐ | `pip install -e ".[piper]"` |
 | SO-101 adapter | ◐ | Python 3.12; `pip install -e ".[so101]"` |
 | Cruzr adapter | ◐ | `pip install -e ".[cruzr]"`; source the ROS workspace at runtime |
-| Vision/GPU | ◐ | `pip install -e ".[full]"` with the CUDA 12.8 PyTorch index |
-| Browser GUI | ◐ | `pip install -e ".[gui]"`; `jiuwensymbiosis-gui`, default `127.0.0.1:8770` |
-| Voice front end | ◐ | `pip install -e ".[voice]"`; optional FunASR/capture, default `NullTTS` |
+| Remote HTTP inference clients | ◐ | `pip install -e ".[remote]"`; installs no vision/speech models |
+| Optional vision model service | ◐ | Install `.[vision-server]` on the model host with compatible Torch/CUDA; Agent owns a subprocess only in `mode: local` |
+| Browser GUI | ◐ | `pip install -e ".[gui]"`; `jiuwensymbiosis-gui --gui workbench`, default `127.0.0.1:8770`; `--list-guis` lists installed plugins |
+| Voice front end | ◐ | Remote uses `.[remote,voice-io]`; ASR defaults to disabled, TTS to null; local FunASR/ChatTTS are explicit options |
 | Hand-eye calibration | ◐ | `pip install -e ".[calib,piper]"` or `.[calib,so101]` |
 | Actions/skills/state introspection | ✅ | `jiuwensymbiosis-actions` / `-skills` / `-state` |
 | Trace replay | ✅ | `jiuwensymbiosis-replay` |
-| Unit tests | ✅ | `pip install -e ".[dev]"`; `pytest tests/unit_tests/` |
+| Core tests | ✅ | `pip install -e ".[dev]"`; `make test-core` |
+| GUI tests | ◐ | `pip install -e ".[dev,gui]"`; `make test-gui` |
+
+`make test` defaults to core tests and requires only `.[dev]`. To run both no-hardware
+suites, install `.[dev,gui]` and use `make test test-gui`. `make test-all` also includes
+integration tests and requires the dependencies and environment for those tests.
+The `.[gui]` extra supplies the workbench UI dependencies; other installed GUI plugins supply their own UI dependencies.
 
 When maintaining this matrix, check these sources of truth together:
 

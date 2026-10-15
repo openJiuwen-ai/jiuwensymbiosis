@@ -15,6 +15,7 @@ composition until a caller asks for its spec.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -66,6 +67,10 @@ class SessionFactory(Protocol):
         pass
 
     def from_dict(self, data: dict[str, Any], *, include_sidecars: bool = True) -> Any:
+        pass
+
+    def resource_keys(self, cfg: Any) -> Iterable[str]:
+        """Return device identities for the already loaded typed config."""
         pass
 
 

@@ -34,6 +34,8 @@
 - [手眼标定指南](zh/how-to/calibrate-hand-eye.md)
 - [SO-101 固定相机手眼标定使用指南](zh/how-to/calibrate-so101-eye-to-hand.md)
 - [图形界面使用指南](zh/how-to/configure-gui.md)
+- [使用远程 HTTP 视觉与语音服务](zh/how-to/remote-inference.md)
+- [接入一个 GUI 插件](zh/how-to/add-gui.md)
 - [配置和使用日志](zh/how-to/configure-logging.md)
 - [移植机器人硬件适配器](zh/how-to/port-hardware-adapter.md)
 - [使用 Trace Feedback Loop](zh/how-to/use-trace-feedback.md)
@@ -45,6 +47,7 @@
 - [特性矩阵](zh/reference/feature-matrix.md)
 - [命令行参考](zh/reference/cli.md)
 - [Agent 与框架 API 参考](zh/reference/framework-api.md)
+- [Agent 全量配置参考](zh/reference/agent-config.md)
 - [机器人环境、能力与工具 API 参考](zh/reference/robot-api.md)
 - [执行轨迹参考](zh/reference/tracing.md)
 
@@ -64,6 +67,8 @@
 - [Calibrate Hand-Eye Geometry](en/how-to/calibrate-hand-eye.md)
 - [Calibrate an SO-101 with a Fixed Camera](en/how-to/calibrate-so101-eye-to-hand.md)
 - [Configure the GUI](en/how-to/configure-gui.md)
+- [Use Remote HTTP Vision and Speech](en/how-to/remote-inference.md)
+- [Add a GUI Plugin](en/how-to/add-gui.md)
 - [Configure and Use Logging](en/how-to/configure-logging.md)
 - [Port a Robot Hardware Adapter](en/how-to/port-hardware-adapter.md)
 - [Use the Trace Feedback Loop](en/how-to/use-trace-feedback.md)
@@ -75,6 +80,7 @@
 - [Feature Matrix](en/reference/feature-matrix.md)
 - [Command-Line Reference](en/reference/cli.md)
 - [Agent and Framework API Reference](en/reference/framework-api.md)
+- [Complete Agent Configuration Reference](en/reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](en/reference/robot-api.md)
 - [Execution Tracing Reference](en/reference/tracing.md)
 

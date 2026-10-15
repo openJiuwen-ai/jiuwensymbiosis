@@ -7,9 +7,12 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwensymbiosis.adapters.cruzr import lowlevel as nav_mod
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.lowlevel import CruzrNav
+from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 
 
 def _fake_proc(stdout: str, rc: int = 0):
@@ -78,16 +81,14 @@ def test_navigate_relative_lidar_blocked(monkeypatch):
 def test_navigate_relative_worker_failure(monkeypatch):
     monkeypatch.setattr(nav_mod.subprocess, "run",
                         lambda cmd, **k: _fake_proc("", rc=1))
-    out = CruzrNav(CruzrConfig()).navigate_relative(0.4)
-    assert out["ok"] is False
-    assert out["reason"] == "wheel_worker_failed"
+    with pytest.raises(HardwareCleanupError, match="rc=1"):
+        CruzrNav(CruzrConfig()).navigate_relative(0.4)
 
 
 def test_navigate_relative_no_output(monkeypatch):
     monkeypatch.setattr(nav_mod.subprocess, "run", lambda cmd, **k: _fake_proc(""))
-    out = CruzrNav(CruzrConfig()).navigate_relative(0.4)
-    assert out["ok"] is False
-    assert out["reason"] == "wheel_no_output"
+    with pytest.raises(HardwareCleanupError, match="no valid result"):
+        CruzrNav(CruzrConfig()).navigate_relative(0.4)
 
 
 def test_worker_help_runs_without_rclpy():
@@ -121,6 +122,7 @@ class _FakePopen:
         return self._polled
 
     def communicate(self, input=None, timeout=None):
+        self.returncode = self._polled = 0
         self.communicated = input
         return (json.dumps({"ok": True, "stopped": True, "yaw_turned": 1.23}), "")
 
@@ -167,7 +169,7 @@ def test_spin_running_reflects_poll():
 def test_stop_spin_sends_sentinel_when_running():
     p = _FakePopen(["x"])
     p._polled = None                       # still spinning
-    out = CruzrNav.stop_spin(p)
+    out = CruzrNav(CruzrConfig()).stop_spin(p)
     assert p.communicated == "stop\n"      # clean stop via stdin sentinel
     assert out["ok"] and out["yaw_turned"] == 1.23
 
@@ -175,7 +177,7 @@ def test_stop_spin_sends_sentinel_when_running():
 def test_stop_spin_drains_when_already_finished():
     p = _FakePopen(["x"])
     p._polled = 0                          # worker already exited (full revolution, not found)
-    out = CruzrNav.stop_spin(p)
+    out = CruzrNav(CruzrConfig()).stop_spin(p)
     assert p.communicated is None          # no sentinel needed
     assert out["yaw_turned"] == 1.23
 
@@ -228,6 +230,7 @@ def test_lowlevel_navigate_relative_delegates():
 
 class _FakeDrivePopen(_FakePopen):
     def communicate(self, input=None, timeout=None):
+        self.returncode = self._polled = 0
         self.communicated = input
         return (json.dumps({"ok": True, "stopped": True, "dist_traveled": 0.9}), "")
 
@@ -339,7 +342,7 @@ def test_lowlevel_steer_base_drive_delegates():
 def test_stop_drive_sends_sentinel_when_running():
     p = _FakeDrivePopen(["x"])
     p._polled = None                       # still driving
-    out = CruzrNav.stop_drive(p)
+    out = CruzrNav(CruzrConfig()).stop_drive(p)
     assert p.communicated == "stop\n"      # clean stop via stdin sentinel
     assert out["ok"] and out["dist_traveled"] == 0.9
 
@@ -347,7 +350,7 @@ def test_stop_drive_sends_sentinel_when_running():
 def test_stop_drive_drains_when_already_finished():
     p = _FakeDrivePopen(["x"])
     p._polled = 0                          # worker already exited (hit its self-bound, parent late)
-    out = CruzrNav.stop_drive(p)
+    out = CruzrNav(CruzrConfig()).stop_drive(p)
     assert p.communicated is None          # no sentinel needed
     assert out["dist_traveled"] == 0.9
 

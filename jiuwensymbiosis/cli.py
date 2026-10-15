@@ -293,20 +293,21 @@ def skills_main() -> int:
     return 0
 
 
-def state_main() -> int:
+def state_main(*, resource_manager=None) -> int:
     """Console-script entry: print the live world state (connects to hardware)."""
     from jiuwensymbiosis import introspect
     from jiuwensymbiosis.api.world_state import WorldState
+    from jiuwensymbiosis.runtime.admission import admitted_session
 
     args = _introspect_parser(
         "jiuwensymbiosis-state", "Print the body's current world state (connects to the robot).", needs_config=True
     ).parse_args()
     try:
-        session = introspect.build_session(args.config)
+        binding = introspect.prepare_binding(args.config)
     except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
         logger.error("could not build a session from %s: %s", args.config, exc)
         return 1
-    with session:
+    with admitted_session(binding, resource_manager=resource_manager, operation="cli-state") as session:
         state = WorldState.snapshot(session).describe()
     introspect.emit(state, introspect.render_state(state), as_json=args.json)
     return 0

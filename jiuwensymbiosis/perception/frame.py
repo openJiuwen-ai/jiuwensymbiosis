@@ -12,7 +12,6 @@ driver returns a ``CameraFrame`` and reuses ``project_to_base``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -35,6 +34,8 @@ class CameraFrame:
     """One grabbed frame. ``depth_m`` / ``intrinsics`` / ``tf_base_cam`` may be None when unavailable."""
 
     rgb: np.ndarray
-    depth_m: Optional[np.ndarray] = None
-    intrinsics: Optional[np.ndarray] = None
-    tf_base_cam: Optional[np.ndarray] = None
+    depth_m: np.ndarray | None = None
+    intrinsics: np.ndarray | None = None
+    tf_base_cam: np.ndarray | None = None
+    frame_id: str | None = None
+    captured_monotonic_s: float | None = None

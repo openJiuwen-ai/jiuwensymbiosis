@@ -16,7 +16,7 @@ set -euo pipefail
 # 自动定位仓库根(本脚本位于 <repo>/scripts/)。
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="$REPO_DIR/scripts/launch_gui.sh"
-ICON="$REPO_DIR/jiuwensymbiosis/gui/assets/app_icon.png"
+ICON="$REPO_DIR/jiuwensymbiosis_gui/workbench/assets/app_icon.png"
 
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_FILE="$APPS_DIR/jiuwensymbiosis.desktop"

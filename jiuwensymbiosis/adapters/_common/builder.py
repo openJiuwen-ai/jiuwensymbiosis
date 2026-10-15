@@ -23,7 +23,7 @@ with the three call shapes above. The adapter just does:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -37,6 +37,7 @@ SessionDecorator = Callable[[RobotSession, Any], None]
 #   "cfg_field:api_kwarg" → pass cfg.cfg_field as api kwarg "api_kwarg"
 # A plain callable is also accepted (backward compat).
 ApiKwargsSpec = Callable[[Any], dict] | list[str]
+ResourceKeys = Callable[[Any], Iterable[str]]
 
 
 def _resolve_api_kwargs(spec: ApiKwargsSpec | None, cfg: Any) -> dict:
@@ -123,14 +124,26 @@ def make_builder(
     env_cls: type,
     api_cls: type,
     *,
+    config_factory: ConfigFactory | None = None,
+    resource_keys: ResourceKeys | None = None,
     api_kwargs_from_cfg: ApiKwargsSpec | None = None,
     sidecar_builders: list[SidecarBuilder] | None = None,
+    managed_detector: bool = False,
     decorate: SessionDecorator | None = None,
 ):
     """Build a polymorphic session-factory callable.
 
     Args:
       cfg_cls: Config dataclass with ``from_yaml`` and ``from_dict`` classmethods.
+      config_factory: Optional replacement for ``cfg_cls``'s loader. The returned
+        builder exposes the effective factory as ``.config_factory`` so runtime
+        bindings can parse exactly once and retain the resulting config object.
+        Factories declare their source-relative ``path_fields`` and delegate
+        ``from_yaml`` to ``config.load_yaml_config`` to share parsing with runtime
+        bindings and adapter validation.
+      resource_keys: Adapter-specific device identity callback. The returned
+        builder exposes it as ``.resource_keys(cfg)``; camera and detector
+        sidecar identities are added by the shared resource helpers.
       env_cls: ``BaseRobotEnv`` subclass; constructed as ``env_cls(cfg)``.
       api_cls: ``BaseRobotApi`` subclass; constructed as
         ``api_cls(env, **api_kwargs_from_cfg(cfg))`` if a kwargs spec is given,
@@ -144,9 +157,14 @@ def make_builder(
         manager (e.g. ``detector_subprocess(...)``) or None. Only non-None returns
         are appended to the session's sidecar_starters. The order is preserved.
       decorate: Optional final-pass callback for storing things on the session.
+      managed_detector: Own a lazy HTTP detector client in the session and inject
+        it into ``api_cls`` as ``detector_client``. Maintenance sessions retain
+        this client, but never spawn a model process or contact the service on
+        connect. The first explicit inference call performs network I/O.
 
-    Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``
-    and ``.from_dict(dict)`` as attributes. All three take ``include_sidecars``
+    Returns a callable ``build(cfg)`` that also exposes ``.from_yaml(path)``,
+    ``.from_dict(dict)``, ``.config_factory``, and ``.resource_keys(cfg)`` as
+    attributes. All session-building call shapes take ``include_sidecars``
     (default True); passing False builds the same env/api without starting any
     sidecar, which is how calibration connects hardware without paying the
     detector subprocess's GPU model load.
@@ -155,6 +173,12 @@ def make_builder(
     def _session_from_cfg(cfg: Any, *, include_sidecars: bool = True) -> RobotSession:
         env = env_cls(cfg)
         api_kwargs = _resolve_api_kwargs(api_kwargs_from_cfg, cfg)
+        detector_client = None
+        if managed_detector:
+            from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+            detector_client = create_detector_client(cfg.detector)
+            api_kwargs["detector_client"] = detector_client
         api = api_cls(env, **api_kwargs)
 
         sidecar_starters: list[Callable[[], Any]] = []
@@ -172,6 +196,22 @@ def make_builder(
                     # bridge cm→zero-arg factory; list typed list[Callable[[],Any]]
                     sidecar_starters.append(lambda cm=cm_or_lambda: cm)  # type: ignore[misc]
 
+        if detector_client is not None:
+
+            def client_starter(token=None):
+                detector_client.bind_cancel_token(token)
+                # Maintenance does not need an inference connection pool.
+                # A deliberate later inference call still opens lazily, and its
+                # resources remain owned by this session's cleanup stack.
+                if include_sidecars:
+                    return detector_client
+                detector_client.open(lazy=True)
+                return detector_client.close
+
+            # Registered after the local process so ExitStack closes the client
+            # before stopping the model process. Opening the client is lazy.
+            sidecar_starters.append(client_starter)
+
         session = RobotSession(
             env=env,
             api=api,
@@ -186,17 +226,21 @@ def make_builder(
         """Build a session directly from an in-memory config object."""
         return _session_from_cfg(cfg, include_sidecars=include_sidecars)
 
+    effective_config_factory = config_factory or cfg_cls
+
     def from_yaml(path: str | Path, *, include_sidecars: bool = True) -> RobotSession:
         """Build a session from a YAML config file at ``path``."""
-        return _session_from_cfg(cfg_cls.from_yaml(path), include_sidecars=include_sidecars)
+        return _session_from_cfg(effective_config_factory.from_yaml(path), include_sidecars=include_sidecars)
 
     def from_dict(data: dict[str, Any], *, include_sidecars: bool = True) -> RobotSession:
         """Build a session from an in-memory config ``dict``."""
-        return _session_from_cfg(cfg_cls.from_dict(data), include_sidecars=include_sidecars)
+        return _session_from_cfg(effective_config_factory.from_dict(data), include_sidecars=include_sidecars)
 
     # A function carrying its loaders, deliberately not a class — see
     # tests/unit_tests/adapters/common/test_builder.py:TestBuilderSignature.
     # mypy cannot model fn.__dict__, so the two attachments stay silenced.
     build.from_yaml = from_yaml  # type: ignore[attr-defined]
     build.from_dict = from_dict  # type: ignore[attr-defined]
+    build.config_factory = effective_config_factory  # type: ignore[attr-defined]
+    build.resource_keys = resource_keys or (lambda cfg: ())  # type: ignore[attr-defined]
     return build

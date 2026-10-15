@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -121,8 +122,10 @@ def _format_reach_prior(prior: dict) -> str:
     f = prior.get("forward_m") or [0.0, 0.0]
     la = prior.get("lateral_m") or [0.0, 0.0]
     h = prior.get("height_m") or [0.0, 0.0]
-    return (f"【本体可达域】(URDF 估算，当前站姿下双臂大致可达范围)：前向 {f[0]:.2f}~{f[1]:.2f}m、"
-            f"横向 {la[0]:.2f}~{la[1]:.2f}m、高度 {h[0]:.2f}~{h[1]:.2f}m。超出此范围的目标须先移动靠近再抓。")
+    return (
+        f"【本体可达域】(URDF 估算，当前站姿下双臂大致可达范围)：前向 {f[0]:.2f}~{f[1]:.2f}m、"
+        f"横向 {la[0]:.2f}~{la[1]:.2f}m、高度 {h[0]:.2f}~{h[1]:.2f}m。超出此范围的目标须先移动靠近再抓。"
+    )
 
 
 def _format_scene(scene: Any) -> str:
@@ -347,12 +350,17 @@ def _validate_parsed(data: dict | None) -> dict[str, Any]:
         count = None
     dest = d.get("destination")
     dest = dest if isinstance(dest, str) and dest.strip() else None
-    intent = d.get("intent") if d.get("intent") in ("pick", "pick_place", "carry") else (
-        "pick_place" if dest else "pick"
+    intent = (
+        d.get("intent") if d.get("intent") in ("pick", "pick_place", "carry") else ("pick_place" if dest else "pick")
     )
     return {
-        "targets": targets, "references": refs, "grounding": grounding, "destination": dest,
-        "mode": mode, "count": count, "intent": intent,
+        "targets": targets,
+        "references": refs,
+        "grounding": grounding,
+        "destination": dest,
+        "mode": mode,
+        "count": count,
+        "intent": intent,
     }
 
 
@@ -388,7 +396,7 @@ def parse_task(
         max_tokens=256,
     )
     parsed = _validate_parsed(_extract_json_object(text))
-    logger.info("[parser] task=%r → intent=%s", query, parsed)
+    logger.debug("[parser] task=%r → intent=%s", query, parsed)
     return parsed
 
 
@@ -432,6 +440,7 @@ def _chat(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    logger.debug("[planner] LLM request model=%s messages=%s", model_name, payload["messages"])
     last_exc: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         if cancel_token is not None:
@@ -440,10 +449,15 @@ def _chat(
             client_kwargs: dict[str, Any] = {"timeout": timeout_s}
             if proxy:
                 client_kwargs["proxy"] = proxy
+            started = time.monotonic()
+            logger.info("[planner] LLM request model=%s attempt=%d/%d", model_name, attempt, max(1, attempts))
             with httpx.Client(**client_kwargs) as client:
                 resp = _post(client, url, payload, headers, cancel_token)
             resp.raise_for_status()
-            return cast(str, resp.json()["choices"][0]["message"]["content"])
+            reply = cast(str, resp.json()["choices"][0]["message"]["content"])
+            logger.info("[planner] LLM response model=%s duration=%.2fs", model_name, time.monotonic() - started)
+            logger.debug("[planner] LLM response content: %s", reply)
+            return reply
         except RunCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 - retry on transient LLM/HTTP failure
@@ -544,8 +558,7 @@ _COMPOSER_SYSTEM = (
     "本体移动之后先前感知到的坐标一律作废，要重新感知。\n"
     "- 感知类动作可能失败（目标不在视野）。若任务要求的目标当前【场景感知】里没有，"
     "优先选清单里能**主动搜索**的那类动作，而不是只看当前视野的一次性检测。\n"
-    "- 只用【机器人能力】支持的动作；用不到的动作不要列。\n\n"
-    + _SEQUENCE_FORMAT
+    "- 只用【机器人能力】支持的动作；用不到的动作不要列。\n\n" + _SEQUENCE_FORMAT
 )
 
 
@@ -620,7 +633,10 @@ def _strip_frontmatter(md: str) -> str:
     if end == -1:
         return md
     nl = md.find("\n", end + 4)
-    return md[nl + 1:] if nl != -1 else ""
+    if nl == -1:
+        return ""
+    start = nl + 1
+    return md[start:]
 
 
 def _format_skills_md(skills_md: Sequence[Mapping[str, Any]]) -> str:
@@ -737,7 +753,8 @@ def _compile_loop(
             continue
         data = _extract_json_array(text)
         if data is None:
-            last_err = f"no JSON array in reply: {text[:200]!r}"
+            last_err = "no JSON array in reply"
+            logger.debug("[%s] invalid reply: %s", label, text)
             logger.warning("[%s] attempt %d: %s", label, attempt, last_err)
             correction = "\n\n上次回复没有包含合法的 JSON 数组。请只输出一个 JSON 数组，不要任何解释或 markdown。"
             continue
@@ -751,8 +768,11 @@ def _compile_loop(
             continue
         try:
             parse_sequence(
-                data, allowed_ops=allowed_ops, special_ops=special_ops,
-                initial_state=initial_state, grounding=grounding,
+                data,
+                allowed_ops=allowed_ops,
+                special_ops=special_ops,
+                initial_state=initial_state,
+                grounding=grounding,
                 blocked_access=blocked_access,
             )  # validate only; keep raw dicts
         except SequenceError as exc:
@@ -760,7 +780,8 @@ def _compile_loop(
             logger.warning("[%s] attempt %d: invalid sequence: %s", label, attempt, exc)
             correction = _sequence_correction(exc)
             continue
-        logger.info("[%s] → %d steps: %s", label, len(data), data)
+        logger.info("[%s] → %d steps", label, len(data))
+        logger.debug("[%s] sequence: %s", label, data)
         return data
     raise RuntimeError(f"{label} produced no valid sequence after {attempts} attempts: {last_err}")
 
@@ -909,7 +930,9 @@ def compile_sequence(
     # 【可用动作】 carries each action's exact param names (from its signature) so the
     # compiler uses them verbatim instead of inventing param names.
     if action_index:
-        vocab_block = "(括号内为参数名，? = 可省略；-> 后是该动作的返回字段)：\n" + format_action_contracts(action_index)
+        vocab_block = "(括号内为参数名，? = 可省略；-> 后是该动作的返回字段)：\n" + format_action_contracts(
+            action_index
+        )
     else:
         sigs = action_sigs or {}
         vocab_block = "(动作名后括号是参数名，? = 可省略；只用这些参数名)：" + ", ".join(
