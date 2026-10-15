@@ -26,12 +26,13 @@ Implementer contract:
 
   1. Construct: open SDK sockets, enable robot, snapshot init pose, load
      calibration, optionally start a camera.
-  2. ``get_pose`` and ``home_pose`` return your own vendor Pose dataclass
+  2. For CartesianDriver, ``get_pose`` and ``home_pose`` return your own vendor Pose dataclass
      — e.g. ``4-DoF (x, y, z, r)`` or ``6-DoF (x, y, z, rx, ry, rz)``.
      The ``XxxEnv.get_observation()`` is what flattens to ``RobotObservation.pose``.
   3. ``move_to_pose_blocking`` speaks FLANGE frame. The api layer's
      ``goto_xyzr`` is responsible for tip↔flange conversion (so the shared
-     motion tools work for any tool-offset).
+     motion tools work for any tool-offset). TCP-native drivers instead implement
+     ``TcpDriver`` with explicit TCP verbs; they do not promise a flange transform.
   4. ``close()`` must be idempotent — it's called from ``Env.disconnect``
      which itself may be invoked twice on error paths.
 
@@ -105,6 +106,25 @@ class CartesianDriver(RobotDriver, Protocol):
         (``sync_timeout_s``, ``joint=True``, ...) ride in ``*args``/``**kwargs``
         after it.
         """
+
+
+@runtime_checkable
+class TcpDriver(RobotDriver, Protocol):
+    """TCP-native alternative to CartesianDriver for ``motion.cartesian``.
+
+    Poses use base-frame millimeters and XYZ Euler degrees (x/y/z/rx/ry/rz).
+    This surface does not promise a flange transform; an Env must not forward
+    its FLANGE verbs here without an explicit tool geometry conversion.
+    """
+
+    def get_tcp_pose(self) -> dict[str, float]:
+        """Return the measured TCP pose, never a flange pose or command echo."""
+
+    def move_tcp_blocking(self, pose: dict[str, float]) -> dict[str, float]:
+        """Move TCP and return measured completion evidence in the same frame."""
+
+    def home(self) -> None:
+        """Restore the robot's home posture without inventing a flange target."""
 
 
 @runtime_checkable

@@ -45,6 +45,7 @@ class CommandCoordinator:
         self._depth = 0
         self._record: CommandRecord | None = None
         self._service_id: str | None = None
+        self._write_accepted = False
 
     def snapshot(self) -> dict:
         """Return a copy suitable for diagnostics without releasing ownership."""
@@ -68,6 +69,13 @@ class CommandCoordinator:
                 self._record = None
             self._service_id = instance_id
 
+    def accept_write(self) -> None:
+        """Remember successful dispatch until the entire enclosing action finishes."""
+        with self._lock:
+            if self._owner != threading.get_ident():
+                raise RuntimeError("A write must belong to the active command")
+            self._write_accepted = True
+
     @contextmanager
     def command(self, action: str) -> Iterator[None]:
         """Hold a write lease across dispatch and readback; never swallow cancellation."""
@@ -85,14 +93,21 @@ class CommandCoordinator:
             if outer:
                 self._record = CommandRecord(uuid.uuid4().hex, action, "running")
                 self._owner = owner
+                self._write_accepted = False
             self._depth += 1
         try:
             yield
         except BaseException as exc:
             # This is an execution boundary: interruption cannot imply motion stopped.
-            unknown = getattr(exc, "outcome_unknown", False) or not isinstance(exc, Exception)
+            unknown = self._write_accepted or getattr(exc, "outcome_unknown", False) or not isinstance(exc, Exception)
             if outer or unknown:
                 self._finish("outcome_unknown" if unknown else "failed", getattr(exc, "code", type(exc).__name__))
+            if unknown and isinstance(exc, Exception) and not getattr(exc, "outcome_unknown", False):
+                raise RobosimError(
+                    f"Command completion is unconfirmed after dispatch: {exc}",
+                    code=getattr(exc, "code", "robosim_completion_unconfirmed"),
+                    outcome_unknown=True,
+                ) from exc
             raise
         else:
             if outer:

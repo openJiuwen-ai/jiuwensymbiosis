@@ -1,6 +1,6 @@
 """Run a deterministic JiuwenSymbiosis action sequence against RoboSim.
 
-This validates the tool/rail/runner/adapter path without an LLM or a mock robot.
+This validates the tool/rail/runner/backend path without an LLM or a mock robot.
 The service is launched separately using run_robosim_service.py.
 """
 
@@ -11,12 +11,14 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from jiuwensymbiosis.agent.fast.runner import run_sequence
 from jiuwensymbiosis.agent.fast.sequence import parse_sequence
 from jiuwensymbiosis.api.actions import ACTIONS
-from jiuwensymbiosis.introspect import build_session
+from jiuwensymbiosis.introspect import prepare_binding
 from jiuwensymbiosis.rails.safety import SafetyRail
+from jiuwensymbiosis.runtime.admission import admitted_session
 from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
 from jiuwensymbiosis.utils.logging import configure_logging, get_logger
 
@@ -31,10 +33,16 @@ def main() -> int:
     parser.add_argument("--cartesian", action="store_true", help="Also exercise RoboSim TCP motion planning")
     args = parser.parse_args()
     configure_logging()
-    report = {"ok": False, "robot_backend": "robosim", "planner": "fixed_action_sequence", "actions": []}
+    report: dict[str, Any] = {
+        "ok": False,
+        "robot_backend": "robosim",
+        "planner": "fixed_action_sequence",
+        "actions": [],
+    }
     started = time.monotonic()
     try:
-        with build_session(args.config) as session:
+        binding = prepare_binding(args.config, include_sidecars=False)
+        with admitted_session(binding, operation="robosim-smoke") as session:
             rail = SafetyRail(session)
             tool = RobotControlTool(session.api, env=session.env)
 
@@ -61,7 +69,7 @@ def main() -> int:
                     "skip_recovery": data.get("skip_recovery") is True,
                 }
 
-            initial = session.env.low_level.observe()
+            initial = session.env.observe()
             report["initial"] = initial
             joints = initial["joint_positions"]
             joint = list(joints)[-1]
@@ -111,7 +119,7 @@ def main() -> int:
                 raise RuntimeError("Expected grasp_not_confirmed for an empty closure")
             if not execute("home", {})["ok"]:
                 raise RuntimeError("Planned home failed")
-            report["final"] = session.env.low_level.observe()
+            report["final"] = session.env.observe()
             report["ok"] = True
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"

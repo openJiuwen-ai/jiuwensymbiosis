@@ -54,3 +54,28 @@ def test_interruption_is_reraised_and_blocks_later_writes():
         raise KeyboardInterrupt
     assert coordinator.snapshot()["write_blocked"]
     assert not coordinator.snapshot()["busy"]
+
+
+def test_readback_failure_after_accepted_write_is_unknown_even_when_nested():
+    coordinator = CommandCoordinator()
+    with pytest.raises(RobosimError) as exc:
+        with coordinator.command("motion"):
+            with coordinator.command("POST"):
+                coordinator.accept_write()
+            with coordinator.command("readback"):
+                raise ValueError("missing measurement")
+    assert exc.value.outcome_unknown and exc.value.skip_recovery
+    assert isinstance(exc.value.__cause__, ValueError)
+    assert coordinator.snapshot()["write_blocked"]
+
+
+def test_completed_write_does_not_poison_next_commands_preflight_failure():
+    coordinator = CommandCoordinator()
+    with coordinator.command("completed motion"):
+        coordinator.accept_write()
+    with pytest.raises(ValueError), coordinator.command("invalid next target"):
+        raise ValueError("invalid target")
+    assert not coordinator.snapshot()["write_blocked"]
+    with coordinator.command("next valid command"):
+        coordinator.accept_write()
+    assert coordinator.snapshot()["command"]["status"] == "completed"

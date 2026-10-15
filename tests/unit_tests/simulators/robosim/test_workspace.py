@@ -45,9 +45,29 @@ def backend():
                     payload = {"ready": True}
                 elif self.path == "/robot" and self.command == "POST":
                     state.robot = object()
-                    payload = {"robot_type": state.robot_type}
+                    payload = {"success": True, "data": {"robot_type": state.robot_type}}
                 elif self.path == "/robot/state":
                     payload = {"robot_type": state.robot_type}
+                elif self.path.startswith("/robot/gripper/"):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "robot_type": state.robot_type,
+                            "gripper_open": self.path.endswith("open"),
+                            "holding": None,
+                            "holding_arm_id": None,
+                        },
+                    }
+                elif self.path == "/skills/reset_to_home":
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "arms_reset": ["left"],
+                            "partial_success": False,
+                            "gripper_released": False,
+                            "failed_arms": {},
+                        },
+                    }
                 elif self.path.startswith("/symbiosis/observation"):
                     payload = observation()
                 else:
@@ -294,3 +314,181 @@ def test_invalid_response_encoding_blocks_writes_without_retry(backend, payload)
     with pytest.raises(RobosimError, match="Previous command"):
         client.request("POST", "/test")
     assert backend.calls == [("POST", "/invalid", None)]
+
+
+@pytest.mark.parametrize("action", ["joint", "tcp"])
+def test_post_write_readback_failure_blocks_recovery_and_later_commands(backend, monkeypatch, action):
+    from urllib.error import URLError
+
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    opener = workspace.client._opener.open
+    sent = False
+
+    def fail_readback(request, **kwargs):
+        nonlocal sent
+        if sent and "/symbiosis/observation" in request.full_url:
+            raise URLError("readback unavailable")
+        response = opener(request, **kwargs)
+        if request.get_method() == "POST":
+            sent = True
+        return response
+
+    monkeypatch.setattr(workspace.client._opener, "open", fail_readback)
+    with pytest.raises(RobosimError) as exc:
+        if action == "joint":
+            session.api.move_joint({"wrist": 0.1})
+        else:
+            session.api.goto_pose({"x": 300, "y": 0, "z": 400, "rx": 0, "ry": 0, "rz": 0})
+    assert exc.value.outcome_unknown and exc.value.skip_recovery
+    assert workspace.client.commands.snapshot()["write_blocked"]
+    writes = [c for c in backend.calls if c[0] == "POST"]
+    with pytest.raises(RobosimError, match="Previous command"):
+        session.api.open_gripper()
+    assert [c for c in backend.calls if c[0] == "POST"] == writes
+    session.disconnect()
+    workspace.close()
+
+
+@pytest.mark.parametrize("first_connect_fails", [False, True])
+def test_bound_session_keeps_identity_across_reconnection(backend, first_connect_fails):
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    if first_connect_fails:
+        backend.robot = object()
+        with pytest.raises(RobosimError, match="stale"):
+            session.connect()
+    else:
+        session.connect()
+        session.disconnect()
+        backend.robot = object()
+    writes = [c for c in backend.calls if c[0] == "POST"]
+    for _ in range(2):
+        with pytest.raises(RobosimError, match="stale"):
+            session.connect()
+    assert [c for c in backend.calls if c[0] == "POST"] == writes
+    assert workspace.refresh()["robot_state"]["robot_type"] == "moz1"
+    workspace.close()
+
+
+def test_bound_session_reconnect_same_identity_keeps_borrowed_client(backend):
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    session.disconnect()
+    session.connect()
+    assert session.env.low_level.client is workspace.client
+    session.disconnect()
+    workspace.refresh()
+    workspace.close()
+    with pytest.raises(RobosimError, match="closed"):
+        session.connect()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"success": True},
+        {"success": True, "data": None},
+        {"success": True, "data": {}},
+        {"success": True, "data": {"robot_type": "moz1"}},
+    ],
+)
+async def test_malformed_gripper_result_never_commits_release(backend, payload):
+    from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
+
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    backend.overrides["/robot/gripper/open"] = (200, payload)
+    output = await RobotControlTool(session.api, env=session.env).invoke({"action": "open_gripper"})
+    assert not output.success
+    assert output.data["outcome_unknown"] and output.data["skip_recovery"]
+    assert workspace.client.commands.snapshot()["write_blocked"]
+    session.disconnect()
+    workspace.close()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"arms_reset": ["right"]},
+        {"arms_reset": ["left"], "partial_success": True, "gripper_released": False, "failed_arms": {}},
+    ],
+)
+def test_home_requires_selected_arm_completion_evidence(backend, data):
+    driver = RobosimLowLevel(backend.cfg)
+    backend.overrides["/skills/reset_to_home"] = (200, {"success": True, "data": data})
+    with pytest.raises(RobosimError) as exc:
+        driver.home()
+    assert exc.value.outcome_unknown
+    assert driver.client.commands.snapshot()["write_blocked"]
+    driver.close()
+
+
+def test_real_readback_error_stops_runner_without_release_or_home(backend, monkeypatch):
+    from urllib.error import URLError
+
+    from jiuwensymbiosis.agent.fast.runner import run_sequence
+    from jiuwensymbiosis.agent.fast.sequence import parse_sequence
+    from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
+
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    backend.calls.clear()
+    opener = workspace.client._opener.open
+
+    def fail_readback(request, **kwargs):
+        if any(method == "POST" for method, *_ in backend.calls) and "/symbiosis/observation" in request.full_url:
+            raise URLError("readback unavailable")
+        return opener(request, **kwargs)
+
+    monkeypatch.setattr(workspace.client._opener, "open", fail_readback)
+    index = _build_action_index(session.api, env=session.env, planner_only=True)
+    steps = parse_sequence(
+        [{"op": "move_joint", "params": {"targets": {"wrist": 0.1}}}, {"op": "open_gripper"}], allowed_ops=index
+    )
+    result = run_sequence(session, steps, action_index=index)
+    assert result["outcome_unknown"] and not result["ok"]
+    assert result["steps_done"] == 1
+    assert [path for method, path, _ in backend.calls if method == "POST"] == ["/robot/joints"]
+    assert workspace.client.commands.snapshot()["write_blocked"]
+    session.disconnect()
+    workspace.close()
+
+
+def test_motion_result_uses_readback_inside_command_scope(backend):
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    backend.calls.clear()
+    result = session.api.move_joint({"wrist": 0.0})
+    assert result == {"ok": True, "joint_positions": {"wrist": 0.0}}
+    reads = [p for m, p, _ in backend.calls if p.startswith("/symbiosis/observation")]
+    assert len(reads) == 2  # Preflight and completion, no unguarded API read after completion.
+    session.disconnect()
+    workspace.close()
+
+
+def test_valid_native_gripper_and_home_evidence_is_accepted(backend):
+    workspace = RobosimWorkspace(backend.cfg)
+    session, _ = bind_robosim_session(workspace, workspace.load_robot())
+    session.connect()
+    session.env.home()
+    assert workspace.client.commands.snapshot()["command"]["status"] == "completed"
+    assert session.api.open_gripper() == {"ok": True}
+    backend.overrides["/robot/gripper/close"] = (
+        200,
+        {
+            "success": True,
+            "data": {"robot_type": "moz1", "gripper_open": False, "holding": "cube", "holding_arm_id": "left"},
+        },
+    )
+    assert session.api.close_gripper() == {"ok": True, "holding": "cube"}
+    assert not workspace.client.commands.snapshot()["write_blocked"]
+    session.disconnect()
+    workspace.close()

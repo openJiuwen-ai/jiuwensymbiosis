@@ -22,6 +22,7 @@ from jiuwensymbiosis.env.protocol import (
     NamedJointDriver,
     RobotDriver,
     SuctionDriver,
+    TcpDriver,
     VisionDriver,
     WaistDriver,
 )
@@ -233,7 +234,7 @@ class TestProtocolsMirrorCapabilitySpec:
     @pytest.mark.parametrize(
         ("capability", "protocol"),
         [
-            ("motion.cartesian", CartesianDriver),
+            ("motion.cartesian", (CartesianDriver, TcpDriver)),
             # motion.joint has two encodings; the spec entry is a tuple, so the pair of
             # sibling protocols together must declare it.
             ("motion.joint", (JointDriver, NamedJointDriver)),

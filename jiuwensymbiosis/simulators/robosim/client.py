@@ -141,19 +141,26 @@ class RobosimClient:
                 raise RobosimError(
                     "Expected JSON response", code="robosim_protocol_error", outcome_unknown=writing
                 ) from exc
-            return self._decode(result, writing=writing)
+            decoded = self._decode(result, writing=writing)
+            if writing:
+                self.commands.accept_write()
+            return decoded
 
     @staticmethod
     def _decode(result: Any, *, writing: bool) -> dict[str, Any]:
         if not isinstance(result, dict):
             raise RobosimError("Expected JSON object", code="robosim_protocol_error", outcome_unknown=writing)
         if "success" not in result:
+            if writing:
+                raise RobosimError("Missing write result envelope", code="robosim_protocol_error", outcome_unknown=True)
             return result
         if result["success"] is False:
             raise RobosimError(
                 result.get("error") or "RoboSim action failed",
                 code=result.get("failure_reason") or "robosim_action_failed",
             )
+        if writing and (not isinstance(result.get("data"), dict) or not result["data"]):
+            raise RobosimError("Missing write result data", code="robosim_protocol_error", outcome_unknown=True)
         if result["success"] is not True or not isinstance(result.get("data", {}), (dict, type(None))):
             raise RobosimError("Invalid RoboSim envelope", code="robosim_protocol_error", outcome_unknown=writing)
         return result.get("data") or {}

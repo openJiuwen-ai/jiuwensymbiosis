@@ -67,18 +67,22 @@ with admitted_session(binding) as session:
     print(session.env.get_observation())
 ```
 
-已有工作区可通过 `bind_robosim_session(workspace, workspace.refresh())` 绑定会话和命名查询工具。会话借用工作区传输；断开会话只关闭本地驱动。独立会话和工作区绑定会话都校验服务与机器人实例身份，同型号重载后旧会话拒绝操作。
+已有工作区可通过 `bind_robosim_session(workspace, workspace.refresh())` 绑定会话和命名查询工具。会话借用工作区传输；断开会话只关闭本地驱动，Env 保留借入客户端和绑定身份。重连同一实例仍借用原客户端；实例变化、工作区关闭或首次连接失败后重试不会自动转成独立会话。独立会话和工作区绑定会话都校验服务与机器人实例身份，同型号重载后旧会话拒绝操作。
 
-- 关节使用名称与弧度，限位来自 USD，运动完成依据实测关节读回。
-- TCP API 使用基坐标系毫米和 XYZ 欧拉角度数，驱动转换为后端世界坐标米与弧度。
+- 关节使用名称与弧度，限位来自 USD，运动完成依据实测关节读回。`env.move_named_joints(targets, timeout_s=...)` 可覆盖本次到位等待期限；省略时使用 `joint_timeout_s`。
+- TCP API 使用基坐标系毫米和 XYZ 欧拉角度数，经 `RobosimEnv.get_tcp_pose/move_to_tcp` 调用 `TcpDriver`，驱动转换为后端世界坐标米与弧度。当前未提供 TCP 到法兰的几何转换，Env 的 FLANGE 查询和运动接口明确拒绝调用。
 - 夹爪闭合本身不证明抓取成功；没有所选机械臂的抓持绑定时返回 `grasp_not_confirmed`。
 - `SafetyRail` 在正常 Agent 入口执行。直接调用 API 不自动触发 rail；诊断脚本必须显式校验。
 
+所有机器人动作经 `RobosimApi → RobosimEnv → RobosimLowLevel`。关节与 TCP 动作直接返回同一命令范围内的实测结果，API 不再在命令结束后追加一次无保护读回。夹爪的抓持确认由 Env 保留所选机械臂的证据。
+
 ## 通信失败与安全边界
 
-HTTP 仅允许 loopback，禁用代理与重定向，不自动重试失败请求。写入超时、损坏响应或中断造成结果未知后，同进程内同端口的后续写入被阻断，查询仍可进行；清空客户端不会解除保护。只有已识别后台换成新服务实例才可恢复。
+HTTP 仅允许 loopback，禁用代理与重定向，不自动重试失败请求。写入超时、损坏响应、中断，或写入已接受后的读回/到位确认失败造成结果未知后，同进程内同端口的后续写入被阻断，查询仍可进行；清空客户端不会解除保护。只有已识别后台换成新服务实例才可恢复。
 
-官方 CLI 的运行时准入锁按服务端口串行化本机调用，同一服务的左右臂和 loopback 别名共用资源标识。该锁不替代 RoboSim 的结果未知保护：本阶段操作协调器仍是进程内状态，不能跨进程或跨重启保存未知操作。运行时保持单操作者，不通过重启 Agent 绕过未知状态；先核对现场，再显式重启自有后台。不要将本地 `completed` 视为独立物理验收。
+写响应必须包含 `success: true` 和非空对象 `data`；只读桥接接口仍允许原始 JSON。夹爪响应还必须包含机器人型号、开合和抓持状态；归位响应必须确认所选机械臂完成，不能是部分成功。缺失这些证据时保留结果未知，不提交动作成功效果。
+
+官方 CLI 和 `robosim_smoke` 的运行时准入锁按服务端口串行化本机调用，同一服务的左右臂和 loopback 别名共用资源标识。该锁不替代 RoboSim 的结果未知保护：本阶段操作协调器仍是进程内状态，不能跨进程或跨重启保存未知操作。运行时保持单操作者，不通过重启 Agent 绕过未知状态；先核对现场，再显式重启自有后台。不要将本地 `completed` 视为独立物理验收。
 
 RobotControlTool、直接执行器和 ability executor 保留 `outcome_unknown` 与 `skip_recovery`，序列在失败处停止，不追加自动回零或松爪。
 
@@ -88,7 +92,7 @@ RobotControlTool、直接执行器和 ability executor 保留 `outcome_unknown` 
 
 ```bash
 python -m pytest tests/unit_tests/simulators/robosim tests/unit_tests/test_backends.py -q
-python scripts/validate_adapter.py --module jiuwensymbiosis.simulators.robosim
+python -m scripts.validate_adapter --module jiuwensymbiosis.simulators.robosim
 ```
 
 RoboSim 确定性 smoke 会加载或连接仿真机器人并执行运动，应在空载、专用仿真中运行：

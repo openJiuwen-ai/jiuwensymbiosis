@@ -11,7 +11,6 @@ from jiuwensymbiosis.simulators.robosim.api import RobosimApi
 from jiuwensymbiosis.simulators.robosim.client import identity_token
 from jiuwensymbiosis.simulators.robosim.config import RobosimConfig
 from jiuwensymbiosis.simulators.robosim.env import RobosimEnv
-from jiuwensymbiosis.simulators.robosim.lowlevel import RobosimLowLevel
 from jiuwensymbiosis.simulators.robosim.operations import RobosimError
 from jiuwensymbiosis.simulators.robosim.tools import build_workspace_tools
 
@@ -41,8 +40,6 @@ def bind_robosim_session(workspace: RobosimWorkspace, snapshot: dict) -> tuple[R
     if snapshot.get("scene_phase") in {"loading", "failed"}:
         raise RobosimError("Scene is not ready", code="robosim_scene_not_ready")
     session = build_robosim_session(workspace.cfg, include_sidecars=False)
-    session.env.low_level = RobosimLowLevel(
-        workspace.cfg, client=workspace.client, expected_identity=identity_token(snapshot)
-    )
+    session.env.bind_transport(workspace.client, identity_token(snapshot))
     tools = build_workspace_tools(workspace, allow_load=False)
     return session, tools

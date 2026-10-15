@@ -37,7 +37,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # 仓根必须先进 sys.path：以 ``python scripts/smoke_test_adapter.py`` 运行时，
 # sys.path[0] 是 scripts/ 而不是仓根，``import jiuwensymbiosis`` 会安静地落到
@@ -160,6 +160,15 @@ class _StubDriver:
     @staticmethod
     def move_to_pose_blocking(*args: Any, **kwargs: Any) -> None:
         return None
+
+    # -- TcpDriver: explicit TCP coordinates, independent of the flange stub above.
+    @staticmethod
+    def get_tcp_pose() -> dict[str, float]:
+        return {"x": 100.0, "y": 0.0, "z": 200.0, "rx": 180.0, "ry": 0.0, "rz": 0.0}
+
+    @staticmethod
+    def move_tcp_blocking(pose: dict[str, float]) -> dict[str, float]:
+        return dict(pose)
 
     # -- JointDriver (both encodings) / ServoDriver
     def get_angles(self) -> list[float]:
@@ -294,7 +303,7 @@ def _attach_stub_driver(env: Any) -> bool:
     return True
 
 
-def _build_args(func: Any) -> tuple[dict[str, Any], Optional[str]]:
+def _build_args(func: Any) -> tuple[dict[str, Any], str | None]:
     """Heuristically build call kwargs for a bound tool function.
 
     Returns ``(kwargs, skip_reason)``. ``skip_reason`` is non-None when a
@@ -372,9 +381,7 @@ def smoke_test_api(api: Any, *, env: Any = None) -> list[dict[str, Any]]:
         try:
             ret = func(**kwargs)
         except Exception as exc:
-            results.append(
-                {"name": name, "status": "fail", "error": f"{type(exc).__name__}: {exc}"}
-            )
+            results.append({"name": name, "status": "fail", "error": f"{type(exc).__name__}: {exc}"})
             continue
         entry: dict[str, Any] = {"name": name, "status": "pass"}
         if ret is None:
@@ -412,7 +419,7 @@ def _jsonable(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_module(module_str: Optional[str], path_str: Optional[str]) -> str:
+def _resolve_module(module_str: str | None, path_str: str | None) -> str:
     if module_str:
         return module_str
     if path_str:
@@ -509,11 +516,12 @@ def main() -> int:
         epilog=__doc__,
     )
     parser.add_argument("--module", "-m", type=str, default=None, help="适配器模块路径")
+    parser.add_argument("--path", "-p", type=str, default=None, help="适配器目录路径 (自动推导模块)")
     parser.add_argument(
-        "--path", "-p", type=str, default=None, help="适配器目录路径 (自动推导模块)"
-    )
-    parser.add_argument(
-        "--config", "-c", type=str, default=None,
+        "--config",
+        "-c",
+        type=str,
+        default=None,
         help="配置 YAML；缺省先试空配置，再回退到 configs/<name>/<name>.yaml",
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON 而非格式化报告")

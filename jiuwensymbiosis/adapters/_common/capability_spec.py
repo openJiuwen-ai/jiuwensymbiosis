@@ -45,12 +45,26 @@ CAPABILITY_ACTIONS: dict[str, list[str]] = {
 # forwarding one line. Everything else under a declared capability is real work the
 # adapter must write (vendor calibration, IK, end-effector geometry, force confirmation),
 # which is what makes forgetting one worth a warning.
-ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset({
-    "home", "get_pose", "get_home_pose", "goto_xyzr", "move_direction", "move_joint",
-    "activate_suction", "deactivate_suction", "open_gripper", "close_gripper",
-    "get_image", "navigate_relative", "rotate_base", "drive_arc", "set_lift_pose",
-    "turn_waist",
-})
+ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset(
+    {
+        "home",
+        "get_pose",
+        "get_home_pose",
+        "goto_xyzr",
+        "move_direction",
+        "move_joint",
+        "activate_suction",
+        "deactivate_suction",
+        "open_gripper",
+        "close_gripper",
+        "get_image",
+        "navigate_relative",
+        "rotate_base",
+        "drive_arc",
+        "set_lift_pose",
+        "turn_waist",
+    }
+)
 
 # Capability → low-level driver members the Env/Api delegate to (structural
 # driver contract, mirrors env/protocol.py). Used by validate [D-14].
@@ -58,8 +72,10 @@ ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset({
 # ``motion.joint`` into an indexed and a named encoding (``JointDriver`` /
 # ``NamedJointDriver``) and a body implements the one its hardware speaks, so requiring
 # both would fail every body for having exactly the surface it should have.
+# Cartesian motion likewise accepts explicit TCP or FLANGE driver verbs; the Env
+# must keep their coordinate meanings distinct.
 CAPABILITY_DRIVER_MEMBERS: dict[str, list[str | tuple[str, ...]]] = {
-    "motion.cartesian": ["home", "get_pose", "move_to_pose_blocking"],
+    "motion.cartesian": ["home", ("get_pose", "get_tcp_pose"), ("move_to_pose_blocking", "move_tcp_blocking")],
     "motion.joint": [("move_joint_blocking", "move_joints_blocking")],
     "grasp.parallel": ["set_gripper"],
     "grasp.suction": ["set_suction"],

@@ -6,7 +6,7 @@ import functools
 import math
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -21,12 +21,17 @@ from jiuwensymbiosis.simulators.robosim.client import (
 from jiuwensymbiosis.simulators.robosim.config import RobosimConfig
 from jiuwensymbiosis.simulators.robosim.operations import RobosimError as RobosimError
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
-def _commanded(method: Callable[..., Any]) -> Callable[..., Any]:
+
+def _commanded(
+    method: Callable[Concatenate[RobosimLowLevel, _P], _R],
+) -> Callable[Concatenate[RobosimLowLevel, _P], _R]:
     """Hold command ownership until the driver's measured readback is complete."""
 
     @functools.wraps(method)
-    def run(self: RobosimLowLevel, *args: Any, **kwargs: Any) -> Any:
+    def run(self: RobosimLowLevel, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         with self.client.commands.command(method.__name__):
             return method(self, *args, **kwargs)
 
@@ -136,8 +141,16 @@ class RobosimLowLevel:
         return {name: float(value) for name, value in self.observe()["joint_positions"].items()}
 
     @_commanded
-    def move_joints_blocking(self, targets: dict[str, float]) -> None:
+    def move_joints_blocking(self, targets: dict[str, float], *, timeout_s: float | None = None) -> dict[str, float]:
         """Hold a named setpoint until measured joints converge or the deadline expires."""
+        timeout = self.cfg.joint_timeout_s if timeout_s is None else timeout_s
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("timeout_s must be finite and positive")
         observation = self.observe()
         if not targets or set(targets) - observation["joint_positions"].keys():
             raise ValueError("targets must name joints on the selected arm")
@@ -147,23 +160,23 @@ class RobosimLowLevel:
             limits = observation["joint_limits"].get(name)
             if limits and not limits[0] <= value <= limits[1]:
                 raise ValueError(f"Target outside authored joint limits: {name}")
-        deadline = time.monotonic() + self.cfg.joint_timeout_s
+        deadline = time.monotonic() + timeout
         while True:
             # The existing endpoint advances five physics ticks per command. Reissue
             # the same idempotent target to settle; never retry a failed request.
             self.request("POST", "/robot/joints", {"joint_values": targets})
             measured = self.get_joint_positions()
             if all(abs(measured[k] - v) <= self.cfg.joint_tolerance_rad for k, v in targets.items()):
-                return
+                return measured
             if time.monotonic() >= deadline:
                 raise RobosimError("Joint readback did not converge", code="robosim_joint_timeout")
 
-    def get_pose(self) -> dict[str, float]:
+    def get_tcp_pose(self) -> dict[str, float]:
         """Read selected TCP in base-frame mm and XYZ Euler degrees."""
         return base_pose(self.observe())
 
     @_commanded
-    def move_to_pose_blocking(self, pose: dict[str, float]) -> None:
+    def move_tcp_blocking(self, pose: dict[str, float]) -> dict[str, float]:
         """Convert the shared TCP contract and use RoboSim's existing motion planner."""
         values = [pose[k] for k in ("x", "y", "z", "rx", "ry", "rz")]
         if not all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) for v in values):
@@ -184,16 +197,27 @@ class RobosimLowLevel:
                 },
             },
         )
-        actual = pose_matrix(self.observe()["tcp_world"])
+        observation = self.observe()
+        actual = pose_matrix(observation["tcp_world"])
         error_mm = float(np.linalg.norm(actual[:3, 3] - world[:3, 3]) * 1000)
         error_deg = float(np.degrees(Rotation.from_matrix(actual[:3, :3].T @ world[:3, :3]).magnitude()))
         if error_mm > self.cfg.position_tolerance_mm or error_deg > self.cfg.orientation_tolerance_deg:
             raise RobosimError(f"TCP readback error: {error_mm:.2f} mm, {error_deg:.2f} deg", code="robosim_pose_error")
+        return base_pose(observation)
 
     @_commanded
     def set_gripper(self, on: bool) -> dict:
         """Actuate a gripper; closure alone does not establish payload ownership."""
         state = self.request("POST", "/robot/gripper/close" if on else "/robot/gripper/open", {"side": self.cfg.side})
+        if (
+            state.get("robot_type") != self.cfg.robot_type
+            or not isinstance(state.get("gripper_open"), bool)
+            or "holding" not in state
+            or not (state["holding"] is None or isinstance(state["holding"], str))
+            or "holding_arm_id" not in state
+            or state["holding_arm_id"] not in (None, "left", "right")
+        ):
+            raise RobosimError("Invalid gripper state response", code="robosim_protocol_error", outcome_unknown=True)
         self._gripper_state = on
         return state
 
@@ -207,7 +231,19 @@ class RobosimLowLevel:
         """Use the planned home operation without resetting physics or releasing payloads."""
         if self.observe()["reported_state"].get("holding"):
             raise RobosimError("Refusing home while carrying a payload", code="robosim_payload_held")
-        self.request("POST", "/skills/reset_to_home", {"arms": self.cfg.side, "release_gripper": False, "force": False})
+        state = self.request(
+            "POST", "/skills/reset_to_home", {"arms": self.cfg.side, "release_gripper": False, "force": False}
+        )
+        if (
+            not isinstance(state.get("arms_reset"), list)
+            or self.cfg.side not in state["arms_reset"]
+            or state.get("partial_success") is not False
+            or state.get("gripper_released") is not False
+            or state.get("failed_arms") != {}
+        ):
+            raise RobosimError(
+                "Home completion was not confirmed", code="robosim_home_unconfirmed", outcome_unknown=True
+            )
 
     def close(self) -> None:
         """Close this client; the independently launched simulation remains owned by its caller."""
