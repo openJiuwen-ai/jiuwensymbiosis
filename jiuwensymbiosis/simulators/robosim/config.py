@@ -13,7 +13,7 @@ import yaml
 
 @dataclass
 class RobosimConfig:
-    """Connection and readback tolerances; no Isaac imports or local repository paths."""
+    """RoboSim connection and readback tolerances, independent of the service runtime."""
 
     name: str = "robosim_moz1"
     service_url: str = "http://127.0.0.1:8001"

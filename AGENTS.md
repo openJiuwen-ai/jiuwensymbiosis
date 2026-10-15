@@ -327,7 +327,8 @@ jiuwensymbiosis/          # Main package
 jiuwensymbiosis_gui/      # GUI launcher, plugin contract, and existing workbench
   __main__.py / launcher.py / plugin.py / startup.py
   workbench/              # NiceGUI application, pages, engines, data, and assets
-configs/{piper,so101,cruzr}/  # Per-body YAML; the top-level `adapter:` key picks the session builder
+configs/{piper,so101,cruzr}/  # Hardware YAML; the top-level `adapter:` key picks the session builder
+configs/simulators/          # All simulation configs; use `adapter: robosim` for the RoboSim backend
 templates/xxx_adapter/    # Adapter skeleton for new hardware
 tests/
   unit_tests/             # Core/domain tests; mirrors jiuwensymbiosis package structure

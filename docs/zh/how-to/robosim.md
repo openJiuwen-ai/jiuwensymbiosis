@@ -1,22 +1,43 @@
 # 接入 RoboSim 仿真后端
 
-RoboSim 在独立的 Isaac Python 环境中运行。JiuwenSymbiosis 通过本机 HTTP 连接它，Agent 环境不导入 Isaac，也不负责关闭仿真世界。
+RoboSim 在专用 Python 环境中运行并管理仿真世界。JiuwenSymbiosis 在独立 Agent 环境中通过本机 HTTP 接入，断开连接只释放本地客户端，不关闭 RoboSim 服务。
 
 当前接入支持 MOZ1 所选单臂的关节控制、TCP 运动和夹爪操作。对象抓放、底盘导航、相机输入和双臂协同不在本阶段的能力集合中。
 
 ## 启动独立服务
 
-在 JiuwenSymbiosis 源码根目录，用已配置 RoboSim 的 Isaac Python 启动服务：
+在 JiuwenSymbiosis 源码根目录，使用 RoboSim 专用环境的 Python 启动服务：
 
 ```bash
-<isaac-python> scripts/run_robosim_service.py --repo <RiemannRoboSim_Isaac路径> --headless
+<robosim-python> scripts/run_robosim_service.py --repo <robosim-repo> --headless
 ```
+
+`<robosim-python>` 是已安装 RoboSim 运行依赖的 Python 可执行文件，`<robosim-repo>` 是包含 `sim_service/main.py` 的 RoboSim 源码根目录。
 
 服务默认监听 `127.0.0.1:8001`。启动器复用 RoboSim 的主循环，并添加只读观测与实例身份接口；它不修改 RoboSim 源码。Agent 环境继续使用本项目原有依赖。
 
 ## 配置与工作区查询
 
-使用 `configs/robosim/moz1.yaml`。`adapter: robosim` 经统一发现入口解析到 `jiuwensymbiosis.simulators.robosim`，现有硬件仍位于 `adapters/`。
+所有仿真配置统一放在 `configs/simulators/`，当前入口为 `configs/simulators/moz1.yaml`。`adapter: robosim` 经统一发现入口解析到 `jiuwensymbiosis.simulators.robosim`，现有硬件仍位于 `adapters/`。
+
+`adapter` 是通用运行时读取的必需选择字段，目录名不参与后端选择。`RobosimConfig.from_dict` 只提取自身负责的连接和运动参数；未提取 `adapter` 与 `agent` 不代表它们未被使用。
+
+| 字段 | 消费方与作用 |
+| --- | --- |
+| `adapter` | `prepare_binding` 校验并选择 `robosim` 后端及会话构建器。 |
+| `name` | 通用会话构建器设置 `RobotSession.name`，用于会话标识及默认工作区选择。 |
+| `service_url` | HTTP 客户端连接地址；运行时还用服务端口生成准入资源标识。 |
+| `robot_type` | 机器人加载与身份核验；当前支持 `moz1`。 |
+| `side` | 选择左/右臂的观测和控制资源。 |
+| `load_robot` | 控制会话连接时是否允许在空服务中加载机器人。 |
+| `request_timeout_s` | 单次 HTTP 请求超时。 |
+| `joint_timeout_s` | 关节到位读回等待上限。 |
+| `joint_tolerance_rad` | 关节到位误差阈值，单位为弧度。 |
+| `position_tolerance_mm` | TCP 位置读回误差阈值，单位为毫米。 |
+| `orientation_tolerance_deg` | TCP 姿态读回误差阈值，单位为度。 |
+| `agent.modules.visual_feedback.enabled` | Agent 配置关闭视觉反馈；本阶段不提供相机输入。 |
+
+这些字段均有用途。部分值与后端默认值一致，示例显式保留它们，方便部署时核对连接、加载行为和到位阈值。
 
 ```python
 from jiuwensymbiosis.simulators.robosim import RobosimConfig, RobosimWorkspace
@@ -39,7 +60,7 @@ finally:
 from jiuwensymbiosis.introspect import prepare_binding
 from jiuwensymbiosis.runtime.admission import admitted_session
 
-binding = prepare_binding("configs/robosim/moz1.yaml")
+binding = prepare_binding("configs/simulators/moz1.yaml")
 with admitted_session(binding) as session:
     print(session.env.get_observation())
 ```
@@ -61,18 +82,18 @@ RobotControlTool、直接执行器和 ability executor 保留 `outcome_unknown` 
 
 ## 验证
 
-无需 Isaac 的边界测试：
+无需启动 RoboSim 服务的边界测试：
 
 ```bash
 python -m pytest tests/unit_tests/simulators/robosim tests/unit_tests/test_backends.py -q
 python scripts/validate_adapter.py --module jiuwensymbiosis.simulators.robosim
 ```
 
-真实 Isaac 确定性 smoke 会加载或连接机器人并实际运动，应在空载、专用仿真中运行：
+RoboSim 确定性 smoke 会加载或连接仿真机器人并执行运动，应在空载、专用仿真中运行：
 
 ```bash
-python -m scripts.robosim_smoke --config configs/robosim/moz1.yaml --cartesian \
+python -m scripts.robosim_smoke --config configs/simulators/moz1.yaml --cartesian \
   --output outputs/robosim_smoke/pr1.json
 ```
 
-它保存动作参数、实测读回和失败状态，不调用 LLM。通用 `smoke_test_adapter.py` 的桩驱动没有抓持证据，因此 `close_gripper` 应拒绝成功；通用脚本也缺少 `goto_pose` 的安全参数。对应行为由本后端的针对性测试覆盖，不能将通用桩结果当作物理验收。
+报告的 `robot_backend` 固定为 `robosim`，保存动作参数、实测读回和失败状态，不调用 LLM。通用 `smoke_test_adapter.py` 的桩驱动没有抓持证据，因此 `close_gripper` 应拒绝成功；通用脚本也缺少 `goto_pose` 的安全参数。对应行为由本后端的针对性测试覆盖，不能将通用桩结果当作物理验收。

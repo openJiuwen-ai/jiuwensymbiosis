@@ -80,7 +80,7 @@ def test_shipped_robosim_config_uses_grouped_agent_schema():
     from jiuwensymbiosis.agent.config import RobotAgentConfig
     from jiuwensymbiosis.runtime.bindings import prepare_binding
 
-    source = Path(__file__).resolve().parents[2] / "configs/robosim/moz1.yaml"
+    source = Path(__file__).resolve().parents[2] / "configs/simulators/moz1.yaml"
     data = yaml.safe_load(source.read_text())
     cfg = RobotAgentConfig.from_dict(data["agent"])
     assert not cfg.modules.visual_feedback.enabled

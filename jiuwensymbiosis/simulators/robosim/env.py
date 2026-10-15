@@ -1,4 +1,4 @@
-"""RobotSession environment backed by an independently running Isaac service."""
+"""RobotSession environment backed by an independently running RoboSim service."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Check standalone backend selection without importing Isaac or starting a server."""
+"""Check standalone RoboSim selection without loading its runtime or starting a server."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def test_launcher_loads_only_the_requested_checkout(tmp_path, shadowed):
         "    assert Path.cwd() == Path(__file__).resolve().parents[1]\n"
         "    assert kwargs == dict(headless=True, streaming=False, shutdown_sim_on_lifespan=False)\n"
         "    raise SystemExit(0)\n"
-        "def run_service_loop(*args):\n    raise AssertionError('must not start Isaac')\n",
+        "def run_service_loop(*args):\n    raise AssertionError('must not start RoboSim')\n",
         encoding="utf-8",
     )
     dependencies = tmp_path / "dependencies"

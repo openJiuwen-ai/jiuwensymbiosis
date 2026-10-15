@@ -49,7 +49,7 @@ def base_pose(observation: dict[str, Any]) -> dict[str, float]:
 
 
 class RobosimLowLevel:
-    """Named-joint and TCP driver for one arm on a separately owned Isaac service."""
+    """Named-joint and TCP driver for one arm on a separately owned RoboSim service."""
 
     def __init__(
         self,
@@ -92,7 +92,7 @@ class RobosimLowLevel:
     def connect(self) -> None:
         """Attach to the configured body, optionally loading it into an empty service."""
         if not self.request("GET", "/sim/health").get("ready"):
-            raise RobosimError("Isaac is not ready", code="robosim_not_ready")
+            raise RobosimError("RoboSim is not ready", code="robosim_not_ready")
         identity = read_identity(self.client.request)
         self._check_identity(identity)
         self.client.commands.observe_service(identity["service_instance_id"])

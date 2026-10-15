@@ -1,4 +1,4 @@
-"""Shared loopback transport and native protocol checks, without Isaac imports."""
+"""Shared loopback transport and native RoboSim protocol checks."""
 
 from __future__ import annotations
 

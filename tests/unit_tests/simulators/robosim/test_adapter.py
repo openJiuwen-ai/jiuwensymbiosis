@@ -1,4 +1,4 @@
-"""Boundary tests for the HTTP/physics adapter; no Isaac or external service."""
+"""Boundary tests for the RoboSim HTTP backend; no external service."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ async def test_empty_close_does_not_commit_payload_effect():
 
 
 def test_config_discovery_and_capability_gates():
-    session = build_session("configs/robosim/moz1.yaml")
+    session = build_session("configs/simulators/moz1.yaml")
     assert isinstance(session.api, RobosimApi)
     assert session.api.capabilities & session.env.capabilities == frozenset(
         {"motion.joint", "motion.cartesian", "grasp.parallel"}

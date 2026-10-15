@@ -1,7 +1,7 @@
-"""Isaac-side read-only observation extension; imported only by the launcher.
+"""RoboSim-side read-only observation extension; imported only by the launcher.
 
-This module intentionally does not import jiuwensymbiosis: Isaac and the agent
-run in separate environments. All articulation access uses RoboSim's Kit queue.
+This module intentionally does not import jiuwensymbiosis: RoboSim and the agent
+run in separate environments. Articulation access uses RoboSim's main-thread queue.
 """
 
 from __future__ import annotations

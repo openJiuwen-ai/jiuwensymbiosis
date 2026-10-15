@@ -1,4 +1,4 @@
-"""MOZ1 adapter for an independently running RiemannRoboSim Isaac service."""
+"""MOZ1 backend for an independently running RoboSim service."""
 
 from jiuwensymbiosis.simulators.robosim.api import RobosimApi
 from jiuwensymbiosis.simulators.robosim.config import RobosimConfig

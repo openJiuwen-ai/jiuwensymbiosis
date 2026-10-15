@@ -1,15 +1,18 @@
-# Start scripts/run_robosim_service.py with the separate Isaac Python first.
+# 先在 RoboSim 专用 Python 环境中启动 scripts/run_robosim_service.py。
+# 通用运行时用此字段选择仿真后端，不从目录名推断。
 adapter: robosim
 name: robosim_moz1
 service_url: http://127.0.0.1:8001
 robot_type: moz1
 side: left
+# 连接空服务时允许加载机器人；false 表示只连接已有机器人。
 load_robot: true
 request_timeout_s: 180.0
 joint_timeout_s: 20.0
 joint_tolerance_rad: 0.01
 position_tolerance_mm: 20.0
 orientation_tolerance_deg: 5.0
+# 本阶段未提供相机输入，禁用视觉反馈模块。
 agent:
   modules:
     visual_feedback:

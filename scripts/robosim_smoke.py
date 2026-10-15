@@ -1,4 +1,4 @@
-"""Run a deterministic JiuwenSymbiosis action sequence against real Isaac physics.
+"""Run a deterministic JiuwenSymbiosis action sequence against RoboSim.
 
 This validates the tool/rail/runner/adapter path without an LLM or a mock robot.
 The service is launched separately using run_robosim_service.py.
@@ -26,12 +26,12 @@ logger = get_logger("jiuwensymbiosis.robosim_smoke")
 def main() -> int:
     """Persist measured before/after state and return nonzero on any acceptance failure."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/robosim/moz1.yaml")
+    parser.add_argument("--config", default="configs/simulators/moz1.yaml")
     parser.add_argument("--output", type=Path, default=Path("outputs/robosim_smoke/headless.json"))
-    parser.add_argument("--cartesian", action="store_true", help="Also exercise cuMotion TCP planning")
+    parser.add_argument("--cartesian", action="store_true", help="Also exercise RoboSim TCP motion planning")
     args = parser.parse_args()
     configure_logging()
-    report = {"ok": False, "robot_backend": "real_isaac_physx", "planner": "fixed_action_sequence", "actions": []}
+    report = {"ok": False, "robot_backend": "robosim", "planner": "fixed_action_sequence", "actions": []}
     started = time.monotonic()
     try:
         with build_session(args.config) as session:

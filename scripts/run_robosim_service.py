@@ -1,8 +1,8 @@
-"""Launch the unmodified RoboSim service using its Isaac Python environment.
+"""Launch the unmodified RoboSim service using its dedicated Python environment.
 
 Uvicorn's automatic uvloop selection replaces the process-wide event-loop
-policy, breaking Kit callbacks on the main thread. Keep the asyncio policy
-installed by Kit and let RoboSim retain ownership of its main-thread loop.
+policy, breaking RoboSim callbacks on the main thread. Preserve the runtime
+asyncio policy and let RoboSim retain ownership of its main-thread loop.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def main() -> None:
     args = parser.parse_args()
     repo = args.repo.resolve()
     if not (repo / "sim_service" / "main.py").is_file():
-        parser.error("--repo must point to a RiemannRoboSim_Isaac checkout")
+        parser.error("--repo must point to a RoboSim checkout containing sim_service/main.py")
     sys.dont_write_bytecode = True
     # Preserve interpreter/library precedence; reject a shadowed backend explicitly.
     sys.path.append(str(repo))
@@ -53,7 +53,7 @@ def main() -> None:
     import omni.kit.app
 
     def serve(server_app):
-        """Keep Uvicorn from replacing Kit's asyncio event-loop policy."""
+        """Keep Uvicorn from replacing RoboSim's asyncio event-loop policy."""
         uvicorn.run(server_app, host="127.0.0.1", port=args.port, loop="asyncio")
 
     run_service_loop(app, headless, serve, omni.kit.app.get_app())

@@ -1,4 +1,4 @@
-"""Exercise workspace/tool boundaries over real loopback HTTP, without Isaac."""
+"""Exercise workspace/tool boundaries over loopback HTTP with a stub RoboSim service."""
 
 from __future__ import annotations
 

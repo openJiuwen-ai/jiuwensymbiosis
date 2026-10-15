@@ -28,7 +28,7 @@ class RobosimWorkspace:
         """Read health, incarnation and robot state without loading or moving anything."""
         health = self.client.request("GET", "/sim/health")
         if health.get("ready") is not True:
-            raise RobosimError("Isaac is not ready", code="robosim_not_ready")
+            raise RobosimError("RoboSim is not ready", code="robosim_not_ready")
         identity = self.read_identity()
         service_id = identity["service_instance_id"]
         robot_id = identity.get("robot_instance_id")
