@@ -1,0 +1,13 @@
+# Start scripts/run_robosim_service.py with the separate Isaac Python first.
+adapter: robosim
+name: robosim_moz1
+service_url: http://127.0.0.1:8001
+robot_type: moz1
+side: left
+load_robot: true
+request_timeout_s: 180.0
+joint_timeout_s: 20.0
+joint_tolerance_rad: 0.01
+position_tolerance_mm: 20.0
+orientation_tolerance_deg: 5.0
+enable_visual_feedback: false

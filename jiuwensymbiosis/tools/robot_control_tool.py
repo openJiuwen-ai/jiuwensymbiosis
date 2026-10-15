@@ -221,7 +221,12 @@ class RobotControlTool(Tool):
             return ToolOutput(
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",
-                data={"action": action, "error_code": code} if code else None,
+                data={
+                    "action": action,
+                    "error_code": code,
+                    "outcome_unknown": bool(getattr(exc, "outcome_unknown", False)),
+                    "skip_recovery": bool(getattr(exc, "skip_recovery", False)),
+                },
             )
 
     async def stream(self, inputs: dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:

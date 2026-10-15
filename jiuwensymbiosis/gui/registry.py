@@ -15,8 +15,8 @@
 分开,属 GUI 内部资产。
 
 **约定式会话构建**:本体只需在数据里声明 ``adapter`` 名,真机会话由约定推导——
-惰性 import ``jiuwensymbiosis.adapters.<adapter>.build_<adapter>_session`` 并
-``from_dict`` 构建。故"接入一种新硬件"=
+在 ``jiuwensymbiosis.simulators`` 或 ``jiuwensymbiosis.adapters`` 下惰性 import
+``<adapter>.build_<adapter>_session`` 并 ``from_dict`` 构建。故"接入一种新硬件"=
 6 个适配器文件 + 一条 ``bodies.yaml`` 数据,注册表零改动。
 """
 
@@ -34,6 +34,7 @@ import yaml
 
 import jiuwensymbiosis
 from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.backends import backend_module_name
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class RobotBody:
     Attributes:
         key: 稳定标识(下拉/任务引用用)。
         display_name: 界面显示名。
-        adapter: 适配器包名段,``jiuwensymbiosis.adapters.<adapter>``。标定工具据此
+        adapter: 后端包名段,从 ``simulators`` 或 ``adapters`` 解析。标定工具据此
             找到该本体的标定包装器与标定档案,无需另立映射。
         default_config_relpath: 本体的、**与具体任务无关**的**默认**真机配置(相对 ``configs/``
             或绝对路径);运行时套上所选任务的指令与 agent 默认。用户后续可指向别的配置。
@@ -102,7 +103,7 @@ class RobotBody:
 
     def adapter_module(self) -> str:
         """该本体的适配器包路径(标定子系统据此发现标定包装器)。"""
-        return f"jiuwensymbiosis.adapters.{self.adapter}"
+        return backend_module_name(self.adapter)
 
 
 @dataclass(frozen=True)
@@ -134,13 +135,13 @@ class TaskDef:
 def _real_session_builder(adapter: str) -> Callable[..., RobotSession]:
     """按约定返回某 adapter 的真机会话构建器(惰性导入,无 SDK 时仅在真跑时才失败)。
 
-    约定:``jiuwensymbiosis.adapters.<adapter>`` 导出 ``build_<adapter>_session``,后者
+    约定:``simulators`` 或 ``adapters`` 下的后端包导出 ``build_<adapter>_session``,后者
     带 ``.from_dict``(见 ``adapters/_common/builder.make_builder``)。直接采用**界面编辑过
     的配置 dict**(而非重新读盘),使配置页改动对真机运行同样生效。
     """
 
     def build(config_data: dict, *, include_sidecars: bool = True) -> RobotSession:
-        module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+        module = importlib.import_module(backend_module_name(adapter))
         factory = getattr(module, f"build_{adapter}_session")
         return cast(RobotSession, factory.from_dict(config_data, include_sidecars=include_sidecars))
 
@@ -150,7 +151,7 @@ def _real_session_builder(adapter: str) -> Callable[..., RobotSession]:
 def _adapter_available(adapter: str) -> bool:
     """该 adapter 包是否存在(不执行其重依赖;仅 find_spec 定位)。"""
     try:
-        return importlib.util.find_spec(f"jiuwensymbiosis.adapters.{adapter}") is not None
+        return importlib.util.find_spec(backend_module_name(adapter)) is not None
     except (ImportError, ValueError):
         return False
 

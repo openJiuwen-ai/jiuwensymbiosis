@@ -84,11 +84,14 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             # The ability manager has already fired the exception hooks, so
             # RecoveryRail (when applicable) owns recovery for this failure.
             # The fast runner must not immediately repeat release/home.
+            data = getattr(output, "data", None) or {}
             return {
                 "ok": False,
                 "reason": _failure_reason(output, results[0]),
                 "error_code": _failure_code(output),
                 "recovery_managed": True,
+                "outcome_unknown": isinstance(data, dict) and data.get("outcome_unknown") is True,
+                "skip_recovery": isinstance(data, dict) and data.get("skip_recovery") is True,
             }
         # RobotControlTool wraps the api return under data["result"].
         data = getattr(output, "data", None) or {}
@@ -108,6 +111,12 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             return asyncio.run(_execute(op, params))
         except Exception as exc:  # noqa: BLE001 - surface as structured failure
             logger.warning("[ability_exec] %s(%s) raised: %s", op, params, exc)
-            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
+            return {
+                "ok": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "error_code": error_code(exc),
+                "outcome_unknown": bool(getattr(exc, "outcome_unknown", False)),
+                "skip_recovery": bool(getattr(exc, "skip_recovery", False)),
+            }
 
     return run

@@ -592,9 +592,19 @@ Replanner = Callable[[WorldState, str], "list[ActionStep | LoopStep] | None"]
 class _StepExecutionError(JiuwenSymbiosisError, RuntimeError):
     """Primitive-op failure with recovery ownership metadata."""
 
-    def __init__(self, message: str, *, recovery_managed: bool = False, code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        recovery_managed: bool = False,
+        code: str | None = None,
+        outcome_unknown: bool = False,
+        skip_recovery: bool = False,
+    ) -> None:
         super().__init__(message, code=code)
         self.recovery_managed = recovery_managed
+        self.outcome_unknown = outcome_unknown
+        self.skip_recovery = skip_recovery or outcome_unknown
 
 
 def _servo_failure(phase: str, res: ServoResult) -> _StepExecutionError:
@@ -622,6 +632,8 @@ def _raise_executor_failure(
         message,
         recovery_managed=response.get("recovery_managed") is True,
         code=str(response.get("error_code") or ""),
+        outcome_unknown=response.get("outcome_unknown") is True,
+        skip_recovery=response.get("skip_recovery") is True,
     )
 
 
@@ -645,7 +657,13 @@ def direct_executor(api_or_index: Any) -> Executor:
         try:
             result = fn(**params)
         except Exception as exc:  # noqa: BLE001 - convert op failure to structured result
-            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
+            return {
+                "ok": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "error_code": error_code(exc),
+                "outcome_unknown": bool(getattr(exc, "outcome_unknown", False)),
+                "skip_recovery": bool(getattr(exc, "skip_recovery", False)),
+            }
         api = getattr(fn, "__self__", None)
         if api is not None:
             record_action(api, fn, params, result)
@@ -792,7 +810,14 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     upgrades whole-binding params (``box`` / ``surface``) before dispatch.
     """
     env, run_op, session, cfg, cache, out, state = (
-        ctx.env, ctx.run_op, ctx.session, ctx.cfg, ctx.cache, ctx.out, ctx.state)
+        ctx.env,
+        ctx.run_op,
+        ctx.session,
+        ctx.cfg,
+        ctx.cache,
+        ctx.out,
+        ctx.state,
+    )
     i = state["i"]
     holding = state["holding"]
     tracked_grasp: _TrackedGraspContext | None = state["tracked_grasp"]
@@ -887,8 +912,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         raise
     except Exception as exc:  # noqa: BLE001 - surface as structured failure
         logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
-        if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
-            logger.info("[runner] recovery already handled by the ability rail stack")
+        if getattr(exc, "skip_recovery", False) or isinstance(exc, _StepExecutionError) and exc.recovery_managed:
+            logger.info("[runner] automatic retreat skipped or owned by the ability rail stack")
         else:
             _safe_retreat(session)
         # ``reason`` is the human/LLM-facing text; ``error_code`` is the machine
@@ -900,6 +925,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 "ok": False,
                 "reason": f"{type(exc).__name__}: {exc}",
                 "error_code": error_code(exc),
+                "outcome_unknown": bool(getattr(exc, "outcome_unknown", False)),
             }
         )
         state["i"] = i + 1
@@ -932,8 +958,14 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
             state["i"] = i + 1
             return True  # clean termination — the scene is clear
         env[loop.bind] = normalize_detection(det)
-        out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True,
-                    "result": {"target": det.get("position") or det.get("center_mm")}})
+        out.append(
+            {
+                "i": i,
+                "op": f"loop:{loop.detect_op}",
+                "ok": True,
+                "result": {"target": det.get("position") or det.get("center_mm")},
+            }
+        )
         state["i"] = i + 1
         # 2. process this one target: run the body once
         for bstep in loop.body:
@@ -1094,8 +1126,7 @@ def run_sequence(
 
     out: list[dict] = []
     state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
-    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg,
-                      cache=cache, out=out, state=state)
+    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg, cache=cache, out=out, state=state)
     # Empty without a replanner, which makes _drift a dict lookup that always misses.
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)
@@ -1124,7 +1155,10 @@ def run_sequence(
         if not ok_all:
             break
 
-    return {"ok": ok_all, "steps_done": len(out), "steps": out, "env_keys": sorted(env)}
+    result = {"ok": ok_all, "steps_done": len(out), "steps": out, "env_keys": sorted(env)}
+    if any(step.get("outcome_unknown") for step in out):
+        result["outcome_unknown"] = True
+    return result
 
 
 def _safe_retreat(session: Any) -> None:

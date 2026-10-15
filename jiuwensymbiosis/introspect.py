@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from jiuwensymbiosis.api.decorators import ToolMeta
+from jiuwensymbiosis.backends import backend_module_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,12 @@ def build_session(config_path: str) -> Any:
     """Build (but do not connect) the session a config describes.
 
     The adapter is named by the config's ``adapter:`` field and resolved by the
-    same convention the GUI registry uses — ``jiuwensymbiosis.adapters.<name>``
-    exports ``build_<name>_session`` with a ``.from_dict``. So a new body needs no
-    change here.
+    same convention the GUI registry uses: a package under ``simulators`` or
+    ``adapters`` exports ``build_<name>_session`` with a ``.from_dict``.
     """
     raw = load_config(config_path)
     adapter = str(raw.get("adapter") or "piper")
-    module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+    module = importlib.import_module(backend_module_name(adapter))
     factory = getattr(module, f"build_{adapter}_session")
     return factory.from_dict(raw)
 
