@@ -13,6 +13,7 @@ import pytest
 
 from jiuwensymbiosis.agent.cancel import cancellable_call
 from jiuwensymbiosis.agent.lifecycle import CleanupReport, HardwareCleanupError
+from jiuwensymbiosis.backends import SessionTarget
 from jiuwensymbiosis.runtime import RequestConflictError, ResourceBusyError, Runtime, RuntimeClosedError, worker
 
 
@@ -22,7 +23,7 @@ class Binding:
     session: object
     binding_id: str = "frozen-binding"
     fingerprint: str = "frozen-fingerprint"
-    adapter: str = "stub"
+    target: SessionTarget = SessionTarget("adapter", "stub")
     resources: tuple = ("device:test",)
 
     def config_data(self):
@@ -271,3 +272,15 @@ def test_next_job_cannot_enter_until_finalization_and_logs_are_detached(runtime,
     first_events = str(runtime.read_events(first["job_id"], limit=1000))
     assert "message for first-job" in first_events
     assert "second-job" not in first_events
+
+
+def test_simulation_run_event_reports_backend_instead_of_adapter(runtime, monkeypatch):
+    runtime, binding = runtime
+    binding.target = SessionTarget("backend", "robosim")
+    monkeypatch.setattr(worker, "run_robot_task", lambda *args, **kwargs: {"result_type": "success", "output": "ok"})
+    job = runtime.submit_task(binding.binding_id, "simulation-identity", "hello")
+    assert wait_job(runtime, job)["phase"] == "succeeded"
+    events = runtime.read_events(job["job_id"])["events"]
+    started = next(event for event in events if event["kind"] == "run_started")
+    assert started["data"]["backend"] == "robosim"
+    assert "adapter" not in started["data"]

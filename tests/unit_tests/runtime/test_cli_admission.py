@@ -430,3 +430,48 @@ def test_task_cli_only_overrides_explicit_agent_options(monkeypatch, explicit):
     assert cfg.execution.fastagent.tracking.servo.control_hz == (9 if explicit else 7)
     assert cfg.execution.fastagent.tracking.servo.max_lin_step_mm == 2
     assert cfg.modules.tracing.enabled and cfg.modules.tracing.max_frames == 3
+
+
+def test_task_cli_preserves_backend_in_admitted_binding(monkeypatch, tmp_path):
+    from jiuwensymbiosis.runtime import bindings
+
+    script = Path(__file__).resolve().parents[3] / "examples" / "run_task.py"
+    spec = spec_from_file_location("_run_task_backend_test", script)
+    run_task = module_from_spec(spec)
+    spec.loader.exec_module(run_task)
+    source = tmp_path / "simulation.yaml"
+    source.write_text("backend: robosim\nload_robot: false\n")
+    events = []
+    session = _Session(events)
+    captured = []
+    original = bindings.prepare_binding
+
+    def prepare(path, **kwargs):
+        actual = original(path, **kwargs)
+        captured.append(actual)
+        return _Binding(events, session, actual.resources)
+
+    monkeypatch.setattr(bindings, "prepare_binding", prepare)
+    monkeypatch.setattr(run_task, "run_robot_task", lambda *args, **kwargs: {"result_type": "success", "output": "ok"})
+    assert (
+        run_task.main(
+            ["--config", str(source), "--query", "test"], resource_manager=_RecordingManager(tmp_path / "locks", events)
+        )
+        == 0
+    )
+    assert captured[0].backend == "robosim"
+    assert captured[0].adapter is None
+    assert "adapter" not in captured[0].config_data()
+    assert events.index("acquire") < events.index("connect")
+    with pytest.raises(ValueError, match="--robot"):
+        run_task._session_config(SimpleNamespace(robot="piper"), {"backend": "robosim"})
+
+
+@pytest.mark.parametrize("backend", ["robosim", "piper"])
+def test_task_cli_mock_never_routes_simulation_through_hardware(backend):
+    script = Path(__file__).resolve().parents[3] / "examples" / "run_task.py"
+    spec = spec_from_file_location("_run_task_backend_mock_test", script)
+    run_task = module_from_spec(spec)
+    spec.loader.exec_module(run_task)
+    with pytest.raises(ValueError, match="--mock"):
+        run_task._build_session(SimpleNamespace(robot=None, mock=True), {"backend": backend})

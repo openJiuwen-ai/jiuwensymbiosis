@@ -14,10 +14,9 @@
 合并(用户可覆盖同 key、可「另存为新任务」)。数据文件与面向 terminal 的 ``configs/``
 分开,属 GUI 内部资产。
 
-**约定式会话构建**:本体只需在数据里声明 ``adapter`` 名,真机会话由约定推导——
-在 ``jiuwensymbiosis.simulators`` 或 ``jiuwensymbiosis.adapters`` 下惰性 import
-``<adapter>.build_<adapter>_session`` 并 ``from_dict`` 构建。故"接入一种新硬件"=
-6 个适配器文件 + 一条 ``bodies.yaml`` 数据,注册表零改动。
+**会话构建**:硬件声明 ``adapter``，仿真声明 ``backend``，二者互斥。
+分别从 ``jiuwensymbiosis.adapters`` 和 ``jiuwensymbiosis.simulators`` 惰性加载
+``<name>.build_<name>_session``，配置快照保留原始选择字段。
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ import yaml
 
 import jiuwensymbiosis
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.backends import backend_module_name
+from jiuwensymbiosis.backends import SessionTarget, adapter_module_name, session_target
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +97,8 @@ class RobotBody:
     Attributes:
         key: 稳定标识(下拉/任务引用用)。
         display_name: 界面显示名。
-        adapter: 后端包名段,从 ``simulators`` 或 ``adapters`` 解析。标定工具据此
-            找到该本体的标定包装器与标定档案,无需另立映射。
+        adapter: 硬件适配器名，仅从 ``adapters`` 解析；仿真本体为 None。
+        backend: 仿真后端名，仅从 ``simulators`` 解析；与 adapter 互斥。
         default_config_relpath: 本体的、**与具体任务无关**的默认配置路径(相对源码 ``configs/``
             或随包安全模板);wheel 首启时安全模板复制到用户配置树,用户后续可指向别的配置。
         build_real_session: 传入界面编辑过的配置 dict,返回真机会话(惰性导入硬件依赖);
@@ -108,9 +107,20 @@ class RobotBody:
 
     key: str
     display_name: str
-    adapter: str
+    adapter: str | None
     default_config_relpath: str
     build_real_session: Callable[..., RobotSession]
+    backend: str | None = None
+
+    @property
+    def target(self) -> SessionTarget:
+        """Keep simulation identity separate from hardware adapter discovery."""
+        fields = {}
+        if self.adapter is not None:
+            fields["adapter"] = self.adapter
+        if self.backend is not None:
+            fields["backend"] = self.backend
+        return session_target(fields)
 
     def config_path(self) -> Path:
         """返回本体默认配置路径；wheel 首启时将只读模板复制到用户可写目录。"""
@@ -145,7 +155,9 @@ class RobotBody:
 
     def adapter_module(self) -> str:
         """该本体的适配器包路径(标定子系统据此发现标定包装器)。"""
-        return backend_module_name(self.adapter)
+        if self.adapter is None:
+            raise ValueError("仿真后端不使用硬件标定适配器。")
+        return adapter_module_name(self.adapter)
 
 
 @dataclass(frozen=True)
@@ -174,26 +186,22 @@ class TaskDef:
 
 
 # ------------------------------------------------------------------ 约定式会话构建
-def _real_session_builder(adapter: str) -> Callable[..., RobotSession]:
-    """按约定返回某 adapter 的真机会话构建器(惰性导入,无 SDK 时仅在真跑时才失败)。
-
-    约定:``simulators`` 或 ``adapters`` 下的后端包导出 ``build_<adapter>_session``,后者
-    带 ``.from_dict``(见 ``adapters/_common/builder.make_builder``)。直接采用**界面编辑过
-    的配置 dict**(而非重新读盘),使配置页改动对真机运行同样生效。
-    """
+def _session_builder(target: SessionTarget) -> Callable[..., RobotSession]:
+    """Load only the selected namespace and build from the edited config snapshot."""
 
     def build(config_data: dict, *, include_sidecars: bool = True) -> RobotSession:
-        module = importlib.import_module(backend_module_name(adapter))
-        factory = getattr(module, f"build_{adapter}_session")
-        return cast(RobotSession, factory.from_dict(config_data, include_sidecars=include_sidecars))
+        selected_data = target.bind_config(config_data)
+        module = importlib.import_module(target.module_name)
+        factory = getattr(module, f"build_{target.name}_session")
+        return cast(RobotSession, factory.from_dict(selected_data, include_sidecars=include_sidecars))
 
     return build
 
 
-def _adapter_available(adapter: str) -> bool:
-    """该 adapter 包是否存在(不执行其重依赖;仅 find_spec 定位)。"""
+def _target_available(target: SessionTarget) -> bool:
+    """Probe the selected provider without importing its runtime dependencies."""
     try:
-        return importlib.util.find_spec(backend_module_name(adapter)) is not None
+        return importlib.util.find_spec(target.module_name) is not None
     except (ImportError, ValueError):
         return False
 
@@ -219,17 +227,22 @@ def _read_yaml_mapping(path: Path | Traversable) -> dict[str, Any]:
 
 
 def _body_from_dict(entry: dict) -> RobotBody | None:
-    """把一条本体数据构造成 ``RobotBody``;adapter 包不存在则跳过(记 warning)。"""
-    adapter = str(entry.get("adapter", ""))
-    if not adapter or not _adapter_available(adapter):
-        logger.warning("本体 %r 引用了未知 adapter %r,跳过", entry.get("key"), adapter)
+    """Build one explicit hardware/simulation registration, skipping invalid entries."""
+    try:
+        target = session_target(entry)
+    except ValueError:
+        logger.warning("本体 %r 必须声明唯一有效的 adapter 或 backend，跳过", entry.get("key"))
+        return None
+    if not _target_available(target):
+        logger.warning("本体 %r 引用了未知 %s %r，跳过", entry.get("key"), target.selector, target.name)
         return None
     return RobotBody(
         key=str(entry["key"]),
         display_name=str(entry.get("display_name", entry["key"])),
-        adapter=adapter,
+        adapter=target.name if target.selector == "adapter" else None,
+        backend=target.name if target.selector == "backend" else None,
         default_config_relpath=str(entry.get("default_config_relpath", "")),
-        build_real_session=_real_session_builder(adapter),
+        build_real_session=_session_builder(target),
     )
 
 
@@ -275,7 +288,7 @@ def _fallback_bodies() -> dict[str, RobotBody]:
             display_name="Piper 六轴机械臂",
             adapter="piper",
             default_config_relpath="piper/piper.yaml",
-            build_real_session=_real_session_builder("piper"),
+            build_real_session=_session_builder(SessionTarget("adapter", "piper")),
         )
     }
 

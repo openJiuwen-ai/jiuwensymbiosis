@@ -46,7 +46,7 @@ pytest -k "test_capabilities"                              # filter by test name
 # Validate a hardware adapter
 python scripts/validate_adapter.py --module jiuwensymbiosis.adapters.my_robot
 
-# Run a task (generic runner; robot = --config's adapter: field, task = --query).
+# Run a task (hardware uses adapter:, simulation uses backend:; task = --query).
 # mock mode: no hardware, no real LLM (piper only; implies --stepagent).
 python examples/run_task.py --config configs/piper/piper.yaml --mock --query "<任务>"
 # CLI entry point (after pip install)
@@ -328,7 +328,7 @@ jiuwensymbiosis_gui/      # GUI launcher, plugin contract, and existing workbenc
   __main__.py / launcher.py / plugin.py / startup.py
   workbench/              # NiceGUI application, pages, engines, data, and assets
 configs/{piper,so101,cruzr}/  # Hardware YAML; the top-level `adapter:` key picks the session builder
-configs/simulators/          # All simulation configs; use `adapter: robosim` for the RoboSim backend
+configs/simulators/          # All simulation configs; use `backend: robosim` for the RoboSim backend
 templates/xxx_adapter/    # Adapter skeleton for new hardware
 tests/
   unit_tests/             # Core/domain tests; mirrors jiuwensymbiosis package structure

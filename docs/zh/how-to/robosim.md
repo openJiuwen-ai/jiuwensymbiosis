@@ -18,13 +18,15 @@ RoboSim 在专用 Python 环境中运行并管理仿真世界。JiuwenSymbiosis 
 
 ## 配置与工作区查询
 
-所有仿真配置统一放在 `configs/simulators/`，当前入口为 `configs/simulators/moz1.yaml`。`adapter: robosim` 经统一发现入口解析到 `jiuwensymbiosis.simulators.robosim`，现有硬件仍位于 `adapters/`。
+所有仿真配置统一放在 `configs/simulators/`，当前入口为 `configs/simulators/moz1.yaml`。`backend: robosim` 经仿真后端发现入口解析到 `jiuwensymbiosis.simulators.robosim`，现有硬件仍位于 `adapters/`。
 
-`adapter` 是通用运行时读取的必需选择字段，目录名不参与后端选择。`RobosimConfig.from_dict` 只提取自身负责的连接和运动参数；未提取 `adapter` 与 `agent` 不代表它们未被使用。
+`backend` 选择 `simulators/` 下的仿真后端；`adapter` 只选择 `adapters/` 下的真实硬件适配器。二者互斥，不根据目录名或模块是否存在自动回退。仿真配置应使用 `backend: robosim`；此前 PR 草稿中的 `adapter: robosim` 需要改写，否则将按硬件路径解析并报错。
+
+`prepare_binding()` 是共用的运行配置准备入口：它按选择字段加载对应的会话构建器，校验并冻结配置，计算资源准入标识；此阶段不连接硬件或仿真服务。仿真与硬件共用会话生命周期和准入保护，选择字段及发现命名空间保持分离。`RobosimConfig.from_dict` 只提取自身负责的连接和运动参数；`backend` 由运行时读取，`agent` 由 Agent 配置读取。
 
 | 字段 | 消费方与作用 |
 | --- | --- |
-| `adapter` | `prepare_binding` 校验并选择 `robosim` 后端及会话构建器。 |
+| `backend` | `prepare_binding` 只从 `simulators/robosim` 选择仿真会话构建器。 |
 | `name` | 通用会话构建器设置 `RobotSession.name`，用于会话标识及默认工作区选择。 |
 | `service_url` | HTTP 客户端连接地址；运行时还用服务端口生成准入资源标识。 |
 | `robot_type` | 机器人加载与身份核验；当前支持 `moz1`。 |
@@ -54,7 +56,7 @@ finally:
 
 ## 机器人会话与动作
 
-通用入口可直接读取 YAML。示例配置的 `load_robot: true` 允许会话连接时在空服务中加载 MOZ1；只连接已有机器人时设置为 `false`。
+通用入口可直接读取带 `backend: robosim` 的 YAML。CLI 的 `--robot` 只覆盖硬件 `adapter`，不能覆盖仿真配置；GUI 注册仿真本体时同样使用 `backend`。示例配置的 `load_robot: true` 允许会话连接时在空服务中加载 MOZ1；只连接已有机器人时设置为 `false`。
 
 ```python
 from jiuwensymbiosis.introspect import prepare_binding

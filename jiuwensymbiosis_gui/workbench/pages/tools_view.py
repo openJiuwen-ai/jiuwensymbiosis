@@ -254,7 +254,11 @@ class ToolsView:
         cfg_data = self._state.config_for(body_key, task_key).data
         z_correction = float(_dig(cfg_data, "env", "cfg", "low_level", "z_correction_mm") or 0.0)
         admission = MaintenanceOwner(
-            self._state.host.runtime(self._state.workspace), config_source, self._state.workspace, adapter=body.adapter
+            self._state.host.runtime(self._state.workspace),
+            config_source,
+            self._state.workspace,
+            adapter=body.adapter,
+            backend=body.backend,
         )
         self._engine = PerceptionEngine(
             lambda: body.build_real_session(cfg_data, include_sidecars=False),

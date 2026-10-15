@@ -195,7 +195,11 @@ class HardwareView:
             ui.notify(str(exc), type="negative")
             return
         admission = MaintenanceOwner(
-            self._state.host.runtime(self._state.workspace), config_source, self._state.workspace, adapter=body.adapter
+            self._state.host.runtime(self._state.workspace),
+            config_source,
+            self._state.workspace,
+            adapter=body.adapter,
+            backend=body.backend,
         )
         self._engine = HardwareEngine(
             HardwareSetup(build_session=body.build_real_session, config_data=config_data), admission=admission

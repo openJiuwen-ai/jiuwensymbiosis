@@ -249,13 +249,14 @@ def run(
         if _LAUNCH_OPTIONS.config_path is not None:
             import yaml
 
+            from jiuwensymbiosis.backends import session_target
             from jiuwensymbiosis_gui.workbench.registry import list_bodies
 
             raw = yaml.safe_load(_LAUNCH_OPTIONS.config_path.read_text(encoding="utf-8")) or {}
-            adapter = str(raw.get("adapter") or "piper")
-            body = next((body for body in list_bodies() if body.adapter == adapter), None)
+            target = session_target(raw)
+            body = next((body for body in list_bodies() if body.target == target), None)
             if body is None:
-                raise ValueError(f"工作台未注册配置对应的本体: {adapter}")
+                raise ValueError(f"工作台未注册配置对应的本体: {target.selector}={target.name}")
             state.current_body = body.key
             state.current_config_file = str(_LAUNCH_OPTIONS.config_path)
         build_layout(state)

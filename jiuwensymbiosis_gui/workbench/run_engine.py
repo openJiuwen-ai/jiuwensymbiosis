@@ -188,11 +188,7 @@ class RunEngine:
         if self._config.get("gui.disable_vision"):
             data = strip_vision_services(data)
         data = copy.deepcopy(data)
-        adapter = get_body(self._body_key).adapter
-        if data.get("adapter", adapter) != adapter:
-            raise ValueError("配置中的 adapter 与当前选择的本体不一致，请重新选择本体和配置。")
-        data.setdefault("adapter", adapter)
-        return data
+        return get_body(self._body_key).target.bind_config(data)
 
     def start_return_to(self, joints):
         if self.is_running() or self._job_id is None:

@@ -200,7 +200,7 @@ def test_adapter_owns_new_path_fields_without_runtime_changes(tmp_path, monkeypa
         calls.append(cfg)
         return SimpleNamespace(env=SimpleNamespace(cfg=cfg))
 
-    monkeypatch.setattr(bindings, "_discover_adapter", lambda _: (Config, builder, lambda cfg: ("device:test",)))
+    monkeypatch.setattr(bindings, "_discover_session", lambda _: (Config, builder, lambda cfg: ("device:test",)))
     source = tmp_path / "robot.yaml"
     source.write_text("adapter: custom\nvendor_model: models/vendor.bin\ncalib_path: not-owned\n")
     binding = prepare_binding(source)

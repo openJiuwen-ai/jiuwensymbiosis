@@ -1064,13 +1064,13 @@ class CalibrationView:
         pending_dir = workspace / "pending"
         pending_dir.mkdir(parents=True, exist_ok=True)
         mount = self._resolve_mount(body_key)
-        out_path = pending_dir / Path(_output_relpath(body.adapter, mount, profile)).name
+        out_path = pending_dir / Path(_output_relpath(body.target.name, mount, profile)).name
         setup = CalibrationSetup(
             adapter_module=body.adapter_module(),
             config_data=config_data,
             board=self._measured_board(),
             out_path=out_path,
-            waypoint_path=workspace / f"{body.adapter}_waypoints.npz",
+            waypoint_path=workspace / f"{body.target.name}_waypoints.npz",
             calibration_profile=profile,
             min_corners=int(self._in_corners.value or 16),
             n_stations=int(self._in_stations.value or 20),
@@ -1079,7 +1079,11 @@ class CalibrationView:
         if self._engine is not None:
             self._engine.close()
         admission = MaintenanceOwner(
-            self._state.host.runtime(self._state.workspace), config_source, self._state.workspace, adapter=body.adapter
+            self._state.host.runtime(self._state.workspace),
+            config_source,
+            self._state.workspace,
+            adapter=body.adapter,
+            backend=body.backend,
         )
         self._engine = CalibrationEngine(setup, admission=admission)
         return self._engine
@@ -1352,9 +1356,9 @@ class CalibrationView:
         body_key = str(self._state.current_body)
         body = registry.get_body(body_key)
         profile = registry.calibration_profile(body_key) or {}
-        relpath = PurePosixPath(_output_relpath(body.adapter, self._resolve_mount(body_key), profile))
-        if relpath.parts and relpath.parts[0] == body.adapter:
-            return str(relpath.relative_to(body.adapter))
+        relpath = PurePosixPath(_output_relpath(body.target.name, self._resolve_mount(body_key), profile))
+        if relpath.parts and relpath.parts[0] == body.target.name:
+            return str(relpath.relative_to(body.target.name))
         return str(relpath)
 
     # ================================================================== 应用到配置

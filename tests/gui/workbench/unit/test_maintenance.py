@@ -132,3 +132,18 @@ def test_missing_public_cleanup_report_keeps_session_blocked() -> None:
     assert not report.released
     assert report.connected is True
     assert "no public cleanup_report" in report.errors[0]
+
+
+def test_simulation_maintenance_preserves_backend_and_rejects_adapter(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.runtime import bindings
+
+    prepare = Mock(return_value=SimpleNamespace(resources=("robosim:local:8001",)))
+    monkeypatch.setattr(bindings, "prepare_binding", prepare)
+    owner = MaintenanceOwner(Mock(), tmp_path / "simulation.yaml", tmp_path, backend="robosim")
+    owner.acquire({"backend": "robosim"}, "test")
+    assert prepare.call_args.kwargs["config_snapshot"] == {"backend": "robosim"}
+    with pytest.raises(ValueError):
+        owner.acquire({"adapter": "robosim"}, "test")
+    assert prepare.call_count == 1

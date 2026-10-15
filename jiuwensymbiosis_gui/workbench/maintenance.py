@@ -86,14 +86,22 @@ class MaintenanceOwner:
     config_source: Path
     workspace: Path
     adapter: str | None
+    backend: str | None
 
     def __init__(
-        self, runtime: Any, config_source: str | Path, workspace: str | Path, *, adapter: str | None = None
+        self,
+        runtime: Any,
+        config_source: str | Path,
+        workspace: str | Path,
+        *,
+        adapter: str | None = None,
+        backend: str | None = None,
     ) -> None:
         object.__setattr__(self, "runtime", runtime)
         object.__setattr__(self, "config_source", Path(config_source).expanduser().resolve(strict=False))
         object.__setattr__(self, "workspace", Path(workspace).expanduser().resolve(strict=False))
         object.__setattr__(self, "adapter", adapter)
+        object.__setattr__(self, "backend", backend)
 
     def acquire(
         self,
@@ -106,10 +114,15 @@ class MaintenanceOwner:
         from jiuwensymbiosis.runtime.bindings import prepare_binding
 
         config_snapshot = dict(config_snapshot)
-        if self.adapter is not None:
-            if config_snapshot.get("adapter", self.adapter) != self.adapter:
-                raise ValueError("配置中的 adapter 与当前选择的本体不一致，请重新选择本体和配置。")
-            config_snapshot.setdefault("adapter", self.adapter)
+        if self.adapter is not None or self.backend is not None:
+            from jiuwensymbiosis.backends import session_target
+
+            fields = {}
+            if self.adapter is not None:
+                fields["adapter"] = self.adapter
+            if self.backend is not None:
+                fields["backend"] = self.backend
+            config_snapshot = session_target(fields).bind_config(config_snapshot)
         binding = prepare_binding(
             self.config_source,
             config_snapshot=config_snapshot,

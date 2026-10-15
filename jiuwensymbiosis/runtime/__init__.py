@@ -1,7 +1,7 @@
 """Headless task submission and local resource admission.
 
-Importing this package does not load a GUI, calibration or an adapter. Bindings
-load the selected adapter only when prepare_binding() is called.
+Importing this package does not load a GUI, calibration or a session provider. Bindings
+load the selected hardware adapter or simulation backend only when prepare_binding() is called.
 """
 
 from jiuwensymbiosis.agent.lifecycle import CleanupReport

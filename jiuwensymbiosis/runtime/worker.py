@@ -203,7 +203,7 @@ def run_job(request: JobRequest) -> None:
             job_id,
             {"phase": "running"},
             event_kind="run_started",
-            event_data={"query": sanitize(query), "adapter": binding.adapter},
+            event_data={"query": sanitize(query), **binding.target.as_config()},
         )
         from jiuwensymbiosis.env.protocol import JointDriver
 
@@ -215,7 +215,7 @@ def run_job(request: JobRequest) -> None:
             if isinstance(getattr(session.env, "low_level", None), JointDriver) and observation.joints:
                 pose = {
                     "binding_id": binding.binding_id,
-                    "adapter": binding.adapter,
+                    **binding.target.as_config(),
                     "joints": [float(v) for v in observation.joints],
                 }
                 runtime.store.update(job_id, {"start_pose": pose}, event_kind="start_pose", event_data=pose)

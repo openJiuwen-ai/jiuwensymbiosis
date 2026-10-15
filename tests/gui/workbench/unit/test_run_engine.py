@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.backends import SessionTarget
 from jiuwensymbiosis.runtime import Runtime, worker
 from jiuwensymbiosis.runtime.events import TaskEventRail
 from jiuwensymbiosis_gui.workbench import registry
@@ -32,7 +33,7 @@ class Binding:
     session: object
     binding_id: str = "binding"
     fingerprint: str = "fingerprint"
-    adapter: str = "piper"
+    target: SessionTarget = SessionTarget("adapter", "piper")
     resources: tuple = ("device:fake",)
 
     def config_data(self):

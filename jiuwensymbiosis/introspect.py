@@ -37,9 +37,9 @@ def load_config(config_path: str) -> dict[str, Any]:
 def build_session(config_path: str) -> Any:
     """Build (but do not connect) the session a config describes.
 
-    The adapter is named by the config's ``adapter:`` field and resolved by the
-    same convention the GUI registry uses: a package under ``simulators`` or
-    ``adapters`` exports ``build_<name>_session`` with a ``.from_dict``.
+    ``adapter:`` selects hardware under ``adapters``; ``backend:`` selects
+    simulation under ``simulators``. Both export ``build_<name>_session`` with
+    a ``.from_dict`` factory; the two selectors cannot be combined.
     """
     return prepare_binding(config_path, include_sidecars=False).build_session()
 

@@ -3,8 +3,8 @@
 
 """Generic task runner (jiuwensymbiosis) — one entry for every robot + task.
 
-Pick the robot with ``--config`` (the YAML's ``adapter:`` field selects the
-adapter from the registry; ``--robot`` overrides). Give the task at run time
+Pick hardware with YAML ``adapter:`` or simulation with ``backend:`` via
+``--config``. ``--robot`` overrides hardware adapters only. Give the task at run time
 with ``--query "..."`` or ``--voice`` — the **task is not in the config**.
 Nothing here is task- or robot-specific, so a new task is a new ``--query`` and
 a new robot is a new ``--config`` — no new Python file.
@@ -40,6 +40,7 @@ clear_proxy_env()
 
 from jiuwensymbiosis import RobotSession, run_robot_task  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
 from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
+from jiuwensymbiosis.backends import session_target  # noqa: E402 - after proxy cleanup
 from jiuwensymbiosis.utils.logging import get_logger  # noqa: E402 - after proxy cleanup
 
 logger = get_logger("jiuwensymbiosis.cli.run_task")
@@ -51,34 +52,28 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _robot_session_builders() -> dict[str, Any]:
-    """适配器注册表：机器人名 → 会话构建器（暴露 ``.from_yaml(path)``）。
-
-    支持多机器人的关键：新增一款机器人只需在此注册一条。机器人由 config 的 ``adapter:``
-    字段选中（``--robot`` 覆盖），其余代码无需改动。
-    """
-    from jiuwensymbiosis.adapters.cruzr import build_cruzr_session
-    from jiuwensymbiosis.adapters.piper import build_piper_session
-    from jiuwensymbiosis.adapters.so101 import build_so101_session
-    from jiuwensymbiosis.simulators.robosim import build_robosim_session
-
-    return {
-        "piper": build_piper_session,
-        "cruzr": build_cruzr_session,
-        "so101": build_so101_session,
-        "robosim": build_robosim_session,
-    }
-
-
-def _resolve_robot(args: argparse.Namespace, raw: dict[str, Any]) -> str:
-    """机器人身份：``--robot`` > config 顶层 ``adapter:`` > piper（向后兼容）。"""
-    return args.robot or raw.get("adapter") or "piper"
+def _session_config(args: argparse.Namespace, raw: dict[str, Any]) -> dict[str, Any]:
+    """Preserve backend selection; legacy --robot/defaults apply only to hardware."""
+    data = dict(raw)
+    if "adapter" in data and "backend" in data:
+        raise ValueError("configuration cannot declare both adapter and backend")
+    if args.robot:
+        if "backend" in data:
+            raise ValueError("--robot selects hardware; edit backend in the simulation config instead")
+        data["adapter"] = args.robot
+    elif "adapter" not in data and "backend" not in data:
+        data["adapter"] = "piper"
+    session_target(data)
+    return data
 
 
 def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSession:
-    """构建 RobotSession：piper 的 --mock 用 MockArmEnv 干跑，否则按机器人从注册表加载。"""
-    robot = _resolve_robot(args, raw)
-    if args.mock and robot == "piper":
+    """构建会话；硬件 Piper 的 --mock 使用 MockArmEnv，其他配置按声明的命名空间加载。"""
+    selected = _session_config(args, raw)
+    target = session_target(selected)
+    if args.mock and target.as_config() != {"adapter": "piper"}:
+        raise ValueError("--mock is supported only for adapter: piper")
+    if args.mock:
         from jiuwensymbiosis.api.actions import (
             CLOSE_GRIPPER,
             GET_GRASP_INFO_SIMPLE,
@@ -154,11 +149,9 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
         api = _MockPiperApi(env)
         return RobotSession(env=env, api=api, name="piper_mock")
 
-    builders = _robot_session_builders()
-    build = builders.get(robot)
-    if build is None:
-        raise ValueError(f"unknown robot {robot!r}; registered: {sorted(builders)}")
-    return cast(RobotSession, build.from_yaml(args.config))
+    from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+    return prepare_binding(args.config, config_snapshot=selected).build_session()
 
 
 def _build_model_spec(raw: dict[str, Any], args: argparse.Namespace) -> ModelSpec:
@@ -317,9 +310,11 @@ def _run_voice(
 
 
 def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
-    """通用任务入口：按 config 的 adapter 建会话，用 --query 给任务，执行并输出结果。"""
+    """通用任务入口：按 config 的 adapter/backend 建会话，用 --query 给任务，执行并输出结果。"""
     p = argparse.ArgumentParser(description="Generic task runner (jiuwensymbiosis).")
-    p.add_argument("--config", required=True, help="Path to a robot config YAML (its adapter: field picks the robot).")
+    p.add_argument(
+        "--config", required=True, help="Path to YAML declaring adapter: for hardware or backend: for simulation."
+    )
     p.add_argument("--query", help='User task, e.g. --query "把箱子搬到桌上". The task is not in the config.')
     p.add_argument(
         "--server-url",
@@ -449,7 +444,14 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         return 2
 
     agent_cfg.logging.configure()
-    robot = _resolve_robot(args, raw)
+    try:
+        effective_config = _session_config(args, raw)
+    except ValueError as exc:
+        p.error(str(exc))
+    target = session_target(effective_config)
+    if args.mock and target.as_config() != {"adapter": "piper"}:
+        p.error("--mock is supported only for adapter: piper")
+    robot = target.name
     binding = None
     try:
         if args.mock and robot == "piper":
@@ -458,10 +460,9 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         else:
             from jiuwensymbiosis.runtime.bindings import prepare_binding
 
-            effective_config = {**raw, "adapter": robot}
             binding = prepare_binding(cfg_path, config_snapshot=effective_config, workspace=args.workspace)
     except ImportError as exc:
-        logger.error("failed to import the %r adapter (%s).", robot, exc)
+        logger.error("failed to import the %r session provider (%s).", robot, exc)
         return 2
     spec = _build_model_spec(raw, args)
 

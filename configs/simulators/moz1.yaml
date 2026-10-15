@@ -1,6 +1,6 @@
 # 先在 RoboSim 专用 Python 环境中启动 scripts/run_robosim_service.py。
 # 通用运行时用此字段选择仿真后端，不从目录名推断。
-adapter: robosim
+backend: robosim
 name: robosim_moz1
 service_url: http://127.0.0.1:8001
 robot_type: moz1

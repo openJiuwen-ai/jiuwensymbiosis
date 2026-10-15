@@ -1,6 +1,6 @@
 """Immutable, source-aware bindings between config and robot sessions.
 
-Preparing a binding validates one adapter config, resolves source-relative paths,
+Preparing a binding validates one hardware or simulation config, resolves source-relative paths,
 captures environment-derived defaults, and derives its admission resources. It
 does not connect a driver or start a sidecar. A binding keeps the typed config
 private and only hands a fresh deep copy to each session builder invocation.
@@ -15,7 +15,6 @@ import enum
 import hashlib
 import importlib
 import json
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,11 +25,9 @@ import yaml
 from jiuwensymbiosis.adapters._common.config import parse_config
 from jiuwensymbiosis.adapters._common.resources import complete_resource_keys
 from jiuwensymbiosis.agent.session import RobotSession
-from jiuwensymbiosis.backends import backend_module_name
+from jiuwensymbiosis.backends import SessionTarget, session_target
 
 __all__ = ["BindingSnapshot", "prepare_binding"]
-
-_ADAPTER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,15 +35,15 @@ class BindingSnapshot:
     """A validated, immutable reference to the effective robot configuration.
 
     ``config_data()`` returns a deep copy of the complete, normalized source
-    mapping (including non-adapter fields such as agent settings). Session
-    construction uses the private typed adapter config parsed during
+    mapping (including agent settings). Session
+    construction uses the private typed provider config parsed during
     ``prepare_binding``; it never re-reads files or environment defaults.
     """
 
     binding_id: str
     fingerprint: str
     source: Path
-    adapter: str
+    adapter: str | None
     workspace: Path
     resources: tuple[str, ...]
     _config_data: dict[str, Any] = field(repr=False, compare=False)
@@ -55,10 +52,21 @@ class BindingSnapshot:
     _device_resource_keys: tuple[str, ...] = field(repr=False, compare=False)
     _physical_device_id: str | None = field(repr=False, compare=False)
     _include_sidecars: bool = field(repr=False, compare=False)
+    backend: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_config_data", copy.deepcopy(self._config_data))
         object.__setattr__(self, "_effective_config", copy.deepcopy(self._effective_config))
+
+    @property
+    def target(self) -> SessionTarget:
+        """Explicit provider identity; hardware construction keeps its adapter field."""
+        fields = {}
+        if self.adapter is not None:
+            fields["adapter"] = self.adapter
+        if self.backend is not None:
+            fields["backend"] = self.backend
+        return session_target(fields)
 
     def config_data(self) -> dict[str, Any]:
         """Return an isolated copy of the normalized source mapping."""
@@ -86,7 +94,7 @@ class BindingSnapshot:
         )
         fingerprint = _fingerprint(
             source=self.source,
-            adapter=self.adapter,
+            target=self.target,
             config_data=self._config_data,
             effective_config=self._effective_config,
             workspace=self.workspace,
@@ -97,6 +105,7 @@ class BindingSnapshot:
             fingerprint=fingerprint,
             source=self.source,
             adapter=self.adapter,
+            backend=self.backend,
             workspace=self.workspace,
             resources=resources,
             _config_data=self._config_data,
@@ -141,25 +150,18 @@ def _snapshot_data(config_snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(dict(config_snapshot))
 
 
-def _adapter_from_data(data: Mapping[str, Any]) -> str:
-    value = data.get("adapter")
-    if not isinstance(value, str) or not _ADAPTER_NAME.fullmatch(value.strip()):
-        raise ValueError("configuration must declare a valid top-level adapter name")
-    return value.strip()
-
-
-def _discover_adapter(adapter: str) -> tuple[Any, Callable[..., RobotSession], Callable[[Any], Any]]:
-    """Resolve an adapter by the existing package/session naming convention."""
-    module = importlib.import_module(backend_module_name(adapter))
-    builder = getattr(module, f"build_{adapter}_session", None)
+def _discover_session(target: SessionTarget) -> tuple[Any, Callable[..., RobotSession], Callable[[Any], Any]]:
+    """Import the selected namespace and check its shared session-building contract."""
+    module = importlib.import_module(target.module_name)
+    builder = getattr(module, f"build_{target.name}_session", None)
     if not callable(builder):
-        raise ValueError(f"adapter {adapter!r} must export build_{adapter}_session")
+        raise ValueError(f"{target.selector} {target.name!r} must export build_{target.name}_session")
     config_factory = getattr(builder, "config_factory", None)
     resource_keys = getattr(builder, "resource_keys", None)
     if config_factory is None or not callable(getattr(config_factory, "from_dict", None)):
-        raise ValueError(f"adapter {adapter!r} session builder must expose config_factory.from_dict")
+        raise ValueError(f"{target.selector} {target.name!r} session builder must expose config_factory.from_dict")
     if not callable(resource_keys):
-        raise ValueError(f"adapter {adapter!r} session builder must expose resource_keys(cfg)")
+        raise ValueError(f"{target.selector} {target.name!r} session builder must expose resource_keys(cfg)")
     return config_factory, builder, resource_keys
 
 
@@ -196,7 +198,7 @@ def _json_value(value: Any) -> Any:
 def _fingerprint(
     *,
     source: Path,
-    adapter: str,
+    target: SessionTarget,
     config_data: Mapping[str, Any],
     effective_config: Any,
     workspace: Path,
@@ -204,7 +206,7 @@ def _fingerprint(
 ) -> str:
     payload = {
         "source": str(source),
-        "adapter": adapter,
+        **target.as_config(),
         "config_data": _json_value(config_data),
         "effective_config": _json_value(effective_config),
         "workspace": str(workspace),
@@ -221,17 +223,17 @@ def prepare_binding(
     workspace: str | Path | None = None,
     include_sidecars: bool = True,
 ) -> BindingSnapshot:
-    """Validate and freeze an adapter configuration without connecting hardware.
+    """Validate and freeze hardware or simulation configuration without connecting.
 
     ``config_snapshot`` is the complete unsaved config mapping, such as a GUI
-    edit or a CLI adapter override. ``config_source`` remains required and must
+    edit or a CLI hardware override. ``config_source`` remains required and must
     identify an existing YAML file because it supplies provenance and the base
     directory for relative paths.
     """
     source = _resolve_source(config_source)
     source_data = _load_source_data(source) if config_snapshot is None else _snapshot_data(config_snapshot)
-    adapter = _adapter_from_data(source_data)
-    factory, builder, resource_key_factory = _discover_adapter(adapter)
+    target = session_target(source_data)
+    factory, builder, resource_key_factory = _discover_session(target)
 
     # Parse once. The returned typed config captures adapter defaults derived
     # from process environment (for example CAMERA_SERIAL); build_session() only
@@ -250,7 +252,7 @@ def prepare_binding(
     selected_workspace = selected_workspace.resolve(strict=False)
     fingerprint = _fingerprint(
         source=source,
-        adapter=adapter,
+        target=target,
         config_data=normalized_data,
         effective_config=effective_config,
         workspace=selected_workspace,
@@ -260,7 +262,8 @@ def prepare_binding(
         binding_id=fingerprint,
         fingerprint=fingerprint,
         source=source,
-        adapter=adapter,
+        adapter=target.name if target.selector == "adapter" else None,
+        backend=target.name if target.selector == "backend" else None,
         workspace=selected_workspace,
         resources=resources,
         _config_data=normalized_data,
