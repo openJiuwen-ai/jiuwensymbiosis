@@ -190,6 +190,8 @@ def run_job(request: JobRequest) -> None:
     try:
         token.raise_if_set()
         config = build_agent_config(binding, options)
+        handler.setLevel(config.logging.level.upper())
+        config.logging.configure()
         session = binding.build_session()
         session.cancel_token = token
         config.prepare_session(session)

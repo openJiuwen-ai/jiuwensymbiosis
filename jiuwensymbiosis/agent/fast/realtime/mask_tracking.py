@@ -347,13 +347,8 @@ class MaskTargetFilter:
             return
         previous = self._state or "none"
         self._state = state
-        logger.info(
-            "[mask-track-%s] %s -> %s metrics=%s",
-            self._name,
-            previous,
-            state,
-            metrics,
-        )
+        logger.info("[mask-track-%s] %s -> %s", self._name, previous, state)
+        logger.debug("[mask-track-%s] metrics=%s", self._name, metrics)
 
 
 __all__ = ["MaskTargetFilter", "MaskTrackingConfig", "MaskTrackingState"]

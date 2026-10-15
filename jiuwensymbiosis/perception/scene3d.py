@@ -460,7 +460,7 @@ def sense_surface_geometry(
         return fail
     if not surf.ok:
         return {"ok": False, "reason": surf.reason, "object": object_name}
-    logger.info(
+    logger.debug(
         "%s %s: surface_z=%.1fmm x=[%.1f,%.1f] cy=%.1f w=%.1f n=%d%s",
         log_prefix,
         object_name,
@@ -495,7 +495,7 @@ def log_grounded_pick(
     trusted = math.hypot(geo.face_normal_x, geo.face_normal_y) > 0.5 and geo.face_flatness <= face_flatness_max
     face_ang = math.degrees(math.atan2(geo.face_normal_y, geo.face_normal_x))
     to_robot = math.degrees(math.atan2(-geo.center_mm[1], -geo.center_mm[0]))
-    logger.info(
+    logger.debug(
         "%s %r on %r: %d cand → %d on-surface, picked center=%s "
         "footprint yaw=%.0f° long=%.0f short=%.0f aspect=%.2f (square-up needs aspect≥%.2f) | "
         "face n=(%.2f,%.2f) angle=%.0f° (target→robot=%.0f°) flatness=%.2f trusted=%s (needs flatness≤%.2f)",
@@ -917,7 +917,7 @@ def _sense_surface_related(api: Any, object_name: str, reference: str, relation:
         "relation": relation,
         **surface_footprint_fields(surf),
     }
-    logger.info(
+    logger.debug(
         "[scene3d] locate_for_place %r %s %r: %d surf → %d matched, picked cy=%.1f z=%.1f%s",
         object_name,
         relation,

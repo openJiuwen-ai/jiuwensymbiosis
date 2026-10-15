@@ -25,11 +25,10 @@ For a dry run without hardware or a real LLM (piper only), pass ``--mock``.
 from __future__ import annotations
 
 import argparse
-import json
-import logging
 import os
 import sys
 import uuid
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,8 +40,9 @@ clear_proxy_env()
 
 from jiuwensymbiosis import RobotSession, run_robot_task  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
 from jiuwensymbiosis.agent import ModelSpec, RobotAgentConfig  # noqa: E402 - after clear_proxy_env() (proxy hygiene)
+from jiuwensymbiosis.utils.logging import get_logger  # noqa: E402 - after proxy cleanup
 
-logger = logging.getLogger(__name__)
+logger = get_logger("jiuwensymbiosis.cli.run_task")
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -190,6 +190,44 @@ def _voice_enabled(args: argparse.Namespace) -> bool:
     return bool(args.voice or args.voice_text or args.voice_audio_file)
 
 
+def _log_failure_summary(result: Any) -> None:
+    """Keep structured task/step failures visible without dumping their payloads."""
+    if not isinstance(result, dict) or result.get("ok") is not False:
+        return
+    steps = result.get("steps")
+    failed_steps = (
+        [step for step in steps if isinstance(step, dict) and step.get("ok") is False]
+        if isinstance(steps, list)
+        else []
+    )
+    for step in failed_steps:
+        logger.error(
+            "Agent failed at step %s (%s): %s",
+            step.get("i", "?"),
+            step.get("op", "unknown"),
+            step.get("reason") or step.get("error_code") or "reason unavailable",
+        )
+    reason = result.get("reason") or result.get("error_code")
+    if reason or not failed_steps:
+        logger.error("Agent failed: %s", reason or "reason unavailable")
+
+
+def _result_answer(result: Any) -> str | None:
+    """Return a task answer or a compact successful fastagent summary."""
+    if isinstance(result, str):
+        return result or None
+    if not isinstance(result, dict):
+        return None
+    for key in ("output", "content"):
+        answer = result.get(key)
+        if isinstance(answer, str) and answer:
+            return answer
+    steps_done = result.get("steps_done")
+    if result.get("ok") is True and type(steps_done) is int and steps_done >= 0:
+        return f"任务完成，共执行 {steps_done} 步"
+    return None
+
+
 def _run_voice(
     session: RobotSession,
     agent_cfg: RobotAgentConfig,
@@ -235,9 +273,17 @@ def _run_voice(
     )
 
     def on_command(text: str) -> str:
-        logger.info("[voice] 指令 → agent: %s", text)
-        reply = result_to_speech(run_robot_task(session, text, agent_cfg, conversation_id=conv_id))
-        logger.info("[voice] agent → 反馈: %s", reply)
+        logger.info("[voice] 已收到指令，开始执行")
+        logger.debug("[voice] 指令 → agent: %s", text)
+        result = run_robot_task(session, text, agent_cfg, conversation_id=conv_id)
+        _log_failure_summary(result)
+        logger.debug("[voice] Agent result details: %s", result)
+        reply = result_to_speech(result)
+        if not (isinstance(result, dict) and result.get("ok") is False):
+            reply = _result_answer(result) or reply
+        logger.debug("[voice] agent → 反馈: %s", reply)
+        if reply:
+            print(reply, flush=True)
         return reply
 
     # 一次性文本/音频用 mock/file 注入；否则用配置里的实时麦克风后端。
@@ -356,44 +402,10 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
     p.add_argument("--asr-device", default=None, help="语音模式覆盖 ASR 设备(cuda:0/cpu)。")
     args = p.parse_args(argv)
 
-    # Configure logging up front so the voice-listening phase (before the first
-    # agent build, which is what otherwise sets logging up) is visible. Without
-    # this, only WARNING+ shows and ``--voice`` looks "stuck" while it is in fact
-    # listening / loading the ASR model — all of which log at INFO.
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
     cfg_path = Path(args.config).resolve()
     raw = _load_yaml(cfg_path)
 
-    # 任务不在 config 里：非语音模式必须由 --query 给出；语音模式由说话给出。
-    query = _resolve_query(raw, args)
-    if not _voice_enabled(args) and not query.strip():
-        logger.error(
-            '未提供任务：config 不内置任务。请用 --query "..." 给出要执行的任务，'
-            "或用 --voice / --voice-text / --voice-audio-file 由语音给出。"
-        )
-        return 2
-
-    robot = _resolve_robot(args, raw)
-    binding = None
-    try:
-        if args.mock and robot == "piper":
-            # This path uses MockArmEnv and does not touch physical resources.
-            session = _build_session(args, raw)
-        else:
-            from jiuwensymbiosis.runtime.bindings import prepare_binding
-
-            effective_config = {**raw, "adapter": robot}
-            binding = prepare_binding(cfg_path, config_snapshot=effective_config, workspace=args.workspace)
-    except ImportError as exc:
-        logger.error("failed to import the %r adapter (%s).", robot, exc)
-        return 2
-    spec = _build_model_spec(raw, args)
-
-    overrides = {"execution": {}, "modules": {}, "logging": {}}
+    overrides: dict[str, Any] = {"execution": {}, "modules": {}, "logging": {}}
     if args.mock or args.stepagent:
         overrides["execution"]["mode"] = "stepagent"
     step = {}
@@ -419,6 +431,34 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         overrides["execution"]["fastagent"] = {"tracking": {"servo": servo}}
     agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"), overrides=overrides)
     agent_cfg.validate(for_execution=True)
+
+    # 任务不在 config 里：非语音模式必须由 --query 给出；语音模式由说话给出。
+    query = _resolve_query(raw, args)
+    if not _voice_enabled(args) and not query.strip():
+        print(
+            '未提供任务：config 不内置任务。请用 --query "..." 给出要执行的任务，'
+            "或用 --voice / --voice-text / --voice-audio-file 由语音给出。",
+            file=sys.stderr,
+        )
+        return 2
+
+    agent_cfg.logging.configure()
+    robot = _resolve_robot(args, raw)
+    binding = None
+    try:
+        if args.mock and robot == "piper":
+            # This path uses MockArmEnv and does not touch physical resources.
+            session = _build_session(args, raw)
+        else:
+            from jiuwensymbiosis.runtime.bindings import prepare_binding
+
+            effective_config = {**raw, "adapter": robot}
+            binding = prepare_binding(cfg_path, config_snapshot=effective_config, workspace=args.workspace)
+    except ImportError as exc:
+        logger.error("failed to import the %r adapter (%s).", robot, exc)
+        return 2
+    spec = _build_model_spec(raw, args)
+
     agent_cfg.model_spec = spec
     if args.mock:
         from jiuwensymbiosis.agent.mock_model import build_mock_model
@@ -434,9 +474,10 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         "fastagent (compile-once, no per-step LLM)" if exec_mode == "fastagent" else "stepagent (per-step LLM)",
     )
     logger.info("  model : %s @ %s", spec.model_name, spec.api_base)
-    logger.info("  query : %s", query[:120] + ("..." if len(query) > 120 else ""))
+    logger.debug("  query : %s", query)
     logger.info("")
 
+    session_scope: AbstractContextManager[RobotSession]
     if binding is None:
         agent_cfg.prepare_session(session)
         session_scope = session
@@ -457,11 +498,19 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
         else:
             result = run_robot_task(session, query, agent_cfg, conversation_id=conv_id)
 
-    logger.info("=== Agent result ===")
-    if isinstance(result, dict):
-        logger.info(json.dumps(result, ensure_ascii=False, indent=2, default=repr))
-    else:
-        logger.info(result)
+    from jiuwensymbiosis.runtime.results import normalize_result
+
+    phase = normalize_result({"ok": True, "result": result})
+    if isinstance(result, dict) and result.get("ok") is False:
+        phase = "incomplete"
+    logger.info("=== Agent result: %s ===", phase)
+    _log_failure_summary(result)
+    logger.debug("Agent result details: %s", result)
+    # The final answer is CLI output, not an execution-context log dump.
+    if not _voice_enabled(args):
+        answer = _result_answer(result)
+        if answer:
+            print(answer)
     return 0
 
 

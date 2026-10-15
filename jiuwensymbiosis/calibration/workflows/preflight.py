@@ -27,7 +27,6 @@ controller is the sole hardware-safety authority and may refuse a segment
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Literal
 
 import numpy as np
@@ -42,8 +41,9 @@ from jiuwensymbiosis.calibration.domain.ports import (
     ManualGuidance,
 )
 from jiuwensymbiosis.calibration.domain.trajectory import TrajectorySpace
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.preflight")
+logger = get_logger("jiuwensymbiosis.calibration.preflight")
 
 
 class PreflightError(RuntimeError):

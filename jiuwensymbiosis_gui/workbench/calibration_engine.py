@@ -14,7 +14,7 @@
    ——CLI 只能盲按回车,废姿态要等采集阶段才暴露。预览与示教在**同一个线程**里
    交替进行,不额外碰硬件,避免相机/串口的并发访问。
 2. **把日志变成进度**。标定子系统全程走 ``logging``,复用 ``run_engine`` 的
-   ``QueueLogHandler`` 挂到 ``calibration`` logger 树上即可,无需改业务代码。
+   ``QueueLogHandler`` 挂到 ``jiuwensymbiosis.calibration`` logger 树上即可,无需改业务代码。
 3. **把力矩恢复失败单独拎出来**。``ManualGuidanceRecoveryError`` 意味着机械臂可能
    仍处于失力矩状态,是唯一需要用户立刻用手接住的错误,因此单独标 ``fatal``。
 4. **在动力矩之前设一道确认门**。示教方式取决于设备实现了哪个端口
@@ -85,7 +85,7 @@ class TeachingAborted(Exception):
 
 
 # 标定子系统的 logger 树根;挂一个 handler 就能收全 collect/execute/publication/preflight。
-_CALIBRATION_LOGGER = "calibration"
+_CALIBRATION_LOGGER = "jiuwensymbiosis.calibration"
 
 
 @dataclass(frozen=True)

@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import base64
 import io
-import logging
 import os
 import sys
 import time
@@ -58,9 +57,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jiuwensymbiosis.perception.detector_client import MAX_PIXELS, encode_mask_png
 from jiuwensymbiosis.serving.http_support import InferenceAdmission, configure_service
+from jiuwensymbiosis.utils.logging import configure_logging, get_logger
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("jiuwensymbiosis.serving.gdino_sam2")
+logger = get_logger("jiuwensymbiosis.serving.gdino_sam2")
 
 app = FastAPI(title="jiuwensymbiosis GroundingDINO+SAM2 server")
 configure_service(app)
@@ -371,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.set_defaults(use_sam2=True)
     args = parser.parse_args(argv)
+    configure_logging()
 
     import torch
 

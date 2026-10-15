@@ -53,7 +53,7 @@ class _InstantArm:
 @pytest.fixture
 def piper_factory(monkeypatch):
     envs = []
-    monkeypatch.setattr(lowlevel, "_attach_cmd_log_handler", lambda: None)
+    monkeypatch.setattr(lowlevel, "_attach_cmd_log_handler", lambda **_kwargs: None)
     monkeypatch.setattr(lowlevel.time, "sleep", lambda _seconds: None)
 
     def build(

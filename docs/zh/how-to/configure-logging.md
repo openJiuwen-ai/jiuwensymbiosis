@@ -1,245 +1,119 @@
 # 配置和使用日志
 
-> 类别：How-to。内容以治理前原始文档为基线重组。
+Symbiosis 与 openjiuwen 分别控制日志级别。默认保留 Symbiosis 的 `INFO` 执行摘要；openjiuwen 保持其当前策略，只有显式设置 `openjiuwen_level` 才统一调整其终端和文件级别；任务上下文、完整计划、工具参数和结果在 Symbiosis 的 `DEBUG` 日志中。
 
-本模块是整个 jiuwensymbiosis 框架**唯一的日志配置入口**：一处 `configure_logging` 统一格式 + 可选文件输出，一处 `get_logger` 呼出，外加一个把关键日志推入执行轨迹的 `TraceLogHandler`。
+## 配置
 
-## 一、快速上手
+在机器人 YAML 中设置：
 
-### 1.1 在你的代码里记日志
+```yaml
+agent:
+  logging:
+    level: INFO                         # Symbiosis 终端与主文件
+    openjiuwen_level: null              # 默认保留上游策略；显式 WARNING 同时限制终端和文件
+    dir: ./logs                         # Symbiosis 文件目录；null 关闭主日志文件
+    motion_dir: null                    # 默认 ./jiuwen_motion_log
+```
 
-直接用 `get_logger` 拿一个 logger，按需 `debug/info/warning/error`：
+两个级别相互独立。CLI `--debug` 只覆盖 `logging.level=DEBUG`，不会自动开启 openjiuwen 的 INFO。需要上游详细日志时，显式修改 `openjiuwen_level: INFO`，终端和文件一起生效；上游部分 INFO 日志包含请求和上下文。
+
+省略该字段或设置 `null` 时，不调用上游配置接口，不增删其 handler，也不改变 logger/sink 级别。`null` 保留当前状态，不恢复更早的快照；例如显式 WARNING 后再传 `null`，仍保持 WARNING。仓库机器人 YAML 中已有的显式 WARNING 保留，它是该示例的选择，不是字段默认值。
+
+显式设置该字段时，通过上游公开配置接口统一设置默认 logger、per-logger 和 sink 级别，保留后端、输出目标、格式、路由及轮转配置。改变上游级别可能重新打开其日志文件；重复应用相同配置不会重置。旧的终端专用字段 `openjiuwen_console_level` 已移除，请改用 `openjiuwen_level`。
+
+字段取值与校验见 [Agent 全量配置](../reference/agent-config.md)。相对路径按进程工作目录解析。`logging.dir: null` 只关闭 Symbiosis 主文件，不关闭 openjiuwen 文件、Piper 命令文件或执行轨迹。
+
+## 日志归属与输出
+
+| 来源 | 默认级别 / 内容 | 输出位置 |
+|---|---|---|
+| Symbiosis 核心、CLI、标定、工作台 | INFO：连接状态、执行进度、LLM 请求/完成和耗时；DEBUG：上下文、计划、参数、结果、伺服 tick | stderr 与 `<logging.dir>/jiuwensymbiosis.log` |
+| openjiuwen 终端 | 上游当前策略；显式配置后使用 openjiuwen_level | 上游自身的终端 handler / stdout、stderr sink |
+| openjiuwen 文件 | 上游当前策略；显式配置后与上游终端使用同一级别 | 上游文件 handler / sink |
+| Piper 命令记录 | DEBUG，独立保留运动诊断细节 | `<motion_dir>/<时间戳>/commands.log` |
+| 执行轨迹 | 结构化工具调用；按 `capture_loggers` 捕获 WARNING+ | `<workspace>/traces/` 或 `modules.tracing.dir` |
+
+Symbiosis 主日志文件只接收 `jiuwensymbiosis`、`jiuwensymbiosis_gui` 及其子命名空间。标定使用 `jiuwensymbiosis.calibration.*`，任务 CLI 使用 `jiuwensymbiosis.cli.run_task`。两个框架命名空间共用一组 handler，并设置 `propagate=False`，终端与主文件都只接收框架日志。openjiuwen 使用自己的出口。显式设置上游级别时，少数直接使用 `openjiuwen.*` 标准库 logger 的记录，由独立适配层设置 `openjiuwen` 命名空间级别，并在该节点补充终端 handler；传播路径上已有其他控制台 handler（包括宿主 root）时不补充。它们不进入 Symbiosis 主文件。
+
+主日志使用统一格式 `%(asctime)s %(levelname)s %(name)s: %(message)s`，单文件 5 MB，保留 3 个备份。openjiuwen 的格式、目录、轮转和输出目标仍由上游管理；部分版本默认文件位于 `logs/logs/`。显式级别配置统一调整上游日志级别，不重写其日志内容或路径，也不会启用原本关闭的输出目标。
+
+Piper 命令文件沿用同一格式，连接时定位到当前运行目录。同一运行目录内重连采用追加写入，保留此前的命令记录；新运行仍使用独立目录。它不修改全局级别或关闭主日志文件。Piper 的 DEBUG 内容默认只进入 `commands.log`；只有 `logging.level: DEBUG` 时才同时进入主文件和控制台。`JIUWEN_PIPER_CMD_LOG=0` 禁用附加并移除已有命令 handler；目录通过 `logging.motion_dir` 配置。最后一个使用者关闭驱动时释放文件、恢复 logger 原级别（不覆盖外部后续调整），构造失败也会回滚；关闭失败会报告并保留句柄供重试。切换目录失败不会继续写入上一轮文件。
+
+`modules.tracing.console: true` 的实时步骤摘要也通过标准日志输出，遵循 `logging.level`，完整参数和结果只用 DEBUG。Trace JSON 仍按结构化轨迹配置记录参数和结果；日志级别不用于删除轨迹内容。
+
+最终回答是 CLI 的 stdout 用户输出，不受文本日志级别裁剪。fastagent 成功且没有 `output` / `content` 文本时，按 `steps_done` 输出“任务完成，共执行 N 步”；已有文本回答优先。语音模式每条指令输出一次反馈后再交给 TTS；`--tts null` 下仍可见。输入上下文和完整执行结果继续使用 DEBUG。
+
+任务返回 `ok: false` 时，CLI 单独用 ERROR 记录任务原因及失败步骤的序号、操作和原因；语音模式也在生成回复前记录该摘要。这样仅通过 `reason` 或 `steps[].reason` 返回的失败在 INFO/WARNING 配置下仍可见，完整参数、计划和结果继续保留在 DEBUG。
+
+## 初始化与 Python API
+
+官方 CLI 先合并全部命令行覆盖，再构造、校验 Agent 配置，检查 query 后初始化日志，避免有效覆盖被提前校验拦截。CLI 和 Runtime 均在构建/连接会话、语音监听与首次规划之前应用配置。`prepare_session()`、Agent builder 和直接调用 `run_fast_task()` 的路径均会幂等配置，规划失败也能留下日志。缺少 query 时，CLI 向 stderr 报错并返回 2，不创建 Symbiosis 日志文件；adapter 导入之前已完成日志初始化，导入失败仍会落盘。包导入不主动配置上游日志，导入期输出遵循上游策略；显式 YAML 级别在入口读取配置后才生效。适配层通过 `get_log_config_snapshot()` / `configure_log_config()` 配置 default 和 Loguru 后端，无私有接口或生命周期挂钩。上游配置变化时，公开接口会重置其 logger 和输出；之后惰性创建的 logger 使用新级别。
+
+嵌入式宿主还需区分其他依赖的初始化行为：当前依赖链中的 `pymilvus` 首次导入会调用全局 `logging.dictConfig()`，可能关闭已有 handler；这不是日志适配层直接修改 root 造成的，也不由此适配层接管。
 
 ```python
-from jiuwensymbiosis.utils import get_logger   # 或 from jiuwensymbiosis.utils.logging import get_logger
+from jiuwensymbiosis.agent import RobotAgentConfig
 
-logger = get_logger(__name__)
-
-logger.info("已连接 CAN %s", can_port)
-logger.warning("目标越界，已钳制到 (%.1f, %.1f, %.1f)", x, y, z)
-logger.error("使能超时：%s", exc)
+config = RobotAgentConfig.from_dict(raw.get("agent"))
+config.prepare_session(session)
+with session:
+    ...
 ```
 
-- `get_logger(__name__)` 与标准库 `logging.getLogger(__name__)` 完全等价——**既有的 `logging.getLogger(__name__)` 调用无需改动**，照样享受统一配置。
-- `get_logger()`（无参）会通过 `inspect.currentframe` best-effort 探测调用方模块名，与 `logging.getLogger(__name__)` 惯用法对齐（CPython 专属，失败回退到 `"jiuwensymbiosis"`）。
-- **日志格式统一**：全框架走同一个 formatter
-  `%(asctime)s %(levelname)s %(name)s: %(message)s`（常量 `DEFAULT_FMT`）。你**不需要**、也不应该自己 `setFormatter` 或 `basicConfig`——否则会和 `configure_logging` 重复挂 handler，导致控制台每条日志打印两次（见 §三.3）。
-
-> ⚠️ **不要在模块顶层做任何全局日志配置**。`build_robot_agent` 会在合适时机调一次 `configure_logging`；重复配置或 `basicConfig` 会造成 handler 叠加。
-
-### 1.2 默认行为：开箱即落盘到 `./logs`
-
-无需任何配置，框架日志就会同时输出到：
-- **控制台（stderr）**——一个 `StreamHandler`，统一格式，**不过滤**：`jiuwensymbiosis.*` 和 openjiuwen 用标准库 `logging` 打的日志都会显示，便于调试时看全貌。
-- **文件** `<log_dir>/jiuwensymbiosis.log`——`RotatingFileHandler`，单文件 5 MB、保留 3 个备份。默认 `log_dir="./logs"`。**只记录 `jiuwensymbiosis.*` 名空间的日志**（文件 handler 上挂了 `_FrameworkFilter`，挡掉 openjiuwen 冒泡到 root 的标准库日志，保持文件干净）。
-
-默认 `./logs` 是刻意选择的：框架日志落在这里。openjiuwen 自有日志后端因实现原因会落在 `logs/logs/` 下（见下方说明），彼此独立、互不干扰：
-
-```
-logs/
-├── jiuwensymbiosis.log              ← 【我们的】框架日志（agent / rails / 各模块）
-└── logs/                            ← 【openjiuwen】自有日志后端（落点见下说明）
-    ├── run/jiuwen.log               ← 运行日志
-    ├── runner.log                   ← runner 日志
-    ├── interface/jiuwen_interface.log
-    └── performance/jiuwen_performance.log
-```
-
-每次运行的运动产物单独成一个目录（`agent.logging.motion_dir` 配置，默认 `./jiuwen_motion_log`）：
-
-```
-jiuwen_motion_log/<时间戳>/          ← 每次运行一个目录
-├── commands.log                     ← 【我们的】Piper 每次运行的命令轨迹（仅 piper）
-└── grasp_debug/                     ← 【我们的】检测/抓取位姿调试图（det/raw/info_NNN）
-```
-
-**日志归属说明**：
-
-| 来源 | 落点 | 是否进 `jiuwensymbiosis.log` |
-|------|------|------------------------------|
-| `jiuwensymbiosis.*`（我们的 agent/rails/适配器代码） | `logs/jiuwensymbiosis.log` | ✅ 是 |
-| Piper 命令日志 + 抓取调试图 | `<motion_log_dir>/<stamp>/{commands.log, grasp_debug/}`（默认 `./jiuwen_motion_log`） | ❌（每次运行独立目录） |
-| openjiuwen 自有日志后端（json/trace_id 那套） | `logs/logs/run/`、`logs/logs/interface/`、`logs/logs/performance/` 下各文件 | ❌（绕过标准库 logging） |
-| openjiuwen 用标准库 `logging` 打的日志（如初始化时的 `Registered parser ...`） | 控制台可见，**不落 `jiuwensymbiosis.log`** | ❌（被 `_FrameworkFilter` 挡掉） |
-
-> 简言之：`jiuwensymbiosis.log` 只存我们自己的日志；openjiuwen 的日志在它自己的 `logs/logs/` 子目录里（或仅控制台可见）。控制台则全量显示。
-
-> `./logs` 是**相对当前工作目录**的路径。从不同目录运行，日志落在不同位置——固定运行目录即可。
-
----
-
-## 二、通过配置控制日志
-
-日志参数通过 `RobotAgentConfig` 的 `logging.level` / `logging.dir` 两个字段控制，它们最终传给 `build_robot_agent → configure_logging`。两种设置方式：**YAML `agent:` 块**（声明式，推荐）和 **CLI 参数**（临时覆盖）。两者可叠加，CLI 优先级更高。
-
-规范配置为 `logging.level` / `logging.dir` / `logging.motion_dir`；仅支持分组结构。完整默认值和约束见 [Agent 全量配置](../reference/agent-config.md)。省略目录字段仍写入 `./logs`，只有显式 `null` 才关闭文件日志。
-
-### 2.1 YAML `agent:` 块（声明式配置）
-
-在任务配置文件（如 `configs/piper/piper.yaml`）里写 `agent:` 块：
-
-```yaml
-agent:
-  logging:
-    level: INFO
-    dir: ./logs
-```
-
-加载链路：
-
-```
-YAML → raw["agent"] → RobotAgentConfig.from_dict(raw["agent"])   # run_task.py / jiuwensymbiosis-run
-                      → build_robot_agent(config=...)
-                          → configure_logging(level=config.logging.level, log_dir=config.logging.dir)
-```
-
-- `from_dict` 递归合并显式覆盖并校验分组字段和类型。
-- **未知键会抛 `TypeError`**（[agent/config.py](../../../jiuwensymbiosis/agent/config.py) `RobotAgentConfig.from_dict`）——拼错（如 `modules.tracing.enabld`）会在加载期立刻报错，而不是被静默忽略。
-
-`logging.level` / `logging.dir` 字段：
-
-| 字段 | 默认 | 说明 |
-|------|------|------|
-| `logging.level` | `"INFO"` | 根 logger 级别（`logging` 的 level 名字符串） |
-| `logging.dir` | `"./logs"` | 日志文件目录；`None`/`null` = 仅控制台。默认 `./logs`（openjiuwen 日志因其实现落在 `logs/logs/`，与本目录独立） |
-
-#### 关掉文件落盘（仅控制台）
-
-```yaml
-agent:
-  logging:
-    dir: null
-```
-
-#### 调到 DEBUG 抓更详细日志
-
-```yaml
-agent:
-  logging:
-    level: DEBUG
-    dir: ./logs
-```
-
-### 2.2 CLI 参数覆盖（demo 临时调级）
-
-`examples/run_task.py` 提供了 `--debug`，它通过 `RobotAgentConfig.from_dict(..., overrides=...)` 把 `logging.level` 改成 `DEBUG`，**优先级高于 YAML**：
+独立使用日志模块时：
 
 ```python
-overrides = {"logging": {"level": "DEBUG"}} if args.debug else {}
-agent_cfg = RobotAgentConfig.from_dict(raw.get("agent"), overrides=overrides)
-result = run_robot_task(session, args.query, agent_cfg)
+from jiuwensymbiosis.utils.logging import configure_logging, get_logger
+
+configure_logging("INFO", log_dir="./logs")  # 默认保留上游配置
+logger = get_logger("jiuwensymbiosis.my_module")
+logger.info("执行完成，步数=%d", count)
+logger.debug("完整参数=%s", params)
 ```
 
-```bash
-# 临时看 DEBUG 级日志（覆盖 YAML 的 logging.level），不必改配置文件
-python examples/run_task.py --config configs/piper/piper.yaml --mock --debug
+YAML 的 `openjiuwen_level` 接受级别字符串或 `null`；公开 Python API `configure_logging()` 还接受标准整数级别，如 `logging.WARNING`。`NOTSET` 表示允许所有标准级别，不能用来替代“不干预”的 `None`。
+
+项目模块使用 `get_logger(__name__)`；已有 `logging.getLogger(__name__)` 同样有效，它们返回同一个标准库 logger，记录沿框架命名空间传给统一 handler。业务代码不直接调用 handler。应用脚本及可用 `python -m` 执行的模块使用稳定的 Symbiosis 命名空间，避免日志名称变成 `__main__`。不要另调 `basicConfig()` 或在驱动中配置 root。
+
+`configure_logging()` 只管理 `jiuwensymbiosis` 和 `jiuwensymbiosis_gui` 根节点上带 `_jiuwensymbiosis_owned` 标记的 handler：
+
+- 重复调用更新级别和格式，不增加 handler。
+- 控制台与文件 handler 都设置级别，显式 DEBUG 子 logger 不会绕过 INFO 阈值。
+- 从目录 A 切换到 B，先准备 B，再统一切换配置并关闭 A；设为 `None` 会关闭文件输出。目录创建或文件打开失败会保留原配置；旧文件关闭失败时新配置已经完整生效，错误仍向调用者报告，并在下次配置时重试清理。
+- 不修改 root 级别、handler、formatter 或 filter。外部 handler 保持原样，外部输出策略由宿主负责。
+- 仅在显式设置上游级别时，独立适配层才通过公开配置接口统一设置终端和文件级别。后续显式调用上游配置接口会覆盖这项策略，直到再次通过 Symbiosis 显式设置上游级别；适配层不拦截上游重配置。
+
+由于框架日志不再传播到 root，宿主聚合器和 pytest `caplog` 需要直接向 `jiuwensymbiosis` / `jiuwensymbiosis_gui` 附加捕获 handler。Runtime 与 Trace 本来就使用命名空间捕获；仓库的 `caplog` fixture 也已适配。测试调整源头级别时指定 `caplog.at_level("DEBUG", logger="jiuwensymbiosis")`。
+
+两个框架命名空间设置自己的源头级别；显式配置上游时，`openjiuwen` 命名空间也设置独立级别，不依赖宿主 root 的阈值。宿主自己附加的 handler 仍按宿主策略过滤。NOTSET 允许全部标准日志级别；上游 Loguru 后端映射为其支持的最低标准级别 DEBUG。
+
+日志配置作用于进程；运行期间官方 Runtime 串行执行任务。自行嵌入多个并行任务时不能依靠这组进程级配置获得各任务独立的级别和文件目录。
+
+## 兼容性与迁移
+
+调用 `configure_logging()` 后，框架命名空间停止向 root 传播。仅在 root 上采集日志的宿主应把采集 handler 同时附加到两个框架命名空间；采集结束时从相同位置移除：
+
+```python
+import logging
+
+for name in ("jiuwensymbiosis", "jiuwensymbiosis_gui"):
+    logging.getLogger(name).addHandler(collector)
 ```
 
-> demo **不在 `main()` 里调 `logging.basicConfig`**——根日志完全由 `build_robot_agent → configure_logging` 接管。这点很重要：`basicConfig` 会另挂一个不被 `configure_logging` 识别的 handler，导致控制台重复打印（见 §三.3）。<sup>run_task.py 在 `main()` 开头设了一个 `logging.basicConfig` 供语音监听阶段可见，随后 `configure_logging` 再接管根 logger。</sup>
+外部 pytest 测试同样需要附加 `caplog.handler`，并在测试结束时移除；调整源头级别时使用 `caplog.at_level("DEBUG", logger="jiuwensymbiosis")`。仓库内的 fixture 已处理这一步。
 
-### 2.3 与执行轨迹（trace）联动
+legacy 标定命令 `scripts/calibrate/calibrate_hand_eye.py`（包括 `--selftest`）的日志由 stdout 改为 stderr，采用带时间、级别、logger 名称的统一格式。原来读取 stdout 的脚本应改读 stderr，并调整文本匹配；若只判断自检是否通过，使用退出码。
 
-日志还能进执行轨迹（`modules.tracing.enabled` 开启时）。相关配置项在 `agent:` 块里（详见[执行轨迹参考](../reference/tracing.md)）：
+## 执行轨迹中的告警
+
+`TraceLogHandler` 把指定 logger 的 WARNING+ 转成 trace 的 `log_events`。默认捕获 `jiuwensymbiosis`，包含其标定子命名空间，不默认捕获 openjiuwen 或工作台：
 
 ```yaml
 agent:
   modules:
     tracing:
       enabled: true
-      capture_loggers: ["jiuwensymbiosis"]
+      capture_loggers: [jiuwensymbiosis]
 ```
 
----
-
-## 三、API 与机制参考
-
-### 3.1 `configure_logging(level="INFO", *, log_dir=None, fmt=DEFAULT_FMT)`
-
-幂等地配置根 logger。**普通开发者通常不直接调用**——`build_robot_agent` 会替你调。仅在你脱离 `build_robot_agent` 独立使用框架时才手动调一次。
-
-```python
-from jiuwensymbiosis.utils.logging import configure_logging
-
-configure_logging()                                         # 控制台 + 默认行为
-configure_logging(level="DEBUG", log_dir="/var/log/js")     # 控制台 + 指定目录的文件
-configure_logging(level="INFO", log_dir=None)               # 仅控制台（关闭文件）
-```
-
-**幂等机制**：每个由本模块创建的 handler 都被打上 `_OWNED_TAG = "_jiuwensymbiosis_owned"` 标记。重复调用时：
-- StreamHandler：存在则只更新 formatter，不新增。
-- FileHandler：`log_dir` 从无→有则新增，从有→无则移除并关闭旧的；从一个非空路径直接换到另一个非空路径
-  不会替换已有 handler。需要先调用一次 `configure_logging(log_dir=None)`，再传入新路径，或重启进程。
-
-```
-configure_logging(level, log_dir)
-  │
-  ├─ root.setLevel(int_level)
-  ├─ _owned_handlers() 为空？
-  │    ├─ 是 → 新建 StreamHandler（不过滤），打 _OWNED_TAG，加到 root
-  │    └─ 否 → 更新已有 owned handler 的 formatter
-  └─ log_dir 给定？
-       ├─ 是 且 无 owned FileHandler → 新建 RotatingFileHandler(5MB, 3 backup)
-       │                                  + 挂 _FrameworkFilter（只放行 jiuwensymbiosis.*）
-       └─ 否 且 有 owned FileHandler → 移除并 close
-```
-
-> **文件 handler 的过滤范围**：`_FrameworkFilter` 只加在 `RotatingFileHandler` 上，**不加在 StreamHandler 上**——所以 `jiuwensymbiosis.log` 只存我们自己的日志，而控制台仍显示 openjiuwen 等全部来源的日志（调试时看全貌）。openjiuwen 自有的日志后端（写 `logs/run/` 等）根本不走标准库 logging，不受此影响。
-
-### 3.2 `get_logger(name=None)`
-
-`logging.getLogger` 的薄封装，留作未来加结构化字段的单一入口。用法见 §一.1。
-
-### 3.3 `TraceLogHandler`（把 WARNING+ 推入 trace）
-
-把 `WARNING`+ 的日志记录转发给一个绑定的 trace sink（通常是 `TraceRail`）。这是"关键日志进 trace"的实现核心——只要把 handler 挂到对应 logger 上，业务模块里既有的 `logger.warning(...)` 就自动成为 trace 的 `log_events`，**无需改业务代码**。
-
-```python
-from jiuwensymbiosis.utils.logging import TraceLogHandler
-
-handler = TraceLogHandler(sink=trace_rail, level=logging.WARNING)
-logging.getLogger("jiuwensymbiosis").addHandler(handler)
-# 此后 jiuwensymbiosis.* 下任何 logger.warning(...) 都会进入 trace
-```
-
-- **捕获级别固定 `WARNING`**：在 `build_robot_agent` 里硬编码（`capture_log_level=_logging.WARNING`），不开放配置。理由见[日志集成设计](../../../design/logging.md)。
-- **emit 行为**：`sink is None` 时 no-op（可提前构造）；否则组装 `{logger, level, msg, ts}` 调 `sink.record_log_event(...)`；sink 异常被精确类型 `(AttributeError, TypeError, ValueError)` 吞掉——日志 handler 绝不能抛。
-- **生命周期**由 `TraceRail` 管理（详见[执行轨迹内部设计](../../../design/tracing.md)）：`set_sink(sink)` 切换 sink（每个 invoke 开始时绑回、结束后置 None）。
-
-### 3.4 常量
-
-| 常量 | 值 | 用途 |
-|------|----|------|
-| `DEFAULT_FMT` | `"%(asctime)s %(levelname)s %(name)s: %(message)s"` | 默认 formatter 格式 |
-| `_OWNED_TAG` | `"_jiuwensymbiosis_owned"` | 标记本模块创建的 handler，用于幂等识别 |
-| `_FrameworkFilter` | `logging.Filter` 子类 | 只放行 `jiuwensymbiosis.*` 记录；挂在文件 handler 上，使 `jiuwensymbiosis.log` 不混入 openjiuwen 日志 |
-
-### 3.5 handler 所有权模型
-
-本模块通过 `_OWNED_TAG` 区分"自己创建的 handler"与"外部（pytest、应用代码）注入的 handler"：
-
-```
-root.handlers = [
-  StreamHandler(_owned=True)                       ← 不过滤，控制台全量显示
-  RotatingFileHandler(_owned=True, _FrameworkFilter)   ← 只记 jiuwensymbiosis.*
-  LogCaptureHandler                                ← pytest 注入，configure_logging 不碰
-]
-```
-
-这保证了：
-- `configure_logging` 不会误删 pytest 的日志捕获 handler。
-- 重复调用不会堆叠 owned handler。
-- `log_dir` 启停时只动 owned FileHandler；非空路径之间的切换需先显式关闭旧 handler。
-
----
-
-## 四、相关文件
-
-| 文件 | 角色 |
-|------|------|
-| [jiuwensymbiosis/utils/logging.py](../../../jiuwensymbiosis/utils/logging.py) | 本模块实现 |
-| [jiuwensymbiosis/utils/\_\_init\_\_.py](../../../jiuwensymbiosis/utils/__init__.py) | re-export `configure_logging` / `get_logger` / `TraceLogHandler` / `DEFAULT_FMT` |
-| [jiuwensymbiosis/agent/config.py](../../../jiuwensymbiosis/agent/config.py) | `RobotAgentConfig.logging.level` / `logging.dir` 字段 + `from_dict`（YAML 透传） |
-| [jiuwensymbiosis/agent/builder.py](../../../jiuwensymbiosis/agent/builder.py) | `build_robot_agent` 调 `configure_logging`；tracing 开启时挂 `TraceLogHandler` |
-| [examples/run_task.py](../../../examples/run_task.py) | `--debug` 覆盖 `logging.level`；演示 YAML `agent:` 块加载链路 |
-| [jiuwensymbiosis/adapters/piper/lowlevel.py](../../../jiuwensymbiosis/adapters/piper/lowlevel.py) | Piper `_attach_cmd_log_handler` 复用 `configure_logging` |
-| [执行轨迹参考](../reference/tracing.md) | `TraceLogHandler` 的消费者与数据格式 |
+捕获级别固定 WARNING。invoke 结束解除 sink，Session 结束移除 handler。详细数据格式和生命周期见 [执行轨迹参考](../reference/tracing.md) 与 [日志设计](../../../design/logging.md)。

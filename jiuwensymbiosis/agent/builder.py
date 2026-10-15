@@ -36,7 +36,7 @@ from jiuwensymbiosis.agent.config import (
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import TraceRail
 from jiuwensymbiosis.skills import SKILLS_DIR
-from jiuwensymbiosis.utils.logging import TraceLogHandler, configure_logging
+from jiuwensymbiosis.utils.logging import TraceLogHandler
 
 _JIUWENSYMBIOSIS_SETTINGS = Path.home() / ".jiuwensymbiosis" / "settings.json"
 
@@ -476,7 +476,7 @@ def _build_agent(session: RobotSession, config: RobotAgentConfig, *, fast: bool)
     session.strict_capabilities = config.strict_capabilities
     # Centralised logging: one uniform format across all modules,
     # optional file output. Idempotent.
-    configure_logging(level=config.logging.level, log_dir=config.logging.dir)
+    config.logging.configure()
     model = config.model or build_model(config.model_spec)
     tools = _build_tools(
         session,

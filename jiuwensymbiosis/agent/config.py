@@ -180,8 +180,15 @@ class ModulesConfig:
 @dataclass
 class LoggingConfig:
     level: str = "INFO"
+    openjiuwen_level: str | None = None
     dir: str | None = "./logs"
     motion_dir: str | None = None
+
+    def configure(self) -> None:
+        """Apply process-wide logging before connecting or planning a task."""
+        from jiuwensymbiosis.utils.logging import configure_logging
+
+        configure_logging(level=self.level, log_dir=self.dir, openjiuwen_level=self.openjiuwen_level)
 
 
 @dataclass
@@ -344,7 +351,7 @@ class RobotAgentConfig:
         for path, (value, minimum) in limits.items():
             if value < minimum:
                 raise ValueError(f"agent.{path} must be >= {minimum}")
-        if self.logging.level.upper() not in {
+        levels = {
             "DEBUG",
             "INFO",
             "WARNING",
@@ -353,8 +360,11 @@ class RobotAgentConfig:
             "CRITICAL",
             "FATAL",
             "NOTSET",
-        }:
-            raise ValueError("agent.logging.level is not a logging level")
+        }
+        for name in ("level", "openjiuwen_level"):
+            value = getattr(self.logging, name)
+            if value is not None and value.upper() not in levels:
+                raise ValueError(f"agent.logging.{name} is not a logging level")
         if self.modules.diagnosis.enabled and not self.modules.tracing.enabled:
             raise ValueError("agent.modules.diagnosis.enabled requires modules.tracing.enabled")
         if for_execution and self.execution.mode == "fastagent":
@@ -366,6 +376,7 @@ class RobotAgentConfig:
 
     def prepare_session(self, session: Any) -> None:
         """Apply connection-time settings before connect, shared by official hosts."""
+        self.logging.configure()
         session.strict_capabilities = self.strict_capabilities
         session.motion_log_dir = self.logging.motion_dir
 

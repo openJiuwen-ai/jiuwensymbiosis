@@ -135,6 +135,45 @@ def test_chat_serializes_disabled_thinking_mode(monkeypatch):
     assert captured["payload"]["thinking"] == {"type": "disabled"}
 
 
+@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+def test_llm_logs_summary_and_only_debug_logs_context(monkeypatch, caplog, level):
+    caplog.set_level(level, logger=planner.logger.name)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "response-context"}}]})
+    )
+    client = httpx.Client(transport=transport)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+    assert (
+        planner._chat(
+            "system-context",
+            "user-context",
+            api_base="https://offline.invalid/v1",
+            api_key="test-secret-token",
+            model_name="test-model",
+            timeout_s=1,
+            temperature=0,
+            proxy=None,
+            attempts=1,
+            max_tokens=100,
+        )
+        == "response-context"
+    )
+    assert "LLM request model=test-model" in caplog.text
+    assert "LLM response model=test-model duration=" in caplog.text
+    for content in ("system-context", "user-context", "response-context"):
+        assert (content in caplog.text) == (level == "DEBUG")
+    assert "test-secret-token" not in caplog.text
+
+
+@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+def test_compiled_parameters_are_debug_only(monkeypatch, caplog, level):
+    caplog.set_level(level, logger=planner.logger.name)
+    _patch_chat(monkeypatch, json.dumps(_GOOD_SEQUENCE))
+    _compile()
+    assert "4 steps" in caplog.text
+    assert ("黑盒子" in caplog.text) == (level == "DEBUG")
+
+
 def test_compile_uses_runtime_special_ops(monkeypatch):
     cap = _patch_chat(monkeypatch, json.dumps(_GOOD_TRACK_GRASP_SEQUENCE))
     out = _compile(special_ops=frozenset({"track_grasp"}))

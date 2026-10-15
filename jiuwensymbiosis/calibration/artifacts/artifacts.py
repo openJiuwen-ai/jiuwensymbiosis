@@ -18,7 +18,6 @@ bridge, not this framework-neutral artifact module.
 from __future__ import annotations
 
 import json
-import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -35,8 +34,9 @@ from jiuwensymbiosis.calibration_schema import (
     frame_field_for_mount,
 )
 from jiuwensymbiosis.utils.geometry import orthonormalize
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.artifacts")
+logger = get_logger("jiuwensymbiosis.calibration.artifacts")
 
 # Candidate reports remain separate from the loadable schema-2 camera fields.
 REPORT_KIND = "eye_to_hand_solve_report"

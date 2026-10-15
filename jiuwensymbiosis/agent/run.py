@@ -430,6 +430,7 @@ def run_fast_task(
     config.validate(for_execution=True)
     if config.execution.mode != "fastagent":
         raise ValueError("run_fast_task requires agent.execution.mode=fastagent")
+    config.logging.configure()
     spec = config.model_spec
     if spec is None:
         return {"ok": False, "reason": "no_model_spec", "query": query}
@@ -510,7 +511,8 @@ def run_fast_task(
     steps = parse_sequence(
         raw, allowed_ops=action_index, special_ops=special_ops, blocked_access=plan_kwargs["blocked_access"]
     )
-    logger.info("[fast] %s-tier plan → %d steps for task=%r", planned.tier, len(steps), query)
+    logger.info("[fast] %s-tier plan → %d steps", planned.tier, len(steps))
+    logger.debug("[fast] task=%r", query)
 
     def replan(measured: WorldState, why: str) -> list | None:
         """Re-plan the remainder from what the world actually is, both tiers again.

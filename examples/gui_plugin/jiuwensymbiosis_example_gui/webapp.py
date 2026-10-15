@@ -21,7 +21,7 @@ _JOB_PATH = re.compile(r"^/api/jobs/([a-f0-9]{32})$")
 _CANCEL_PATH = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 _MAX_REQUEST_BYTES = 16 * 1024
 _POLL_EVENT_LIMIT = 128
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jiuwensymbiosis_gui.example.webapp")
 
 _PAGE = r"""<!doctype html>
 <html lang="en">

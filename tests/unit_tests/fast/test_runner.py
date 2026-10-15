@@ -1000,7 +1000,7 @@ def test_servo_binding_logs_each_tick_only_for_opted_in_adapter(caplog):
     callback = binding.make_tick_logger("track_grasp.approach")
     assert callback is not None
 
-    caplog.set_level("INFO", logger="jiuwensymbiosis.agent.fast.realtime.binding")
+    caplog.set_level("DEBUG", logger="jiuwensymbiosis.agent.fast.realtime.binding")
     callback(
         {
             "tick": 7,

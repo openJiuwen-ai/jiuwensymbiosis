@@ -228,7 +228,7 @@ def _prescan(session: Any, steps: list[ActionStep | LoopStep]) -> dict[str, dict
         if det is not None:
             cache[n] = det
             record_action(api, api.get_grasp_info_simple, {"object_name": n}, det)
-            logger.info("[runner] pre-scan cached %r at home: pos=%s", n, det.get("position"))
+            logger.debug("[runner] pre-scan cached %r at home: pos=%s", n, det.get("position"))
         else:
             logger.warning("[runner] pre-scan: %r not detected at home (will retry live)", n)
     return cache
@@ -535,7 +535,7 @@ def _track_grasp(
                     f"track_grasp tip {err:.1f} mm off final target after re-align; aborting before close"
                 )
 
-        logger.info(
+        logger.debug(
             "[runner] track_grasp %r final target: position=%s grasp_z=%s state=%s detections=%d",
             object_name,
             latest.get("position"),
@@ -876,7 +876,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 tracked_grasp = None
                 sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
         out.append({"i": i, "op": step.op, "ok": True, "result": result})
-        logger.info("[runner] step %d ok: %s(%s)", i, step.op, params)
+        logger.info("[runner] step %d ok: %s", i, step.op)
+        logger.debug("[runner] step %d params: %s", i, params)
         state["i"] = i + 1
         state["holding"] = holding
         state["tracked_grasp"] = tracked_grasp
@@ -891,7 +892,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         # would otherwise issue fresh motion after the user requested a stop.
         if token is not None:
             token.raise_if_set()
-        logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
+        logger.warning("[runner] step %d failed: %s: %s", i, step.op, exc)
+        logger.debug("[runner] step %d params: %s", i, step.params)
         if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
             logger.info("[runner] recovery already handled by the ability rail stack")
         elif ctx.recovery_enabled:

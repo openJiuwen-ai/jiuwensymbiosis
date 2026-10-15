@@ -97,6 +97,7 @@ agent:
       - jiuwensymbiosis
   logging:
     level: INFO
+    openjiuwen_level: null
     dir: ./logs
     motion_dir: null
   workspace: null
@@ -213,7 +214,8 @@ Unknown fields, invalid types and out-of-range values are rejected. Disabled mod
 
 | Field | Default | Meaning and constraints |
 |---|---|---|
-| `level` | `"INFO"` | Logging level: DEBUG/INFO/WARNING/ERROR/CRITICAL/NOTSET; WARN/FATAL aliases accepted |
+| `level` | `"INFO"` | Symbiosis level (context and full payloads use DEBUG): DEBUG/INFO/WARNING/ERROR/CRITICAL/NOTSET; WARN/FATAL aliases accepted |
+| `openjiuwen_level` | `null` | Omitted/null preserves current upstream policy; an explicit string level controls console and files together, overriding per-logger/sink severity; accepts the same levels as level; NOTSET is still explicit |
 | `dir` | `"./logs"` | Framework log directory; null selects console-only logging |
 | `motion_dir` | `null` | Per-run motion artifact root; null uses ./jiuwen_motion_log; applied before connection |
 

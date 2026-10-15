@@ -1,127 +1,73 @@
 # 日志模块设计文档
 
-## 1. 设计目的
+## 职责边界
 
-本设计针对集中日志模块引入前的项目状态：各模块各自调用 `logging.getLogger()`，没有统一的
-格式、级别和文件出口；Piper 另有一套只服务真机命令的文件 handler；执行轨迹也无法复用
-业务日志中的告警信息。
+`jiuwensymbiosis.utils.logging` 管理 Symbiosis 的格式、级别和主文件，使用标准库 Logger 与 handler。业务代码只产生日志；入口通过 `LoggingConfig.configure()` 应用配置。
 
-设计要解决三个问题：
+openjiuwen 保留自己的日志内容、后端、格式、输出目标、路由及文件轮转。`_openjiuwen_logging.py` 只通过公开 `get_log_config_snapshot()` / `configure_log_config()` 设置级别，不修改私有接口或包装生命周期方法。包导入不调用该适配层；只有入口应用显式上游级别时才调用。导入期日志遵循上游自身策略。
 
-1. 为框架提供幂等的统一配置入口，重复构建 Agent 时不叠加 handler。
-2. 区分“日常框架日志”“Piper 单次运行命令日志”和“执行轨迹告警事件”，避免三个用途互相污染。
-3. 日志故障不得改变机器人任务结果，特别是 trace sink、目录创建或格式化失败时必须安全降级。
+用户配置 `agent.logging.level` 默认 INFO；`agent.logging.openjiuwen_level` 默认 `None`，省略/null 保留上游当前配置，不修改 handler、logger 或 sink，也不重置其日志系统。先显式配置再传 None 保留当时状态，不回滚快照。显式级别与 Symbiosis 级别独立，分别作用于对应终端和文件；此时上游默认 logger、per-logger 和 Loguru sink 级别统一设置，不保留相互冲突的级别覆盖。旧的终端专用字段 `openjiuwen_console_level` 已移除。公开使用说明见 [配置和使用日志](../docs/zh/how-to/configure-logging.md)。
 
-设计基线以集中日志模块首次接入 `build_robot_agent()` 时的代码状态为起点。用户配置与公共 API 用法见
-[配置和使用日志](../docs/zh/how-to/configure-logging.md)。
+适配层在公开配置快照上只更新级别；快照未变化时跳过配置调用。级别变化会通过上游公开接口重置 logger，可能重新打开其文件，后续惰性创建的 logger 使用新设置。宿主之后显式重配上游时以宿主设置为准，直到再次通过 Symbiosis 显式设置上游级别；不安装持续拦截重配置的钩子。
 
-## 2. 核心概念
+当前依赖链中的 `pymilvus` 首次导入调用全局 `logging.dictConfig()`，可能关闭已有标准库 handler；这项既有导入副作用不在适配层控制范围。宿主预配置测试先加载该依赖，再验证适配层行为。
 
-- **受管 Handler（Owned Handler）**：由本框架创建并带 `_jiuwensymbiosis_owned` 标记的 handler。
-  配置入口只更新或移除这类 handler，不接管宿主应用已有的日志设施。
-- **框架日志流（Framework Log Stream）**：`jiuwensymbiosis` 命名空间产生的常规运行记录。
-- **命令审计流（Command Audit Stream）**：Piper 单次进程运行的运动命令记录，保存到独立时间戳目录。
-- **轨迹日志事件（Trace Log Event）**：从指定 logger 捕获的 `WARNING` 及以上记录，写入当前
-  `ExecutionTrace` 步骤或 trace 级日志。
+## 初始化和输出
 
-这些概念共同确定封装边界：集中日志模块薄封装 Python `logging`，不替换标准库 Logger；
-Piper 和 Trace 只通过 handler 扩展输出目的地，不复制业务日志调用。
+CLI 先合并全部命令行覆盖，再构造、校验一次 Agent 配置，检查 query 后初始化日志；Runtime 同样在创建或连接会话、语音监听和首次规划之前配置日志；`prepare_session()`、builder 和 `run_fast_task()` 为不同 Python 入口提供幂等兜底。缺少 query 时直接向 stderr 报错并返回 2，不创建 Symbiosis 日志目录；adapter 导入前仍配置日志，以记录导入失败。整个配置作用于进程，沿用官方 Runtime 一次只执行一个操作的约束。
 
-## 3. 设计逻辑
-
-### 3.1 单一配置入口与所有权
-
-`configure_logging()` 配置 root logger，并通过 Owned Handler 标记识别自己创建的输出端。
-重复调用时更新级别和 formatter；请求文件输出时至多创建一个滚动文件 handler，取消文件输出时
-只关闭受管文件 handler。宿主程序自行安装的 handler 保持不变。
-
-选择显式管理而不是 `logging.config.dictConfig`，是为了保留宿主日志配置，并让“重复构建不叠加”
-这一约束可以直接由 handler 标记实现和测试。
-
-### 3.2 三种输出按用途分离
+Symbiosis 主文件只接收 `jiuwensymbiosis`、`jiuwensymbiosis_gui` 及其子命名空间。标定日志归入 `jiuwensymbiosis.calibration`，CLI 使用稳定的 `jiuwensymbiosis.cli.run_task`，不依赖脚本运行时的 `__main__` 名称。
 
 ```mermaid
 flowchart LR
-    L[业务 logger] --> R[root logger]
-    R --> C[控制台<br/>不过滤命名空间]
-    R --> F[jiuwensymbiosis.log<br/>仅框架命名空间]
-    P[Piper logger] --> M[commands.log<br/>单次运行目录]
-    L --> T[TraceLogHandler<br/>WARNING+]
-    T --> E[ExecutionTrace log_events]
+    S[Symbiosis logger] --> N[core / GUI namespace: propagate=False]
+    N --> C[Shared Symbiosis console: level]
+    N --> F[Shared jiuwensymbiosis.log: level]
+    P[Piper logger] --> M[commands.log: DEBUG]
+    P --> N
+    S --> T[TraceLogHandler: WARNING+]
+    O[openjiuwen logger: current policy or explicit level] --> U[Upstream console]
+    O --> UF[Upstream files]
 ```
 
-- 控制台保留所有传播到 root 的标准库日志，便于观察依赖初始化。
-- `jiuwensymbiosis.log` 使用 `_FrameworkFilter`，只保存框架命名空间，防止 openjiuwen 初始化噪声淹没业务记录。
-- Piper `commands.log` 直接挂在 Piper logger 上，以运行时间戳隔离，并保持统一格式。
-- `TraceLogHandler` 只把告警事件转发给 trace sink，不写第二份普通日志文件。
+Symbiosis 的两个命名空间在根节点停止传播，共用相同的控制台与文件 handler 实例，避免重复打开同一轮转文件。`configure_logging()` 不修改 root 的级别、handler、formatter 或 filter。Symbiosis 配置 NOTSET 时，命名空间使用最低正级别 1，让标准日志级别全部通过且不继承宿主阈值。
 
-### 3.3 Trace 转发采用可替换 Sink
+openjiuwen 默认后端拥有独立 handler，继续沿用上游的传播行为。显式配置上游时，纯 `openjiuwen.*` 标准库 logger 的命名空间级别由 `openjiuwen_level` 独立控制；补充终端 handler 挂在 `openjiuwen` 节点，传播路径上已有其他控制台 handler（含宿主 root）时不补充输出。宿主 handler 保持自己的策略。NOTSET 是显式级别，不表示跳过配置；它允许全部标准级别：标准库使用最低正级别 1 避免继承 root，Loguru 使用上游支持的最低标准级别 DEBUG。
 
-`TraceLogHandler` 依赖最小的 `_TraceSinkLike.record_log_event()` 协议，不反向依赖 `TraceRail`
-实现。Agent 构建时绑定 sink；一次 invoke 结束后把 sink 置空，下一次 invoke 再绑定；Session
-结束时从目标 logger 移除 handler。这样既避免运行间串写，也避免长进程中的 handler 泄漏。
+`get_logger(__name__)` 和已有 `logging.getLogger(__name__)` 返回相同的标准库 logger。框架命名空间内的日志都会路由至统一 handler，无需业务代码直接操作 handler。脚本和可用 `python -m` 执行的模块使用稳定命名空间；服务入口调用 `configure_logging()`，不调用 root 的 `basicConfig()`。
 
-日志转发是 best-effort：sink 缺失时无操作，sink 的协议调用失败时吞掉异常。日志永远不能把
-一次成功的工具调用变成失败。
+## Handler 所有权
 
-### 3.4 Piper 命令日志保留独立生命周期
+- 仅更新或关闭两个框架命名空间根节点上带 `_jiuwensymbiosis_owned` 标记的 handler；不扫描子 logger 的专用 handler。
+- 控制台一个，滚动文件至多一个（5 MB / 3 备份）。重复配置更新 formatter 和 handler 级别。
+- 目录 A → B 时先准备新文件，成功后统一更新所有出口和 logger，再移除、关闭旧文件；`None` 移除主文件 handler。
+- 每个输出 handler 都设置阈值。父 Logger 的级别不重新过滤子 Logger 传播的记录，因此仅设置命名空间级别无法隔离 Piper 的 DEBUG 内容。
+- 目录创建或文件打开失败时，不修改原有 logger、handler 或上游日志策略。旧 handler 关闭失败时，新配置已完整生效；尝试所有待清理 handler 后向调用者报告错误，保留失败句柄供下一次配置重试。
 
-Piper 命令日志服务真机审计，生命周期与进程内驱动实例一致，而不是与某次 Agent invoke 一致。
-`_attach_cmd_log_handler()` 使用模块级附加标志保证一次进程只安装一次，并支持：
+Piper 命令 handler 只负责 `<logging.motion_dir>/<时间戳>/commands.log`。运行目录由 `RobotSession.connect()` 的 `begin_run()` 确定，默认根目录 `./jiuwen_motion_log`，与抓取调试图共享。驱动通过弱引用共享 handler，最后一个使用者关闭时释放文件，并恢复它为写入 DEBUG 而调整的 logger 原级别；外部随后调整过级别时不覆盖。构造失败会回滚日志资源，关闭失败保留清理状态供重试。每次附加时检查路径并关闭旧路径 handler；禁用 `JIUWEN_PIPER_CMD_LOG=0` 会移除已有 handler，切换路径后新文件打开失败也不会继续写入旧文件。驱动不调用全局 `configure_logging()`，不改变主日志的级别或目的地。
 
-- `JIUWEN_PIPER_CMD_LOG=0`：关闭命令日志；
-- `JIUWEN_PIPER_CMD_LOG_DIR`：设置目录；
-- `JIUWEN_CMD_LOG_DIR`：兼容旧目录变量。
+Piper 的 `commands.log` 使用追加模式：关闭驱动后在同一运行目录内重连不会截断已有记录；`begin_run()` 创建的新运行目录仍独立保存命令。
 
-其输出目录同时写入 `JIUWEN_MOTION_LOG_RUN_DIR`，供抓取调试产物与同一次真机运行对齐。
+## 内容级别
 
-## 4. 核心数据结构
+- INFO：会话状态、LLM 请求/完成和耗时、规划步数、动作开始/完成。
+- DEBUG：用户任务、LLM 消息和回复、完整计划、工具参数和结果、伺服 tick、跟踪 metrics。
+- WARNING / ERROR：检测、规划、工具和清理失败，以及安全/恢复事件；保留可诊断的错误原因。
 
-| 结构 | 关键成员 | 作用 |
-| --- | --- | --- |
-| Owned Handler 标记 | `_jiuwensymbiosis_owned=True` | 区分框架 handler 与宿主 handler |
-| `_Formatter` | 标准格式、异常时 `repr(record.msg)` | 保证异常消息不会击穿日志路径 |
-| `_FrameworkFilter` | `jiuwensymbiosis` 前缀 | 限定框架滚动日志的命名空间 |
-| `TraceLogHandler` | `_sink`、`level` | 把告警转换为结构化 trace 日志事件 |
-| Piper 命令日志状态 | `_CMD_LOG_ATTACHED`、`_CMD_LOG_PATH`、运行时间戳 | 保证进程内只附加一次并暴露实际路径 |
+Fastagent 直接调用 HTTP，不经过 openjiuwen LLM logger，因此自己的 LLM 摘要和 DEBUG 内容由 planner 记录。HTTP Authorization 不写入这些日志。CLI 最终文本回答是用户输出；fastagent 成功且无文本回答时按 `steps_done` 输出“任务完成，共执行 N 步”，WARNING 配置也可见；语音模式在 on_command 回调里向 stdout 输出一次回复，再交给 TTS，因此 NullTTS 下也可见，连续命令逐条输出。完整执行结果只进入 DEBUG。
 
-## 5. 接口定义
+CLI 对 `ok: false` 结果单独记录 ERROR 摘要：任务原因，以及失败步骤的序号、操作与原因。文本和语音入口共用该提取逻辑，确保 `reason` / `steps[].reason` 不会随完整结果一起被 DEBUG 隐藏；成功步骤的结果和完整参数不进入该摘要。
 
-```python
-def configure_logging(
-    level: int | str = "INFO",
-    *,
-    log_dir: str | Path | None = None,
-    fmt: str = DEFAULT_FMT,
-) -> None:
-    """配置或更新受管控制台/滚动文件 handler，不叠加重复实例。"""
+`TraceRail.console` 的步骤展示使用同一日志设施，不直接 print 参数。Trace JSON 是独立结构化产物，仍保存配置要求的参数、结果和观测，不受文本日志级别裁剪。
 
+## Trace 与 Runtime
 
-def get_logger(name: str | None = None) -> logging.Logger:
-    """返回标准库 Logger；name 为空时推断调用模块。"""
+两者直接附加到框架命名空间，不依赖 root 传播。宿主聚合器或 pytest `caplog` 也需把捕获 handler 附加到 `jiuwensymbiosis` / `jiuwensymbiosis_gui`；不要为了捕获恢复 root 传播，否则会造成重复输出。仓库的 `caplog` fixture 已适配此边界。
 
+`TraceLogHandler` 通过最小 sink 协议把 WARNING+ 转成 trace `log_events`，无需业务 logger 依赖 TraceRail。invoke 结束解除 sink，下次 invoke 重新绑定；Session 清理移除 handler。协议调用的 AttributeError / TypeError / ValueError 被隔离。
 
-class TraceLogHandler(logging.Handler):
-    def set_sink(self, sink: _TraceSinkLike | None) -> None:
-        """在 invoke 生命周期边界绑定或解除 trace sink。"""
-```
+Runtime 的 `EventLogHandler` 使用任务的 Symbiosis 级别，避免显式 DEBUG 子 logger 绕过 WARNING 配置向工作台队列发送 INFO。Runtime 事件存储失败的取消策略保持原有语义。
 
-接口关系是：模块通过 `get_logger()` 或标准库 Logger 产生日志；应用在构建入口调用
-`configure_logging()`；启用 tracing 时，builder 额外安装 `TraceLogHandler`，由
-`TraceRail` 管理 sink 和卸载时机。
+## 验证
 
-## 6. 一致性校验
-
-- **所有权一致性**：只能更新或移除带 Owned Handler 标记的 handler。
-- **幂等性**：连续调用 `configure_logging()` 不增加受管控制台或滚动文件 handler 数量。
-- **隔离性**：文件日志仅包含 `jiuwensymbiosis.*`，控制台不应用该过滤器。
-- **生命周期**：invoke 结束解除 sink，Session 结束移除 `TraceLogHandler`。
-- **可靠性**：格式化、sink 调用和 Piper 日志目录创建失败均不得向业务路径传播。
-- **可测试性**：上述约束由 `tests/unit_tests/utils/test_logging.py` 和
-  `tests/unit_tests/rails/test_trace.py` 覆盖；Piper 输出路径由低层驱动相关测试和人工真机日志验收确认。
-
-## 7. 变更历史
-
-| 日期 | 变更内容 | 原因 |
-| --- | --- | --- |
-| 2026-08-10 | 新增集中日志模块设计文档 | 记录日志职责、封装边界、接口与一致性约束 |
+离线测试覆盖：导入、省略/null、显式覆盖后传 None 均保留上游当前策略，宿主已有 logger/handler 存活，CLI 缺 query 不创建日志文件，文本/语音成功摘要输出一次，Symbiosis / openjiuwen 独立级别、终端与文件统一过滤、per-logger / sink 级别覆盖、后端与输出目标保留、重复配置不重置、导入前预配置和惰性创建的上游 logger、公开 reset / 重配置、default / Loguru 后端（含 stdout/stderr）、无重复输出、目录切换、外部 handler 保留、DEBUG 子 logger 不越过框架输出阈值、Piper 命令文件独立、连接及规划失败前的日志、Symbiosis 上下文只在 DEBUG、Trace 与工作台日志消费。

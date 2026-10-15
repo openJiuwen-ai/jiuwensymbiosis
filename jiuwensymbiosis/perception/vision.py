@@ -74,19 +74,20 @@ def _run_detect_pick_best(
         len(results),
         score_threshold,
     )
-    for i, r in enumerate(results):
-        m = r["mask"]
-        logger.info(
-            "%s   cand[%d] score=%.3f label=%r mask_shape=%s n_pixels=%d coverage=%.1f%% box=%s",
-            log_prefix,
-            i,
-            float(r.get("score", 0.0)),
-            r.get("label", ""),
-            tuple(m.shape),
-            int(m.sum()),
-            100.0 * float(m.sum()) / (m.shape[0] * m.shape[1]),
-            [round(float(b), 1) for b in r["box"][:4]],
-        )
+    if logger.isEnabledFor(logging.DEBUG):
+        for i, r in enumerate(results):
+            m = r["mask"]
+            logger.debug(
+                "%s   cand[%d] score=%.3f label=%r mask_shape=%s n_pixels=%d coverage=%.1f%% box=%s",
+                log_prefix,
+                i,
+                float(r.get("score", 0.0)),
+                r.get("label", ""),
+                tuple(m.shape),
+                int(m.sum()),
+                100.0 * float(m.sum()) / (m.shape[0] * m.shape[1]),
+                [round(float(b), 1) for b in r["box"][:4]],
+            )
     if not results:
         # Carry the below-threshold candidates out with the failure. "Nothing at all" and "an
         # 0.28 hit against a 0.35 gate" call for different next moves — retry closer vs. go look
@@ -205,7 +206,7 @@ def _mask_centroid(
     scale_y = img_h / mask_h
     u = u_mask * scale_x
     v = v_mask * scale_y
-    logger.info(
+    logger.debug(
         "%s centroid: mask=%dx%d (u,v)_mask=(%.1f, %.1f) scale=(%.3f, %.3f) (u,v)_img=(%.1f, %.1f)",
         log_prefix,
         mask_w,
@@ -242,7 +243,7 @@ def _median_depth_window(
     y0, y1 = max(0, cv - win), min(h, cv + win + 1)
     patch = depth_img_m[y0:y1, x0:x1]
     valid = patch[(patch > 0) & np.isfinite(patch)]
-    logger.info(
+    logger.debug(
         "%s depth window: x=[%d,%d) y=[%d,%d) patch_size=%d valid=%d depth_range=[%s, %s] median=%s",
         log_prefix,
         x0,
@@ -357,7 +358,7 @@ def detect_and_centroid(
     captured_monotonic_s = time.monotonic() if captured_monotonic_s is None else captured_monotonic_s
     img_h, img_w = rgb.shape[:2]
     dep_h, dep_w = depth_img_m.shape[:2]
-    logger.info(
+    logger.debug(
         "%s grab: rgb=%dx%d depth=%dx%d tcp=(%.2f, %.2f, %.2f, %.2f) obj=%r",
         log_prefix,
         img_w,
@@ -995,7 +996,7 @@ def dump_grasp_debug(
             info.update({key: value for key, value in extra_info.items() if key != "slot_surface_mask"})
         info_path = debug_dir / f"info_{idx:03d}.json"
         info_path.write_text(json.dumps(info, indent=2, ensure_ascii=False))
-        logger.info(
+        logger.debug(
             "[grasp-debug] dumped #%d → raw_%03d.jpg / det_%03d.jpg / %s",
             idx,
             idx,

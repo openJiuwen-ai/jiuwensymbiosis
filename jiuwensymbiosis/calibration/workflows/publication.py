@@ -11,7 +11,6 @@ for eye-to-hand, ``T_flange_cam`` for eye-in-hand) after the reload smoke.
 
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -40,8 +39,9 @@ from jiuwensymbiosis.calibration.domain.solver import (
 from jiuwensymbiosis.calibration.workflows.preflight import validate_mount
 from jiuwensymbiosis.calibration.workflows.workflows import RunOutcome, WorkflowDependencies
 from jiuwensymbiosis.calibration_schema import EYE_IN_HAND_FRAME_FIELD
+from jiuwensymbiosis.utils.logging import get_logger
 
-logger = logging.getLogger("calibration.publication")
+logger = get_logger("jiuwensymbiosis.calibration.publication")
 
 
 def acceptance_policy(mount: str, dependencies: WorkflowDependencies) -> AcceptancePolicy:

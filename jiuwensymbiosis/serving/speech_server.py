@@ -20,11 +20,11 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from jiuwensymbiosis.serving.http_support import InferenceAdmission, configure_service
-from jiuwensymbiosis.utils.logging import get_logger
+from jiuwensymbiosis.utils.logging import configure_logging, get_logger
 from jiuwensymbiosis.utils.validation import require_positive_number
 from jiuwensymbiosis.voice.protocol import decode_audio, encode_audio
 
-logger = get_logger(__name__)
+logger = get_logger("jiuwensymbiosis.serving.speech_server")
 
 
 class _AudioPayload(BaseModel):
@@ -220,6 +220,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-queue", type=int, default=8)
     parser.add_argument("--queue-timeout-s", type=float, default=30.0)
     args = parser.parse_args(argv)
+    configure_logging()
     asr = synthesizer = None
     if args.asr == "funasr":
         if not args.asr_model_path or not Path(args.asr_model_path).expanduser().is_dir():

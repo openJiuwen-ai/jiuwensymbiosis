@@ -57,7 +57,7 @@ from scripts.calibrate._cli_common import (
     workflow_dependencies,
 )
 
-logger = logging.getLogger("hand_eye_calib")
+logger = logging.getLogger("jiuwensymbiosis.calibration.cli")
 
 
 @dataclass(frozen=True)

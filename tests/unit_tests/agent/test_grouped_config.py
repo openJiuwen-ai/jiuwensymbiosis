@@ -93,6 +93,10 @@ def test_removed_fields_rejected_in_all_config_inputs(old):
         {"model": {}},
         {"model_spec": {}},
         {"modules": []},
+        {"logging": {"level": "typo"}},
+        {"logging": {"openjiuwen_level": "typo"}},
+        {"logging": {"openjiuwen_level": 20}},
+        {"logging": {"openjiuwen_console_level": "INFO"}},
     ],
 )
 def test_invalid_configuration_fails_before_execution(data):
@@ -144,3 +148,16 @@ def test_prepare_session_applies_connection_settings():
     cfg.prepare_session(session)
     assert session.strict_capabilities is True
     assert session.motion_log_dir == "/tmp/motion-test"
+
+
+def test_upstream_level_defaults_and_leaf_override():
+    cfg = RobotAgentConfig.from_dict({"logging": {"level": "DEBUG"}})
+    assert cfg.logging.openjiuwen_level is None
+    override = RobotAgentConfig.from_dict(cfg.to_dict(), overrides={"logging": {"openjiuwen_level": "INFO"}})
+    assert override.logging.level == "DEBUG"
+    assert override.logging.openjiuwen_level == "INFO"
+    assert RobotAgentConfig.from_dict(override.to_dict()).logging == override.logging
+    cleared = RobotAgentConfig.from_dict(override.to_dict(), overrides={"logging": {"openjiuwen_level": None}})
+    assert cleared.logging.openjiuwen_level is None
+    assert cleared.logging.level == "DEBUG"
+    assert RobotAgentConfig.from_dict(cleared.to_dict()).logging == cleared.logging

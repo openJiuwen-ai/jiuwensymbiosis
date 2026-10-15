@@ -103,4 +103,5 @@ agent:
       enabled: false
   logging:
     level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
     dir: ./logs

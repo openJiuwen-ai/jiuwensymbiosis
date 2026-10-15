@@ -150,7 +150,7 @@ def test_runtime_public_task_flow_uses_mock_session_without_private_registry(
         runtime.store.close()
 
 
-def test_example_server_and_task_share_one_console_handler(monkeypatch, tmp_path, capsys):
+def test_example_server_and_task_share_one_console_handler(monkeypatch, tmp_path, capsys, isolated_framework_logging):
     import logging
     from unittest.mock import Mock
 
@@ -170,16 +170,27 @@ def test_example_server_and_task_share_one_console_handler(monkeypatch, tmp_path
         logging.getLogger("jiuwensymbiosis.task").warning("single-console-message")
 
     root = logging.getLogger()
-    original_level = root.level
-    with monkeypatch.context() as patcher:
-        patcher.setattr(root, "handlers", [])
-        patcher.setattr(runtime_module, "Runtime", Mock(return_value=runtime))
-        patcher.setattr(webapp, "serve", serve)
-        try:
-            assert plugin.main(LaunchOptions(config_path=tmp_path / "robot.yaml")) == 0
-            # Capture the actual stream: caplog counts records, not duplicate emits.
-            assert capsys.readouterr().err.count("single-console-message") == 1
-        finally:
-            for handler in root.handlers:
-                handler.close()
-            root.setLevel(original_level)
+    original_level, original_handlers = root.level, root.handlers[:]
+    monkeypatch.setattr(runtime_module, "Runtime", Mock(return_value=runtime))
+    monkeypatch.setattr(webapp, "serve", serve)
+    assert plugin.main(LaunchOptions(config_path=tmp_path / "robot.yaml")) == 0
+    # Capture the actual stream: caplog counts records, not duplicate emits.
+    assert capsys.readouterr().err.count("single-console-message") == 1
+    assert root.level == original_level
+    assert root.handlers == original_handlers
+
+
+def test_example_listening_address_uses_framework_output(monkeypatch, capsys, isolated_framework_logging):
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.utils.logging import configure_logging
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "examples" / "gui_plugin"))
+    from jiuwensymbiosis_example_gui import webapp
+
+    server = Mock(server_port=8765)
+    monkeypatch.setattr(webapp, "create_server", lambda *_args, **_kwargs: server)
+    configure_logging("INFO")
+    webapp.serve(Mock(), {}, host="127.0.0.1", port=8765, title="test", open_browser=False)
+    assert capsys.readouterr().err.count("Example GUI listening at http://127.0.0.1:8765/") == 1
+    server.server_close.assert_called_once()

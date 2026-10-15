@@ -356,7 +356,7 @@ class PiperApi(BaseRobotApi):
             corr_desc = f"{corr_desc}+z{self._z_correction_mm:+.0f}"
 
         intrinsics_flat = np.asarray(intrinsics, dtype=float).reshape(-1)
-        logger.info(
+        logger.debug(
             "[grasp-debug] K_src=%s flange_pose=(%.2f, %.2f, %.2f, %.2f, %.2f, %.2f) "
             "raw_xyz_mm=(%.2f, %.2f, %.2f) corr=%s final_xyz_mm=(%.2f, %.2f, %.2f)",
             intrinsics_src,

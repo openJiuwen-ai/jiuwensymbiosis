@@ -440,7 +440,7 @@ class TestReprojectionAdvice:
     def test_large_error_warns_with_remediation_hints(self, caplog):
         from jiuwensymbiosis.calibration.workflows.publication import _log_reprojection_advice
 
-        with caplog.at_level("INFO", logger="calibration.publication"):
+        with caplog.at_level("INFO", logger="jiuwensymbiosis.calibration.publication"):
             _log_reprojection_advice(self._report([100.0, 98.0, 102.0]), mount="eye_to_hand")
 
         text = caplog.text
@@ -452,7 +452,7 @@ class TestReprojectionAdvice:
     def test_good_error_reported_at_info(self, caplog):
         from jiuwensymbiosis.calibration.workflows.publication import _log_reprojection_advice
 
-        with caplog.at_level("INFO", logger="calibration.publication"):
+        with caplog.at_level("INFO", logger="jiuwensymbiosis.calibration.publication"):
             _log_reprojection_advice(self._report([0.3, 0.4, 0.2]), mount="eye_to_hand")
 
         assert "good" in caplog.text
@@ -463,7 +463,7 @@ class TestReprojectionAdvice:
         from jiuwensymbiosis.calibration.workflows.publication import _log_reprojection_advice
 
         empty = ReprojectionReport(per_view_rms_px=(), summary=VerifyStat(0.0, 0.0, 0.0))
-        with caplog.at_level("INFO", logger="calibration.publication"):
+        with caplog.at_level("INFO", logger="jiuwensymbiosis.calibration.publication"):
             _log_reprojection_advice(empty, mount="eye_to_hand")
 
         assert "missing or non-finite" in caplog.text

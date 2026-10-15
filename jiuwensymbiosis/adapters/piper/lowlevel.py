@@ -17,6 +17,7 @@ import time
 from dataclasses import astuple, dataclass
 from pathlib import Path
 from typing import Any
+from weakref import WeakSet
 
 import numpy as np
 
@@ -52,50 +53,75 @@ _ARPHRD_CAN = "280"  # linux/if_arp.h ARPHRD_CAN, as reported by <link>/type
 # =============================================================================
 _CMD_LOG_PATH: Path | None = None
 _CMD_LOG_HANDLER: logging.Handler | None = None
+_CMD_LOG_PREVIOUS_LEVEL: int | None = None
+_CMD_LOG_OWNERS: WeakSet[PiperLowLevel] = WeakSet()
 
 
-def _attach_cmd_log_handler() -> Path | None:
+def _detach_cmd_log_handler() -> None:
+    """Stop routing immediately; retain a failed close for a later retry."""
+    global _CMD_LOG_PATH, _CMD_LOG_HANDLER, _CMD_LOG_PREVIOUS_LEVEL
+    if _CMD_LOG_HANDLER is not None:
+        logger.removeHandler(_CMD_LOG_HANDLER)
+    _CMD_LOG_PATH = None
+    if _CMD_LOG_PREVIOUS_LEVEL is not None:
+        if logger.level == logging.DEBUG:
+            logger.setLevel(_CMD_LOG_PREVIOUS_LEVEL)
+        _CMD_LOG_PREVIOUS_LEVEL = None
+    if _CMD_LOG_HANDLER is not None:
+        _CMD_LOG_HANDLER.close()
+        _CMD_LOG_HANDLER = None
+
+
+def _release_cmd_log_handler(owner: PiperLowLevel) -> None:
+    if owner not in _CMD_LOG_OWNERS:
+        return
+    if len(_CMD_LOG_OWNERS) == 1:
+        _detach_cmd_log_handler()
+    _CMD_LOG_OWNERS.remove(owner)
+
+
+def _attach_cmd_log_handler(*, owner: PiperLowLevel | None = None) -> Path | None:
     """Point the Piper command log at the current per-run directory.
 
     Called from the driver ctor on each ``connect()``; re-targets the file
     handler when the run directory changed (the GUI reconnects per task) so every
-    run's motion lines land in that run's ``commands.log``. Best-effort.
+    run's motion lines land in that run's ``commands.log``. Opening is best-effort;
+    failures closing an existing file propagate so cleanup can be retried.
     """
-    global _CMD_LOG_PATH, _CMD_LOG_HANDLER
+    global _CMD_LOG_PATH, _CMD_LOG_HANDLER, _CMD_LOG_PREVIOUS_LEVEL
     if os.environ.get("JIUWEN_PIPER_CMD_LOG", "") == "0":
+        _detach_cmd_log_handler()
         return None
     from jiuwensymbiosis.utils.logging import (
         _OWNED_TAG,
         DEFAULT_FMT,
-        configure_logging,
         current_run_dir,
     )
 
+    path = current_run_dir() / "commands.log"
+    if _CMD_LOG_HANDLER is not None and _CMD_LOG_PATH == path:
+        if owner is not None:
+            _CMD_LOG_OWNERS.add(owner)
+        return path
+    # A failed new attachment must never keep writing to the previous run.
+    _detach_cmd_log_handler()
     try:
-        path = current_run_dir() / "commands.log"
-        if _CMD_LOG_HANDLER is not None and _CMD_LOG_PATH == path:
-            return path  # already pointed at this run's dir
-        # Run dir changed (or first attach): drop the previous handler.
-        if _CMD_LOG_HANDLER is not None:
-            logger.removeHandler(_CMD_LOG_HANDLER)
-            try:
-                _CMD_LOG_HANDLER.close()
-            except OSError:
-                pass
-            _CMD_LOG_HANDLER = None
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Centralised logging: uniform format + console, DEBUG so motion lines land.
-        configure_logging(level="DEBUG", log_dir=None)
-        # Per-run Piper file handler (same uniform format), tagged as owned.
-        handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+        # DEBUG belongs to this command file; never reconfigure the root logger.
+        # Main console/file handlers enforce the user's own severity threshold.
+        # Reconnecting without a new run directory must retain earlier commands.
+        handler = logging.FileHandler(path, mode="a", encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter(DEFAULT_FMT, datefmt="%H:%M:%S"))
         setattr(handler, _OWNED_TAG, True)
         logger.addHandler(handler)
         if logger.level == logging.NOTSET or logger.level > logging.DEBUG:
+            _CMD_LOG_PREVIOUS_LEVEL = logger.level
             logger.setLevel(logging.DEBUG)
         _CMD_LOG_PATH = path
         _CMD_LOG_HANDLER = handler
+        if owner is not None:
+            _CMD_LOG_OWNERS.add(owner)
         logger.info("[Piper] cmd log started: pid=%d log=%s", os.getpid(), path)
         return path
     except Exception as exc:
@@ -259,7 +285,6 @@ class PiperLowLevel:
         unreachable_grace_s: float = 2.0,
     ) -> None:
         """Connect to CAN, enable arm/gripper, load calibration or fallback, init camera."""
-        self._cmd_log_path = _attach_cmd_log_handler()
         self._lock = threading.RLock()
         self._move_speed = max(1, min(100, int(move_speed)))
         self._gripper_open_mm = float(gripper_open_mm)
@@ -294,7 +319,9 @@ class PiperLowLevel:
         self._arm: Any | None = None
         self._can_may_be_open = False
         self._closed = False
+        self._cmd_log_path: Path | None = None
         try:
+            self._cmd_log_path = _attach_cmd_log_handler(owner=self)
             self._initialize_connected_driver(locals(), C_PiperInterface_V2)
         except BaseException as original:
             try:
@@ -361,7 +388,7 @@ class PiperLowLevel:
                 )
             )
             z_min_safe = float(calib_object_xyz[2]) + float(z_safe_margin_mm)
-            logger.info(
+            logger.debug(
                 "[Piper] loaded calibration from %s: object_tip=%s, home_lift=%smm, "
                 "z_safe_margin=%smm, tool_offset=%smm",
                 calib_path,
@@ -468,10 +495,10 @@ class PiperLowLevel:
             )
         if home_use_init_pose:
             self._home_pose = PiperPose(*init_pose.as_tuple())
-            logger.info("[Piper] home_use_init_pose=True; home=%s", self._home_pose.as_tuple())
+            logger.debug("[Piper] home_use_init_pose=True; home=%s", self._home_pose.as_tuple())
         if home_needs_live_pose:
             self._warn_if_home_uncommandable("startup" if home_use_init_pose else "anchor-derived")
-        logger.info(
+        logger.debug(
             "[Piper] init=%s home=%s z_min_safe=%.2fmm",
             init_pose.as_tuple(),
             self._home_pose.as_tuple(),
@@ -601,7 +628,7 @@ class PiperLowLevel:
         x, y, z, rx, ry, rz = (value / _FACTOR for value in command)
         target = (x, y, z, rx, ry, rz)
         with self._lock:
-            logger.info(
+            logger.debug(
                 "[Piper] EndPoseCtrl(MOVE_P, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f) ...",
                 *target,
             )
@@ -648,7 +675,7 @@ class PiperLowLevel:
                 raise ValueError(f"[Piper] non-finite q[{i}]={v}")
         q_int = [round(float(v) * _FACTOR) for v in q]
         with self._lock:
-            logger.info("[Piper] JointCtrl(%s) ...", [round(v, 2) for v in q])
+            logger.debug("[Piper] JointCtrl(%s) ...", [round(v, 2) for v in q])
             self._arm.MotionCtrl_2(_CTRL_CAN, _MOVE_J, self._move_speed, 0x00)
             self._arm.JointCtrl(*q_int)
         self._wait_joints_reached(q, sync_timeout_s or self._move_timeout_s)
@@ -682,7 +709,7 @@ class PiperLowLevel:
         width_int = max(0, round(float(width_mm) * _FACTOR))
         eff = int(effort) if effort is not None else self._gripper_effort
         with self._lock:
-            logger.info("[Piper] GripperCtrl(width=%.1fmm, effort=%d)", width_mm, eff)
+            logger.debug("[Piper] GripperCtrl(width=%.1fmm, effort=%d)", width_mm, eff)
             self._arm.GripperCtrl(width_int, eff, _GRIPPER_ENABLE, 0)
         time.sleep(self._gripper_settle_s)
 
@@ -712,12 +739,17 @@ class PiperLowLevel:
             else:
                 self._can_may_be_open = False
 
-        self._closed = self._camera is None and not self._can_may_be_open
-        if self._closed:
+        hardware_closed = self._camera is None and not self._can_may_be_open
+        if hardware_closed:
             self._arm = None
+            logger.info("[Piper] Closed.")
+            try:
+                _release_cmd_log_handler(self)
+            except BaseException as exc:
+                errors.append(exc)
+        self._closed = hardware_closed and self not in _CMD_LOG_OWNERS
         if errors:
             raise HardwareCleanupError("PiperLowLevel.close", cleanup_errors=errors) from errors[0]
-        logger.info("[Piper] Closed.")
 
     # ============================================================== private helpers
     def _read_pose(self) -> PiperPose | None:

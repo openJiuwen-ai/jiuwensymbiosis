@@ -109,25 +109,25 @@ class TestSelftest:
     def test_selftest_exits_0(self):
         r = _run(["--selftest"])
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "全部离线自检通过" in r.stdout
+        assert "全部离线自检通过" in r.stderr
 
     @pytest.mark.skipif(not _have_cv2(), reason=_CV2_REASON)
     def test_selftest_checks_pose_convention(self):
         r = _run(["--selftest"])
         assert r.returncode == 0
-        assert "pose_to_tf_base_flange" in r.stdout
+        assert "pose_to_tf_base_flange" in r.stderr
 
     @pytest.mark.skipif(not _have_cv2(), reason=_CV2_REASON)
     def test_selftest_checks_save_load_roundtrip(self):
         r = _run(["--selftest"])
         assert r.returncode == 0
-        assert "save_calibration" in r.stdout or "round-trip" in r.stdout
+        assert "save_calibration" in r.stderr or "round-trip" in r.stderr
 
     @pytest.mark.skipif(not _have_cv2(), reason=_CV2_REASON)
     def test_selftest_recovers_handeye_truth(self):
         r = _run(["--selftest"])
         assert r.returncode == 0
-        assert "calibrateHandEye" in r.stdout
+        assert "calibrateHandEye" in r.stderr
 
 
 class TestGenerateBoard:

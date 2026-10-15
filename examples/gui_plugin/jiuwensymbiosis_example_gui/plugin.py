@@ -9,7 +9,7 @@ from typing import Any
 
 from jiuwensymbiosis_gui.plugin import GUI_API_VERSION, GuiSpec, LaunchOptions, StartupError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jiuwensymbiosis_gui.example.plugin")
 
 
 def describe() -> GuiSpec:

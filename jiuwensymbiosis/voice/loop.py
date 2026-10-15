@@ -291,7 +291,7 @@ class VoiceLoop:
                 if command:
                     self._pending_command = (command, utterance_id, captured_at, epoch)
                 return command
-            logger.info("[voice] 未检测到唤醒词，忽略：%s", text)
+            logger.debug("[voice] 未检测到唤醒词，忽略：%s", text)
             return None
         remainder = remainder.strip()
         if not remainder:
@@ -324,7 +324,8 @@ class VoiceLoop:
             self._dispatched_id = utterance_id
         if self._closed:
             return
-        logger.info("[voice] 指令：%s", text)
+        logger.info("[voice] 开始执行指令")
+        logger.debug("[voice] 指令：%s", text)
         if self.config.speak_ack:
             self.speak(self.config.ack_text)
         try:

@@ -58,7 +58,7 @@ class NullTTS:
     def speak(self, text: str) -> None:
         if text:
             self.spoken.append(text)
-            logger.info("[voice][tts:null] %s", text)
+            logger.debug("[voice][tts:null] %s", text)
 
     @staticmethod
     def preload(text: str) -> None:

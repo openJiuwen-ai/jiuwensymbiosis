@@ -10,8 +10,8 @@ Piper-specific ``_attach_cmd_log_handler`` (a hand-rolled module-level singleton
 
 This module provides:
 
-- :func:`configure_logging` — idempotent root-logger setup with one
-  ``StreamHandler`` (uniform format) and an optional ``RotatingFileHandler``.
+- :func:`configure_logging` — idempotent namespace setup sharing one
+  ``StreamHandler`` and an optional ``RotatingFileHandler`` across core and GUI.
 - :func:`get_logger` — thin alias so new code imports from one place; existing
   ``logging.getLogger(__name__)`` calls keep working unchanged.
 - :class:`TraceLogHandler` — a ``logging.Handler`` that forwards ``WARNING``+
@@ -22,8 +22,10 @@ This module provides:
   (``<root>/<stamp>``) shared by the piper command log and the grasp-debug
   dumps, so one run's on-disk artifacts land under one folder.
 
-Call ``configure_logging(...)`` once at agent build time (see
-``build_robot_agent``). It is idempotent: repeated calls do not stack handlers.
+Official entry points configure logging before connecting; builders and task
+dispatch repeat it safely for Python callers. Upstream logging keeps its own
+outputs and format. An explicit upstream level applies to console and files;
+omitting it preserves the current upstream policy.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from contextlib import ExitStack
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Protocol
@@ -41,6 +44,8 @@ _LOG_FILE_NAME = "jiuwensymbiosis.log"
 # Sentinel attached to handlers we own, so configure_logging can recognise its
 # own handlers on a repeat call and avoid stacking them.
 _OWNED_TAG = "_jiuwensymbiosis_owned"
+_FRAMEWORK_NAMESPACES = ("jiuwensymbiosis", "jiuwensymbiosis_gui")
+_pending_handler_closes: set[logging.Handler] = set()
 
 # Per-run output directory shared by the piper command log and grasp-debug
 # dumps. Set at RobotSession.connect(); None until the first run begins.
@@ -67,7 +72,10 @@ def _to_level(level: LevelLike) -> int:
     if isinstance(level, int):
         return level
     name = str(level).upper()
-    return logging.getLevelNamesMapping().get(name, logging.INFO)
+    try:
+        return logging.getLevelNamesMapping()[name]
+    except KeyError:
+        raise ValueError(f"Unknown logging level: {level!r}") from None
 
 
 class _Formatter(logging.Formatter):
@@ -83,7 +91,7 @@ class _Formatter(logging.Formatter):
 class TraceLogHandler(logging.Handler):
     """Forward ``WARNING``+ log records to a bound trace sink.
 
-    Attached to the loggers named in ``RobotAgentConfig.trace_capture_loggers``
+    Attached to the loggers named in ``RobotAgentConfig.modules.tracing.capture_loggers``
     (default ``["jiuwensymbiosis"]``) when tracing is enabled. Each emitted
     record becomes a ``log_event`` entry on the current trace step (or the
     trace-level log when no step is active).
@@ -118,89 +126,100 @@ class TraceLogHandler(logging.Handler):
 
 
 def _owned_handlers() -> list[logging.Handler]:
-    root = logging.getLogger()
-    return [h for h in root.handlers if getattr(h, _OWNED_TAG, False)]
+    # The same file handler serves two disjoint trees; deduplicate before close.
+    candidates: list[logging.Handler] = []
+    for name in _FRAMEWORK_NAMESPACES:
+        candidates.extend(logging.getLogger(name).handlers)
+    return list(dict.fromkeys(h for h in candidates if getattr(h, _OWNED_TAG, False)))
 
 
-class _FrameworkFilter(logging.Filter):
-    """Accept only records from the ``jiuwensymbiosis.*`` logger namespace.
-
-    Attached to the framework ``RotatingFileHandler`` so ``jiuwensymbiosis.log``
-    holds only our own logs, not openjiuwen's stdlib-logging records (which
-    bubble up to the root logger we attach to). Matched on the logger name's
-    dotted prefix, so ``"jiuwensymbiosis"`` and ``"jiuwensymbiosis.agent"`` both
-    pass; ``"openjiuwen.*"`` / ``"common"`` / ``"alembic"`` etc. are dropped.
-    """
-
-    _PREFIX = "jiuwensymbiosis"
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        name = record.name
-        return name == self._PREFIX or name.startswith(self._PREFIX + ".")
+def _close_retired_handlers(handlers: list[logging.Handler]) -> None:
+    """Attempt every close; keep failed, detached handlers for the next call."""
+    _pending_handler_closes.update(handlers)
+    errors: list[OSError] = []
+    for handler in list(_pending_handler_closes):
+        try:
+            handler.close()
+        except OSError as exc:
+            exc.add_note("New logging configuration is active; retired handler cleanup will be retried.")
+            errors.append(exc)
+        else:
+            _pending_handler_closes.remove(handler)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("Failed to close retired logging handlers", errors)
 
 
 def configure_logging(
     level: LevelLike = "INFO",
     *,
     log_dir: str | Path | None = None,
+    openjiuwen_level: LevelLike | None = None,
     fmt: str = DEFAULT_FMT,
 ) -> None:
-    """Idempotently configure the root logger with a uniform format.
+    """Configure independent Symbiosis and upstream levels without stacking handlers.
 
     Args:
-        level: Root logger level (name or int).
-        log_dir: When given, also attach a ``RotatingFileHandler`` writing to
-            ``<log_dir>/jiuwensymbiosis.log`` (5 MB, 3 backups). None = console only.
-        fmt: ``logging`` format string.
+        level: Symbiosis logger and owned handler level (name or int).
+        log_dir: Directory for jiuwensymbiosis.log (5 MB, 3 backups), or None
+            for console only. Changing the directory closes the previous file.
+        openjiuwen_level: Upstream console/file severity, independent of level.
+            Backend, destinations, format and rotation remain upstream-owned.
+            None preserves the current policy, including any prior override;
+            it does not restore earlier settings. NOTSET is an explicit level.
+        fmt: Symbiosis logging format string.
 
-    Idempotent: repeat calls adjust the level / format but never stack
-    duplicate handlers.
+    Both framework namespace roots stop propagation. Root and foreign handlers
+    remain untouched; collectors must attach directly to the desired namespace.
+    File preparation errors preserve the prior configuration. Cleanup errors
+    propagate after the new configuration is active and are retried next time.
     """
-    root = logging.getLogger()
     int_level = _to_level(level)
-    root.setLevel(int_level)
+    upstream_level = _to_level(openjiuwen_level) if openjiuwen_level is not None else None
 
     formatter = _Formatter(fmt, datefmt=_DATEFMT)
-
+    loggers = [logging.getLogger(name) for name in _FRAMEWORK_NAMESPACES]
     owned = _owned_handlers()
-    if not owned:
-        stream = logging.StreamHandler(stream=sys.stderr)
-        stream.setFormatter(formatter)
-        setattr(stream, _OWNED_TAG, True)
-        root.addHandler(stream)
-    else:
-        for h in owned:
-            h.setFormatter(formatter)
+    target = (Path(log_dir).expanduser().resolve() / _LOG_FILE_NAME) if log_dir is not None else None
+    active: list[logging.Handler] = []
+    with ExitStack() as rollback:
+        if target is not None:
+            file_handler = next(
+                (h for h in owned if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == target), None
+            )
+            if file_handler is None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = RotatingFileHandler(target, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+                rollback.callback(file_handler.close)
+            active.append(file_handler)
+        stream = next((h for h in owned if not isinstance(h, logging.FileHandler)), None)
+        if stream is None:
+            stream = logging.StreamHandler(stream=sys.stderr)
+            rollback.callback(stream.close)
+        active.append(stream)
 
-    # File handler: attach once if requested, detach if previously attached but
-    # no longer requested.
-    has_file = any(isinstance(h, RotatingFileHandler) and getattr(h, _OWNED_TAG, False) for h in root.handlers)
-    if log_dir and not has_file:
-        log_path = Path(log_dir)
-        log_path.mkdir(parents=True, exist_ok=True)
-        file_h = RotatingFileHandler(
-            log_path / _LOG_FILE_NAME,
-            maxBytes=5 * 1024 * 1024,
-            backupCount=3,
-            encoding="utf-8",
-        )
-        file_h.setFormatter(formatter)
-        # Keep our log file clean of openjiuwen's stdlib-logging noise: the
-        # file handler accepts only ``jiuwensymbiosis.*`` records. The console
-        # handler stays unfiltered so openjiuwen init lines still show while
-        # debugging; openjiuwen's *own* (non-stdlib) log backend never reaches
-        # the root logger anyway, so it is unaffected.
-        file_h.addFilter(_FrameworkFilter())
-        setattr(file_h, _OWNED_TAG, True)
-        root.addHandler(file_h)
-    elif not log_dir and has_file:
-        for h in list(root.handlers):
-            if isinstance(h, RotatingFileHandler) and getattr(h, _OWNED_TAG, False):
-                root.removeHandler(h)
-                try:
-                    h.close()
-                except OSError:
-                    pass
+        # No logger or live handler changes until all filesystem work succeeds.
+        if upstream_level is not None:
+            from jiuwensymbiosis._openjiuwen_logging import configure_openjiuwen_logging
+
+            configure_openjiuwen_logging(upstream_level, fallback_formatter=formatter)
+        for handler in active:
+            setattr(handler, _OWNED_TAG, True)
+            handler.setFormatter(formatter)
+            # Explicit DEBUG children (Piper) still need output-side gating.
+            handler.setLevel(int_level)
+        for logger in loggers:
+            # NOTSET would inherit root; 1 admits every standard severity.
+            logger.setLevel(int_level if int_level != logging.NOTSET else 1)
+            logger.propagate = False
+            for handler in active:
+                logger.addHandler(handler)
+            for handler in owned:
+                if handler not in active:
+                    logger.removeHandler(handler)
+        rollback.pop_all()
+    _close_retired_handlers([h for h in owned if h not in active])
 
 
 def begin_run(root: str | Path) -> Path:

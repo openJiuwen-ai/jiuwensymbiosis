@@ -6,7 +6,7 @@
 import pytest
 
 from jiuwensymbiosis.agent import builder
-from jiuwensymbiosis.agent.config import RobotAgentConfig
+from jiuwensymbiosis.agent.config import LoggingConfig, RobotAgentConfig
 from tests.helpers import make_mock_session
 
 
@@ -15,7 +15,7 @@ def public_builder(request, monkeypatch, tmp_path):
     monkeypatch.setattr(builder, "create_deep_agent", lambda **kwargs: kwargs)
     monkeypatch.setattr(builder, "SubAgentConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(builder, "build_model", lambda _spec: object())
-    monkeypatch.setattr(builder, "configure_logging", lambda **kwargs: None)
+    monkeypatch.setattr(LoggingConfig, "configure", lambda self: None)
     monkeypatch.setattr(builder, "_resolve_workspace", lambda *_args: str(tmp_path))
     return getattr(builder, request.param)
 
@@ -61,8 +61,8 @@ def test_mode_mismatch_fails_before_build_side_effects(public_builder, monkeypat
     def unexpected(*_args, **_kwargs):
         pytest.fail("A mismatched profile must fail before constructing the agent or its dependencies")
 
+    monkeypatch.setattr(LoggingConfig, "configure", unexpected)
     for name in (
-        "configure_logging",
         "build_model",
         "_build_tools",
         "_resolve_rails",

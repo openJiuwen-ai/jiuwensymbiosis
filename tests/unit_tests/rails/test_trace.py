@@ -510,10 +510,13 @@ class TestCurrentStepAndFrameSink:
 
 class TestConsoleDashboard:
     @pytest.mark.asyncio
-    async def test_console_prints_lines(self, trace_rail, capsys):
+    async def test_console_logs_progress_without_context(self, trace_rail, caplog):
+        caplog.set_level("INFO", logger="jiuwensymbiosis.agent.trace")
         trace_rail.console = True
         await trace_rail.before_invoke(_FakeCtx(_FakeInputs(conversation_id="c13")))
         await _run_step(trace_rail, tool_args={"x": 1, "y": 2, "z": 3}, tool_result={"ok": True})
-        out = capsys.readouterr().out
-        assert "#1" in out
-        assert "goto_xyzr" in out
+        assert "#1" in caplog.text
+        assert "goto_xyzr" in caplog.text
+        assert "succeeded" in caplog.text
+        assert "params:" not in caplog.text
+        assert "output:" not in caplog.text

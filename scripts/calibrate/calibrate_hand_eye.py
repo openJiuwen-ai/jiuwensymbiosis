@@ -50,7 +50,6 @@ import argparse
 import itertools
 import json
 import logging
-import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,7 +95,7 @@ from scripts.calibrate.handeye_board import (
     generate_board_image,
 )
 
-logger = logging.getLogger("calibrate_hand_eye")
+logger = logging.getLogger("jiuwensymbiosis.calibration.legacy_cli")
 
 
 # =============================================================================
@@ -1084,12 +1083,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _configure_logging(debug: bool = False) -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG if debug else logging.INFO)
-    logger.propagate = False
-    logging.getLogger().setLevel(logging.DEBUG if debug else logging.WARNING)
+    from jiuwensymbiosis.utils.logging import configure_logging
+
+    configure_logging("DEBUG" if debug else "INFO")
 
 
 def main(argv: list[str] | None = None) -> int:

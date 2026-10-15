@@ -34,7 +34,7 @@ from scripts.calibrate.handeye_board import BoardSpec
 if TYPE_CHECKING:
     from jiuwensymbiosis.agent.session import RobotSession
 
-logger = logging.getLogger("calibrate.cli_common")
+logger = logging.getLogger("jiuwensymbiosis.calibration.cli_common")
 
 
 # =============================================================================
@@ -187,16 +187,6 @@ def configure_logging(debug: bool = False) -> None:
     """
     level = "DEBUG" if debug else "INFO"
     _configure_framework_logging(level=level)
-    for name in (
-        "eye_to_hand_calib",
-        "hand_eye_calib",
-        "scripts.calibrate.hand_eye_calib",
-        "calibrate.cli_common",
-        "scripts.calibrate._cli_common",
-    ):
-        named = logging.getLogger(name)
-        named.setLevel(level)
-        named.propagate = True
 
 
 def resolve_mount_guard(device, expected: str, other_command: str) -> str:

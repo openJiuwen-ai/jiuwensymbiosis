@@ -97,6 +97,7 @@ agent:
       - jiuwensymbiosis
   logging:
     level: INFO
+    openjiuwen_level: null
     dir: ./logs
     motion_dir: null
   workspace: null
@@ -213,7 +214,8 @@ agent:
 
 | 字段 | 默认值 | 含义与约束 |
 |---|---|---|
-| `level` | `"INFO"` | 日志级别，DEBUG/INFO/WARNING/ERROR/CRITICAL/NOTSET；兼容 WARN/FATAL |
+| `level` | `"INFO"` | Symbiosis 日志级别（上下文、完整参数和结果仅 DEBUG），DEBUG/INFO/WARNING/ERROR/CRITICAL/NOTSET；兼容 WARN/FATAL |
+| `openjiuwen_level` | `null` | 省略或 null 保留上游当前策略；显式字符串级别统一控制上游终端和文件，覆盖 per-logger / sink 级别；取值同 level；NOTSET 仍是显式级别 |
 | `dir` | `"./logs"` | 框架日志目录；null 只输出控制台 |
 | `motion_dir` | `null` | 每轮运动产物的根目录；null 使用 ./jiuwen_motion_log；在连接前应用 |
 

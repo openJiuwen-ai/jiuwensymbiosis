@@ -14,6 +14,9 @@ ros_backend: auto
 # 预检 move_joint/底盘/lifter/waist 指令；双臂无夹爪故关视觉反馈，几何安全仍靠 IK+自碰撞；
 # RecoveryRail 经 always-safe home() 退避。
 agent:
+  logging:
+    level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
   execution:
     mode: fastagent
   modules:

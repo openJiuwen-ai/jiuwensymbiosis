@@ -644,8 +644,8 @@ class TraceRail(AgentRail):
         )
         ctx.extra[_TRACE_CURRENT_KEY] = entry
         if self.console:
-            params = entry.input_params
-            print(f"[trace] #{entry.step} {effective_name}({params}) …", flush=True)
+            logger.info("[trace] #%d %s started", entry.step, effective_name)
+            logger.debug("[trace] #%d params: %s", entry.step, entry.input_params)
 
     async def after_tool_call(self, ctx: Any) -> None:
         if self._trace is None:
@@ -698,12 +698,15 @@ class TraceRail(AgentRail):
             self._trace.entries = self._trace.entries[-cap:]
         ctx.extra.pop(_TRACE_CURRENT_KEY, None)
         if self.console:
-            mark = "✅" if entry.success else "❌"
-            print(
-                f"[trace]   └ {mark} {entry.duration_s:.2f}s"
-                + (f" | {entry.output_summary[:80]}" if entry.output_summary else ""),
-                flush=True,
+            log = logger.info if entry.success else logger.warning
+            log(
+                "[trace] #%d %s %s in %.2fs",
+                entry.step,
+                entry.tool_name,
+                "succeeded" if entry.success else "failed",
+                entry.duration_s,
             )
+            logger.debug("[trace] #%d output: %s", entry.step, entry.output_summary)
 
     async def on_tool_exception(self, ctx: Any) -> None:
         if self._trace is None:
@@ -719,7 +722,7 @@ class TraceRail(AgentRail):
         # this hook sees it; the rail event itself is pushed by SafetyRail via
         # the trace_sink (more precise than parsing the message here).
         if self.console:
-            print(f"[trace]   └ ❌ {entry.error}", flush=True)
+            logger.warning("[trace] #%d %s failed: %s", entry.step, entry.tool_name, entry.error)
 
     # ------------------------------------------------------------------ finalize
     def finalize(self) -> Path | None:

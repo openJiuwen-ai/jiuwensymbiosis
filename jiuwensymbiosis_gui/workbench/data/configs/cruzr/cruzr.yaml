@@ -25,6 +25,9 @@ model:
   max_tokens: 2048
 
 agent:
+  logging:
+    level: INFO
+    openjiuwen_level: WARNING  # 上游终端和文件统一级别；独立于 Symbiosis
   execution:
     mode: fastagent
     stepagent:
