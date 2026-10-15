@@ -167,3 +167,47 @@ def test_config_discovery_and_capability_gates():
 def test_config_rejects_unsupported_values(kwargs):
     with pytest.raises(ValueError):
         RobosimConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://localhost:8001",
+        "http://remote:8001",
+        "http://user@localhost:8001",
+        "http://:secret@localhost:8001",
+        "http://localhost:0",
+        "http://localhost:8001/path",
+        "http://localhost:8001/?query=1",
+        "http://localhost:8001/#fragment",
+    ],
+)
+def test_service_url_rejects_non_origin_components(url):
+    with pytest.raises(ValueError, match="loopback HTTP origin"):
+        RobosimConfig(service_url=url)
+
+
+@pytest.mark.parametrize("value", [True, "1", 0, -1, float("nan"), float("inf")])
+def test_timeouts_reject_nonpositive_or_nonfinite_numbers(value):
+    with pytest.raises(ValueError, match="finite and positive"):
+        RobosimConfig(request_timeout_s=value)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("world_from_base", [[1.0]]),
+        ("world_from_base", np.full((4, 4), float("nan")).tolist()),
+        ("joint_positions", {}),
+        ("joint_positions", {"wrist": float("inf")}),
+        ("tcp_world", {"position": {"x": float("nan"), "y": 0, "z": 0}, "rotation": {"roll": 0, "pitch": 0, "yaw": 0}}),
+    ],
+)
+def test_invalid_physical_state_is_rejected(monkeypatch, field, value):
+    driver = RobosimLowLevel(RobosimConfig())
+    state = observation()
+    state[field] = value
+    monkeypatch.setattr(driver, "request", lambda *args: state)
+    with pytest.raises(RobosimError) as exc:
+        driver.observe()
+    assert exc.value.code == "robosim_observation_invalid"

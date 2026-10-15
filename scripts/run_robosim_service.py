@@ -8,6 +8,7 @@ installed by Kit and let RoboSim retain ownership of its main-thread loop.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
 import sys
@@ -26,7 +27,12 @@ def main() -> None:
     if not (repo / "sim_service" / "main.py").is_file():
         parser.error("--repo must point to a RiemannRoboSim_Isaac checkout")
     sys.dont_write_bytecode = True
-    sys.path.insert(0, str(repo))
+    # Preserve interpreter/library precedence; reject a shadowed backend explicitly.
+    sys.path.append(str(repo))
+    spec = importlib.util.find_spec("sim_service")
+    locations = () if spec is None else spec.submodule_search_locations or ()
+    if {Path(location).resolve() for location in locations} != {repo / "sim_service"}:
+        parser.error("sim_service resolves outside --repo; use the backend's isolated Python environment")
     os.chdir(repo)
     logging.basicConfig(level=logging.INFO)
 

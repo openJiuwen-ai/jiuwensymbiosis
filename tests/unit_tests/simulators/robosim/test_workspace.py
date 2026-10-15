@@ -53,7 +53,7 @@ def backend():
                 else:
                     payload = {"success": True, "data": {"items": []}}
             self.send_response(status)
-            if status == 302:
+            if 300 <= status < 400:
                 self.send_header("Location", "/redirect-target")
             self.end_headers()
             self.wfile.write(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
@@ -268,3 +268,29 @@ def test_standalone_driver_also_rejects_replaced_robot(backend):
     assert exc.value.code == "robosim_robot_changed"
     assert all(method == "GET" for method, *_ in backend.calls)
     driver.close()
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_redirects_are_not_followed_for_reads_or_writes(backend, status, method):
+    backend.overrides["/redirect"] = (status, {})
+    client = RobosimClient(backend.cfg)
+    with pytest.raises(RobosimError) as exc:
+        client.request(method, "/redirect")
+    assert exc.value.code == "robosim_http_error"
+    assert exc.value.outcome_unknown is (method != "GET")
+    assert client.commands.snapshot()["write_blocked"] is (method != "GET")
+    assert backend.calls == [(method, "/redirect", None)]
+
+
+@pytest.mark.parametrize("payload", [b"broken json", b"\xff"])
+def test_invalid_response_encoding_blocks_writes_without_retry(backend, payload):
+    backend.overrides["/invalid"] = (200, payload)
+    client = RobosimClient(backend.cfg)
+    with pytest.raises(RobosimError) as exc:
+        client.request("POST", "/invalid")
+    assert exc.value.code == "robosim_protocol_error"
+    assert exc.value.outcome_unknown is True
+    with pytest.raises(RobosimError, match="Previous command"):
+        client.request("POST", "/test")
+    assert backend.calls == [("POST", "/invalid", None)]

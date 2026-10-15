@@ -123,13 +123,11 @@ class RobosimLowLevel:
             raise RobosimError("Observation bridge/body mismatch", code="robosim_protocol_error")
         transform = np.asarray(result["world_from_base"], dtype=float)
         joints = result["joint_positions"]
-        if (
-            transform.shape != (4, 4)
-            or not np.isfinite(transform).all()
-            or not joints
-            or not all(math.isfinite(v) for v in joints.values())
-            or not np.isfinite(pose_matrix(result["tcp_world"])).all()
-        ):
+        if transform.shape != (4, 4) or not np.isfinite(transform).all():
+            raise RobosimError("Observation contains invalid physical state", code="robosim_observation_invalid")
+        if not joints or not all(math.isfinite(v) for v in joints.values()):
+            raise RobosimError("Observation contains invalid physical state", code="robosim_observation_invalid")
+        if not np.isfinite(pose_matrix(result["tcp_world"])).all():
             raise RobosimError("Observation contains invalid physical state", code="robosim_observation_invalid")
         return result
 

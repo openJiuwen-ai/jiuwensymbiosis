@@ -7,9 +7,9 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from http.client import HTTPException
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPErrorProcessor, ProxyHandler, Request, build_opener
 
 from jiuwensymbiosis.simulators.robosim.config import RobosimConfig
 from jiuwensymbiosis.simulators.robosim.operations import CommandCoordinator, RobosimError, coordinator_for
@@ -72,9 +72,16 @@ def read_identity(request: Callable[..., dict]) -> dict:
     return identity
 
 
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(req.full_url, code, "RoboSim redirects are disabled", headers, fp)
+class _NoRedirect(HTTPErrorProcessor):
+    def http_response(self, request, response):
+        """Reject redirects before urllib can replay a request to another URL."""
+        if 300 <= response.code < 400:
+            raise HTTPError(
+                request.full_url, response.code, "RoboSim redirects are disabled", response.headers, response
+            )
+        return super().http_response(request, response)
+
+    https_response = http_response
 
 
 class RobosimClient:
@@ -96,13 +103,9 @@ class RobosimClient:
             raise RobosimError("Client is closed", code="robosim_disconnected")
         method = method.upper()
         parsed = urlsplit(path)
-        if (
-            method not in {"GET", "POST", "PATCH", "DELETE"}
-            or not path.startswith("/")
-            or parsed.netloc
-            or parsed.scheme
-            or parsed.fragment
-        ):
+        if method not in {"GET", "POST", "PATCH", "DELETE"} or not path.startswith("/"):
+            raise ValueError("Expected a supported method and a relative RoboSim path")
+        if parsed.netloc or parsed.scheme or parsed.fragment:
             raise ValueError("Expected a supported method and a relative RoboSim path")
         data = None if payload is None else json.dumps(payload, allow_nan=False).encode()
         writing = method != "GET"
@@ -128,13 +131,13 @@ class RobosimClient:
                     code=code or "robosim_http_error",
                     outcome_unknown=writing and exc.code not in {400, 401, 403, 404, 405, 409, 422},
                 ) from exc
-            except (URLError, TimeoutError, OSError, HTTPException) as exc:
+            except (OSError, HTTPException) as exc:
                 raise RobosimError(
                     f"RoboSim {path}: transport failed; execution outcome is unknown",
                     code="robosim_transport_error",
                     outcome_unknown=writing,
                 ) from exc
-            except (ValueError, UnicodeError) as exc:
+            except ValueError as exc:
                 raise RobosimError(
                     "Expected JSON response", code="robosim_protocol_error", outcome_unknown=writing
                 ) from exc

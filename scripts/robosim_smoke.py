@@ -18,6 +18,9 @@ from jiuwensymbiosis.api.actions import ACTIONS
 from jiuwensymbiosis.introspect import build_session
 from jiuwensymbiosis.rails.safety import SafetyRail
 from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
+from jiuwensymbiosis.utils.logging import configure_logging, get_logger
+
+logger = get_logger("jiuwensymbiosis.robosim_smoke")
 
 
 def main() -> int:
@@ -27,6 +30,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("outputs/robosim_smoke/headless.json"))
     parser.add_argument("--cartesian", action="store_true", help="Also exercise cuMotion TCP planning")
     args = parser.parse_args()
+    configure_logging()
     report = {"ok": False, "robot_backend": "real_isaac_physx", "planner": "fixed_action_sequence", "actions": []}
     started = time.monotonic()
     try:
@@ -46,7 +50,7 @@ def main() -> int:
                     "error": output.error,
                 }
                 report["actions"].append(entry)
-                print(json.dumps(entry, ensure_ascii=False), flush=True)
+                logger.info("%s", json.dumps(entry, ensure_ascii=False))
                 data = output.data or {}
                 return {
                     "ok": output.success,
@@ -115,8 +119,9 @@ def main() -> int:
         report["duration_s"] = time.monotonic() - started
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(
-        json.dumps({"ok": report["ok"], "output": str(args.output), "error": report.get("error")}, ensure_ascii=False)
+    logger.info(
+        "%s",
+        json.dumps({"ok": report["ok"], "output": str(args.output), "error": report.get("error")}, ensure_ascii=False),
     )
     return 0 if report["ok"] else 1
 

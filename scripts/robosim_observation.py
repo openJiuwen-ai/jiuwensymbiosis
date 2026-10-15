@@ -43,7 +43,9 @@ def install_observation_route(app) -> None:
                     if prim.GetName() in resource.joint_names and prim.IsA(UsdPhysics.RevoluteJoint):
                         joint = UsdPhysics.RevoluteJoint(prim)
                         low, high = joint.GetLowerLimitAttr().Get(), joint.GetUpperLimitAttr().Get()
-                        if low is not None and high is not None and math.isfinite(low) and math.isfinite(high):
+                        if low is None or high is None:
+                            continue
+                        if math.isfinite(low) and math.isfinite(high):
                             limits[prim.GetName()] = [math.radians(low), math.radians(high)]
                 # Gf uses row vectors; the agent uses column-vector homogeneous transforms.
                 return {

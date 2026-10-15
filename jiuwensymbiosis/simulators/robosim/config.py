@@ -29,16 +29,11 @@ class RobosimConfig:
     def __post_init__(self) -> None:
         """Reject unsupported bodies and ambiguous connection/measurement settings."""
         url = urlsplit(self.service_url)
-        if (
-            url.scheme != "http"
-            or url.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or url.path not in {"", "/"}
-            or url.port == 0
-        ):
+        if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("service_url must be a loopback HTTP origin")
+        if url.username or url.password or url.port == 0:
+            raise ValueError("service_url must be a loopback HTTP origin")
+        if url.query or url.fragment or url.path not in {"", "/"}:
             raise ValueError("service_url must be a loopback HTTP origin")
         if self.robot_type != "moz1" or self.side not in {"left", "right"}:
             raise ValueError("This adapter currently supports MOZ1 left/right arms")
@@ -52,7 +47,9 @@ class RobosimConfig:
             "orientation_tolerance_deg",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be finite and positive")
+            if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
 
     @classmethod
