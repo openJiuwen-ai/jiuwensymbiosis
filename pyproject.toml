@@ -120,6 +120,8 @@ voice = [
 gui = [
     # GUI launcher 与工作台的本机浏览器界面；不引入 [full] 的重型 GPU 栈。
     "nicegui>=2,<3",
+    "httpx>=0.28",  # Explicit model discovery; no SDK provider dependency.
+    "keyring>=25,<26",  # OS credential storage only; no plaintext fallback.
     "pillow>=10",
 ]
 calib = [

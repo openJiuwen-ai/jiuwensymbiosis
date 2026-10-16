@@ -8,6 +8,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from nicegui import context
 
 from jiuwensymbiosis_gui.workbench import registry
 from jiuwensymbiosis_gui.workbench.app_state import AppState
@@ -18,7 +19,12 @@ _DROPPED_YAML = "env:\n  cfg:\n    low_level:\n      port: /dev/dropped\n"
 
 
 @pytest.fixture
-def layout(tmp_path, monkeypatch):
+def page_slot():
+    return context.client.content
+
+
+@pytest.fixture
+async def layout(tmp_path, monkeypatch, page_slot):
     """把 ``configs/`` 引到临时目录后装配整页,免得用例写进仓库配置。"""
     monkeypatch.setattr(registry, "configs_dir", lambda: tmp_path)
     body_key = registry.list_bodies()[0].key
@@ -26,7 +32,21 @@ def layout(tmp_path, monkeypatch):
     body_dir.mkdir(parents=True, exist_ok=True)
     registry.get_body(body_key).config_path().write_text(_BASE_YAML, encoding="utf-8")
     monkeypatch.setenv("JIUWENSYMBIOSIS_RUNTIME_DIR", str(tmp_path / "locks"))
-    return Layout(AppState(workspace=str(tmp_path / "workspace")))
+    from jiuwensymbiosis_gui.workbench.model_preferences import ModelPreferences
+    from jiuwensymbiosis_gui.workbench.pages import model_view
+    from tests.gui.workbench.unit.test_model_preferences import MemoryKeyring
+
+    store = ModelPreferences(backend=MemoryKeyring())
+    monkeypatch.setattr(model_view, "ModelPreferences", lambda: store)
+
+    async def call(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(model_view.run, "io_bound", call)
+    with page_slot:
+        page = Layout(AppState(workspace=str(tmp_path / "workspace")))
+    await page._models._restore_model()
+    return page
 
 
 def _drop(layout: Layout, name: str, text: str) -> None:
@@ -268,3 +288,68 @@ def test_dropped_valid_config_can_replace_a_source_that_failed_to_load(layout, t
     _drop(layout, "fixed.yaml", _DROPPED_YAML)
     layout._confirm_drop()
     assert layout._state.current_config().get("env.cfg.low_level.port") == "/dev/dropped"
+
+
+def test_model_connection_fixes_open_shared_model_page(layout):
+    layout._open_config_field("model.api_key")
+    assert layout._tabs.value is layout._model_tab
+
+
+def test_model_restoration_blocks_runs_before_releasing_hardware(layout, monkeypatch):
+    from unittest.mock import Mock
+
+    layout._models._restoring_model = True
+    release = Mock()
+    monkeypatch.setattr(layout._tools, "release_hardware", release)
+    layout._start_run(layout._state.current_task)
+    release.assert_not_called()
+    assert layout._state.engine is None
+
+
+async def test_runs_and_reruns_use_applied_model_without_modifying_yaml(layout):
+    state = layout._state
+    config = state.current_config()
+    config.set("model.temperature", 0.7)
+    config.set("model.max_tokens", 1234)
+    original = config.to_yaml()
+    panel = layout._models
+    panel._preset.set_value("deepseek")
+    panel._key.set_value("test-applied-key")
+    await panel._save_model()
+    layout._tools.release_hardware = lambda **kw: True
+    layout._run.attach = lambda engine: None
+    layout._start_run(state.current_task)
+    first = state.engine
+    assert first._real_session_config()["model"]["api_key"] == "test-applied-key"
+    assert first._real_session_config()["model"]["temperature"] == 0.7
+    assert first._real_session_config()["model"]["max_tokens"] == 1234
+    panel._name.set_options(["next-model"], value="next-model")
+    await panel._save_model()
+    layout._rerun()
+    assert state.engine._real_session_config()["model"]["model_name"] == "next-model"
+    assert first._real_session_config()["model"]["model_name"] == "deepseek-flash"
+    assert config.to_yaml() == original
+
+
+def test_temporary_model_and_task_mode_reach_run_and_rerun_snapshots(layout):
+    state = layout._state
+    config = state.current_config()
+    config.set("model.api_key", "task-test-key")
+    config.set("model.model_name", "task-model")
+    original = config.to_yaml()
+    panel = layout._models
+    panel._name.set_options(["temporary-model"], value="temporary-model")
+    panel._key.set_value("temporary-test-key")
+    panel._apply_model()
+    layout._tools.release_hardware = lambda **kw: True
+    layout._run.attach = lambda engine: None
+    layout._start_run(state.current_task)
+    first = state.engine
+    assert first._real_session_config()["model"]["api_key"] == "temporary-test-key"
+    panel._use_task_model()
+    layout._rerun()
+    assert state.engine._real_session_config()["model"]["model_name"] == "task-model"
+    assert state.engine._real_session_config()["model"]["api_key"] == "task-test-key"
+    assert first._real_session_config()["model"]["model_name"] == "temporary-model"
+    assert panel._preferences.load(panel.selected()) is None
+    assert config.to_yaml() == original

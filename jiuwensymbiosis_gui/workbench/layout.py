@@ -18,12 +18,14 @@ from typing import Any
 
 from nicegui import app, ui
 
+from jiuwensymbiosis.agent.config import ModelSpec
 from jiuwensymbiosis_gui.workbench import ABOUT_TEXT, APP_NAME, registry
 from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
 from jiuwensymbiosis_gui.workbench.config_model import ConfigModel
 from jiuwensymbiosis_gui.workbench.pages.config_view import ConfigView
 from jiuwensymbiosis_gui.workbench.pages.history_view import HistoryView
 from jiuwensymbiosis_gui.workbench.pages.home_view import HomeView
+from jiuwensymbiosis_gui.workbench.pages.model_view import ModelView
 from jiuwensymbiosis_gui.workbench.pages.run_view import RunView
 from jiuwensymbiosis_gui.workbench.pages.settings_view import SettingsView
 from jiuwensymbiosis_gui.workbench.pages.tools_view import ToolsView
@@ -73,6 +75,7 @@ class Layout:
             self._run_tab = ui.tab("运行")
             self._tools_tab = ui.tab(_TOOLS)
             self._history_tab = ui.tab(_HISTORY)
+            self._model_tab = ui.tab("模型")
             self._settings_tab = ui.tab("设置")
 
         with ui.tab_panels(self._tabs, value=self._home_tab, on_change=self._on_nav).classes("w-full grow") as panels:
@@ -94,6 +97,8 @@ class Layout:
                 )
             with ui.tab_panel(self._tools_tab):
                 self._tools = ToolsView(self._state, on_open_config=self._open_config_field)
+            with ui.tab_panel(self._model_tab):
+                self._models = ModelView(model_config=self._current_model_config)
             with ui.tab_panel(self._history_tab):
                 self._history = HistoryView(self._state.workspace)
             with ui.tab_panel(self._settings_tab):
@@ -104,6 +109,10 @@ class Layout:
         panels.on("dragover.prevent", js_handler="() => {}")  # 不 preventDefault 浏览器就不允许放下
         panels.on("drop.prevent", self._on_yaml_dropped, js_handler=_DROP_JS)
         ui.timer(0.2, self._sync_shared_run)
+
+    def _current_model_config(self) -> dict[str, Any]:
+        cfg = self._state.current_config()
+        return (cfg.data.get("model") or {}) if cfg else {}
 
     def _sync_shared_run(self) -> None:
         engine = self._state.engine
@@ -272,6 +281,9 @@ class Layout:
         ``_goto`` 传的是 Tab 对象,那几条分支都不会命中,表单不会被重建。定位放在切标签
         之后,这样 ``_on_nav`` 日后改成认得 Tab 对象了也不会把落点冲掉。
         """
+        if path in {"model.provider", "model.api_base", "model.api_key", "model.model_name", "model.verify_ssl"}:
+            self._goto(self._model_tab)
+            return
         if self._state.current_body is None or self._state.current_task is None:
             ui.notify("请先在主页选择一个本体与任务,再去改配置。", type="warning")
             self._goto(self._home_tab)
@@ -306,6 +318,9 @@ class Layout:
         if self._state.is_busy():
             ui.notify("已有任务在运行,请等待其结束或先停止。", type="warning")
             return
+        if not self._models.ready:
+            ui.notify("正在恢复统一模型设置，请稍后再试。", type="warning")
+            return
         body_key = self._state.current_body
         if body_key is None:
             ui.notify("请先在主页选择一个本体。", type="warning")
@@ -314,6 +329,7 @@ class Layout:
         try:
             model = self._state.config_for(body_key, task_key)
             model.validate_agent()
+            selected_model = self._models.selected(ModelSpec(**(model.data.get("model") or {})))
         except (TypeError, ValueError) as exc:
             ui.notify(str(exc), type="negative")
             return
@@ -338,6 +354,7 @@ class Layout:
             body_key=body_key,
             config_source=self._state.current_config_file,
             host=self._state.host,
+            model_spec=selected_model,
         )
         self._state.engine = engine
         self._goto(self._run_tab)
@@ -356,14 +373,22 @@ class Layout:
         engine = self._state.engine
         if engine is None or self._state.is_busy():
             return
+        if not self._models.ready:
+            ui.notify("正在恢复统一模型设置，请稍后再试。", type="warning")
+            return
         try:
             model = self._state.config_for(engine.body_key, engine.task_key)
             model.validate_agent()
+            selected_model = self._models.selected(ModelSpec(**(model.data.get("model") or {})))
         except (TypeError, ValueError) as exc:
             ui.notify(str(exc), type="negative")
             return
         source = self._state.current_config_file or registry.get_body(engine.body_key).config_path()
-        fresh = engine.rerun_with(model.data, config_source=source)
+        fresh = engine.rerun_with(
+            model.data,
+            config_source=source,
+            model_spec=selected_model,
+        )
         self._state.engine = fresh
         self._goto(self._run_tab)
         self._run.attach(fresh)

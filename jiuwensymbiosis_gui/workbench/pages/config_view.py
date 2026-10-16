@@ -113,7 +113,17 @@ class ConfigView:
                         ui.button("存储为可选配置", on_click=self._open_save)
 
     def _build_group(self, group: str) -> None:
+        if group == "模型":
+            ui.label("模型连接和 API Key 请在顶部「模型」页设置；已应用的设置优先，未应用时使用任务 YAML。")
         for spec in [s for s in self._fields if s.group == group]:
+            if spec.path in {
+                "model.provider",
+                "model.api_base",
+                "model.api_key",
+                "model.model_name",
+                "model.verify_ssl",
+            }:
+                continue
             control = self._make_control(spec)
             self._controls[spec.path] = control
             if spec.help:

@@ -9,9 +9,11 @@ import queue
 import traceback
 import uuid
 from collections import deque
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from jiuwensymbiosis.agent.config import ModelSpec
 from jiuwensymbiosis.runtime import decode_frame
 from jiuwensymbiosis.runtime import default_workspace as runtime_default_workspace
 from jiuwensymbiosis.utils.logging import get_logger
@@ -95,7 +97,9 @@ class RunEngine:
         config_source=None,
         host=None,
         runtime=None,
+        model_spec: ModelSpec | None = None,
     ):
+        self._model_spec = copy.deepcopy(model_spec)
         self._task = task
         self._body_key = body_key
         self._config = ConfigModel.from_dict(copy.deepcopy(config_data))
@@ -141,7 +145,9 @@ class RunEngine:
         if self._start_failure is not None:
             self._local_events.put(("run_finished", self._start_failure))
 
-    def rerun_with(self, config_data: dict[str, Any], *, config_source: str | Path) -> RunEngine:
+    def rerun_with(
+        self, config_data: dict[str, Any], *, config_source: str | Path, model_spec: ModelSpec | None = None
+    ) -> RunEngine:
         """重跑时一起替换配置及其来源，保持相对路径的解析基准一致。"""
         return RunEngine(
             self._task,
@@ -151,6 +157,7 @@ class RunEngine:
             config_source=config_source,
             host=self._host,
             runtime=self._runtime,
+            model_spec=model_spec,
         )
 
     def start(self):
@@ -192,6 +199,8 @@ class RunEngine:
         if data.get("adapter", adapter) != adapter:
             raise ValueError("配置中的 adapter 与当前选择的本体不一致，请重新选择本体和配置。")
         data.setdefault("adapter", adapter)
+        if self._model_spec is not None:
+            data["model"] = asdict(self._model_spec)
         return data
 
     def start_return_to(self, joints):
