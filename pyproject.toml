@@ -165,6 +165,7 @@ jiuwensymbiosis = [
     # SO-101 kinematics-only URDF for RobotKinematics FK/IK.
     "adapters/so101/description/**/*.urdf",
     "adapters/so101/description/**/*.md",
+    "simulators/assets/data/*.yaml",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

@@ -16,3 +16,6 @@ tmp/
 # 标定产物与写回配置时留下的备份,都是本机运行的结果
 configs/*/calibration/
 *.yaml.bak
+# Generated reports and machine-specific asset configuration.
+/outputs/
+/configs/simulators/assets.yaml
