@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jiuwensymbiosis_gui.workbench.model_catalog import model_list_url
+from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider, model_list_url
 
 if TYPE_CHECKING:
     from jiuwensymbiosis.agent.config import ModelSpec
@@ -44,7 +44,7 @@ class ModelPreferenceError(RuntimeError):
     """A safe error message that contains neither credentials nor backend output."""
 
 
-def _system_backend() -> _CredentialBackend:
+def _system_backend(*, allow_interaction: bool = False) -> _CredentialBackend:
     try:
         import keyring
         from keyring.backends.chainer import ChainerBackend
@@ -53,7 +53,11 @@ def _system_backend() -> _CredentialBackend:
         candidates = backend.backends if isinstance(backend, ChainerBackend) else [backend]
         for candidate in candidates:
             if type(candidate).__module__ in _SECURE_BACKENDS and candidate.priority > 0:
-                if type(candidate).__module__ == "keyring.backends.SecretService":
+                if not allow_interaction and type(candidate).__module__ == "keyring.backends.kwallet":
+                    # Even an open wallet can require application authorization. Its
+                    # get_password() calls open(), so it is never a passive probe.
+                    raise ModelPreferenceError("KWallet 需要主动恢复；请点击“从钥匙串恢复（可能解锁）”，或仅本次应用。")
+                if not allow_interaction and type(candidate).__module__ == "keyring.backends.SecretService":
                     import secretstorage
 
                     bus = secretstorage.dbus_init()
@@ -99,52 +103,103 @@ class ModelPreferences:
         self._backend_override = backend
         self._account = account
 
-    def _backend(self) -> _CredentialBackend:
-        return self._backend_override if self._backend_override is not None else _system_backend()
+    def _backend(self, *, allow_interaction: bool = False) -> _CredentialBackend:
+        return (
+            self._backend_override
+            if self._backend_override is not None
+            else _system_backend(allow_interaction=allow_interaction)
+        )
 
     @staticmethod
     def validate(model: ModelSpec) -> None:
         """Validate connection fields without accessing the credential store."""
         _validate_fields({name: getattr(model, name) for name in _FIELDS})
 
-    def load(self, default: ModelSpec) -> ModelSpec | None:
-        """Restore the last connection profile, retaining current non-connection options."""
-        with _LOCK:
-            backend = self._backend()
-            try:
-                encoded = backend.get_password(_SERVICE, self._account)
-            except Exception:
-                raise ModelPreferenceError("无法读取系统钥匙串；请检查钥匙串是否已解锁。") from None
-            if encoded is None:
-                return None
-            try:
-                if len(encoded) > 32768:
-                    raise ValueError("oversized profile")
-                record = json.loads(encoded)
-                if not isinstance(record, dict) or record.get("version") != 1:
-                    raise ValueError("unknown schema")
-                fields = _validate_fields(record.get("model"))
-            except (TypeError, ValueError):
-                raise ModelPreferenceError("已保存的模型设置损坏或版本不兼容，请重新保存或忘记旧设置。") from None
-            return replace(default, **fields)
+    def _read_record(self, backend: _CredentialBackend) -> dict[str, Any]:
+        try:
+            encoded = backend.get_password(_SERVICE, self._account)
+        except Exception:
+            raise ModelPreferenceError("无法读取系统钥匙串；请检查钥匙串是否已解锁。") from None
+        if encoded is None:
+            return {"version": 1}
+        try:
+            if len(encoded) > 32768:
+                raise ValueError("oversized profile")
+            record = json.loads(encoded)
+            if not isinstance(record, dict) or record.get("version") != 1:
+                raise ValueError("unknown schema")
+            if "model" in record:
+                _validate_fields(record["model"])
+            providers = record.get("providers", [])
+            if not isinstance(providers, list):
+                raise ValueError("invalid providers")
+            names = [CustomProvider(**entry).name for entry in providers]
+            if len(names) != len(set(names)) or not ({"model", "providers"} & record.keys()):
+                raise ValueError("invalid profile")
+        except (TypeError, ValueError):
+            raise ModelPreferenceError("已保存的模型设置损坏或版本不兼容，请忘记旧设置后重新保存。") from None
+        return record
 
-    def save(self, model: ModelSpec) -> None:
-        """Remember the connection profile and API key as a single credential entry."""
-        fields = _validate_fields({name: getattr(model, name) for name in _FIELDS})
-        encoded = json.dumps({"version": 1, "model": fields}, ensure_ascii=False)
+    def _write_record(self, backend: _CredentialBackend, record: dict[str, Any]) -> None:
+        encoded = json.dumps(record, ensure_ascii=False)
         if len(encoded) > 32768:
             raise ModelPreferenceError("模型设置过长，未保存到系统钥匙串。")
+        try:
+            backend.set_password(_SERVICE, self._account, encoded)
+        except Exception:
+            raise ModelPreferenceError("保存失败；请检查系统钥匙串是否已解锁。") from None
+
+    def load_profiles(
+        self, default: ModelSpec, *, allow_interaction: bool = False
+    ) -> tuple[ModelSpec | None, dict[str, CustomProvider]]:
+        """Read the active connection and named providers in one credential-store access."""
         with _LOCK:
-            backend = self._backend()
-            try:
-                backend.set_password(_SERVICE, self._account, encoded)
-            except Exception:
-                raise ModelPreferenceError("保存失败；请检查系统钥匙串是否已解锁。") from None
+            record = self._read_record(self._backend(allow_interaction=allow_interaction))
+            model = replace(default, **record["model"]) if "model" in record else None
+            providers = {entry["name"]: CustomProvider(**entry) for entry in record.get("providers", [])}
+            return model, providers
+
+    def load(self, default: ModelSpec, *, allow_interaction: bool = False) -> ModelSpec | None:
+        """Restore connection fields; interactive backends require an explicit user action."""
+        return self.load_profiles(default, allow_interaction=allow_interaction)[0]
+
+    def save(self, model: ModelSpec) -> None:
+        """Remember the applied connection without replacing named providers."""
+        fields = _validate_fields({name: getattr(model, name) for name in _FIELDS})
+        with _LOCK:
+            backend = self._backend(allow_interaction=True)
+            record = self._read_record(backend)
+            record["model"] = fields
+            self._write_record(backend, record)
+
+    def save_provider(self, provider: CustomProvider, *, original_name: str | None = None) -> None:
+        """Add or edit a provider without applying a model or overwriting another provider."""
+        with _LOCK:
+            backend = self._backend(allow_interaction=True)
+            record = self._read_record(backend)
+            providers = {entry["name"]: entry for entry in record.get("providers", [])}
+            if provider.name in providers and provider.name != original_name:
+                raise ModelPreferenceError("供应商名称已存在，请使用其他名称。")
+            if original_name is not None:
+                if original_name not in providers:
+                    raise ModelPreferenceError("供应商已被删除，请重新添加。")
+                del providers[original_name]
+            providers[provider.name] = asdict(provider)
+            record["providers"] = list(providers.values())
+            self._write_record(backend, record)
+
+    def delete_provider(self, name: str) -> None:
+        """Remove only the named preset; the applied connection remains unchanged."""
+        with _LOCK:
+            backend = self._backend(allow_interaction=True)
+            record = self._read_record(backend)
+            record["providers"] = [entry for entry in record.get("providers", []) if entry["name"] != name]
+            self._write_record(backend, record)
 
     def clear(self) -> None:
         """Forget this application's profile; leave other credential entries untouched."""
         with _LOCK:
-            backend = self._backend()
+            backend = self._backend(allow_interaction=True)
             try:
                 if backend.get_password(_SERVICE, self._account) is not None:
                     backend.delete_password(_SERVICE, self._account)

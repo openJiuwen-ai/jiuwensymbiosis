@@ -2,19 +2,61 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 import httpx
 
 if TYPE_CHECKING:
     from jiuwensymbiosis.agent.config import ModelSpec
 
-__all__ = ["deepseek_model_spec", "fetch_model_options", "model_list_url", "model_preset"]
+__all__ = ["CustomProvider", "deepseek_model_spec", "fetch_model_options", "model_list_url", "model_preset"]
 
 _DEEPSEEK_BASE = "https://api.deepseek.com"
 _COMPATIBLE_PROVIDERS = {"OpenAI", "DeepSeek", "SiliconFlow", "OpenRouter", "DashScope"}
+
+
+def _http_url(value: str) -> SplitResult | None:
+    try:
+        url = urlsplit(value)
+        if url.scheme not in {"http", "https"} or not url.hostname:
+            return None
+        if any(c.isspace() or ord(c) < 32 for c in value):
+            return None
+        _ = url.port
+        return url
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class CustomProvider:
+    """A named OpenAI-compatible service; its website is never an API endpoint."""
+
+    name: str
+    api_base: str
+    api_key: str = field(repr=False)
+    website: str = ""
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(value, str) for value in (self.name, self.api_base, self.api_key, self.website)):
+            raise ValueError("供应商设置格式无效。")
+        if not self.name.strip() or len(self.name) > 80:
+            raise ValueError("请填写供应商名称（最多 80 个字符）。")
+        model_list_url(self.api_base)
+        if not self.api_key.strip():
+            raise ValueError("请填写 API Key；本地无鉴权服务可填 EMPTY。")
+        if self.website:
+            url = _http_url(self.website)
+            if url is None or url.username or url.password:
+                raise ValueError("官网链接须为不含用户名或密码的 http(s) 地址。")
+
+    def model_spec(self, current: ModelSpec) -> ModelSpec:
+        """Load this service's key, keeping task parameters but clearing the old model ID."""
+        return replace(
+            current, provider="OpenAI", api_base=self.api_base, api_key=self.api_key, model_name="", verify_ssl=True
+        )
 
 
 def model_preset(spec: ModelSpec) -> str:
@@ -42,13 +84,8 @@ def deepseek_model_spec(current: ModelSpec) -> ModelSpec:
 def model_list_url(api_base: str) -> str:
     """Append /models to the configured API base, retaining its version/path prefix."""
     base = api_base.strip().rstrip("/")
-    try:
-        url = urlsplit(base)
-        valid = url.scheme in {"http", "https"} and bool(url.hostname)
-        _ = url.port
-    except ValueError:
-        valid = False
-    if not valid:
+    url = _http_url(base)
+    if url is None:
         raise ValueError("请填写有效的 http(s) 模型 API 基础地址。")
     if url.username or url.password:
         raise ValueError("API 地址不能包含用户名或密码；请单独填写 API Key。")

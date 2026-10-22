@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -146,3 +146,102 @@ def test_locked_secret_service_does_not_attempt_an_unlock_prompt(monkeypatch):
     with pytest.raises(preferences.ModelPreferenceError, match="已锁定"):
         preferences.ModelPreferences().load(ModelSpec())
     unlock.assert_not_called()
+
+
+@pytest.mark.parametrize("chained", [False, True])
+@pytest.mark.parametrize("backend_class", ["DBusKeyring", "DBusKeyringKWallet4"])
+def test_kwallet_open_path_requires_explicit_interaction(monkeypatch, chained, backend_class):
+    import keyring
+    from keyring.backends import kwallet
+    from keyring.backends.chainer import ChainerBackend
+
+    backend_type = getattr(kwallet, backend_class)
+    with patch.object(backend_type, "priority", 5):
+        backend = backend_type()
+        # Real get_password() enters connected(), which opens the wallet. No D-Bus
+        # connection is made by this test; False represents cancelling its prompt.
+        connected = Mock(return_value=False)
+        monkeypatch.setattr(backend, "connected", connected)
+        monkeypatch.setattr(ChainerBackend, "backends", [backend])
+        monkeypatch.setattr(keyring, "get_keyring", lambda: ChainerBackend() if chained else backend)
+        store = preferences.ModelPreferences()
+        with pytest.raises(preferences.ModelPreferenceError, match="KWallet"):
+            store.load(ModelSpec())
+        connected.assert_not_called()
+        with pytest.raises(preferences.ModelPreferenceError, match="无法读取"):
+            store.load(ModelSpec(), allow_interaction=True)
+        connected.assert_called_once()
+
+
+def test_named_providers_can_be_saved_before_selecting_a_model_and_edited_without_changing_it(backend, model):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    store = preferences.ModelPreferences(backend=backend)
+    first = CustomProvider("First", "https://one.example/v1", "one-key", "https://one.example")
+    second = CustomProvider("Second", "https://two.example/v1", "two-key")
+    store.save_provider(first)
+    store.save_provider(second)
+    assert store.load(model) is None
+    store.save(model)
+    renamed = replace(first, name="Renamed", api_key="replacement-key")
+    store.save_provider(renamed, original_name=first.name)
+    reopened = preferences.ModelPreferences(backend=backend)
+    saved, providers = reopened.load_profiles(model)
+    assert saved == model
+    assert providers == {"Second": second, "Renamed": renamed}
+    reopened.delete_provider("Renamed")
+    assert reopened.load_profiles(model) == (model, {"Second": second})
+    reopened.clear()
+    assert reopened.load_profiles(model) == (None, {})
+
+
+def test_duplicate_or_stale_provider_edits_preserve_saved_profiles(backend, model):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    store = preferences.ModelPreferences(backend=backend)
+    provider = CustomProvider("First", "https://one.example/v1", "one-key")
+    store.save_provider(provider)
+    before = dict(backend.entries)
+    with pytest.raises(preferences.ModelPreferenceError, match="已存在"):
+        store.save_provider(replace(provider, api_key="different-key"))
+    with pytest.raises(preferences.ModelPreferenceError, match="已被删除"):
+        store.save_provider(replace(provider, name="renamed"), original_name="missing")
+    assert backend.entries == before
+
+
+def test_old_model_record_loads_and_is_preserved_when_adding_provider(backend, model):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    fields = {name: getattr(model, name) for name in preferences._FIELDS}
+    backend.set_password("jiuwensymbiosis.gui", "workbench-model", json.dumps({"version": 1, "model": fields}))
+    store = preferences.ModelPreferences(backend=backend)
+    assert store.load_profiles(model) == (model, {})
+    provider = CustomProvider("First", "https://one.example/v1", "one-key")
+    store.save_provider(provider)
+    assert store.load_profiles(model) == (model, {"First": provider})
+
+
+@pytest.mark.parametrize("operation", ["save_provider", "delete_provider"])
+def test_provider_write_failure_is_safe_and_leaves_saved_record_unchanged(backend, model, operation):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    store = preferences.ModelPreferences(backend=backend)
+    provider = CustomProvider("First", "https://one.example/v1", "one-key")
+    store.save_provider(provider)
+    before = dict(backend.entries)
+    backend.set_password = Mock(side_effect=RuntimeError("one-key"))
+    with pytest.raises(preferences.ModelPreferenceError) as error:
+        if operation == "save_provider":
+            store.save_provider(replace(provider, name="Second"))
+        else:
+            store.delete_provider("First")
+    assert "one-key" not in str(error.value)
+    assert backend.entries == before
+
+
+@pytest.mark.parametrize("providers", [{}, [None], [{"name": "broken", "api_key": "secret"}]])
+def test_corrupt_provider_records_do_not_expose_keys(backend, model, providers):
+    backend.set_password("jiuwensymbiosis.gui", "workbench-model", json.dumps({"version": 1, "providers": providers}))
+    with pytest.raises(preferences.ModelPreferenceError) as error:
+        preferences.ModelPreferences(backend=backend).load_profiles(model)
+    assert "secret" not in str(error.value)

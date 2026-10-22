@@ -129,3 +129,51 @@ def test_unsupported_adapter_and_missing_key_do_not_make_requests():
             with pytest.raises(ValueError):
                 fetch_model_options(spec)
         assert not router.calls
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"name": " "},
+        {"name": "x" * 81},
+        {"api_key": " "},
+        {"api_base": "https://gateway.example/v1/chat/completions"},
+        {"website": "javascript:alert(1)"},
+        {"website": "https://user:secret@example.com"},
+        {"website": "https://example.com:bad"},
+        {"website": None},
+    ],
+)
+def test_invalid_custom_provider_is_rejected(changes):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    fields = {"name": "My service", "api_base": "https://gateway.example/team/v1", "api_key": "test-key"}
+    with pytest.raises(ValueError):
+        CustomProvider(**(fields | changes))
+
+
+def test_custom_provider_discovers_from_api_address_and_uses_compatible_adapter():
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    provider = CustomProvider("My service", "https://gateway.example/team/v1", "test-key", "https://website.example")
+    spec = provider.model_spec(ModelSpec(api_key="other-key", model_name="old-model", max_tokens=777))
+    assert spec.provider == "OpenAI"
+    assert spec.api_key == "test-key"
+    assert spec.model_name == ""
+    assert spec.max_tokens == 777 and spec.verify_ssl
+    assert "test-key" not in repr(provider)
+    with respx.mock as router:
+        route = router.get("https://gateway.example/team/v1/models").respond(200, json={"data": [{"id": "new-model"}]})
+        assert fetch_model_options(spec) == {"new-model": "new-model"}
+        assert len(router.calls) == 1
+        assert route.calls[0].request.headers["Authorization"] == "Bearer test-key"
+
+
+def test_website_query_and_fragment_remain_distinct_from_api_constraints():
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    url = "https://example.com/docs?language=zh#setup"
+    provider = CustomProvider("test", "https://api.example.com/v1", "EMPTY", website=url)
+    assert provider.website == url
+    with pytest.raises(ValueError, match="查询参数或片段"):
+        model_list_url(url)

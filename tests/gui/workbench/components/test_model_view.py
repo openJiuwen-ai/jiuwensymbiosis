@@ -175,7 +175,7 @@ def test_changing_api_origin_clears_key_but_version_path_changes_keep_it(view):
 async def test_restore_failure_leaves_default_model_editable(view, monkeypatch):
     panel, _ = view
     before = panel._draft_model()
-    monkeypatch.setattr(panel._preferences, "load", Mock(side_effect=ModelPreferenceError("无法读取钥匙串")))
+    monkeypatch.setattr(panel._preferences, "load_profiles", Mock(side_effect=ModelPreferenceError("无法读取钥匙串")))
     await panel._restore_model()
     assert panel._draft_model() == before
     assert panel._key.enabled and panel._fetch.enabled
@@ -347,3 +347,237 @@ async def test_forgetting_saved_profile_preserves_task_mode(view):
     assert panel.selected() == before
     assert panel._preferences.load(before) is None
     assert panel._key.value == ""
+
+
+async def test_switching_named_providers_uses_their_keys_and_clears_the_previous_model_list(view, monkeypatch):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    panel, config = view
+    first = CustomProvider("First", "https://one.example/v1", "one-key", "https://one.example")
+    second = CustomProvider("Second", "https://two.example/v1", "two-key")
+    for provider in (first, second):
+        panel._preferences.save_provider(provider)
+    await panel._restore_model()
+    assert panel.selected().api_key == config["api_key"]
+    panel._preset.set_value("provider:First")
+    assert panel._draft_model().api_key == "one-key"
+    assert panel._draft_model().model_name == ""
+    assert panel._website.visible and panel._website.props["href"] == first.website
+    fetch = Mock(return_value={"first-model": "First model"})
+    monkeypatch.setattr(model_view, "fetch_model_options", fetch)
+    await panel._fetch_models()
+    panel._name.set_value("first-model")
+    panel._apply_model()
+    first_active = panel.selected()
+    panel._preset.set_value("provider:Second")
+    assert panel._name.options == {}
+    assert panel._name.value is None
+    assert panel._draft_model().api_key == "two-key"
+    assert not panel._website.visible
+    assert panel.selected() == first_active
+    panel._apply_model()  # Choosing a provider alone is not a valid model selection.
+    assert panel.selected() == first_active
+    panel._name.set_options(["second-model"], value="second-model")
+    await panel._save_model()
+    await panel._restore_model()
+    assert panel._preset.value == "provider:Second"
+    assert panel.selected().model_name == "second-model"
+    assert panel.selected().provider == "OpenAI"
+    assert panel.selected().max_tokens == config["max_tokens"]
+    await panel._forget_model()
+    assert panel._providers == {}
+    assert panel._preferences.load_profiles(panel._model) == (None, {})
+    assert panel.selected().api_key == ""
+    assert not panel._edit_provider_button.visible and not panel._website.visible
+
+
+@pytest.mark.parametrize("name", ["custom", "deepseek"])
+async def test_provider_names_cannot_shadow_builtin_presets(view, name):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    panel, _ = view
+    provider = CustomProvider(name, "https://custom.example/v1", "custom-test-key")
+    panel._preferences.save_provider(provider)
+    await panel._restore_model()
+    panel._preset.set_value(f"provider:{name}")
+    assert panel._draft_model().api_key == "custom-test-key"
+    panel._preset.set_value("deepseek")
+    assert panel._draft_model().api_base == "https://api.deepseek.com"
+    assert panel._draft_model().api_key == ""
+    panel._preset.set_value("custom")
+    assert panel._selected_provider() is None
+
+
+def provider_dialog(panel, page_slot, provider=None):
+    with page_slot:
+        panel._edit_provider(provider)
+    dialog = next(
+        element
+        for element in reversed(list(panel._preset.client.elements.values()))
+        if isinstance(element, model_view.ui.dialog)
+    )
+    inputs = {
+        element.props["label"]: element for element in dialog.descendants() if isinstance(element, model_view.ui.input)
+    }
+    buttons = {element.text: element for element in dialog.descendants() if isinstance(element, model_view.ui.button)}
+    return inputs, buttons
+
+
+async def click_button(button, monkeypatch):
+    from nicegui import core
+
+    monkeypatch.setattr(core, "loop", asyncio.get_running_loop())
+    listener = next(listener for listener in button._event_listeners.values() if listener.type == "click")
+    listener.handler(None)
+    await asyncio.sleep(0)
+
+
+async def test_provider_dialog_add_edit_delete_preserves_the_applied_connection(view, page_slot, monkeypatch):
+    panel, _ = view
+    panel._apply_model()
+    active = panel.selected()
+    inputs, buttons = provider_dialog(panel, page_slot)
+    inputs["供应商名称"].set_value("Local")
+    inputs["请求地址（API 基础地址）"].set_value("https://one.example/v1")
+    inputs["供应商 API Key"].set_value("one-key")
+    inputs["官网链接（可选）"].set_value("https://one.example")
+    await click_button(buttons["保存供应商"], monkeypatch)
+    assert panel._preset.value == "provider:Local"
+    assert panel._draft_model().api_key == "one-key"
+    inputs, buttons = provider_dialog(panel, page_slot, panel._selected_provider())
+    inputs["请求地址（API 基础地址）"].set_value("https://one.example/v2")
+    assert inputs["供应商 API Key"].value == "one-key"
+    inputs["请求地址（API 基础地址）"].set_value("https://two.example/v1")
+    assert inputs["供应商 API Key"].value == ""
+    inputs["供应商 API Key"].set_value("two-key")
+    inputs["供应商名称"].set_value("Renamed")
+    await click_button(buttons["保存供应商"], monkeypatch)
+    assert list(panel._providers) == ["Renamed"]
+    assert panel._draft_model().api_base == "https://two.example/v1"
+    _, buttons = provider_dialog(panel, page_slot, panel._selected_provider())
+    await click_button(buttons["删除供应商"], monkeypatch)
+    assert panel._providers == {}
+    assert panel.selected() == active
+
+
+async def test_provider_dialog_failed_save_keeps_draft_and_does_not_add_preset(view, page_slot, monkeypatch):
+    panel, _ = view
+    before = panel._draft_model()
+    inputs, buttons = provider_dialog(panel, page_slot)
+    inputs["供应商名称"].set_value("Local")
+    inputs["请求地址（API 基础地址）"].set_value("https://one.example/v1")
+    inputs["供应商 API Key"].set_value("one-key")
+    monkeypatch.setattr(panel._preferences, "save_provider", Mock(side_effect=ModelPreferenceError("保存失败")))
+    await click_button(buttons["保存供应商"], monkeypatch)
+    assert panel._providers == {}
+    assert panel._draft_model() == before
+    assert panel._add_provider.enabled and buttons["保存供应商"].enabled
+
+
+@pytest.mark.parametrize("failure", [None, ValueError("旧接口鉴权失败"), RuntimeError("旧接口异常")])
+async def test_late_catalog_result_cannot_replace_another_providers_draft(view, monkeypatch, failure):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    panel, _ = view
+    for name in ("First", "Second"):
+        panel._preferences.save_provider(CustomProvider(name, f"https://{name.lower()}.example/v1", f"{name}-key"))
+    await panel._restore_model()
+    panel._preset.set_value("provider:First")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_fetch(*args):
+        started.set()
+        await release.wait()
+        if failure:
+            raise failure
+        return {"first-model": "First model"}
+
+    monkeypatch.setattr(model_view.run, "io_bound", delayed_fetch)
+    pending = asyncio.create_task(panel._fetch_models())
+    await started.wait()
+    # A selection event can already be queued when the browser gets disabled.
+    panel._preset.set_value("provider:Second")
+    panel._name.set_options({"second-model": "Second model"}, value="second-model")
+    draft = panel._draft_model()
+    release.set()
+    await pending
+    assert panel._draft_model() == draft
+    assert panel._name.options == {"second-model": "Second model"}
+    assert "已忽略旧请求结果" in panel._catalog_status.text
+    assert panel._fetch.enabled and panel._save_model_button.enabled
+
+
+@pytest.mark.parametrize("busy", ["_fetching_models", "_restoring_model", "_saving_model"])
+async def test_open_provider_dialog_cannot_start_save_during_another_operation(view, page_slot, monkeypatch, busy):
+    panel, _ = view
+    inputs, buttons = provider_dialog(panel, page_slot)
+    inputs["供应商名称"].set_value("Local")
+    inputs["请求地址（API 基础地址）"].set_value("https://one.example/v1")
+    inputs["供应商 API Key"].set_value("one-key")
+    save = Mock()
+    monkeypatch.setattr(panel._preferences, "save_provider", save)
+    setattr(panel, busy, True)
+    await click_button(buttons["保存供应商"], monkeypatch)
+    save.assert_not_called()
+    assert panel._providers == {}
+    setattr(panel, busy, False)
+
+
+@pytest.mark.parametrize("rename", [False, True])
+async def test_editing_provider_metadata_preserves_model_list_key_and_tls(view, page_slot, monkeypatch, rename):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    panel, _ = view
+    panel._preferences.save_provider(CustomProvider("First", "https://one.example/v1", "one-key"))
+    await panel._restore_model()
+    panel._preset.set_value("provider:First")
+    options = {"vision": "Vision model", "chat": "Chat model"}
+    panel._name.set_options(options, value="vision")
+    panel._verify_ssl.set_value(False)
+    panel._apply_model()
+    before = panel._draft_model()
+    inputs, buttons = provider_dialog(panel, page_slot, panel._selected_provider())
+    inputs["官网链接（可选）"].set_value("https://one.example/docs")
+    if rename:
+        inputs["供应商名称"].set_value("Renamed")
+    await click_button(buttons["保存供应商"], monkeypatch)
+    assert panel._draft_model() == before
+    assert panel._name.options == options
+    assert panel.selected() == before
+    assert panel._preset.value == ("provider:Renamed" if rename else "provider:First")
+    assert panel._website.props["href"] == "https://one.example/docs"
+
+
+@pytest.mark.parametrize("rename", [False, True])
+async def test_delayed_metadata_save_keeps_newly_selected_provider_and_its_key(view, page_slot, monkeypatch, rename):
+    from jiuwensymbiosis_gui.workbench.model_catalog import CustomProvider
+
+    panel, _ = view
+    for name in ("First", "Second"):
+        panel._preferences.save_provider(CustomProvider(name, f"https://{name.lower()}.example/v1", f"{name}-key"))
+    await panel._restore_model()
+    panel._preset.set_value("provider:First")
+    inputs, buttons = provider_dialog(panel, page_slot, panel._selected_provider())
+    inputs["官网链接（可选）"].set_value("https://first.example/docs")
+    if rename:
+        inputs["供应商名称"].set_value("Renamed")
+    started, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def delayed_save(function, *args):
+        started.set()
+        await release.wait()
+        result = function(*args)
+        completed.set()
+        return result
+
+    monkeypatch.setattr(model_view.run, "io_bound", delayed_save)
+    await click_button(buttons["保存供应商"], monkeypatch)
+    await started.wait()
+    panel._preset.set_value("provider:Second")
+    second = panel._draft_model()
+    release.set()
+    await completed.wait()
+    assert panel._preset.value == "provider:Second"
+    assert panel._draft_model() == second
+    assert panel._selected_provider().api_key == second.api_key
+    assert ("Renamed" if rename else "First") in panel._providers

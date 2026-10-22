@@ -7,7 +7,8 @@ edit the configuration, and run it with one click, with an execution view clear 
 
 ![GUI home: six tabs, body selection with capability tags, task cards and run/configure buttons](../../images/gui-home.png)
 
-The tabs across the top switch between **Home / Configuration / Run / Tools / History / Settings**. **Home**, shown above, is
+The tabs across the top switch between **Home / Configuration / Run / Tools / History / Models / Settings**
+(the screenshot shows an older six-tab layout). **Home**, shown above, is
 the main entry point: pick the **body** from the dropdown on the left (e.g. *Piper 6-axis arm*), select a **task** card
 in the middle, and act on the current task with "▶ Run / ⚙ Configure" below — one click on Run starts the task.
 
@@ -32,7 +33,7 @@ in the middle, and act on the current task with "▶ Run / ⚙ Configure" below 
 
 ## 1. Feature overview
 
-The interface has six pages (switched by the top tabs):
+The interface has seven pages (switched by the top tabs):
 
 | Page | Purpose |
 |---|---|
@@ -41,6 +42,7 @@ The interface has six pages (switched by the top tabs):
 | **Run** | Live monitoring: camera view + a one-line current action + a step-by-step timeline on the right (click a step for the raw tool call/arguments); a bottom drawer holds raw logs, safety events, and error diagnosis. |
 | **Tools** | Task-independent operations: perception testing (click-to-reproject), a four-step hand-eye wizard (requires `pip install -e ".[calib]"`), and hardware control for releasing torque, hand-posing the arm, and restoring it (only for drivers implementing `HandGuidingDriver`). |
 | **History** | Lists recorded execution traces and **replays** them in the browser with the built-in self-contained HTML (camera frames included). |
+| **Models** | Select and apply a shared model connection; saved credentials use the system credential store. |
 | **Settings** | Where run records are stored (the workspace directory), and the UI language. |
 
 > The interface uses [NiceGUI](https://nicegui.io) in **browser mode**, listening only on `127.0.0.1` and never using
