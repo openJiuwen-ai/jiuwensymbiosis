@@ -475,4 +475,5 @@ class RobotSession:
             "env_capabilities": sorted(env_caps),
             "api_capabilities": sorted(api_caps),
             "effective_capabilities": sorted(env_caps & api_caps),
+            "base_motion": {"supports_lateral": getattr(self.env, "supports_lateral", None)},
         }

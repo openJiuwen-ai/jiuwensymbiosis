@@ -134,11 +134,11 @@ GOTO_XYZR = ActionSpec(
 GOTO_POSE = ActionSpec(
     name="goto_pose",
     description="Move the end-effector TIP to an absolute 6-DoF pose (x, y, z in mm; rx, ry, rz in deg), "
-        "base frame — the same point goto_xyzr and get_pose speak about, so a pose read from one "
-        "can be commanded to the other. Use it when the ORIENTATION matters; when top-down with a "
-        "yaw will do, goto_xyzr says the same thing with fewer numbers to get wrong. On an arm "
-        "with fewer joints than the pose demands, position is enforced and orientation is "
-        "best-effort.",
+    "base frame — the same point goto_xyzr and get_pose speak about, so a pose read from one "
+    "can be commanded to the other. Use it when the ORIENTATION matters; when top-down with a "
+    "yaw will do, goto_xyzr says the same thing with fewer numbers to get wrong. On an arm "
+    "with fewer joints than the pose demands, position is enforced and orientation is "
+    "best-effort.",
     capability="motion.cartesian",
     params=("pose",),
     required_params=("pose",),
@@ -181,7 +181,7 @@ MOVE_DIRECTION = ActionSpec(
 GET_POSE = ActionSpec(
     name="get_pose",
     description="Get the current end-effector TIP pose in mm/deg, base frame — the same point goto_xyzr and "
-        "goto_pose command, so a pose read here can be handed straight back to either.",
+    "goto_pose command, so a pose read here can be handed straight back to either.",
     capability="motion.cartesian",
     params=(),
 )
@@ -257,8 +257,7 @@ MOVE_NAMED_JOINT = ActionSpec(
 
 GET_JOINT_POSITIONS = ActionSpec(
     name="get_joint_positions",
-    description="Read the latest known joint positions, keyed by joint name, in the body's "
-    "joint_units.",
+    description="Read the latest known joint positions, keyed by joint name, in the body's joint_units.",
     capability="motion.joint",
     params=(),
     planner_visible=False,  # diagnostic; WorldState already carries joints into the prompt
@@ -270,7 +269,7 @@ GET_JOINT_POSITIONS = ActionSpec(
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
-        "with no width control accepts it and ignores it.",
+    "with no width control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("width_mm",),
     provides=("payload.clear",),
@@ -280,7 +279,7 @@ OPEN_GRIPPER = ActionSpec(
 CLOSE_GRIPPER = ActionSpec(
     name="close_gripper",
     description="Close the parallel gripper onto the target. Call it only once the tip is at the grasp "
-        "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
+    "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("force_n",),
     requires=("payload.clear",),
@@ -414,7 +413,9 @@ NAVIGATE_RELATIVE = ActionSpec(
     name="navigate_relative",
     description=(
         "Move the base to a different PLACE: turn by dyaw_rad (+ = left) then advance dx_m metres "
-        "(REP-103). A differential base cannot strafe, so dy_m is ignored. dx_m is required "
+        "and dy_m metres to the left in the body frame AFTER turning (REP-103). "
+        "Lateral motion requires the body's supports_lateral constraint; unsupported strafe is rejected. "
+        "dx_m is required "
         "because this action changes where the base stands — to only change which way it faces, "
         "use rotate_base, whose signature cannot translate at all."
     ),
