@@ -317,6 +317,8 @@ class SafetyRail(AgentRail):
         else:
             dx = self._coerce_number(tool_name, "dx_m", args.get("dx_m"))
             dy = self._coerce_number(tool_name, "dy_m", args.get("dy_m"))
+            if dy and self._env_limit("supports_lateral") is False:
+                raise self._reject(tool_name, "this base does not support lateral motion")
             distance = None if dx is None and dy is None else math.hypot(dx or 0.0, dy or 0.0)
 
         limits = self._resolve_base_step_limits()

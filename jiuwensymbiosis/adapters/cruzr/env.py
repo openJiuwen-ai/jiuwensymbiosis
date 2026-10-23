@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.geometry import LIFTER_LIMITS
@@ -30,11 +30,12 @@ class CruzrEnv(BaseRobotEnv):
             "motion.waist",
             "motion.goal",
             "vision.search",
-            "motion.dual_arm",   # topology: two arms in coordination
-            "grasp.paddle",      # end effector: two plates that clamp a face each side
+            "motion.dual_arm",  # topology: two arms in coordination
+            "grasp.paddle",  # end effector: two plates that clamp a face each side
         }
     )
     name = "cruzr"
+    supports_lateral = False
     # ROS 2 joint commands and the URDF limits are radians throughout.
     _joint_units = "rad"
 
@@ -45,11 +46,11 @@ class CruzrEnv(BaseRobotEnv):
     def __init__(self, cfg: CruzrConfig) -> None:
         """Store config; ROS 2 driver is created on connect."""
         self.cfg = cfg
-        self._inner: Optional[Any] = None
+        self._inner: Any | None = None
         self._connected = False
-        self._warm_thread: Optional[Any] = None
-        self._warm_ik_thread: Optional[Any] = None
-        self._warm_camera_thread: Optional[Any] = None
+        self._warm_thread: Any | None = None
+        self._warm_ik_thread: Any | None = None
+        self._warm_camera_thread: Any | None = None
         # Read by RecoveryRail / WorldState. There is no cheap hardware probe for it
         # (read_hand_ft blocks ~2 s per arm), so CruzrApi writes it at the clamp/release
         # points it already knows about instead.
@@ -61,12 +62,12 @@ class CruzrEnv(BaseRobotEnv):
         self.lift_limits = dict(LIFTER_LIMITS)
         # Expose URDF + arm chains for the framework planning.reachability capability.
         self.urdf_path = getattr(cfg, "urdf_path", None) or None
-        self.arm_chains = {"left": ("base_link", cfg.left_arm_leaf),
-                           "right": ("base_link", cfg.right_arm_leaf)}
+        self.arm_chains = {"left": ("base_link", cfg.left_arm_leaf), "right": ("base_link", cfg.right_arm_leaf)}
         # Which joints each arm actuates. The chains above run from base_link through the
         # lifter and waist, which the arm solve must hold fixed — so this cannot be read off
         # the chain and the body has to say it.
         from jiuwensymbiosis.adapters.cruzr.geometry import ARM_JOINTS
+
         self.arm_joints = {a: list(j) for a, j in ARM_JOINTS.items()}
         self.waist_joint = cfg.waist_yaw_joint
         self._joint_limits: dict[str, tuple[float, float]] | None = None
@@ -145,12 +146,12 @@ class CruzrEnv(BaseRobotEnv):
         def _warm() -> None:
             try:
                 from jiuwensymbiosis.kinematics import self_collision
+
                 self_collision.available(urdf, pkg)
             except Exception as exc:  # noqa: BLE001  # best-effort warm-up; grasp rebuilds if needed
                 logger.debug("self-collision warm-up skipped: %s", exc)
 
-        self._warm_thread = threading.Thread(
-            target=_warm, name="cruzr-warm-collision", daemon=True)
+        self._warm_thread = threading.Thread(target=_warm, name="cruzr-warm-collision", daemon=True)
         self._warm_thread.start()
 
     def _warm_ik_async(self) -> None:
@@ -167,12 +168,12 @@ class CruzrEnv(BaseRobotEnv):
         def _warm() -> None:
             try:
                 from jiuwensymbiosis.kinematics import ik_pinocchio
+
                 ik_pinocchio.warm(urdf)
             except Exception as exc:  # noqa: BLE001  # best-effort warm-up; IK rebuilds/falls back if needed
                 logger.debug("IK warm-up skipped: %s", exc)
 
-        self._warm_ik_thread = threading.Thread(
-            target=_warm, name="cruzr-warm-ik", daemon=True)
+        self._warm_ik_thread = threading.Thread(target=_warm, name="cruzr-warm-ik", daemon=True)
         self._warm_ik_thread.start()
 
     def _warm_camera_async(self) -> None:
@@ -196,8 +197,7 @@ class CruzrEnv(BaseRobotEnv):
             except Exception as exc:  # noqa: BLE001  # best-effort; real grab retries the cold start
                 logger.debug("head camera warm-up skipped: %s", exc)
 
-        self._warm_camera_thread = threading.Thread(
-            target=_warm, name="cruzr-warm-camera", daemon=True)
+        self._warm_camera_thread = threading.Thread(target=_warm, name="cruzr-warm-camera", daemon=True)
         self._warm_camera_thread.start()
 
     def disconnect(self) -> None:

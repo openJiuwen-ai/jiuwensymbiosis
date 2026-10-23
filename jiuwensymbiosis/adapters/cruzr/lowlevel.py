@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -54,7 +54,7 @@ class CruzrLowLevel:
         self._node_removed = False
         self._latest_joints: dict[str, float] = {}
         self._lock = threading.RLock()
-        self._head_fk_cache: Optional[tuple] = None   # (urdf_path, model, data, frame_id), built on first use
+        self._head_fk_cache: tuple | None = None  # (urdf_path, model, data, frame_id), built on first use
 
         try:
             import rclpy
@@ -124,8 +124,11 @@ class CruzrLowLevel:
                 logger.info("[Cruzr] joint-state stream live")
                 return
             time.sleep(0.05)
-        logger.warning("[Cruzr] no joint state within %.1fs of connect; DDS reception may be "
-                       "misconfigured (moves will run open-loop, detect may report no_live_tf)", timeout_s)
+        logger.warning(
+            "[Cruzr] no joint state within %.1fs of connect; DDS reception may be "
+            "misconfigured (moves will run open-loop, detect may report no_live_tf)",
+            timeout_s,
+        )
 
     @property
     def camera(self):
@@ -155,7 +158,7 @@ class CruzrLowLevel:
                 logger.info("[CruzrCamera] using URDF FK for base<-head optical TF")
         return rgb, cloud, tf_base_cam
 
-    def _head_tf_from_joint_state(self) -> Optional[np.ndarray]:
+    def _head_tf_from_joint_state(self) -> np.ndarray | None:
         """Compute ``base_link <- stereo_left_rgb_optical_link`` from live joints.
 
         The robot currently publishes no complete base-to-head TF chain on DDS.
@@ -202,11 +205,13 @@ class CruzrLowLevel:
             # head_pitch -> stereo_camera is Rx(-90 deg); stereo_camera ->
             # optical is q=(-.5,.5,-.5,.5). Their product is the matrix below.
             tf_head_optical = np.eye(4, dtype=np.float64)
-            tf_head_optical[:3, :3] = np.asarray([
-                [0.0, 0.0, 1.0],
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-            ])
+            tf_head_optical[:3, :3] = np.asarray(
+                [
+                    [0.0, 0.0, 1.0],
+                    [0.0, -1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ]
+            )
             tf_base_optical = tf_base_head @ tf_head_optical
             tf_base_optical[:3, 3] *= 1000.0  # downstream head geometry uses mm
             return tf_base_optical
@@ -221,18 +226,24 @@ class CruzrLowLevel:
             self._nav_obj = CruzrNav(self.cfg)
         return self._nav_obj
 
-    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0, *,
-                          k_rot: Optional[float] = None,
-                          k_rot_slow_rad: Optional[float] = None,
-                          k_fwd: Optional[float] = None) -> dict:
+    def navigate_relative(
+        self,
+        dx_m: float,
+        dy_m: float = 0.0,
+        dyaw_rad: float = 0.0,
+        *,
+        k_rot: float | None = None,
+        k_rot_slow_rad: float | None = None,
+        k_fwd: float | None = None,
+    ) -> dict:
         """相对当前位姿导航（差速轮速 + odom 闭环，经子进程 worker）。
         k_rot/k_rot_slow_rad/k_fwd 非 None 时覆盖全局 base_k_*(approach 精定位用温和值)。
         """
         return self.nav.navigate_relative(
-            float(dx_m), float(dy_m), float(dyaw_rad),
-            k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd)
+            float(dx_m), float(dy_m), float(dyaw_rad), k_rot=k_rot, k_rot_slow_rad=k_rot_slow_rad, k_fwd=k_fwd
+        )
 
-    def navigate_arc(self, radius: float, dyaw: float, *, k_fwd: Optional[float] = None) -> dict:
+    def navigate_arc(self, radius: float, dyaw: float, *, k_fwd: float | None = None) -> dict:
         """沿定曲率弧前进(边转边走,odom 闭环,经子进程 worker):半径 radius(m)、总转角 dyaw(rad,有符号)。"""
         return self.nav.navigate_arc(float(radius), float(dyaw), k_fwd=k_fwd)
 
@@ -248,7 +259,7 @@ class CruzrLowLevel:
         """停止连续自转 worker 并回收结果（发 stdin 'stop' 干净停车；含 SIGTERM/kill 兜底）。"""
         return self.nav.stop_spin(handle)
 
-    def start_base_drive(self, *, k_fwd: Optional[float] = None, fwd_max_m: Optional[float] = None) -> Any:
+    def start_base_drive(self, *, k_fwd: float | None = None, fwd_max_m: float | None = None) -> Any:
         """启动非阻塞【连续驱近前进】worker（匀速前进、可中断、雷达急停）；返回句柄供轮询/停止。
 
         ``k_fwd`` / ``fwd_max_m``：末段抓取伺服用的慢速爬行 / 更紧前进自限；``None``=配置默认（粗定位不传即原行为）。
@@ -276,12 +287,11 @@ class CruzrLowLevel:
 
         Returns {"ok": True, "fx", "fy", "fz", "fmag"} or {"ok": False, "reason": "no_ft"}.
         """
-        topic = (self.cfg.left_hand_ft_topic if arm.lower() in ("left", "l")
-                 else self.cfg.right_hand_ft_topic)
+        topic = self.cfg.left_hand_ft_topic if arm.lower() in ("left", "l") else self.cfg.right_hand_ft_topic
         from geometry_msgs.msg import WrenchStamped
+
         state = {"w": None}
-        sub = self._node.create_subscription(
-            WrenchStamped, topic, lambda m: state.__setitem__("w", m), 10)
+        sub = self._node.create_subscription(WrenchStamped, topic, lambda m: state.__setitem__("w", m), 10)
         deadline = time.monotonic() + 2.0
         # self._executor runs on self._spin_thread, so the subscription callback fires without spin_once here.
         while state["w"] is None and time.monotonic() < deadline:
@@ -291,9 +301,8 @@ class CruzrLowLevel:
             return {"ok": False, "reason": "no_ft"}
         f = state["w"].wrench.force
         t = state["w"].wrench.torque
-        fmag = (f.x ** 2 + f.y ** 2 + f.z ** 2) ** 0.5
-        return {"ok": True, "fx": f.x, "fy": f.y, "fz": f.z, "fmag": fmag,
-                "tx": t.x, "ty": t.y, "tz": t.z}
+        fmag = (f.x**2 + f.y**2 + f.z**2) ** 0.5
+        return {"ok": True, "fx": f.x, "fy": f.y, "fz": f.z, "fmag": fmag, "tx": t.x, "ty": t.y, "tz": t.z}
 
     # ----------------------------------------------------------------- lifecycle
     def close(self) -> None:
@@ -408,7 +417,7 @@ class CruzrLowLevel:
         names = list(getattr(msg.joint_states, "name", []) or [])
         positions = list(getattr(msg.joint_states, "position", []) or [])
         with self._lock:
-            self._latest_joints = {str(name): float(pos) for name, pos in zip(names, positions)}
+            self._latest_joints = {str(name): float(pos) for name, pos in zip(names, positions, strict=False)}
 
     # ------------------------------------------------------------------- state
     def get_joint_positions(self) -> dict[str, float]:
@@ -444,15 +453,18 @@ class CruzrLowLevel:
             cmd.joint_cmd.append(joint)
         self._publisher.publish(cmd)
 
-    def home(self, *, arm: Optional[str] = None) -> dict[str, Any]:
+    def home(self, *, arm: str | None = None) -> dict[str, Any]:
         """Return the selected arm to the configured home position."""
         joint = self.cfg.joint_name_for_arm(arm)
         self.move_joints_blocking({joint: self.cfg.home_position_rad})
-        return {"ok": True, "arm": arm or self.cfg.default_arm, "joint": joint,
-                "position_rad": self.cfg.home_position_rad}
+        return {
+            "ok": True,
+            "arm": arm or self.cfg.default_arm,
+            "joint": joint,
+            "position_rad": self.cfg.home_position_rad,
+        }
 
-    def _ramp_to_targets_native(self, targets: dict[str, float],
-                                *, ramp_duration_s: Optional[float] = None) -> bool:
+    def _ramp_to_targets_native(self, targets: dict[str, float], *, ramp_duration_s: float | None = None) -> bool:
         """Smoothstep-ramp from the measured joint angles to ``targets`` so the arm
         eases into motion instead of snapping to the raw target. Dense duration-based
         setpoints (``ramp_duration_s`` @ ``control_rate_hz``) eased in/out with
@@ -480,8 +492,9 @@ class CruzrLowLevel:
             time.sleep(period)
         return not missing
 
-    def move_joints_blocking(self, targets: dict[str, float], *, timeout_s: float = 10.0,
-                             ramp_duration_s: Optional[float] = None) -> dict:
+    def move_joints_blocking(
+        self, targets: dict[str, float], *, timeout_s: float = 10.0, ramp_duration_s: float | None = None
+    ) -> dict:
         """Move multiple joints to targets via a native multi-JointCmd smoothstep ramp.
 
         ``ramp_duration_s`` overrides the global ``cfg.ramp_duration_s`` for this move only
@@ -504,11 +517,15 @@ class CruzrLowLevel:
             time.sleep(period)
         time.sleep(max(float(self.cfg.settle_s), 0.0))
         readback = self.get_joint_positions()
-        return {"ok": True, "targets": targets, "readback": readback,
-                "open_loop": not bool(readback), "ramp_from_state": ramp_ok}
+        return {
+            "ok": True,
+            "targets": targets,
+            "readback": readback,
+            "open_loop": not bool(readback),
+            "ramp_from_state": ramp_ok,
+        }
 
-    def stream_joint_trajectory(self, waypoints: list[dict[str, float]], *,
-                                total_duration_s: float) -> dict:
+    def stream_joint_trajectory(self, waypoints: list[dict[str, float]], *, total_duration_s: float) -> dict:
         """Stream a precomputed joint-space path through ``waypoints`` (in order) as ONE
         continuous trajectory at ``control_rate_hz`` over ``total_duration_s``.
 
@@ -530,10 +547,10 @@ class CruzrLowLevel:
         steps = max(2, int(float(total_duration_s) * rate))
         for i in range(1, steps + 1):
             s = i / steps
-            a = s * s * (3.0 - 2.0 * s)          # global ease-in/out on the path phase
+            a = s * s * (3.0 - 2.0 * s)  # global ease-in/out on the path phase
             x = a * n_seg
-            seg = min(int(x), n_seg - 1)         # which knot interval we are in
-            f = x - seg                          # position within it
+            seg = min(int(x), n_seg - 1)  # which knot interval we are in
+            f = x - seg  # position within it
             lo, hi = pts[seg], pts[seg + 1]
             self.publish_joint_positions({k: lo[k] + f * (hi[k] - lo[k]) for k in keys})
             time.sleep(period)
@@ -557,8 +574,7 @@ class CruzrLowLevel:
         """
         cfg = getattr(self, "cfg", None)
         dur = ramp_duration_s if ramp_duration_s is not None else getattr(cfg, "lifter_ramp_duration_s", None)
-        return self.move_joints_blocking(
-            {str(k): float(v) for k, v in q_lifter.items()}, ramp_duration_s=dur)
+        return self.move_joints_blocking({str(k): float(v) for k, v in q_lifter.items()}, ramp_duration_s=dur)
 
     def turn_waist_blocking(
         self,
@@ -582,8 +598,7 @@ class CruzrLowLevel:
         target_rad = float(target_rad)
         hold = {str(k): float(v) for k, v in (hold or {}).items()}
         res = self.move_joints_blocking({**hold, waist_joint: target_rad})
-        return {"ok": True, "joint": waist_joint, "target_rad": target_rad,
-                "readback": res.get("readback")}
+        return {"ok": True, "joint": waist_joint, "target_rad": target_rad, "readback": res.get("readback")}
 
     # ------------------------------------------------------------------ helpers
     def _ramp_joint(self, joint_name: str, start: float, target: float) -> None:
@@ -631,7 +646,7 @@ class CruzrCamera:
         # build_cmd -> its persistent --serve worker (one per camera command; resident_workers=True)
         self._resident: dict = {}
 
-    def grab(self, camera: str = "waist") -> Optional[CameraFrame]:
+    def grab(self, camera: str = "waist") -> CameraFrame | None:
         """抓取一帧，失败返回 None（保持 reason=no_camera 回退链）。"""
         if camera == "head":
             return self._grab(self._head_cmd, want_depth=False)
@@ -644,6 +659,7 @@ class CruzrCamera:
         cloud/tf 任一为 None 表示该项拿不到，上层据此优雅降级回纯 bearing。不用 CameraFrame
         (它是 shared 契约、不携带点云)，故回一个 Cruzr 私有 tuple。
         """
+
         def _read(out: Path, meta: dict):
             rgb = np.load(out / "color.npy")
             cloud = None
@@ -657,19 +673,30 @@ class CruzrCamera:
 
     def _waist_cmd(self, out: Path) -> list:
         return [
-            self.cfg.ros_python, str(self._worker),
-            "--color-topic", self.cfg.waist_color_topic,
-            "--depth-topic", self.cfg.waist_depth_topic,
-            "--camera-info-topic", self.cfg.waist_camera_info_topic,
-            "--color-msg-type", self.cfg.color_msg_type,
-            "--depth-msg-type", self.cfg.depth_msg_type,
-            "--depth-scale", str(self.cfg.depth_scale),
-            "--timeout-s", str(self.cfg.camera_grab_timeout_s),
-            "--output-dir", str(out),
-            "--base-frame", getattr(self.cfg, "base_frame", "base_link"),
-            "--camera-optical-frame", getattr(self.cfg, "camera_optical_frame",
-                                              "waist_front_rgbd_color_optical_frame"),
-            "--tf-timeout-s", str(getattr(self.cfg, "camera_tf_timeout_s", 8.0)),
+            self.cfg.ros_python,
+            str(self._worker),
+            "--color-topic",
+            self.cfg.waist_color_topic,
+            "--depth-topic",
+            self.cfg.waist_depth_topic,
+            "--camera-info-topic",
+            self.cfg.waist_camera_info_topic,
+            "--color-msg-type",
+            self.cfg.color_msg_type,
+            "--depth-msg-type",
+            self.cfg.depth_msg_type,
+            "--depth-scale",
+            str(self.cfg.depth_scale),
+            "--timeout-s",
+            str(self.cfg.camera_grab_timeout_s),
+            "--output-dir",
+            str(out),
+            "--base-frame",
+            getattr(self.cfg, "base_frame", "base_link"),
+            "--camera-optical-frame",
+            getattr(self.cfg, "camera_optical_frame", "waist_front_rgbd_color_optical_frame"),
+            "--tf-timeout-s",
+            str(getattr(self.cfg, "camera_tf_timeout_s", 8.0)),
         ]
 
     def _head_cmd(self, out: Path) -> list:
@@ -677,16 +704,20 @@ class CruzrCamera:
         # yuv422; header+payload still traverse DDS), NOT the left rect-color compressed stream. Pure
         # 2-D: no depth/cloud/TF (grounded "on" is judged by 2-D bbox overlap in the api layer).
         color_topic = getattr(self.cfg, "head_right_topic", self.cfg.head_left_topic)
-        color_msg_type = getattr(
-            self.cfg, "head_right_msg_type", self.cfg.head_color_msg_type
-        )
+        color_msg_type = getattr(self.cfg, "head_right_msg_type", self.cfg.head_color_msg_type)
         return [
-            self.cfg.ros_python, str(self._worker),
-            "--color-topic", color_topic,
-            "--color-msg-type", color_msg_type,
-            "--timeout-s", str(self.cfg.camera_grab_timeout_s),
-            "--output-dir", str(out),
-            "--camera-optical-frame", "",
+            self.cfg.ros_python,
+            str(self._worker),
+            "--color-topic",
+            color_topic,
+            "--color-msg-type",
+            color_msg_type,
+            "--timeout-s",
+            str(self.cfg.camera_grab_timeout_s),
+            "--output-dir",
+            str(out),
+            "--camera-optical-frame",
+            "",
             "--ensure-rgb",
         ]
 
@@ -695,22 +726,28 @@ class CruzrCamera:
         # Unlike _head_cmd this needs the TF (to put cloud points in the base frame), so it passes
         # the head optical frame + base frame + tf timeout. Still no depth, --ensure-rgb kept.
         color_topic = getattr(self.cfg, "head_aligned_color_topic", self.cfg.head_left_topic)
-        color_msg_type = getattr(
-            self.cfg, "head_aligned_color_msg_type", self.cfg.head_color_msg_type
-        )
+        color_msg_type = getattr(self.cfg, "head_aligned_color_msg_type", self.cfg.head_color_msg_type)
         cmd = [
-            self.cfg.ros_python, str(self._worker),
-            "--color-topic", color_topic,
-            "--color-msg-type", color_msg_type,
-            "--timeout-s", str(self.cfg.camera_grab_timeout_s),
-            "--output-dir", str(out),
-            "--base-frame", getattr(self.cfg, "base_frame", "base_link"),
-            "--camera-optical-frame", getattr(self.cfg, "head_optical_frame",
-                                              "stereo_left_rgb_optical_link"),
-            "--tf-timeout-s", str(getattr(self.cfg, "camera_tf_timeout_s", 8.0)),
-            "--pointcloud-topic", getattr(self.cfg, "head_pointcloud_topic", ""),
-            "--pointcloud-msg-type", getattr(self.cfg, "head_pointcloud_msg_type",
-                                             "sensor_msgs/msg/PointCloud2"),
+            self.cfg.ros_python,
+            str(self._worker),
+            "--color-topic",
+            color_topic,
+            "--color-msg-type",
+            color_msg_type,
+            "--timeout-s",
+            str(self.cfg.camera_grab_timeout_s),
+            "--output-dir",
+            str(out),
+            "--base-frame",
+            getattr(self.cfg, "base_frame", "base_link"),
+            "--camera-optical-frame",
+            getattr(self.cfg, "head_optical_frame", "stereo_left_rgb_optical_link"),
+            "--tf-timeout-s",
+            str(getattr(self.cfg, "camera_tf_timeout_s", 8.0)),
+            "--pointcloud-topic",
+            getattr(self.cfg, "head_pointcloud_topic", ""),
+            "--pointcloud-msg-type",
+            getattr(self.cfg, "head_pointcloud_msg_type", "sensor_msgs/msg/PointCloud2"),
             "--ensure-rgb",
         ]
         if color_topic == self.cfg.head_left_topic:
@@ -734,8 +771,9 @@ class CruzrCamera:
             if result is not None:
                 return result
             if attempt < attempts:
-                logger.info("[CruzrCamera] grab attempt %d/%d got no frame; "
-                            "retrying with a fresh worker", attempt, attempts)
+                logger.info(
+                    "[CruzrCamera] grab attempt %d/%d got no frame; retrying with a fresh worker", attempt, attempts
+                )
                 time.sleep(settle)
         return None
 
@@ -753,7 +791,9 @@ class CruzrCamera:
             cmd = build_cmd(out)
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True,
+                    cmd,
+                    capture_output=True,
+                    text=True,
                     timeout=float(self.cfg.camera_grab_timeout_s) + 15.0,
                     env=self._worker_env(cmd),
                 )
@@ -842,12 +882,9 @@ class CruzrCamera:
         """Use the configured RMW and default Fast DDS transports by default."""
         env = os.environ.copy()
         env["RMW_IMPLEMENTATION"] = str(
-            getattr(self.cfg, "head_camera_rmw_implementation", "rmw_fastrtps_cpp")
-            or "rmw_fastrtps_cpp"
+            getattr(self.cfg, "head_camera_rmw_implementation", "rmw_fastrtps_cpp") or "rmw_fastrtps_cpp"
         )
-        profile = str(
-            getattr(self.cfg, "camera_fastdds_profiles_file", "") or ""
-        )
+        profile = str(getattr(self.cfg, "camera_fastdds_profiles_file", "") or "")
         if profile:
             env["FASTRTPS_DEFAULT_PROFILES_FILE"] = profile
             env["FASTDDS_DEFAULT_PROFILES_FILE"] = profile
@@ -857,13 +894,11 @@ class CruzrCamera:
         env.pop("RMW_FASTRTPS_USE_QOS_FROM_XML", None)
         env.pop("CYCLONEDDS_URI", None)
         env["ROS_DOMAIN_ID"] = str(getattr(self.cfg, "head_camera_ros_domain_id", 0))
-        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = str(
-            getattr(self.cfg, "head_camera_discovery_range", "SUBNET")
-        )
+        env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = str(getattr(self.cfg, "head_camera_discovery_range", "SUBNET"))
         env.pop("ROS_LOCALHOST_ONLY", None)
         return env
 
-    def _grab(self, build_cmd, *, want_depth: bool) -> Optional[CameraFrame]:
+    def _grab(self, build_cmd, *, want_depth: bool) -> CameraFrame | None:
         def _read(out: Path, meta: dict) -> CameraFrame:
             rgb = np.load(out / "color.npy")
             depth = None
@@ -884,8 +919,7 @@ class CruzrNav:
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
         self._worker = ros2_worker.worker_path("jiuwensymbiosis.adapters.cruzr.ros2.wheel_worker")
-        self._move = ros2_worker.ResidentWorker(
-            self._serve_cmd, label="[CruzrNav] move", env_fn=self._worker_env)
+        self._move = ros2_worker.ResidentWorker(self._serve_cmd, label="[CruzrNav] move", env_fn=self._worker_env)
         self._cleanup_errors: list[BaseException] = []
         self._active_workers: dict[subprocess.Popen, str] = {}
 
@@ -898,9 +932,7 @@ class CruzrNav:
     ) -> dict:
         self._check_cleanup()
         try:
-            return ros2_worker.run_once(
-                cmd, timeout_s=timeout_s, label=label, reason_prefix=reason_prefix, env=env
-            )
+            return ros2_worker.run_once(cmd, timeout_s=timeout_s, label=label, reason_prefix=reason_prefix, env=env)
         except BaseException as exc:
             # Tool/agent code can catch a motion failure. close() must still
             # report the unconfirmed stop to resource admission afterwards.
@@ -912,52 +944,85 @@ class CruzrNav:
         env["ROS_DOMAIN_ID"] = str(self.cfg.ros_domain_id)
         return env
 
-    def navigate_relative(self, dx: float, dy: float = 0.0, dyaw: float = 0.0, *,
-                          k_rot: Optional[float] = None,
-                          k_rot_slow_rad: Optional[float] = None,
-                          k_fwd: Optional[float] = None) -> dict:
-        """相对移动(dy 因差速无横移被忽略)。返回 {ok, reason[, yaw_reached, dist_traveled]}。
+    def navigate_relative(
+        self,
+        dx: float,
+        dy: float = 0.0,
+        dyaw: float = 0.0,
+        *,
+        k_rot: float | None = None,
+        k_rot_slow_rad: float | None = None,
+        k_fwd: float | None = None,
+    ) -> dict:
+        """相对移动(差速底盘拒绝横移)。返回 {ok, reason[, yaw_reached, dist_traveled]}。
 
         k_rot/k_rot_slow_rad/k_fwd 非 None 时覆盖全局 base_k_*(approach 精定位用温和值,搜索大转身用全局快值)。
 
         失败 reason ∈ {no_odom, rotate_timeout, forward_timeout, lidar_blocked,
-        wheel_worker_error}；worker 超时/异常退出等无法确认停止时抛出清理异常。
+        wheel_worker_error, lateral_unsupported}；worker 超时/异常退出等无法确认停止时抛出清理异常。
         """
         self._check_cleanup()
+        if dy != 0:
+            return {"ok": False, "reason": "lateral_unsupported"}
         if getattr(self.cfg, "resident_workers", False):
             res = self._resident_move_request(dx, dyaw, k_rot, k_rot_slow_rad, k_fwd)
             if res is not None:
-                return res   # None → resident worker unavailable; fall through to the one-shot path
+                return res  # None → resident worker unavailable; fall through to the one-shot path
         c = self.cfg
         timeout_s = float(getattr(c, "base_move_timeout_s", 20.0))
         cmd = [
-            getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker),
-            "--dx", str(dx), "--dyaw", str(dyaw),
-            "--command-topic", getattr(c, "command_topic", "/mc/sdk/robot_command"),
-            "--odom-topic", getattr(c, "odom_topic", "/mc/odom"),
-            "--front-lidar-topic", getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
-            "--back-lidar-topic", getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
-            "--left-wheel-joint", getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
-            "--right-wheel-joint", getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
-            "--k-rot", str(k_rot if k_rot is not None else getattr(c, "base_k_rot", 0.6)),
-            "--k-rot-min", str(getattr(c, "base_k_rot_min", 0.25)),
+            getattr(c, "nav_python", "/usr/bin/python3"),
+            str(self._worker),
+            "--dx",
+            str(dx),
+            "--dyaw",
+            str(dyaw),
+            "--command-topic",
+            getattr(c, "command_topic", "/mc/sdk/robot_command"),
+            "--odom-topic",
+            getattr(c, "odom_topic", "/mc/odom"),
+            "--front-lidar-topic",
+            getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
+            "--back-lidar-topic",
+            getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
+            "--left-wheel-joint",
+            getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
+            "--right-wheel-joint",
+            getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
+            "--k-rot",
+            str(k_rot if k_rot is not None else getattr(c, "base_k_rot", 0.6)),
+            "--k-rot-min",
+            str(getattr(c, "base_k_rot_min", 0.25)),
             "--k-rot-slow-rad",
             str(k_rot_slow_rad if k_rot_slow_rad is not None else getattr(c, "base_k_rot_slow_rad", 0.5)),
-            "--k-fwd", str(k_fwd if k_fwd is not None else getattr(c, "base_k_fwd", 0.8)),
-            "--k-fwd-min", str(getattr(c, "base_k_fwd_min", 0.25)),
-            "--k-fwd-slow-m", str(getattr(c, "base_k_fwd_slow_m", 0.25)),
-            "--yaw-tol", str(getattr(c, "base_yaw_tol_rad", 0.05)),
-            "--pos-tol", str(getattr(c, "base_pos_tol_m", 0.05)),
-            "--safe-dist", str(getattr(c, "base_safe_dist_m", 0.45)),
-            "--self-floor", str(getattr(c, "base_lidar_self_floor_m", 0.25)),
-            "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
-            "--timeout", str(timeout_s),
+            "--k-fwd",
+            str(k_fwd if k_fwd is not None else getattr(c, "base_k_fwd", 0.8)),
+            "--k-fwd-min",
+            str(getattr(c, "base_k_fwd_min", 0.25)),
+            "--k-fwd-slow-m",
+            str(getattr(c, "base_k_fwd_slow_m", 0.25)),
+            "--yaw-tol",
+            str(getattr(c, "base_yaw_tol_rad", 0.05)),
+            "--pos-tol",
+            str(getattr(c, "base_pos_tol_m", 0.05)),
+            "--safe-dist",
+            str(getattr(c, "base_safe_dist_m", 0.45)),
+            "--self-floor",
+            str(getattr(c, "base_lidar_self_floor_m", 0.25)),
+            "--sector-deg",
+            str(getattr(c, "base_lidar_sector_deg", 25.0)),
+            "--timeout",
+            str(timeout_s),
         ]
         return self._run_once(
-            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] wheel", reason_prefix="wheel_",
-            env=self._worker_env(cmd))
+            cmd,
+            timeout_s=timeout_s * 2 + 20.0,
+            label="[CruzrNav] wheel",
+            reason_prefix="wheel_",
+            env=self._worker_env(cmd),
+        )
 
-    def navigate_arc(self, radius: float, dyaw: float, *, k_fwd: Optional[float] = None) -> dict:
+    def navigate_arc(self, radius: float, dyaw: float, *, k_fwd: float | None = None) -> dict:
         """沿【定曲率弧】前进(边转边走):半径 radius(m)、总转角 dyaw(rad,有符号,+=左/CCW),
         odom 测瞬时曲率伺服(不需轮径/轮距标定)、按累计转角停。用于抓取精定位把底盘"拐上"面法线线。
         返回 {ok, reason, yaw_turned, dist_traveled}。落点位置误差由随后视觉纠正的直入吸收。
@@ -968,27 +1033,51 @@ class CruzrNav:
         c = self.cfg
         timeout_s = float(getattr(c, "base_move_timeout_s", 20.0))
         cmd = [
-            getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker),
-            "--arc", "--radius", str(radius), "--arc-dyaw", str(dyaw),
-            "--arc-k-curv", str(getattr(c, "arc_curv_gain", 0.5)),
-            "--arc-len-safety", str(getattr(c, "arc_len_safety", 1.5)),
-            "--k-fwd", str(k_fwd if k_fwd is not None else getattr(c, "arc_k_fwd", 0.6)),
-            "--k-fwd-min", str(getattr(c, "arc_k_fwd_min", 0.25)),
-            "--k-rot-slow-rad", str(getattr(c, "base_k_rot_slow_rad", 0.5)),
-            "--command-topic", getattr(c, "command_topic", "/mc/sdk/robot_command"),
-            "--odom-topic", getattr(c, "odom_topic", "/mc/odom"),
-            "--front-lidar-topic", getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
-            "--back-lidar-topic", getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
-            "--left-wheel-joint", getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
-            "--right-wheel-joint", getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
-            "--safe-dist", str(getattr(c, "base_safe_dist_m", 0.45)),
-            "--self-floor", str(getattr(c, "base_lidar_self_floor_m", 0.25)),
-            "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
-            "--timeout", str(timeout_s),
+            getattr(c, "nav_python", "/usr/bin/python3"),
+            str(self._worker),
+            "--arc",
+            "--radius",
+            str(radius),
+            "--arc-dyaw",
+            str(dyaw),
+            "--arc-k-curv",
+            str(getattr(c, "arc_curv_gain", 0.5)),
+            "--arc-len-safety",
+            str(getattr(c, "arc_len_safety", 1.5)),
+            "--k-fwd",
+            str(k_fwd if k_fwd is not None else getattr(c, "arc_k_fwd", 0.6)),
+            "--k-fwd-min",
+            str(getattr(c, "arc_k_fwd_min", 0.25)),
+            "--k-rot-slow-rad",
+            str(getattr(c, "base_k_rot_slow_rad", 0.5)),
+            "--command-topic",
+            getattr(c, "command_topic", "/mc/sdk/robot_command"),
+            "--odom-topic",
+            getattr(c, "odom_topic", "/mc/odom"),
+            "--front-lidar-topic",
+            getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
+            "--back-lidar-topic",
+            getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
+            "--left-wheel-joint",
+            getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
+            "--right-wheel-joint",
+            getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
+            "--safe-dist",
+            str(getattr(c, "base_safe_dist_m", 0.45)),
+            "--self-floor",
+            str(getattr(c, "base_lidar_self_floor_m", 0.25)),
+            "--sector-deg",
+            str(getattr(c, "base_lidar_sector_deg", 25.0)),
+            "--timeout",
+            str(timeout_s),
         ]
         return self._run_once(
-            cmd, timeout_s=timeout_s * 2 + 20.0, label="[CruzrNav] arc", reason_prefix="wheel_",
-            env=self._worker_env(cmd))
+            cmd,
+            timeout_s=timeout_s * 2 + 20.0,
+            label="[CruzrNav] arc",
+            reason_prefix="wheel_",
+            env=self._worker_env(cmd),
+        )
 
     def _serve_cmd(self) -> list[str]:
         """CLI for a persistent --serve wheel worker. Global base_k_* are the startup defaults; each
@@ -996,28 +1085,48 @@ class CruzrNav:
         """
         c = self.cfg
         return [
-            getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker), "--serve",
-            "--command-topic", getattr(c, "command_topic", "/mc/sdk/robot_command"),
-            "--odom-topic", getattr(c, "odom_topic", "/mc/odom"),
-            "--front-lidar-topic", getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
-            "--back-lidar-topic", getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
-            "--left-wheel-joint", getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
-            "--right-wheel-joint", getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
-            "--k-rot", str(getattr(c, "base_k_rot", 0.6)),
-            "--k-rot-min", str(getattr(c, "base_k_rot_min", 0.25)),
-            "--k-rot-slow-rad", str(getattr(c, "base_k_rot_slow_rad", 0.5)),
-            "--k-fwd", str(getattr(c, "base_k_fwd", 0.8)),
-            "--k-fwd-min", str(getattr(c, "base_k_fwd_min", 0.25)),
-            "--k-fwd-slow-m", str(getattr(c, "base_k_fwd_slow_m", 0.25)),
-            "--yaw-tol", str(getattr(c, "base_yaw_tol_rad", 0.05)),
-            "--pos-tol", str(getattr(c, "base_pos_tol_m", 0.05)),
-            "--safe-dist", str(getattr(c, "base_safe_dist_m", 0.45)),
-            "--self-floor", str(getattr(c, "base_lidar_self_floor_m", 0.25)),
-            "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
-            "--timeout", str(getattr(c, "base_move_timeout_s", 20.0)),
+            getattr(c, "nav_python", "/usr/bin/python3"),
+            str(self._worker),
+            "--serve",
+            "--command-topic",
+            getattr(c, "command_topic", "/mc/sdk/robot_command"),
+            "--odom-topic",
+            getattr(c, "odom_topic", "/mc/odom"),
+            "--front-lidar-topic",
+            getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
+            "--back-lidar-topic",
+            getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
+            "--left-wheel-joint",
+            getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
+            "--right-wheel-joint",
+            getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
+            "--k-rot",
+            str(getattr(c, "base_k_rot", 0.6)),
+            "--k-rot-min",
+            str(getattr(c, "base_k_rot_min", 0.25)),
+            "--k-rot-slow-rad",
+            str(getattr(c, "base_k_rot_slow_rad", 0.5)),
+            "--k-fwd",
+            str(getattr(c, "base_k_fwd", 0.8)),
+            "--k-fwd-min",
+            str(getattr(c, "base_k_fwd_min", 0.25)),
+            "--k-fwd-slow-m",
+            str(getattr(c, "base_k_fwd_slow_m", 0.25)),
+            "--yaw-tol",
+            str(getattr(c, "base_yaw_tol_rad", 0.05)),
+            "--pos-tol",
+            str(getattr(c, "base_pos_tol_m", 0.05)),
+            "--safe-dist",
+            str(getattr(c, "base_safe_dist_m", 0.45)),
+            "--self-floor",
+            str(getattr(c, "base_lidar_self_floor_m", 0.25)),
+            "--sector-deg",
+            str(getattr(c, "base_lidar_sector_deg", 25.0)),
+            "--timeout",
+            str(getattr(c, "base_move_timeout_s", 20.0)),
         ]
 
-    def _resident_move_request(self, dx, dyaw, k_rot, k_rot_slow, k_fwd) -> Optional[dict]:
+    def _resident_move_request(self, dx, dyaw, k_rot, k_rot_slow, k_fwd) -> dict | None:
         """Send one 'dx dyaw k_rot k_fwd k_rot_slow' request to the persistent --serve wheel worker and
         read back its JSON result. Returns None (→ caller falls back to the one-shot path) when the
         worker can't be started or a failed request is cleanly stopped. An unconfirmed worker stop
@@ -1068,18 +1177,31 @@ class CruzrNav:
     def _spin_cmd(self, direction: float) -> list[str]:
         c = self.cfg
         return [
-            getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker),
-            "--spin", "--dyaw", str(1.0 if direction >= 0 else -1.0),
-            "--command-topic", getattr(c, "command_topic", "/mc/sdk/robot_command"),
-            "--odom-topic", getattr(c, "odom_topic", "/mc/odom"),
-            "--front-lidar-topic", getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
-            "--back-lidar-topic", getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
-            "--left-wheel-joint", getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
-            "--right-wheel-joint", getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
-            "--k-rot", str(getattr(c, "search_spin_wheel_rs", getattr(c, "base_k_rot", 0.6))),
-            "--yaw-tol", str(getattr(c, "base_yaw_tol_rad", 0.05)),
-            "--spin-max-rad", str(getattr(c, "search_spin_max_rad", 6.6)),
-            "--timeout", str(getattr(c, "search_spin_timeout_s", 40.0)),
+            getattr(c, "nav_python", "/usr/bin/python3"),
+            str(self._worker),
+            "--spin",
+            "--dyaw",
+            str(1.0 if direction >= 0 else -1.0),
+            "--command-topic",
+            getattr(c, "command_topic", "/mc/sdk/robot_command"),
+            "--odom-topic",
+            getattr(c, "odom_topic", "/mc/odom"),
+            "--front-lidar-topic",
+            getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
+            "--back-lidar-topic",
+            getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
+            "--left-wheel-joint",
+            getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
+            "--right-wheel-joint",
+            getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
+            "--k-rot",
+            str(getattr(c, "search_spin_wheel_rs", getattr(c, "base_k_rot", 0.6))),
+            "--yaw-tol",
+            str(getattr(c, "base_yaw_tol_rad", 0.05)),
+            "--spin-max-rad",
+            str(getattr(c, "search_spin_max_rad", 6.6)),
+            "--timeout",
+            str(getattr(c, "search_spin_timeout_s", 40.0)),
         ]
 
     def start_spin(self, direction: float = 1.0) -> subprocess.Popen:
@@ -1091,8 +1213,13 @@ class CruzrNav:
         """
         self._check_cleanup()
         proc = subprocess.Popen(
-            self._spin_cmd(direction), stdin=subprocess.PIPE, env=self._worker_env([]),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._spin_cmd(direction),
+            stdin=subprocess.PIPE,
+            env=self._worker_env([]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self._active_workers[proc] = "spin"
         return proc
 
@@ -1108,30 +1235,45 @@ class CruzrNav:
         """
         return self._stop_worker(proc, "spin")
 
-    def _forward_cmd(self, *, k_fwd: Optional[float] = None, fwd_max_m: Optional[float] = None) -> list[str]:
+    def _forward_cmd(self, *, k_fwd: float | None = None, fwd_max_m: float | None = None) -> list[str]:
         c = self.cfg
         kf = k_fwd if k_fwd is not None else getattr(c, "approach_drive_wheel_rs", 0.5)
         fm = fwd_max_m if fwd_max_m is not None else getattr(c, "approach_drive_max_m", 2.5)
         return [
-            getattr(c, "nav_python", "/usr/bin/python3"), str(self._worker),
+            getattr(c, "nav_python", "/usr/bin/python3"),
+            str(self._worker),
             "--forward",
-            "--command-topic", getattr(c, "command_topic", "/mc/sdk/robot_command"),
-            "--odom-topic", getattr(c, "odom_topic", "/mc/odom"),
-            "--front-lidar-topic", getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
-            "--back-lidar-topic", getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
-            "--left-wheel-joint", getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
-            "--right-wheel-joint", getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
-            "--k-fwd", str(kf),
-            "--k-steer", str(getattr(c, "approach_drive_steer_gain", 0.6)),
-            "--steer-max", str(getattr(c, "approach_drive_steer_max_rs", 0.4)),
-            "--fwd-max-m", str(fm),
-            "--safe-dist", str(getattr(c, "base_safe_dist_m", 0.45)),
-            "--self-floor", str(getattr(c, "base_lidar_self_floor_m", 0.25)),
-            "--sector-deg", str(getattr(c, "base_lidar_sector_deg", 25.0)),
-            "--timeout", str(getattr(c, "approach_drive_timeout_s", 30.0)),
+            "--command-topic",
+            getattr(c, "command_topic", "/mc/sdk/robot_command"),
+            "--odom-topic",
+            getattr(c, "odom_topic", "/mc/odom"),
+            "--front-lidar-topic",
+            getattr(c, "front_lidar_topic", "/sensor/lidar/front"),
+            "--back-lidar-topic",
+            getattr(c, "back_lidar_topic", "/sensor/lidar/back"),
+            "--left-wheel-joint",
+            getattr(c, "left_wheel_joint", "driving_wheel_left_joint"),
+            "--right-wheel-joint",
+            getattr(c, "right_wheel_joint", "driving_wheel_right_joint"),
+            "--k-fwd",
+            str(kf),
+            "--k-steer",
+            str(getattr(c, "approach_drive_steer_gain", 0.6)),
+            "--steer-max",
+            str(getattr(c, "approach_drive_steer_max_rs", 0.4)),
+            "--fwd-max-m",
+            str(fm),
+            "--safe-dist",
+            str(getattr(c, "base_safe_dist_m", 0.45)),
+            "--self-floor",
+            str(getattr(c, "base_lidar_self_floor_m", 0.25)),
+            "--sector-deg",
+            str(getattr(c, "base_lidar_sector_deg", 25.0)),
+            "--timeout",
+            str(getattr(c, "approach_drive_timeout_s", 30.0)),
         ]
 
-    def start_drive(self, *, k_fwd: Optional[float] = None, fwd_max_m: Optional[float] = None) -> subprocess.Popen:
+    def start_drive(self, *, k_fwd: float | None = None, fwd_max_m: float | None = None) -> subprocess.Popen:
         """Launch a NON-blocking continuous forward-creep worker (constant speed, interruptible).
 
         Returns the ``Popen`` handle; poll it with ``drive_running`` and halt it with ``stop_drive``.
@@ -1141,8 +1283,13 @@ class CruzrNav:
         """
         self._check_cleanup()
         proc = subprocess.Popen(
-            self._forward_cmd(k_fwd=k_fwd, fwd_max_m=fwd_max_m), stdin=subprocess.PIPE, env=self._worker_env([]),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._forward_cmd(k_fwd=k_fwd, fwd_max_m=fwd_max_m),
+            stdin=subprocess.PIPE,
+            env=self._worker_env([]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self._active_workers[proc] = "drive"
         return proc
 

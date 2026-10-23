@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jiuwensymbiosis.agent.config import (
     ROBOT_PROMPT_TEMPLATE,
     ModelSpec,
@@ -64,6 +66,22 @@ class TestRailConfig:
 
 
 class TestRobotAgentConfig:
+    @pytest.mark.parametrize(
+        "execution,modules",
+        [
+            ({"mode": "fastagent"}, {}),
+            ({"mode": "stepagent", "stepagent": {"mode": "hybrid"}}, {}),
+            ({"mode": "stepagent", "stepagent": {"mode": "tool"}}, {"skills": {"enabled": True}}),
+        ],
+    )
+    def test_tool_allowlist_rejects_other_dispatch_paths(self, execution, modules):
+        with pytest.raises(ValueError, match="tool_allowlist requires"):
+            RobotAgentConfig(execution=execution, modules=modules, tool_allowlist=frozenset({"home"}))
+
+    def test_tool_allowlist_is_python_only(self):
+        with pytest.raises(TypeError, match="Python-only"):
+            RobotAgentConfig.from_dict({"tool_allowlist": ["home"]})
+
     def test_defaults(self):
         cfg = RobotAgentConfig()
         assert cfg.execution.stepagent.mode == "hybrid"
@@ -195,3 +213,9 @@ class TestRobotAgentConfigFromDict:
 
         with pytest.raises(TypeError):
             RobotAgentConfig.from_dict({"enable_trace": True})
+
+
+@pytest.mark.parametrize("allowed", [set(), ["home"], "home", frozenset({1})])
+def test_invalid_tool_allowlist_is_rejected(allowed):
+    with pytest.raises(ValueError, match="frozenset of tool names"):
+        RobotAgentConfig(execution={"mode": "stepagent", "stepagent": {"mode": "tool"}}, tool_allowlist=allowed)

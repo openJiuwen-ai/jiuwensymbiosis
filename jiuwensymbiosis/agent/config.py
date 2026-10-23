@@ -306,6 +306,7 @@ class RobotAgentConfig:
     model_spec: ModelSpec | None
     extra_tools: list[Any] | None = field(repr=False)
     extra_rails: list[Any] | None = field(repr=False)
+    tool_allowlist: frozenset[str] | None  # Python-only restriction for observation-only hosts.
 
     def __init__(
         self,
@@ -319,6 +320,7 @@ class RobotAgentConfig:
         model_spec: ModelSpec | None = None,
         extra_tools: list[Any] | None = None,
         extra_rails: list[Any] | None = None,
+        tool_allowlist: frozenset[str] | None = None,
     ) -> None:
         self.execution = _parse_settings(ExecutionConfig, execution if execution is not None else {}, "agent.execution")
         fast = self.execution.mode == "fastagent"
@@ -331,6 +333,7 @@ class RobotAgentConfig:
         self.strict_capabilities = _typed(strict_capabilities, bool, "agent.strict_capabilities")
         self.model, self.model_spec = model, model_spec
         self.extra_tools, self.extra_rails = extra_tools, extra_rails
+        self.tool_allowlist = tool_allowlist
         self.validate()
 
     def validate(self, *, for_execution: bool = False) -> None:
@@ -340,6 +343,17 @@ class RobotAgentConfig:
         self.execution = _parse_settings(ExecutionConfig, self.execution, "agent.execution")
         self.modules = _parse_settings(ModulesConfig, self.modules, "agent.modules")
         self.logging = _parse_settings(LoggingConfig, self.logging, "agent.logging")
+        if self.tool_allowlist is not None:
+            if not isinstance(self.tool_allowlist, frozenset) or any(
+                not isinstance(name, str) for name in self.tool_allowlist
+            ):
+                raise ValueError("tool_allowlist must be a frozenset of tool names or None")
+            if (
+                self.execution.mode != "stepagent"
+                or self.execution.stepagent.mode != "tool"
+                or self.modules.skills.enabled
+            ):
+                raise ValueError("tool_allowlist requires stepagent tool mode with skills disabled")
         limits = {
             "execution.stepagent.max_iterations": (self.execution.stepagent.max_iterations, 1),
             "execution.fastagent.max_replans": (self.execution.fastagent.max_replans, 0),
@@ -397,7 +411,7 @@ class RobotAgentConfig:
         for source in (data, overrides):
             if source is not None and not isinstance(source, Mapping):
                 raise TypeError("agent must be a mapping")
-            for name in ("model", "model_spec", "extra_tools", "extra_rails"):
+            for name in ("model", "model_spec", "extra_tools", "extra_rails", "tool_allowlist"):
                 if source is not None and name in source:
                     raise TypeError(f"agent.{name} is Python-only, not a YAML setting")
         return cls(**_merge(data or {}, overrides or {}))

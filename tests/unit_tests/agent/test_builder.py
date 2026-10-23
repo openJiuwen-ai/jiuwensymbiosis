@@ -88,3 +88,44 @@ class TestBuildSystemPrompt:
         # Default mode (hybrid) includes the inproc code tool → globals listed.
         prompt = _build_system_prompt(s, None)
         assert "my_helper" in prompt
+
+
+@pytest.mark.parametrize("subagent", [False, True])
+@pytest.mark.parametrize("allowed", [frozenset(), frozenset({"home"}), frozenset({"extra"})])
+def test_tool_allowlist_excludes_other_robot_tools(mock_session, tmp_path, monkeypatch, subagent, allowed):
+    from types import SimpleNamespace
+
+    from jiuwensymbiosis.agent import builder
+    from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+    config = RobotAgentConfig(
+        model=object(),
+        workspace=str(tmp_path),
+        execution={"mode": "stepagent", "stepagent": {"mode": "tool"}},
+        modules={"skills": {"enabled": False}},
+        tool_allowlist=allowed,
+        extra_tools=[SimpleNamespace(card=SimpleNamespace(name="extra"))],
+    )
+    monkeypatch.setattr(builder, "create_deep_agent", lambda **kwargs: SimpleNamespace(**kwargs))
+    result = (
+        builder.build_robot_agent_config(mock_session, config=config)
+        if subagent
+        else builder.build_robot_agent(mock_session, config=config)
+    )
+    assert {tool.card.name for tool in result.tools} == allowed
+
+
+@pytest.mark.parametrize("supported", [True, False, None])
+def test_mobile_constraints_reach_default_prompt(supported):
+    from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
+    from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
+    from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
+
+    env = CruzrEnv(CruzrConfig())
+    env.supports_lateral = supported
+    session = RobotSession(env=env, api=CruzrApi(env), name="mobile")
+    assert session.describe()["base_motion"] == {"supports_lateral": supported}
+    import json
+
+    prompt = _build_system_prompt(session, None, mode="tool")
+    assert "Body motion constraints: " + json.dumps({"supports_lateral": supported}) in prompt

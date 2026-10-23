@@ -338,6 +338,7 @@ def _build_tools(
     skills_enabled: bool = False,
     *,
     require_dispatcher: bool = False,
+    tool_allowlist: frozenset[str] | None = None,
 ) -> list[Any]:
     """Build tool list for the agent based on operating mode and skill flag.
 
@@ -366,7 +367,7 @@ def _build_tools(
         tools.append(RobotControlTool(session.api, env=session.env))
     if extra_tools:
         tools.extend(extra_tools)
-    return tools
+    return tools if tool_allowlist is None else [tool for tool in tools if tool.card.name in tool_allowlist]
 
 
 def _maybe_append_skill_rail(rails: list[Any], skills_enabled: bool) -> list[Any]:
@@ -402,6 +403,8 @@ def _build_system_prompt(session: RobotSession, custom_prompt: str | None, mode:
         return custom_prompt
     desc = session.describe()
     base = ROBOT_PROMPT_TEMPLATE.format(robot_name=desc["name"])
+    if "motion.base" in desc["effective_capabilities"]:
+        base += "\nBody motion constraints: " + json.dumps(desc["base_motion"])
     if mode not in ("code", "hybrid"):
         return base
     globals_section = _render_globals_section(session)
@@ -484,6 +487,7 @@ def _build_agent(session: RobotSession, config: RobotAgentConfig, *, fast: bool)
         config.extra_tools,
         skills_enabled=config.modules.skills.enabled,
         require_dispatcher=fast,
+        tool_allowlist=config.tool_allowlist,
     )
     rails = _resolve_rails(
         session,
@@ -590,7 +594,11 @@ def build_robot_agent_config(
     _assert_no_tracing_with_parallel(config)
     model = config.model or build_model(config.model_spec)
     tools = _build_tools(
-        session, config.execution.stepagent.mode, config.extra_tools, skills_enabled=config.modules.skills.enabled
+        session,
+        config.execution.stepagent.mode,
+        config.extra_tools,
+        skills_enabled=config.modules.skills.enabled,
+        tool_allowlist=config.tool_allowlist,
     )
     rails = _resolve_rails(
         session,
