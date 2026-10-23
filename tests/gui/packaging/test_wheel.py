@@ -19,6 +19,7 @@ def test_installed_wheel_entries_and_workbench_resources(tmp_path):
         shutil.copytree(repo / name, source / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
+    env.pop("JIUWENSYMBIOSIS_SIMULATOR_HOME", None)
 
     def run(args, *, cwd=tmp_path):
         result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
@@ -90,3 +91,45 @@ entry.load()()
         assert "--config" in run([sys.executable, "-I", "-c", probe, str(installed), entry])
     env["PYTHONPATH"] = str(installed)
     assert "--gui" in run([sys.executable, "-m", "jiuwensymbiosis.gui", "--help"])
+
+    assets_probe = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+root = Path(sys.argv[1])
+user_dir = root.parent / "user"
+Path.home = classmethod(lambda cls: user_dir)
+import yaml
+from jiuwensymbiosis.simulators.assets import AssetLibrary, build_index, initialize_config, load_config
+from jiuwensymbiosis.simulators.assets import config as asset_config
+assert Path(asset_config.__file__).is_relative_to(root)
+config_path = asset_config.default_config_path()
+assert config_path == user_dir / ".jiuwensymbiosis/simulators/configs/simulators/assets.yaml"
+assert not config_path.exists()
+initialize_config()
+assert load_config().index == AssetLibrary().index
+source = user_dir / "assets/background/room/demo/background.usda"
+source.parent.mkdir(parents=True)
+source.write_text('#usda 1.0\\n')
+data = yaml.safe_load(config_path.read_text())
+data["roots"][0]["path"] = str(user_dir / "assets")
+config_path.write_text(yaml.safe_dump(data))
+assert build_index(load_config())["total"] == 1
+library = AssetLibrary()
+assert library.index.is_relative_to(user_dir)
+assert library.resolve(library.search().items[0].id).paths["source"] == source
+assert not (root / "outputs").exists()
+assert not (root / "configs").exists()
+"""
+    run([sys.executable, "-I", "-c", assets_probe, str(installed)])
+    env["JIUWENSYMBIOSIS_SIMULATOR_HOME"] = str(tmp_path / "custom-data")
+    assets_cli = installed / "jiuwensymbiosis/simulators/assets"
+    run([sys.executable, "-I", str(assets_cli), "init-config"])
+    assert (tmp_path / "custom-data/configs/simulators/assets.yaml").is_file()
+    isolated_probe = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import assets
+assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
+"""
+    run([sys.executable, "-I", "-c", isolated_probe, str(assets_cli.parent)])

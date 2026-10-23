@@ -1,0 +1,9 @@
+# 运行 python -m jiuwensymbiosis.simulators.assets init-config 在仿真数据根生成配置。
+# 将生成的 assets.yaml 中 roots[].path 替换为本机资产目录。
+# 下方是示例相对路径，按本 YAML 所在目录解析；也支持绝对路径和 ~。
+version: 1
+index: ../../outputs/simulator-assets/index.sqlite
+roots:
+  - id: geniesim
+    path: ../../../assets/GenieSimAssets
+    scanner: geniesim
