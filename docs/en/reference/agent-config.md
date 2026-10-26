@@ -294,8 +294,11 @@ config.prepare_session(session)  # apply strict_capabilities / motion_dir before
 ```
 
 The execution, modules and logging blocks also accept their dataclasses. `to_dict()` exports effective settings without injected objects.
-`model`, `model_spec`, `extra_tools` and `extra_rails` are Python construction dependencies; YAML model parameters stay in the top-level model block.
-All four Python-only dependencies raise errors in `from_dict` input.
+`model`, `model_spec`, `extra_tools`, `extra_rails` and `tool_allowlist` are Python construction dependencies; YAML model parameters stay in the top-level model block.
+These Python-only dependencies raise errors in `from_dict` input.
+`tool_allowlist` defaults to `None`; a `frozenset` of tool names restricts exposed tools (including `extra_tools`), and an empty set exposes none. It requires stepagent tool mode with skills disabled. Hosts must review explicitly allowed extensions; this is not a Python extension sandbox.
+
+Mobile bodies declare `env.supports_lateral`: `True` supports strafe, `False` rejects nonzero `dy_m`, and `None` means unspecified. `session.describe()["base_motion"]` and the default system prompt carry this constraint; custom prompts remain verbatim. `navigate_relative` turns first, then translates in the resulting body frame (+X forward, +Y left, metres/radians). The Cruzr differential base rejects strafe in both the safety policy and driver entry instead of silently ignoring it.
 `build_robot_agent` builds an invoke-able step agent; `build_robot_agent_config` builds a multi-robot sub-agent configuration.
 Both use stepagent defaults when `config` is omitted (skills off, visual feedback on). Explicit configurations must set `execution.mode="stepagent"`.
 Passing `RobotAgentConfig()` raises `ValueError` because that constructor defaults to fastagent. A mode mismatch fails before constructing models or tools; builders neither rewrite the mode nor recompute module defaults.

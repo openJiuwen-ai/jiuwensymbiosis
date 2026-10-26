@@ -70,17 +70,18 @@ def test_navigate_relative_gain_overrides_reach_worker(monkeypatch):
 
 
 def test_navigate_relative_lidar_blocked(monkeypatch):
-    monkeypatch.setattr(nav_mod.subprocess, "run",
-                        lambda cmd, **k: _fake_proc(json.dumps(
-                            {"ok": False, "reason": "lidar_blocked", "range": 0.3})))
+    monkeypatch.setattr(
+        nav_mod.subprocess,
+        "run",
+        lambda cmd, **k: _fake_proc(json.dumps({"ok": False, "reason": "lidar_blocked", "range": 0.3})),
+    )
     out = CruzrNav(CruzrConfig()).navigate_relative(0.4)
     assert out["ok"] is False
     assert out["reason"] == "lidar_blocked"
 
 
 def test_navigate_relative_worker_failure(monkeypatch):
-    monkeypatch.setattr(nav_mod.subprocess, "run",
-                        lambda cmd, **k: _fake_proc("", rc=1))
+    monkeypatch.setattr(nav_mod.subprocess, "run", lambda cmd, **k: _fake_proc("", rc=1))
     with pytest.raises(HardwareCleanupError, match="rc=1"):
         CruzrNav(CruzrConfig()).navigate_relative(0.4)
 
@@ -111,11 +112,12 @@ def test_worker_help_runs_without_rclpy():
 
 # ---------------------------------------------------------------- continuous-search spin
 
+
 class _FakePopen:
     def __init__(self, cmd, **kw):
         self.cmd = cmd
         self.kw = kw
-        self._polled = None            # None = running
+        self._polled = None  # None = running
         self.communicated = "unset"
 
     def poll(self):
@@ -135,12 +137,13 @@ class _FakePopen:
 
 def test_start_spin_builds_interruptible_worker(monkeypatch):
     captured = {}
-    monkeypatch.setattr(nav_mod.subprocess, "Popen",
-                        lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakePopen(cmd, **kw))
+    monkeypatch.setattr(
+        nav_mod.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakePopen(cmd, **kw)
+    )
     CruzrNav(CruzrConfig()).start_spin(direction=1.0)
     cmd = captured["cmd"]
     assert "--spin" in cmd
-    assert cmd[cmd.index("--dyaw") + 1] == "1.0"                 # CCW/left
+    assert cmd[cmd.index("--dyaw") + 1] == "1.0"  # CCW/left
     assert cmd[cmd.index("--spin-max-rad") + 1] == str(CruzrConfig().search_spin_max_rad)
     assert cmd[cmd.index("--k-rot") + 1] == str(CruzrConfig().search_spin_wheel_rs)
     assert cmd[cmd.index("--command-topic") + 1] == "/mc/sdk/robot_command"
@@ -151,11 +154,13 @@ def test_start_spin_builds_interruptible_worker(monkeypatch):
 def test_start_spin_direction_sign():
     captured = {}
     import unittest.mock as m
-    with m.patch.object(nav_mod.subprocess, "Popen",
-                        side_effect=lambda cmd, **kw: captured.update(cmd=cmd) or _FakePopen(cmd)):
+
+    with m.patch.object(
+        nav_mod.subprocess, "Popen", side_effect=lambda cmd, **kw: captured.update(cmd=cmd) or _FakePopen(cmd)
+    ):
         CruzrNav(CruzrConfig()).start_spin(direction=-2.0)
     cmd = captured["cmd"]
-    assert cmd[cmd.index("--dyaw") + 1] == "-1.0"                # CW/right
+    assert cmd[cmd.index("--dyaw") + 1] == "-1.0"  # CW/right
 
 
 def test_spin_running_reflects_poll():
@@ -168,17 +173,17 @@ def test_spin_running_reflects_poll():
 
 def test_stop_spin_sends_sentinel_when_running():
     p = _FakePopen(["x"])
-    p._polled = None                       # still spinning
+    p._polled = None  # still spinning
     out = CruzrNav(CruzrConfig()).stop_spin(p)
-    assert p.communicated == "stop\n"      # clean stop via stdin sentinel
+    assert p.communicated == "stop\n"  # clean stop via stdin sentinel
     assert out["ok"] and out["yaw_turned"] == 1.23
 
 
 def test_stop_spin_drains_when_already_finished():
     p = _FakePopen(["x"])
-    p._polled = 0                          # worker already exited (full revolution, not found)
+    p._polled = 0  # worker already exited (full revolution, not found)
     out = CruzrNav(CruzrConfig()).stop_spin(p)
-    assert p.communicated is None          # no sentinel needed
+    assert p.communicated is None  # no sentinel needed
     assert out["yaw_turned"] == 1.23
 
 
@@ -221,12 +226,13 @@ def test_lowlevel_navigate_relative_delegates():
     ll._nav_obj = _FakeNav()
     out = ll.navigate_relative(0.5, 0.0, -0.2)
     assert out["ok"] and out["args"] == [0.5, 0.0, -0.2]
-    assert out["gains"] == [None, None, None]                 # no override → global base_k_* used downstream
+    assert out["gains"] == [None, None, None]  # no override → global base_k_* used downstream
     out = ll.navigate_relative(0.5, 0.0, -0.2, k_rot=1.5, k_rot_slow_rad=0.5, k_fwd=0.8)
-    assert out["gains"] == [1.5, 0.5, 0.8]                     # gentle approach gains threaded through
+    assert out["gains"] == [1.5, 0.5, 0.8]  # gentle approach gains threaded through
 
 
 # ---------------------------------------------------------------- continuous-approach forward drive
+
 
 class _FakeDrivePopen(_FakePopen):
     def communicate(self, input=None, timeout=None):
@@ -237,8 +243,9 @@ class _FakeDrivePopen(_FakePopen):
 
 def test_start_drive_builds_interruptible_worker(monkeypatch):
     captured = {}
-    monkeypatch.setattr(nav_mod.subprocess, "Popen",
-                        lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakeDrivePopen(cmd, **kw))
+    monkeypatch.setattr(
+        nav_mod.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakeDrivePopen(cmd, **kw)
+    )
     CruzrNav(CruzrConfig()).start_drive()
     cmd = captured["cmd"]
     assert "--forward" in cmd
@@ -260,11 +267,12 @@ def test_start_drive_overrides_creep_and_self_bound(monkeypatch):
     (``fwd_max_m``); both must reach the worker cmd. Omitted (None) → the config approach-drive defaults
     (see test_start_drive_builds_interruptible_worker) are used, so the coarse approach is unchanged."""
     captured = {}
-    monkeypatch.setattr(nav_mod.subprocess, "Popen",
-                        lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakeDrivePopen(cmd, **kw))
+    monkeypatch.setattr(
+        nav_mod.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakeDrivePopen(cmd, **kw)
+    )
     CruzrNav(CruzrConfig()).start_drive(k_fwd=0.6, fwd_max_m=0.4)
     cmd = captured["cmd"]
-    assert cmd[cmd.index("--k-fwd") + 1] == "0.6"      # slower creep than approach_drive_wheel_rs
+    assert cmd[cmd.index("--k-fwd") + 1] == "0.6"  # slower creep than approach_drive_wheel_rs
     assert cmd[cmd.index("--fwd-max-m") + 1] == "0.4"  # tighter self-bound than approach_drive_max_m
 
 
@@ -278,47 +286,51 @@ def test_drive_running_reflects_poll():
 
 class _StdinRec:
     """Records lines written to a fake worker stdin (for steer_drive)."""
+
     def __init__(self):
         self.lines = []
+
     def write(self, s):
         self.lines.append(s)
+
     def flush(self):
         pass
 
 
 def test_steer_drive_feeds_bearing_to_running_worker():
     p = _FakeDrivePopen(["x"])
-    p._polled = None                       # still driving
+    p._polled = None  # still driving
     p.stdin = _StdinRec()
     CruzrNav.steer_drive(p, 0.3)
-    assert p.stdin.lines == ["0.3000\n"]   # bearing forwarded over stdin, curves toward target
+    assert p.stdin.lines == ["0.3000\n"]  # bearing forwarded over stdin, curves toward target
 
 
 def test_steer_drive_noop_when_worker_finished():
     p = _FakeDrivePopen(["x"])
-    p._polled = 0                          # worker already exited (self-bound) → don't write
+    p._polled = 0  # worker already exited (self-bound) → don't write
     p.stdin = _StdinRec()
     CruzrNav.steer_drive(p, 0.3)
-    assert p.stdin.lines == []             # no write to a dead worker; drive self-bounds
+    assert p.stdin.lines == []  # no write to a dead worker; drive self-bounds
 
 
 def test_steer_drive_swallows_broken_pipe():
     class _DeadStdin:
         def write(self, s):
             raise BrokenPipeError("closed")
+
         def flush(self):
             pass
+
     p = _FakeDrivePopen(["x"])
     p._polled = None
     p.stdin = _DeadStdin()
-    CruzrNav.steer_drive(p, 0.3)           # best-effort: broken pipe is swallowed, no raise
+    CruzrNav.steer_drive(p, 0.3)  # best-effort: broken pipe is swallowed, no raise
 
 
 def test_forward_parser_accepts_steer_flags():
     from jiuwensymbiosis.adapters.cruzr.ros2.wheel_worker import _build_parser
 
-    a = _build_parser().parse_args(
-        ["--forward", "--k-fwd", "0.5", "--k-steer", "0.6", "--steer-max", "0.4"])
+    a = _build_parser().parse_args(["--forward", "--k-fwd", "0.5", "--k-steer", "0.6", "--steer-max", "0.4"])
     assert a.forward is True
     assert a.k_steer == 0.6 and a.steer_max == 0.4
 
@@ -341,17 +353,17 @@ def test_lowlevel_steer_base_drive_delegates():
 
 def test_stop_drive_sends_sentinel_when_running():
     p = _FakeDrivePopen(["x"])
-    p._polled = None                       # still driving
+    p._polled = None  # still driving
     out = CruzrNav(CruzrConfig()).stop_drive(p)
-    assert p.communicated == "stop\n"      # clean stop via stdin sentinel
+    assert p.communicated == "stop\n"  # clean stop via stdin sentinel
     assert out["ok"] and out["dist_traveled"] == 0.9
 
 
 def test_stop_drive_drains_when_already_finished():
     p = _FakeDrivePopen(["x"])
-    p._polled = 0                          # worker already exited (hit its self-bound, parent late)
+    p._polled = 0  # worker already exited (hit its self-bound, parent late)
     out = CruzrNav(CruzrConfig()).stop_drive(p)
-    assert p.communicated is None          # no sentinel needed
+    assert p.communicated is None  # no sentinel needed
     assert out["dist_traveled"] == 0.9
 
 
@@ -404,3 +416,27 @@ def test_api_navigate_relative_tool(monkeypatch):
     meta = {m["name"]: m for m in list_tool_meta(api)}
     assert "navigate_relative" in meta
     assert "motion" in meta["navigate_relative"].get("tags", [])
+
+
+@pytest.mark.parametrize("resident", [False, True])
+@pytest.mark.parametrize("dy", [-0.2, 0.2, -1e-12, 1e-12])
+def test_differential_driver_rejects_strafe_before_starting_worker(monkeypatch, resident, dy):
+    from unittest.mock import Mock
+
+    run = Mock()
+    monkeypatch.setattr(nav_mod.subprocess, "run", run)
+    nav = CruzrNav(CruzrConfig(resident_workers=resident))
+    request = Mock()
+    monkeypatch.setattr(nav, "_resident_move_request", request)
+    assert nav.navigate_relative(0, dy) == {"ok": False, "reason": "lateral_unsupported"}
+    run.assert_not_called()
+    request.assert_not_called()
+
+
+def test_strafe_rejection_does_not_hide_unconfirmed_worker_stop(monkeypatch):
+    monkeypatch.setattr(nav_mod.subprocess, "run", lambda cmd, **k: _fake_proc("", rc=1))
+    nav = CruzrNav(CruzrConfig())
+    with pytest.raises(HardwareCleanupError, match="rc=1"):
+        nav.navigate_relative(0.4)
+    with pytest.raises(HardwareCleanupError, match="rc=1"):
+        nav.navigate_relative(0, 0.2)
