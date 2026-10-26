@@ -295,8 +295,11 @@ config.prepare_session(session)  # strict_capabilities / motion_dir 在连接前
 ```
 
 `execution`、`modules`、`logging` 也接受对应的 dataclass。`to_dict()` 导出全量有效配置，不包含模型对象或扩展实例。
-`model`、`model_spec`、`extra_tools`、`extra_rails` 只用于 Python 构建；YAML 的模型参数仍放在顶层 `model` 块。
-这四个 Python 专用参数出现在 `from_dict` 输入中均报错。
+`model`、`model_spec`、`extra_tools`、`extra_rails`、`tool_allowlist` 只用于 Python 构建；YAML 的模型参数仍放在顶层 `model` 块。
+这些 Python 专用参数出现在 `from_dict` 输入中均报错。
+`tool_allowlist` 默认为 `None`；设为工具名的 `frozenset` 可限制暴露的工具（包含 `extra_tools`），空集合不暴露任何工具，仅支持关闭 skills 的 stepagent tool 模式。宿主负责审核显式允许的扩展工具；这不是 Python 扩展的沙箱。
+
+移动底盘通过 `env.supports_lateral` 声明横移约束：`True` 支持，`False` 拒绝非零 `dy_m`，`None` 表示未声明。`session.describe()` 的 `base_motion` 及默认系统提示词携带该信息；自定义提示词仍按原文使用。`navigate_relative` 先转向，再按转向后的机体坐标平移（+X 前方、+Y 左方，米/弧度）。Cruzr 差速底盘在安全检查和驱动入口均拒绝横移，不再静默忽略。
 `build_robot_agent` 构建可 `invoke()` 的逐步 agent，`build_robot_agent_config` 构建多机器人子 Agent 配置。
 两者省略 `config` 时均采用 stepagent 默认值（skills 关闭、visual feedback 开启）；显式传入配置时，要求 `execution.mode="stepagent"`。
 直接传入 `RobotAgentConfig()` 会报 `ValueError`，因为该构造器默认选择 fastagent。模式不匹配会在模型、工具等构建前报错；builder 不改写模式，也不重算模块默认值。

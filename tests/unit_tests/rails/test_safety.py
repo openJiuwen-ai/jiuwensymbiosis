@@ -621,6 +621,31 @@ class TestSafetyRailBaseStep:
         assert sink.events[0][0] == "SafetyRail"
         assert sink.events[0][3] is False
 
+    def test_lateral_motion_obeys_body_support_and_translation_limit(self, mobile_session):
+        mobile_session.env.base_step_limits = (1.0, 1.0)
+        mobile_session.env.supports_lateral = True
+        rail = SafetyRail(mobile_session)
+        rail.validate_motion("navigate_relative", {"dx_m": 0, "dy_m": 0.2})
+        with pytest.raises(ValueError, match="exceeds"):
+            rail.validate_motion("navigate_relative", {"dx_m": 0.8, "dy_m": 0.8})
+        mobile_session.env.supports_lateral = False
+        with pytest.raises(ValueError, match="lateral"):
+            rail.validate_motion("navigate_relative", {"dx_m": 0, "dy_m": 0.2})
+        rail.validate_motion("navigate_relative", {"dx_m": 0.2, "dy_m": 0})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True])
+    async def test_strafe_rejection_applies_without_range_limits(self, mobile_session, wrapped):
+        mobile_session.env.supports_lateral = False
+        mobile_session.env.base_step_limits = None
+        params = {"dx_m": 0, "dy_m": -0.2}
+        ctx = FakeCtx(
+            tool_name="robot_control" if wrapped else "navigate_relative",
+            tool_args={"action": "navigate_relative", "params": params} if wrapped else params,
+        )
+        with pytest.raises(ValueError, match="lateral"):
+            await SafetyRail(mobile_session).before_tool_call(ctx)
+
 
 class TestSafetyRailLiftLimits:
     LIMITS = {"lifter_1": (0.0, 1.2), "lifter_2": (-0.5, 0.5)}

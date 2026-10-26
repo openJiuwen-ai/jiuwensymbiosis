@@ -133,3 +133,20 @@ import assets
 assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
 """
     run([sys.executable, "-I", "-c", isolated_probe, str(assets_cli.parent)])
+
+    motion_probe = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from jiuwensymbiosis.simulators.genesis import OrbitCamera, PreviewSettings
+from jiuwensymbiosis.simulators.genesis import base_motion, omni_base
+root = Path(sys.argv[1])
+assert Path(base_motion.__file__).is_relative_to(root)
+assert Path(omni_base.__file__).is_relative_to(root)
+base_motion.validate_move(0.1, 0.2, 0.3)
+omni_base.validate_twist(0.1, 0.1, 0.1)
+assert OrbitCamera().snapshot()["up"] == [0.0, 0.0, 1.0]
+assert PreviewSettings().dt > 0
+assert "genesis" not in sys.modules
+"""
+    run([sys.executable, "-I", "-c", motion_probe, str(installed)])
