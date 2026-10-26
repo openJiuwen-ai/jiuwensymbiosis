@@ -1,0 +1,7 @@
+# Camera display settings only; source materials and textures stay unchanged.
+scenes:
+  library://geniesim/background/home/home_0/background:
+    # Supported tone mappers: reinhard, neutral, aces_1_3.
+    color_management:
+      tone_mapper: neutral
+      exposure_adjust_ev: 0.0

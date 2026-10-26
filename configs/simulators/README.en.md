@@ -65,4 +65,37 @@ fingerprints; `probe` additionally validates URDF references and material hashes
 `preview_mode` is candidate metadata (`static_usd` or `urdf`), not a working viewer.
 USD probing reports units, axes and unresolved dependencies. Neither indexing
 nor probing establishes rendering quality, collision validity or robot control.
-USD-to-URDF conversion and simulator integration are outside this delivery.
+USD-to-URDF conversion, workbench integration and continuous simulation workers are outside this delivery.
+
+## USD scenes and optional rendering dependencies
+
+Install CPU scene inspection and surface picking without Genesis/Torch:
+
+```bash
+python -m pip install -e ".[simulator-scenes]"
+python -m jiuwensymbiosis.simulators.genesis.usd_probe --inventory --output outputs/usd-inventory
+```
+
+Build the asset index first. The probe accepts indexed `library://...` IDs and does not
+scan or download assets automatically. Inventory mode reads USD metadata without starting
+a renderer. With editable source installation, appearance/lighting YAML files are read
+from the source package data directory. Generated static scene layers
+and reports go to the explicit output directory, preserving source assets.
+
+Use a dedicated Python 3.12 environment for GPU rendering:
+
+```bash
+python -m pip install -e ".[genesis]" --extra-index-url https://download.pytorch.org/whl/cu130
+python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <asset-id> --output outputs/usd-preview
+```
+
+This pins Torch 2.11.0+cu130, Genesis 1.4.4, Nyx plugin 0.1.9/Nyx 0.1.7 and Pillow 11.3.0.
+A supported NVIDIA GPU/driver is required; successful installation is not GPU acceptance.
+Do not combine this profile with `full`, `vision-server` or `voice-local` (different Torch),
+or `dev`/`remote` (Pillow>=12). CPU tests can use `.[dev,gui,simulator-scenes]`.
+The workbench integration and WebRTC arrive in later batches.
+Source materials and textures are passed directly to the renderer, without material
+conversion, texture baking or glass substitution. Exposure and tone mapping affect only
+the camera display. Material appearance depends on renderer support and may differ from
+the source authoring application.
+USD/geometry tests are not physics or robot-task acceptance.
