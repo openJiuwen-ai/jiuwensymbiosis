@@ -124,6 +124,26 @@ gui = [
     "keyring>=25,<26",  # OS credential storage only; no plaintext fallback.
     "pillow>=10",
 ]
+simulator-scenes = [
+    # CPU USD/mesh/material inspection, independent of the Genesis renderer.
+    "usd-core==25.11",
+    "trimesh>=4.8.2,<6",
+    "rtree>=1",
+    "pillow>=11.3",
+]
+genesis = [
+    # Dedicated simulation environment; see configs/simulators/README.md.
+    "usd-core==25.11",
+    "trimesh>=4.8.2,<6",
+    "rtree>=1",
+    "torch==2.11.0+cu130",
+    "numpy==2.3.5",
+    "genesis-world[render,usd]==1.4.4",
+    "gs-nyx-plugin==0.1.9",
+    "gs-nyx==0.1.7",
+    "pillow==11.3.0",
+    "opencv-python>=4.8,<5",
+]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。
@@ -166,6 +186,7 @@ jiuwensymbiosis = [
     "adapters/so101/description/**/*.urdf",
     "adapters/so101/description/**/*.md",
     "simulators/assets/data/*.yaml",
+    "simulators/genesis/data/*.yaml",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

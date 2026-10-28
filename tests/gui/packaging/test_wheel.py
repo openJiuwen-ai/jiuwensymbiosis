@@ -150,3 +150,31 @@ assert PreviewSettings().dt > 0
 assert "genesis" not in sys.modules
 """
     run([sys.executable, "-I", "-c", motion_probe, str(installed)])
+
+    scene_probe = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from jiuwensymbiosis.simulators.genesis import appearance, source_lighting, usd_probe
+root = Path(sys.argv[1])
+for module in (appearance, source_lighting, usd_probe):
+    assert Path(module.__file__).is_relative_to(root)
+for path in (appearance.PROFILE_PATH, source_lighting.PROFILE_PATH):
+    assert path.is_relative_to(root) and path.is_file()
+assert appearance.load_appearance_profile("unlisted").color_management.tone_mapper == "reinhard"
+assert source_lighting.load_source_lighting(root / "not-needed.usda", "unlisted") is None
+assert "genesis" not in sys.modules
+"""
+    run([sys.executable, "-I", "-c", scene_probe, str(installed)])
+    # A standalone entry must also work with no source checkout or core import.
+    standalone_probe = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import usd_probe
+assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
+sys.argv = ["usd_probe", "--help"]
+usd_probe.main()
+"""
+    assert "--inventory" in run(
+        [sys.executable, "-I", "-c", standalone_probe, str(installed / "jiuwensymbiosis/simulators/genesis")]
+    )

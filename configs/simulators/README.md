@@ -99,7 +99,7 @@ if page.items:
 `search` 支持关键词、`root_id`、`kind`、`category`、`preview_mode` 过滤，返回
 `total/items/limit/offset`；`resolve` 重新检查入口位置、大小和修改时间。
 `preview_mode` 仅标记候选类型：环境为 `static_usd`，关联 URDF 的机器人为 `urdf`。
-本批只提供目录和文件探测，不包含预览界面或仿真执行。
+本批增加 USD 场景处理、色彩管理和灯光适配、表面拾取及离线渲染探针；工作台入口和持续仿真 worker 随后续批次交付。
 `probe` 检查本地资源引用和材质摘要；USD 未解析列表也可能包含 SDK 自带的 MDL 模块。
 索引成功或预览可用不代表碰撞、控制、规划或画质已经通过验收。
 
@@ -107,3 +107,34 @@ if page.items:
 
 资产准备需提供上述 export manifest 或匹配 URDF。本批不提供 USD→URDF 转换器，
 不自动下载资产，也不执行资产目录附带的脚本。
+
+## USD 场景与可选渲染依赖
+
+CPU 场景解析和表面拾取可单独安装，不需要 Genesis、Torch 或 GPU：
+
+```bash
+python -m pip install -e ".[simulator-scenes]"
+python -m jiuwensymbiosis.simulators.genesis.usd_probe --inventory --output outputs/usd-inventory
+```
+
+先按上文构建本地资产索引。探针只接受索引返回的 `library://...` ID，
+不自动扫描或下载资产。`--inventory` 只做 USD 元数据和依赖检查，不初始化渲染器。
+源码可编辑安装后，`genesis_appearance.yaml`、`genesis_lighting.yaml` 从源码包内 `data/` 加载。
+生成的静态场景覆盖层和报告写入显式 `--output`，不覆盖源 USD。
+
+GPU 渲染桥接使用独立 Python 3.12 环境和固定版本的 Genesis/Nyx：
+
+```bash
+python -m pip install -e ".[genesis]" --extra-index-url https://download.pytorch.org/whl/cu130
+python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --output outputs/usd-preview
+```
+
+渲染需要受支持的 NVIDIA GPU/驱动；安装完成不等于 GPU 验收通过。
+`genesis` 固定 Torch 2.11.0+cu130、Genesis 1.4.4、Nyx plugin 0.1.9/Nyx 0.1.7、Pillow 11.3.0。
+不要与固定其他 Torch 版本的 `full`、`vision-server`、`voice-local` 合装，
+也不要与要求 Pillow>=12 的 `dev`、`remote` 合装；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
+本批尚不提供 WebRTC 或工作台仿真界面。
+
+源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
+曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
+灯光转换和拾取测试验证 USD 数值/几何，不代表画质、接触物理或机器人任务验收。
