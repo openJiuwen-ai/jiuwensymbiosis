@@ -1,0 +1,6 @@
+# Renderer-only source-lighting profiles. Asset locations are resolved from USD/SQLite.
+# Native Area is unsupported by gs-nyx 0.1.7; rectangles use emissive visual meshes.
+scenes:
+  library://geniesim/background/home/home_0/background:
+    mode: usd_fitted_emitters
+    exposure_ev: -8.0

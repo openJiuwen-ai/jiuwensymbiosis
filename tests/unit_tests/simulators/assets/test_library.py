@@ -255,6 +255,7 @@ def test_content_tree_uses_configured_folders_and_depths(asset_fixture):
 
 def test_queries_and_loading_use_sqlite_after_all_build_inputs_are_removed(asset_fixture, tmp_path, monkeypatch):
     from jiuwensymbiosis.simulators.assets import index as asset_index
+    from jiuwensymbiosis.simulators.genesis.scene_catalog import resolve_scene, scene_catalog
 
     library, config, roots, _, _ = asset_fixture
     config.source.unlink()
@@ -269,6 +270,8 @@ def test_queries_and_loading_use_sqlite_after_all_build_inputs_are_removed(asset
     assert library.search().total == 10
     assert library.get("library://spiritai/moz/robot").options["file_meshes_are_zup"] is True
     assert probe_asset(library, "library://spiritai/moz/robot")["material_bundle"] == "sha256_verified"
+    assert len(scene_catalog()) == 5
+    assert resolve_scene("library://spiritai/moz/robot").paths["genesis_urdf"].is_file()
     with pytest.raises(AssetError, match="未登记"):
         library.get("robot/test")
     import jiuwensymbiosis.simulators.assets as package
