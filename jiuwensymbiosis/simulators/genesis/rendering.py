@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ class SceneRenderer:
         source_lighting=None,
         robot=None,
         cameras=None,
+        startup=None,
     ):
         import gs_nyx.nyx_py_renderer as npr
         import gs_nyx.nyx_py_sdk as nps
@@ -108,7 +110,8 @@ class SceneRenderer:
             env_maps=[env],
             lights=[fill] if source is not None and source_lighting is None else [],
         )
-        exporter.export_to_file(path)
+        with startup.phase("nyx_scene_export") if startup and not startup.finished else nullcontext():
+            exporter.export_to_file(path)
         if visual_urdfs:
             # Change only the renderer's asset, retaining physical URDF link names
             # and UUIDs so Nyx's existing pose updates and picking still apply.
@@ -166,7 +169,8 @@ class SceneRenderer:
             ),
         )
         try:
-            self._renderer.build(self.entity_pairs)
+            with startup.phase("nyx_renderer_build") if startup and not startup.finished else nullcontext():
+                self._renderer.build(self.entity_pairs)
             self.update_camera_pose(pos=pose["pos"], lookat=pose["lookat"], up=pose["up"])
             for name in self.cameras:
                 self._update_sensor(name)
