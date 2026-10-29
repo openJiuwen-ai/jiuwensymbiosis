@@ -68,6 +68,8 @@ python -m pip install -e ".[full]" \
 
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
 
+Genesis 仿真插件可按需安装，环境配置与启动步骤见 [Genesis 安装教程](docs/zh/tutorial/03-install-genesis.md)。
+
 统一启动器通过 GUI 插件 key 选择界面；本仓库当前提供 `workbench`：
 
 ```bash

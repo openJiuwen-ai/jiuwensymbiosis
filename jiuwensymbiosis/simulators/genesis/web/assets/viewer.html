@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Genesis · Nyx 实时仿真</title>
+<link rel="stylesheet" href="/genesis/assets/viewer.css">
+<script type="module" src="/genesis/assets/viewer.js"></script>
+</head>
+<body>
+<header class="stream-toolbar" aria-label="仿真控制">
+  <label><span>场景机器人</span><select id="robot" aria-label="场景机器人"><option value="">无</option></select></label>
+  <label class="scene-select"><span>场景</span><select id="scene" aria-label="场景"><option value="demo">动态物理演示</option></select></label>
+  <button id="scene-search" title="搜索与分类浏览场景" aria-label="搜索场景">搜索场景</button>
+  <button id="settings" title="分辨率、渲染质量与帧率上限">渲染设置</button>
+</header>
+<output id="notice" role="alert"></output>
+<main class="viewport">
+  <video id="video" tabindex="0" autoplay muted playsinline aria-label="Genesis 实时仿真画面"></video>
+  <svg id="selection-box" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" hidden><path id="selection-path" vector-effect="non-scaling-stroke"/></svg>
+  <div class="video-hud"><span class="connection-badge"><i aria-hidden="true"></i><span id="connection" role="status">视频未连接</span></span><span id="metrics" aria-label="实测性能"><span id="video-metrics">呈现 — · 解码 — FPS</span><span id="physics-metrics">物理 — Hz · RTF —</span><span id="render-metrics">视频渲染 P95 — ms</span></span></div>
+  <div id="selection-hud" hidden><span>已选</span><strong id="selection-name"></strong><button id="clear-selection" aria-label="取消选择" title="取消选择 · Esc">×</button></div>
+  <div id="navigation-hint">右键环顾 · WASD 移动 · 速度 1×</div>
+  <div id="placeholder">启动后台，等待就绪后连接视频</div>
+</main>
+<section class="camera-toolbar" aria-label="手动视角控制">
+  <div class="camera-buttons">
+    <span class="control-caption">视角</span>
+    <select id="camera-source" aria-label="相机视角" disabled><option value="observer">观察视角</option></select>
+    <button id="manual">手动控制</button>
+    <button id="robot-stop" data-base="stop" class="danger" hidden disabled>停止机器人</button>
+    <button id="reset" title="回到当前场景的初始视角" aria-label="重置视角" disabled>重置视角</button>
+    <button id="focus" title="聚焦选中对象；未选择时显示整个场景 · F" aria-label="聚焦选中对象" disabled>聚焦 F</button>
+  </div>
+  <div class="view-buttons">
+    <button id="help" class="icon-button" title="操作说明" aria-label="操作说明">?</button>
+    <button id="fullscreen" title="全屏画面" aria-label="全屏画面"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg><span id="fullscreen-label">全屏</span></button>
+  </div>
+</section>
+
+<footer class="session-bar">
+  <div class="session-buttons">
+    <button id="start" class="primary">启动仿真</button><button id="connect" class="primary" disabled>连接视频</button><button id="disconnect" title="仅断开画面，后台继续运行" disabled>断开视频</button>
+  </div>
+  <span id="backend" role="status">正在检查后台…</span>
+  <div class="session-buttons">
+    <button id="diagnostics" class="icon-button" title="串流详情" aria-label="串流详情"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18v-5m5 5V6m6 12V9m5 9V3"/></svg></button>
+    <button id="stop" class="danger" title="停止物理仿真与渲染进程" disabled>关闭仿真</button>
+  </div>
+</footer>
+<dialog id="scene-dialog">
+  <div class="dialog-heading"><strong>选择场景</strong><button data-close="scene-dialog" aria-label="关闭场景搜索">×</button></div>
+  <input id="scene-filter" type="search" placeholder="搜索名称或资产来源…" aria-label="搜索场景名称或来源" autocomplete="off">
+  <select id="scene-results" size="12" aria-label="分组场景搜索结果"></select>
+  <div class="scene-dialog-footer"><span id="scene-count" class="muted" role="status"></span><button id="apply-scene" class="primary">使用所选场景</button></div>
+</dialog>
+<dialog id="settings-dialog">
+  <div class="dialog-heading"><strong>渲染设置</strong><button data-close="settings-dialog" aria-label="关闭渲染设置">×</button></div>
+  <div class="settings-fields">
+    <label><span>观察分辨率</span><select id="resolution" aria-label="分辨率"><option value="1280x720">720p</option><option value="1920x1080">1080p</option></select></label>
+    <label><span>渲染</span><select id="render-quality" aria-label="渲染质量"><option value="reference" selected>Reference · 64 采样</option></select></label>
+    <label><span>FPS 上限</span><select id="fps" aria-label="帧率"><option value="30">30 fps</option><option value="60" selected>60 fps</option></select></label>
+  </div>
+  <p id="quality-description">Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。</p>
+  <div class="settings-performance"><span>请求档位</span><strong id="requested-profile">—</strong><span>实际表现</span><strong id="actual-performance">等待有效测量</strong></div>
+  <p class="muted">修改后立即应用，视频自动恢复。FPS 是上限；实际呈现、解码帧率和物理实时率在画面右上角。调整画质设置保留机器人位姿。</p>
+  <p class="muted">仅使用 Reference 渲染，固定 64 采样。可调整观察分辨率和 FPS 上限。</p>
+  <p class="muted">机器人相机使用模型标定的分辨率与镜头参数；视角随机器人运动。只更新正在观看或请求取图的相机。</p>
+</dialog>
+<dialog id="manual-dialog">
+  <div class="dialog-heading"><strong>手动控制</strong><button data-close="manual-dialog" aria-label="关闭手动控制">×</button></div>
+  <div class="settings-fields">
+    <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式"><option value="inspection">姿态检视</option><option value="moz1_wheels">MOZ1 底盘物理</option></select></label>
+  </div>
+  <p class="muted">视角操作只移动观察相机；底盘操作移动机器人。</p>
+  <section class="camera-toolbar"><span class="control-caption">视角</span><div class="camera-buttons">
+    <button data-camera="left" title="左转" aria-label="左转" disabled>←</button><button data-camera="right" title="右转" aria-label="右转" disabled>→</button><button data-camera="up" title="抬高" aria-label="抬高" disabled>↑</button><button data-camera="down" title="降低" aria-label="降低" disabled>↓</button><span class="divider"></span><button data-camera="in" title="拉近" aria-label="拉近" disabled>＋</button><button data-camera="out" title="拉远" aria-label="拉远" disabled>−</button>
+  </div></section>
+<section id="base-controls" class="camera-toolbar" aria-label="MOZ1 底盘控制" hidden>
+  <div class="camera-buttons">
+    <span class="control-caption">底盘</span>
+    <button data-base="forward" disabled>前进</button><button data-base="backward" disabled>后退</button>
+    <button data-base="left" disabled>左移</button><button data-base="right" disabled>右移</button>
+    <button data-base="ccw" disabled>左旋</button><button data-base="cw" disabled>右旋</button>
+    <button data-base="stop" class="danger" disabled>停止机器人</button>
+    <span>单击运行最多 1 秒 · 0.15 m/s / 0.3 rad/s</span>
+  </div>
+</section>
+  <p class="muted">底盘按钮仅在机器人底盘物理模式、视频连接后可用。方向以机器人自身为准。</p>
+</dialog>
+<dialog id="help-dialog">
+  <div class="dialog-heading"><strong>操作说明</strong><button data-close="help-dialog" aria-label="关闭操作说明">×</button></div>
+  <p>先在画面内操作，使用下列鼠标和键盘手势控制视角；快捷键只作用于画面。</p>
+  <dl><dt>原地环顾</dt><dd>按住右键拖动</dd><dt>自由移动</dt><dd>按住右键 + W / A / S / D，Q 下降、E 上升</dd><dt>移动速度</dt><dd>按住右键 + 滚轮调速；Shift 临时加速，0.25× 用于精细调整</dd><dt>绕点旋转</dt><dd>Alt + 左键拖动，或方向键；触屏可直接拖动</dd><dt>平移视角</dt><dd>中键 / Shift + 左键拖动，或 Shift + 方向键</dd><dt>拉近 / 拉远</dt><dd>滚轮，或使用 ＋ / − 按钮</dd><dt>重置视角</dt><dd>H / Home 或“重置”；Esc 结束当前导航</dd></dl>
+  <label class="navigation-speed">移动速度 <select id="navigation-speed" aria-label="移动速度"><option value="0.25">精细 · 0.25×</option><option value="1" selected>标准 · 1×</option><option value="4">快速 · 4×</option></select></label>
+  <p><strong>点选与聚焦：</strong>左键单击物体，黄色包围框表示已选；F 将对象完整纳入画面，之后 Alt + 左键围绕对象旋转。单击空白或 Esc 取消选择；未选择时按 F 显示整个场景。触屏轻点也可选择。</p>
+  <p class="muted">移动速度随场景大小调整。USD 按模型选择，名称来自资产节点；黄色框为三维包围盒。相机可以穿过背景几何。</p>
+  <p>场景、画质和帧率可在运行中切换，视频自动恢复。切换场景会重置场景状态。</p>
+  <p>渲染质量：均衡使用 32 次光追采样，适合室内机器人实时控制；精细使用 64 次采样，保留更多光照细节。两者均开启降噪，模型、贴图和碰撞相同。演示场景使用 8 次采样。切换渲染质量保留机器人位姿。</p>
+  <p>MOZ1 移动：选择 MOZ1 资产和“MOZ1 底盘物理”，连接视频后使用底盘按钮。方向以机器人自身为准，单击最多运行 1 秒；断开视频会停止轮速指令。此模式锁定上身，使用 URDF 滚子碰撞代理与地面接触，尚不支持机械臂或避障。</p>
+  <p>断开视频后，仿真后台继续运行；“关闭仿真”才会结束仿真。</p>
+  <p class="muted">室内移动：选择 USD 场景，再在“场景机器人”中选择 MOZ1。系统自动寻找地面上的空闲出生点，并从场景网格生成固定碰撞体；家具不会被推动，也不提供自动避障。不添加机器人时仍为纯视觉预览。空场景或超过 500 万可见三角形会显示具体原因。</p>
+</dialog>
+<dialog id="diagnostics-dialog">
+  <div class="dialog-heading"><strong>串流详情</strong><button data-close="diagnostics-dialog" aria-label="关闭串流详情">×</button></div>
+  <p class="muted">呈现 FPS 为视频提交给浏览器合成器的帧增量（后台标签页不测量），解码 FPS 来自 WebRTC；两者都不是显示器扫描频率。物理 Hz 与 RTF 使用后台物理步数、仿真时间和单调时钟增量，RTF 1.00 表示仿真与现实等速。视频渲染 P95 为后台视频渲染采样窗口内的第 95 百分位，不包含截图耗时。无有效数据时显示 —。</p><pre id="details"></pre>
+</dialog>
+</body></html>

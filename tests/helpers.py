@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from jiuwensymbiosis.agent.session import RobotSession
@@ -92,3 +93,17 @@ def make_mock_session(
     env = env or MockArmEnv()
     api = api or MockApi(env, **(api_kwargs or {}))
     return RobotSession(env=env, api=api, name=name, **session_kwargs)
+
+
+def genesis_ready_state() -> dict:
+    return {
+        "state": "ready",
+        "measured_at": time.monotonic(),
+        "steps": 12,
+        "object_positions": [[1, 2, 3]],
+        "camera": {"pos": [0, 1, 2], "revision": 5},
+        "settings": {"width": 1280, "height": 720, "fps": 60},
+        "log_path": "/private/log",
+        "message": "private error",
+        "session_id": "secret",
+    }
