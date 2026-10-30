@@ -53,6 +53,35 @@ def _drop(layout: Layout, name: str, text: str) -> None:
     layout._on_yaml_dropped(SimpleNamespace(args=[{"name": name, "text": text}]))
 
 
+def test_leaving_simulation_releases_video_and_preserves_task_state(layout, monkeypatch):
+    from nicegui import ui
+
+    sent = []
+    monkeypatch.setattr(ui, "run_javascript", sent.append)
+    state = layout._state
+    before = (state.current_body, state.current_task, state.engine)
+    layout._on_nav(SimpleNamespace(value="仿真"))
+    layout._on_nav(SimpleNamespace(value=layout._simulation_tab))
+    assert sent == []
+    layout._on_nav(SimpleNamespace(value="主页"))
+    assert len(sent) == 1
+    assert "genesis-disconnect" in sent[0]
+    assert (state.current_body, state.current_task, state.engine) == before
+
+
+def test_simulation_chat_uses_the_same_applied_model_as_runs(layout):
+    from jiuwensymbiosis.agent.config import ModelSpec
+
+    original = layout._current_model_config().copy()
+    layout._models._active = ModelSpec(
+        api_base="https://model.example/v1", model_name="shared-model", api_key="test-only-key"
+    )
+    selected = layout._genesis._model()
+    assert selected == layout._models.selected()
+    assert selected.model_name == "shared-model"
+    assert layout._current_model_config() == original
+
+
 def test_external_launch_config_survives_save_refresh_but_not_body_change(tmp_path, monkeypatch):
     from jiuwensymbiosis_gui.workbench.pages.home_view import HomeView
 

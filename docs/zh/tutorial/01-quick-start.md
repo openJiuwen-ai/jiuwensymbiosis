@@ -86,6 +86,8 @@ python -m pip install -e ".[calib]"
 
 可选依赖可以组合安装，例如 `.[full,piper]` 或 `.[full,so101]` 或 `.[full,cruzr]`；凡是包含 `[full]` 的命令，仍需使用上方 PyTorch CUDA 12.8 附加源。
 
+Genesis 仿真插件按需使用独立环境，安装步骤见 [Genesis 安装教程](03-install-genesis.md)。
+
 ## 6. 安装固定版本的运行依赖
 
 [`requirements.txt`](../../../requirements.txt) 固定了项目直接依赖的完整运行版本，包括视觉/GPU 栈；它不是完整的环境锁文件，因为传递依赖、开发工具和 Piper SDK 并未全部锁定。若要安装这组运行依赖，再安装项目本身且不重新解析依赖：

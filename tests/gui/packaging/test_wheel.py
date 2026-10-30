@@ -193,6 +193,42 @@ assert (preview._WORKER.parent / "web/assets/metrics.mjs").is_file()
 assert not {"genesis", "torch", "gs_nyx", "aiortc", "av"} & sys.modules.keys()
 """
     run([sys.executable, "-I", "-c", media_probe, str(installed)])
+    gui_simulator_probe = """
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+os.environ.pop("JIUWENSYMBIOSIS_SIMULATOR_HOME", None)
+sys.path.insert(0, sys.argv[1])
+root = Path(sys.argv[1])
+user_dir = root.parent / "simulator-user"
+Path.home = classmethod(lambda cls: user_dir)
+from jiuwensymbiosis.simulators.genesis import agent, vision
+from jiuwensymbiosis.agent.config import ModelSpec
+from jiuwensymbiosis.simulators.genesis.web.routes import install_genesis_routes
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+assets = root / "jiuwensymbiosis/simulators/genesis/web/assets"
+for filename in ("viewer.html", "viewer.css", "viewer.js", "navigation.mjs", "selection.mjs", "workbench.css"):
+    assert (assets / filename).stat().st_size > 0, filename
+result = vision.save_result({"jpeg": b"filesystem-probe"}, "probe", model="stub", duration_s=0)
+assert vision.OUTPUT_DIR.is_relative_to(user_dir)
+assert vision.latest_result()["id"] == result["id"]
+preview = SimpleNamespace(status=lambda: {"state": "ready", "cameras": []})
+with patch.object(agent, "build_model", return_value=object()), patch.object(agent, "run_robot_task", return_value={"output": "probe"}):
+    result = agent.run_agent_query(preview, ModelSpec(), "probe", actions_enabled=False)
+output = user_dir / ".jiuwensymbiosis/simulators/outputs/genesis-agent"
+assert (output / (result["id"] + ".json")).is_file()
+app = FastAPI()
+install_genesis_routes(app)
+with TestClient(app) as client:
+    assert client.get("/genesis/viewer").status_code == 200
+    assert client.get("/genesis/assets/viewer.js").status_code == 200
+assert not (root / "outputs").exists()
+assert not {"genesis", "torch", "gs_nyx", "aiortc", "av"} & sys.modules.keys()
+"""
+    run([sys.executable, "-I", "-c", gui_simulator_probe, str(installed)])
     worker_probe = """
 import sys
 sys.path.insert(0, sys.argv[1])

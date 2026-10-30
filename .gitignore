@@ -16,6 +16,12 @@ tmp/
 # 标定产物与写回配置时留下的备份,都是本机运行的结果
 configs/*/calibration/
 *.yaml.bak
-# Generated reports and machine-specific asset configuration.
+# Local Genesis development documentation and environment notes.
+/develop_docs/
+# Generated reports and retained acceptance artifacts.
 /outputs/
+# Machine-specific asset roots and registrations.
 /configs/simulators/assets.yaml
+
+# Local SDK-dependent export entry point.
+/jiuwensymbiosis/simulators/genesis/export_urdf.py

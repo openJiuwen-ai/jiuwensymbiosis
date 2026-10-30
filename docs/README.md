@@ -28,12 +28,14 @@
 
 - [安装与快速开始](zh/tutorial/01-quick-start.md)
 - [构建第一个机器人适配器](zh/tutorial/02-build-first-adapter.md)
+- [安装 Genesis 仿真插件](zh/tutorial/03-install-genesis.md)
 
 ### How-to（操作指南）
 
 - [手眼标定指南](zh/how-to/calibrate-hand-eye.md)
 - [SO-101 固定相机手眼标定使用指南](zh/how-to/calibrate-so101-eye-to-hand.md)
 - [图形界面使用指南](zh/how-to/configure-gui.md)
+- [GUI 仿真器使用指南](zh/how-to/gui-simulator.md)
 - [使用远程 HTTP 视觉与语音服务](zh/how-to/remote-inference.md)
 - [接入一个 GUI 插件](zh/how-to/add-gui.md)
 - [配置和使用日志](zh/how-to/configure-logging.md)
@@ -61,12 +63,14 @@
 
 - [Installation and Quick Start](en/tutorial/01-quick-start.md)
 - [Build Your First Robot Adapter](en/tutorial/02-build-first-adapter.md)
+- [Install Genesis (Chinese)](zh/tutorial/03-install-genesis.md)
 
 ### How-to
 
 - [Calibrate Hand-Eye Geometry](en/how-to/calibrate-hand-eye.md)
 - [Calibrate an SO-101 with a Fixed Camera](en/how-to/calibrate-so101-eye-to-hand.md)
 - [Configure the GUI](en/how-to/configure-gui.md)
+- [Use the GUI Simulator (Chinese)](zh/how-to/gui-simulator.md)
 - [Use Remote HTTP Vision and Speech](en/how-to/remote-inference.md)
 - [Add a GUI Plugin](en/how-to/add-gui.md)
 - [Configure and Use Logging](en/how-to/configure-logging.md)

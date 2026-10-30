@@ -194,7 +194,7 @@ jiuwensymbiosis = [
     "adapters/so101/description/**/*.md",
     "simulators/assets/data/*.yaml",
     "simulators/genesis/data/*.yaml",
-    "simulators/genesis/web/assets/*.mjs",
+    "simulators/genesis/web/assets/*",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

@@ -94,12 +94,14 @@ class ModelSpec:
     extra_request_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def build_model(spec: ModelSpec | None = None) -> Any:
+def build_model(spec: ModelSpec | None = None, *, use_shared_http_client: bool = True) -> Any:
     """Construct an openjiuwen ``Model`` from a ``ModelSpec``.
 
     Args:
         spec: Model specification; defaults to
             ``ModelSpec()`` (local vLLM with Qwen3-VL-32B).
+        use_shared_http_client: Disable for callers that invoke models across
+            worker threads or short-lived event loops; HTTP pools are loop-bound.
 
     Returns:
         An openjiuwen ``Model`` instance ready for use in ``create_deep_agent``.
@@ -111,6 +113,7 @@ def build_model(spec: ModelSpec | None = None) -> Any:
             api_key=spec.api_key,
             api_base=spec.api_base,
             verify_ssl=spec.verify_ssl,
+            use_shared_llm_http_client=use_shared_http_client,
         ),
         model_config=ModelRequestConfig(
             model_name=spec.model_name,
