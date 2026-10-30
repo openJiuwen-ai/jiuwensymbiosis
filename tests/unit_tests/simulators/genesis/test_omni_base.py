@@ -13,6 +13,7 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
     OmniWheelLayout,
     prepare_mobile_urdf,
 )
+from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
 
 @pytest.fixture
@@ -252,3 +253,23 @@ def test_incomplete_wheel_geometry_raises_explicit_error(urdf, fault):
     tree.write(urdf)
     with pytest.raises(ValueError, match="requires|Missing roller|radius"):
         OmniWheelLayout.from_urdf(urdf)
+
+
+def test_preview_binds_pulse_to_live_scene_and_clears_on_disconnect(tmp_path):
+    preview = GenesisPreview(state_dir=tmp_path)
+    scene_id = "a" * 32
+    preview._state = {
+        "state": "ready",
+        "scene": {"instance_id": scene_id},
+        "robot": {"control_mode": "wheel_velocity_physics"},
+    }
+    args = {"vx": 0.15, "vy": 0, "wz": 0, "scene_instance_id": scene_id, "config_revision": 0}
+    with pytest.raises(RuntimeError):
+        preview.base_command(**args)
+    preview.set_streaming(True)
+    first = preview.base_command(**args)
+    with pytest.raises(ValueError, match="场景已切换"):
+        preview.base_command(**{**args, "config_revision": 1})
+    assert preview._base_request["id"] == first["queued_id"]
+    preview.set_streaming(False)
+    assert preview._base_request is None

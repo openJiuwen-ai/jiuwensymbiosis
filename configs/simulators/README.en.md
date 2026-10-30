@@ -93,9 +93,29 @@ This pins Torch 2.11.0+cu130, Genesis 1.4.4, Nyx plugin 0.1.9/Nyx 0.1.7 and Pill
 A supported NVIDIA GPU/driver is required; successful installation is not GPU acceptance.
 Do not combine this profile with `full`, `vision-server` or `voice-local` (different Torch),
 or `dev`/`remote` (Pillow>=12). CPU tests can use `.[dev,gui,simulator-scenes]`.
-The workbench integration and WebRTC arrive in later batches.
+A standalone worker and WebRTC backend are available; the browser UI and workbench integration arrive in the next batch.
 Source materials and textures are passed directly to the renderer, without material
 conversion, texture baking or glass substitution. Exposure and tone mapping affect only
 the camera display. Material appearance depends on renderer support and may differ from
 the source authoring application.
 USD/geometry tests are not physics or robot-task acceptance.
+
+## Standalone runtime and media verification
+
+`GenesisPreview` owns the isolated Genesis/CUDA/Nyx worker. `PreviewStream` owns
+one WebRTC viewer lease without binding an HTTP listener. Disconnecting video
+keeps physics alive; explicitly call `stop()` and confirm the worker has exited
+when the owning host shuts down.
+
+CPU-only media tests can use `pip install -e ".[dev,simulator-scenes,simulator-media]"`
+and `python -m pytest tests/unit_tests/simulators/genesis/test_stream.py -q`.
+Run `node --test tests/unit_tests/simulators/genesis/metrics.test.mjs` for counters.
+The media profile pins aiortc 1.15.0 and av 17.1.0. PyAV's binding license does
+not replace the licenses of the selected FFmpeg/codec binaries; inspect those
+with `python -m av --version`. This repository does not bundle those binaries.
+
+The worker's `startup` snapshot records phase durations and the actual Quadrants
+cache configuration.
+GPU acceptance is opt-in through `JIUWEN_GENESIS_INTEGRATION=1`; set
+`JIUWEN_GENESIS_EVIDENCE` to an `outputs/` directory to retain images and measurements.
+CPU transport, GPU rendering, physical-task success and browser QA are separate checks.

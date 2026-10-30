@@ -99,7 +99,7 @@ if page.items:
 `search` 支持关键词、`root_id`、`kind`、`category`、`preview_mode` 过滤，返回
 `total/items/limit/offset`；`resolve` 重新检查入口位置、大小和修改时间。
 `preview_mode` 仅标记候选类型：环境为 `static_usd`，关联 URDF 的机器人为 `urdf`。
-本批增加 USD 场景处理、色彩管理和灯光适配、表面拾取及离线渲染探针；工作台入口和持续仿真 worker 随后续批次交付。
+已提供 USD 场景处理、表面拾取、独立 worker 和 WebRTC 后端；完整浏览器页面与工作台入口由下一批交付。
 `probe` 检查本地资源引用和材质摘要；USD 未解析列表也可能包含 SDK 自带的 MDL 模块。
 索引成功或预览可用不代表碰撞、控制、规划或画质已经通过验收。
 
@@ -138,3 +138,35 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --outp
 源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
 曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
 灯光转换和拾取测试验证 USD 数值/几何，不代表画质、接触物理或机器人任务验收。
+
+
+## 独立运行与媒体后端
+
+`GenesisPreview` 拥有一个独立 worker。worker 内才加载 Genesis、CUDA 和 Nyx；
+父进程可查询状态、切换场景/画质和请求相机图像。`PreviewStream` 提供单观看者
+WebRTC 信令和租约，不自行绑定网络端口。视频断开保留物理世界；结束时必须调用
+`PreviewStream.stop()` 或 `GenesisPreview.stop()`，等待 worker 退出。
+
+CPU 媒体回归可使用独立环境，不需要安装 Genesis/CUDA：
+
+```bash
+python -m pip install -e ".[dev,simulator-scenes,simulator-media]"
+python -m pytest tests/unit_tests/simulators/genesis/test_stream.py -q
+node --test tests/unit_tests/simulators/genesis/metrics.test.mjs
+```
+
+GPU 组合仍在独立环境安装 `.[genesis]`。需要 aiortc 1.15.0 的预编码 H264
+关键帧桥接和 av 17.1.0；直接依赖声明见根目录 Notice。PyAV 的 BSD 许可不覆盖
+所选 FFmpeg/codec 二进制的独立许可；`python -m av --version` 显示实际库版本和许可。
+本仓库不打包这些外部二进制。
+
+以下 GPU 检查使用内置演示场景，不需要配置外部资产，结果保留到指定目录：
+
+```bash
+JIUWEN_GENESIS_INTEGRATION=1 JIUWEN_GENESIS_EVIDENCE="$PWD/outputs/genesis-gpu" \
+python -m pytest tests/integration/test_genesis_preview.py -q \
+  -k 'real_nyx_motion_camera_reconnect_and_cleanup or real_nvenc_quality_and_forced_idr'
+```
+
+这两项检查覆盖动态图像、相机、重连、退出及 NVENC 编码，不代表室内接触物理、
+机器人任务或浏览器界面已经验收。

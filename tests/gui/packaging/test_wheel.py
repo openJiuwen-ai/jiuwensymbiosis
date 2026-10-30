@@ -178,3 +178,25 @@ usd_probe.main()
     assert "--inventory" in run(
         [sys.executable, "-I", "-c", standalone_probe, str(installed / "jiuwensymbiosis/simulators/genesis")]
     )
+
+    media_probe = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+root = Path(sys.argv[1])
+from jiuwensymbiosis.simulators.genesis import preview, stream
+from jiuwensymbiosis.simulators.genesis import robot_cameras, robot_materials, startup_diagnostics
+for module in (preview, stream, robot_cameras, robot_materials, startup_diagnostics):
+    assert Path(module.__file__).is_relative_to(root)
+assert preview._WORKER.is_relative_to(root) and preview._WORKER.is_file()
+assert (preview._WORKER.parent / "web/assets/metrics.mjs").is_file()
+assert not {"genesis", "torch", "gs_nyx", "aiortc", "av"} & sys.modules.keys()
+"""
+    run([sys.executable, "-I", "-c", media_probe, str(installed)])
+    worker_probe = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import worker
+assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "gs_nyx", "av"} & sys.modules.keys()
+"""
+    run([sys.executable, "-I", "-c", worker_probe, str(installed / "jiuwensymbiosis/simulators/genesis")])

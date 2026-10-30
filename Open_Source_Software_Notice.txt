@@ -365,6 +365,52 @@ and reference the following license:
     LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
     OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
     PERFORMANCE OF THIS SOFTWARE.
+Software: aiortc 1.15.0
+Copyright notice:
+Copyright (c) Jeremy Lainé.
+All rights reserved.
+
+License: BSD 3-Clause License
+Please see above under Software: numpy 2.4.4.
+The third clause in aiortc's license reads:
+Neither the name of aiortc nor the names of its contributors may be used to
+endorse or promote products derived from this software without specific prior
+written permission.
+License source: https://github.com/aiortc/aiortc/blob/1.15.0/LICENSE
+Software: av (PyAV) 17.1.0
+Copyright notice:
+Copyright retained by original committers. All rights reserved.
+
+License: BSD 3-Clause License
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of the project nor the names of its contributors may be
+      used to endorse or promote products derived from this software without
+      specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+License source: https://github.com/PyAV-Org/PyAV/blob/v17.1.0/LICENSE.txt
+This entry covers the PyAV bindings. FFmpeg and codec libraries supplied in
+third-party binary wheels have separate licenses; the checked av 17.1.0 Linux
+wheel reports LGPL version 3 or later for its FFmpeg libraries. Those binaries
+are not bundled by this repository. Binary redistributors must retain their
+applicable license notices and meet their source/relinking obligations.
+FFmpeg license information: https://ffmpeg.org/legal.html
+Inspect the selected binary build with: python -m av --version
 Software: Pillow 12.2.0
 Copyright notice:
 Copyright (c) 1997-2011 by Secret Labs AB
