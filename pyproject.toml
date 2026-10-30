@@ -131,6 +131,11 @@ simulator-scenes = [
     "rtree>=1",
     "pillow>=11.3",
 ]
+simulator-media = [
+    # CPU WebRTC/H264 verification; no Genesis or CUDA runtime.
+    "aiortc==1.15.0",
+    "av==17.1.0",
+]
 genesis = [
     # Dedicated simulation environment; see configs/simulators/README.md.
     "usd-core==25.11",
@@ -141,6 +146,8 @@ genesis = [
     "genesis-world[render,usd]==1.4.4",
     "gs-nyx-plugin==0.1.9",
     "gs-nyx==0.1.7",
+    "aiortc==1.15.0",
+    "av==17.1.0",
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
 ]
@@ -187,6 +194,7 @@ jiuwensymbiosis = [
     "adapters/so101/description/**/*.md",
     "simulators/assets/data/*.yaml",
     "simulators/genesis/data/*.yaml",
+    "simulators/genesis/web/assets/*.mjs",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",
