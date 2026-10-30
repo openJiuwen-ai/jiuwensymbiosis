@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1660" viewBox="0 0 1800 1660" role="img" aria-labelledby="title desc">
+<title id="title">Symbiosis 统一 Chat：场景、机器人与仿真</title>
+<desc id="desc">目标设计，尚未完成业务实现。GUI 和 CLI 共用公共配置入口、ChatService、ChatEngine 与 ChatRun。model 加 scene 即可进行空间聊天，无需 adapter、env、detector 或 RobotSession。只有 scene 注入可选 SceneContext，按路径读取 PAI/HOVSG 数据并复用检索。allow_actions 默认 false，跳过额外执行配置解析和绑定；为 true 时机器人和仿真沿用已有配置及执行链，通过 TaskExecutor 接入。Genesis 既有预览和只读相机保持原机制，默认遵循 head-camera-only。场景目标进入执行前需要实时 TargetBinding。消息、证据、任务结果与清理返回同一轮次。</desc>
+<defs>
+<style>
+text {font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill:#20314b}
+.title {font-size:38px;font-weight:700}
+.h1 {font-size:28px;font-weight:700}
+.h2 {font-size:24px;font-weight:700}
+.body {font-size:21px}
+.small {font-size:18px}
+.badge {font-size:17px;font-weight:600}
+.muted {fill:#5e7087}
+.blue {fill:#365da2}
+.teal {fill:#237b6e}
+.orange {fill:#97601c}
+.purple {fill:#70569c}
+.edge {fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+</style>
+
+<marker id="blue-end" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#426cba"/></marker>
+<marker id="blue-start" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M10 0 L0 5 L10 10 Z" fill="#426cba"/></marker>
+<marker id="teal-end" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#238375"/></marker>
+<marker id="teal-start" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M10 0 L0 5 L10 10 Z" fill="#238375"/></marker>
+<marker id="orange-end" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#a9742c"/></marker>
+<marker id="orange-start" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M10 0 L0 5 L10 10 Z" fill="#a9742c"/></marker>
+<marker id="purple-end" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#7761a7"/></marker>
+<marker id="purple-start" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M10 0 L0 5 L10 10 Z" fill="#7761a7"/></marker>
+</defs>
+<rect x="0" y="0" width="1800" height="1660" rx="0" fill="#f7f9fc" stroke="none"/>
+<rect x="52" y="42" width="6" height="46" rx="3" fill="#426cba" stroke="none"/>
+<text id="text-1" x="78" y="79" class="title">Symbiosis · 统一 Chat</text>
+<text id="text-2" x="78" y="122" class="body muted">公共 Chat + 可选 SceneContext + 既有机器人 / 仿真执行</text>
+<rect x="1460" y="44" width="288" height="42" rx="21" fill="#e8edf5" stroke="none"/>
+<text id="text-3" x="1604" y="72" class="badge muted" text-anchor="middle">目标设计 · 方向已确认</text>
+<text id="text-4" x="1748" y="119" class="small muted" text-anchor="end">按路径读场景 · 复用现有执行</text>
+<g data-box="60 174 1680 164">
+<rect x="60" y="174" width="1680" height="164" rx="14" fill="#f3f0f9" stroke="#d9d0e9"/>
+<text id="text-5" x="88" y="215" class="h1 purple">统一交互入口 · GUI / CLI</text>
+<text id="text-6" x="88" y="256" class="body">场景聊天 · 机器人聊天 · 仿真聊天</text>
+<text id="text-7" x="88" y="299" class="body muted">同一消息 / 事件合同 · 各窗口保留自身布局</text>
+<line x1="862" y1="196" x2="862" y2="316" stroke="#d9d0e9"/>
+<text id="text-8" x="900" y="215" class="h2">公共配置入口 → ChatService</text>
+<text id="text-9" x="900" y="256" class="body muted">先解析 model / scene / agent.chat；执行项按需解析</text>
+<text id="text-10" x="900" y="299" class="body muted">会话与历史 · ChatRun / 事件 · 幂等 / 停止 / 恢复</text>
+</g>
+<path d="M900 338 V395" class="edge" stroke="#7761a7" marker-start="url(#purple-start)" marker-end="url(#purple-end)"/>
+<text id="text-11" x="922" y="375" class="small purple">消息 / 已持久化事件</text>
+<g data-box="320 396 1160 190">
+<rect x="320" y="396" width="1160" height="190" rx="14" fill="#eaf1fc" stroke="#a9c0e4"/>
+<text id="text-12" x="350" y="438" class="h1 blue">ChatEngine + ChatRun</text>
+<text id="text-13" x="1450" y="438" class="small blue" text-anchor="end">通用入口 · agent.chat</text>
+<text id="text-14" x="350" y="480" class="body">消息 + 可选场景资料 → 模型生成 → 按需调用工具 → 回填结果</text>
+<text id="text-15" x="350" y="521" class="body blue">仅 SceneContext 注入 build 回调；状态 / 相机 / Rails 沿用原链路</text>
+<text id="text-16" x="350" y="561" class="body muted">allow_actions 默认 false：跳过额外执行配置；宿主只读入口保持原机制</text>
+</g>
+<path d="M600 586 V625 H330 V670" class="edge" stroke="#238375" marker-start="url(#teal-start)" marker-end="url(#teal-end)"/>
+<path d="M900 586 V670" class="edge" stroke="#a9742c" marker-start="url(#orange-start)" marker-end="url(#orange-end)"/>
+<path d="M1200 586 V625 H1470 V670" class="edge" stroke="#7761a7" marker-start="url(#purple-start)" marker-end="url(#purple-end)"/>
+<text id="text-17" x="95" y="624" class="small teal">可选知识注入</text>
+<text id="text-18" x="922" y="624" class="small orange">按配置启用执行</text>
+<text id="text-19" x="1500" y="624" class="small purple">沿用宿主仿真接入</text>
+<rect x="60" y="670" width="540" height="650" rx="20" fill="#edf6f3" stroke="#c9dfd8"/>
+<text id="text-20" x="88" y="714" class="h1 teal">scene · 场景</text>
+<text id="text-21" x="88" y="751" class="small muted">最小配置：model + scene.path</text>
+<rect x="630" y="670" width="540" height="650" rx="20" fill="#fbf5eb" stroke="#e5d7bf"/>
+<text id="text-22" x="658" y="714" class="h1 orange">robot · 机器人</text>
+<text id="text-23" x="658" y="751" class="small muted">沿用配置、状态、观测与执行</text>
+<rect x="1200" y="670" width="540" height="650" rx="20" fill="#f3f0f9" stroke="#d9d0e9"/>
+<text id="text-24" x="1228" y="714" class="h1 purple">simulator · 仿真</text>
+<text id="text-25" x="1228" y="751" class="small muted">沿用宿主启动配置与 Preview</text>
+<g data-box="88 780 484 122">
+<rect x="88" y="780" width="484" height="122" rx="14" fill="#fff" stroke="#bed8ce"/>
+<text id="text-26" x="110" y="818" class="h2 teal">SceneContext</text>
+<text id="text-27" x="110" y="853" class="body muted">对象 / 关系 / 图片 · 来源与引用</text>
+<text id="text-28" x="110" y="885" class="small teal">scene_query / scene_search / scene_image</text>
+</g>
+<path d="M330 902 V944" class="edge" stroke="#238375" marker-start="url(#teal-start)" marker-end="url(#teal-end)"/>
+<g data-box="88 944 484 132">
+<rect x="88" y="944" width="484" height="132" rx="14" fill="#fff" stroke="#bed8ce"/>
+<text id="text-29" x="110" y="984" class="h2 teal">Scene.open(path)</text>
+<text id="text-30" x="110" y="1020" class="body">完整查询 · 受控资产 · 本地缓存</text>
+<text id="text-31" x="110" y="1054" class="small muted">复用 PAI 文本 / 图片检索与融合</text>
+</g>
+<path d="M330 1120 V1076" class="edge" stroke="#238375" marker-end="url(#teal-end)"/>
+<text id="text-32" x="352" y="1105" class="small teal">直接读取</text>
+<g data-box="88 1120 484 126">
+<rect x="88" y="1120" width="484" height="126" rx="14" fill="#fff" stroke="#bed8ce"/>
+<text id="text-33" x="110" y="1159" class="h2">PAI / HOVSG 现有产物</text>
+<text id="text-34" x="110" y="1194" class="body muted">JSON · 来源图片 · 可选 GLB</text>
+<text id="text-35" x="110" y="1226" class="small muted">无需新规范包、发布或场景版本管理</text>
+</g>
+<text id="text-36" x="88" y="1293" class="small teal">无需 adapter / env / detector / RobotSession</text>
+<g data-box="658 780 484 122">
+<rect x="658" y="780" width="484" height="122" rx="14" fill="#fff" stroke="#ddc69f"/>
+<text id="text-37" x="680" y="818" class="h2 orange">现有机器人配置</text>
+<text id="text-38" x="680" y="853" class="body muted">adapter / env · 可选 detector</text>
+<text id="text-39" x="680" y="885" class="small orange">agent.execution / modules · 原校验与绑定</text>
+</g>
+<text id="text-40" x="680" y="929" class="small orange">allow_actions=true 且绑定有效</text>
+<path d="M1120 902 V944" class="edge" stroke="#a9742c" marker-end="url(#orange-end)"/>
+<g data-box="658 944 484 132">
+<rect x="658" y="944" width="484" height="132" rx="14" fill="#fff" stroke="#ddc69f"/>
+<text id="text-41" x="680" y="984" class="h2 orange">TaskExecutor → Runtime</text>
+<text id="text-42" x="680" y="1020" class="body">execute_task · 幂等 / 准入 / 取消</text>
+<text id="text-43" x="680" y="1054" class="small muted">拟接入统一 Chat；复用现有任务生命周期</text>
+</g>
+<path d="M900 1076 V1120" class="edge" stroke="#a9742c" marker-start="url(#orange-start)" marker-end="url(#orange-end)"/>
+<g data-box="658 1120 484 126">
+<rect x="658" y="1120" width="484" height="126" rx="14" fill="#fff" stroke="#ddc69f"/>
+<text id="text-44" x="680" y="1159" class="h2">现有 Agent / ActionSpec / Rails</text>
+<text id="text-45" x="680" y="1194" class="body muted">Env / Driver · 真实机器人执行</text>
+<text id="text-46" x="680" y="1226" class="small muted">当前状态 · 目标验证 · 资源清理</text>
+</g>
+<text id="text-47" x="658" y="1293" class="small orange">新 Chat 无绑定时不默认选择 Piper</text>
+<g data-box="1228 780 484 122">
+<rect x="1228" y="780" width="484" height="122" rx="14" fill="#fff" stroke="#d9cce8"/>
+<text id="text-48" x="1250" y="818" class="h2 purple">现有仿真配置 / Preview</text>
+<text id="text-49" x="1250" y="853" class="body muted">原相机工具 / Rail · 执行反馈</text>
+<text id="text-50" x="1250" y="885" class="small purple">capture_camera · head-camera-only</text>
+</g>
+<text id="text-51" x="1250" y="929" class="small purple">allow_actions=true 且实例就绪</text>
+<path d="M1690 902 V944" class="edge" stroke="#7761a7" marker-end="url(#purple-end)"/>
+<g data-box="1228 944 484 132">
+<rect x="1228" y="944" width="484" height="132" rx="14" fill="#fff" stroke="#d9cce8"/>
+<text id="text-52" x="1250" y="984" class="h2 purple">TaskExecutor → Runtime</text>
+<text id="text-53" x="1250" y="1020" class="body">execute_task · 同一任务与结果合同</text>
+<text id="text-54" x="1250" y="1054" class="small muted">拟新增受控 worker 组装与相机 Rail 接入</text>
+</g>
+<path d="M1470 1076 V1120" class="edge" stroke="#7761a7" marker-start="url(#purple-start)" marker-end="url(#purple-end)"/>
+<g data-box="1228 1120 484 126">
+<rect x="1228" y="1120" width="484" height="126" rx="14" fill="#fff" stroke="#d9cce8"/>
+<text id="text-55" x="1250" y="1159" class="h2">Genesis · Agent / Env / Driver</text>
+<text id="text-56" x="1250" y="1194" class="body muted">Preview · 相机采样 · 运动恢复</text>
+<text id="text-57" x="1250" y="1226" class="small muted">复用分支实现；宿主拥有实例，任务持租约</text>
+</g>
+<text id="text-58" x="1228" y="1293" class="small purple">关闭控制保留原相机路径；不注入真值</text>
+<g data-box="60 1350 1680 90">
+<rect x="60" y="1350" width="1680" height="90" rx="14" fill="#fff" stroke="#d7e0ec"/>
+<text id="text-59" x="88" y="1386" class="h2">场景辅助执行：SceneContext → 目标资料 → 现有执行链实时 TargetBinding</text>
+<text id="text-60" x="88" y="1420" class="small muted">历史位置只作线索；重新加载创建新作用域。纯视觉仿真保持原策略，场景资料仅在策略明确允许时注入。</text>
+</g>
+<g data-box="60 1470 1680 110">
+<rect x="60" y="1470" width="1680" height="110" rx="14" fill="#eaf0f8" stroke="#cbd9ee"/>
+<text id="text-61" x="88" y="1510" class="h2 blue">同一 ChatResult：正文 · 事实与证据 · 可选 TaskResult · 清理状态</text>
+<text id="text-62" x="88" y="1549" class="body">所有分支事件回到原 ChatRun；执行分支共用任务合同。对话完成、动作完成与目标达成分别记录。</text>
+</g>
+<text id="text-63" x="60" y="1620" class="small muted">双向箭头：调用与结果回流。只有 scene 增加上下文注入；robot / simulator 沿用原机制。新增接入尚未实现。</text>
+<text id="text-64" x="1740" y="1646" class="small muted" text-anchor="end">2026-10-26 · Symbiosis 4ce2d6d / PAI bcd25b0 / Genesis b27474e</text>
+</svg>
