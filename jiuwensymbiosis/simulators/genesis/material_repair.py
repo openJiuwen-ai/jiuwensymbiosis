@@ -1,0 +1,558 @@
+"""Non-destructive USD material compatibility for the pinned Nyx importer.
+
+The importer warns and substitutes gray for unsupported surface shaders. Detect
+the same condition before import and author an independent PreviewSurface layer.
+This translates known inputs; it is not an arbitrary MDL compiler or baker.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import re
+from functools import lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger("jiuwensymbiosis.simulators.genesis.material_repair")
+SUPPORTED = {"UsdPreviewSurface", "OmniPBR"}
+LEGACY = {"M_BaseMaterial", "M_BaseMaterial_twosided", "M_TranslucentMaterial"}
+MODERN = {"M_BaseMaterial_v2", "M_BaseMaterial_v2_twosided", "M_TranslucentMaterial_v2"}
+# Explicit recipes for the InteriorAgent MDL templates, not arbitrary MDL.
+CLOTH = {
+    "rongbu_Inst": ("3d66Mat-13918103-maps-4.png", "GeneratedName_16225", (0.5, 1.0)),
+    "rongbu1": ("3d66Mat-13918078-maps-3.png", "GeneratedName_17050", (1.0, 1.0)),
+    "rongbu2": ("3d66Mat-13918103-maps-5.png", "GeneratedName_11155", (1.0, 1.0)),
+    "rongbu3": ("3d66Mat-13918103-maps-4.png", "GeneratedName_4743", (5.0, 5.0)),
+}
+EMISSION = "T_5f0d8e6ed849e100010ee906_emission_Mat"
+MIRROR = "M_59268dbcbc974b45eaafd427"
+
+
+def _value(shader, name, default):
+    value = shader.GetInput(name).Get()
+    return default if value is None else value
+
+
+def _rgb(value):
+    return tuple(float(v) for v in value[:3])
+
+
+@lru_cache(maxsize=128)
+def _texture_defaults(module: str, modified_ns: int) -> dict[str, str]:
+    # Known templates may omit a USD input when its MDL default is intended.
+    return dict(re.findall(r'uniform\s+texture_2d\s+(\w+)\s*=\s*texture_2d\("([^"]+)"', Path(module).read_text()))
+
+
+def _module_path(shader, report):
+    asset = shader.GetSourceAsset("mdl")
+    if not asset:
+        return None
+    if asset.resolvedPath:
+        return Path(asset.resolvedPath)
+    parts = asset.path.replace("\\", "/").split("/")
+    if "Materials" not in parts:
+        return None
+    suffix = Path(*parts[parts.index("Materials") :])
+    for spec in shader.GetPrim().GetAttribute("info:mdl:sourceAsset").GetPropertyStack():
+        if not spec.layer.realPath:
+            continue
+        for parent in Path(spec.layer.realPath).parents:
+            candidate = parent / suffix
+            if candidate.is_file():
+                report["issues"].append(
+                    {"kind": "repaired_material_module_path", "original": asset.path, "resolved": str(candidate)}
+                )
+                return candidate
+            if parent.name == "InteriorAgent":
+                break
+    return None
+
+
+def _resolve_texture(shader, name, report):
+    """Resolve at the authoring layer, never relative to the generated overlay."""
+    value = shader.GetInput(name).Get()
+    if value is None:
+        path = _module_path(shader, report)
+        if path:
+            default = _texture_defaults(str(path), path.stat().st_mtime_ns).get(name)
+            if default:
+                candidate = path.parent / default
+                if candidate.is_file():
+                    return candidate.resolve()
+    if not value or not value.path:
+        report["issues"].append({"kind": "missing_texture", "shader": str(shader.GetPath()), "input": name})
+        return None
+    if value.resolvedPath and Path(value.resolvedPath).is_file():
+        return Path(value.resolvedPath)
+    # Some shipped assets spell ../Materials as .../Materials. Repair only an
+    # exact Materials-relative suffix in this authoring asset's own ancestors.
+    parts = value.path.replace("\\", "/").split("/")
+    if "Materials" in parts:
+        suffix = Path(*parts[parts.index("Materials") :])
+        for spec in shader.GetInput(name).GetAttr().GetPropertyStack():
+            if not spec.layer.realPath:
+                continue
+            for parent in Path(spec.layer.realPath).parents:
+                candidate = parent / suffix
+                if candidate.is_file():
+                    report["issues"].append(
+                        {"kind": "repaired_texture_path", "original": value.path, "resolved": str(candidate)}
+                    )
+                    return candidate
+                if parent.name == "InteriorAgent":
+                    break
+    report["issues"].append(
+        {"kind": "missing_texture", "shader": str(shader.GetPath()), "input": name, "asset": value.path}
+    )
+    return None
+
+
+def _uv_transform(shader, prefix, modern):
+    """USD UV affine equivalent of the local MDL templates' two V flips."""
+    uv = _value(shader, prefix + ("UVW" if modern else "_UVA"), (1, 1, 0, 0))
+    sx, sy = float(uv[0]), float(uv[1])
+    angle = -float(uv[2]) * 2 * math.pi if modern else float(uv[2])
+    offset = _value(shader, prefix + "Offset", (0, 0, 0, 0)) if modern else (0, 0)
+    x = float(offset[0]) - 0.5
+    y = float(offset[1]) - 0.5 if modern else 0.5 - sy
+    c, s = math.cos(angle), math.sin(angle)
+    return (sx, sy), math.degrees(angle), (0.5 + c * x - s * y, 0.5 + s * x + c * y)
+
+
+def _texture(stage, preview, source, name, target, report, *, uv=None, color=False, scale=None, bias=None, path=None):
+    from pxr import Sdf, UsdShade
+
+    path = path or _resolve_texture(source, name, report)
+    if path is None:
+        return
+    if TYPE_CHECKING or __package__:
+        from .material_baking import bake_texture
+    else:
+        from material_baking import bake_texture
+
+    path, color, baked = bake_texture(path, Path(report["texture_directory"]), target, uv, color, scale, bias)
+    if baked:
+        report["baked_textures"].append(baked)
+    tex = UsdShade.Shader.Define(stage, preview.GetPath().AppendChild(target + "Texture"))
+    tex.CreateIdAttr("UsdUVTexture")
+    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(str(path)))
+    tex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("sRGB" if color else "raw")
+    for axis in ("S", "T"):
+        tex.CreateInput("wrap" + axis, Sdf.ValueTypeNames.Token).Set("repeat")
+    if target == "normal":
+        tex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set((2, 2, 2, 1))
+        tex.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set((-1, -1, -1, 0))
+    reader = UsdShade.Shader.Define(stage, tex.GetPath().AppendChild("UV"))
+    reader.CreateIdAttr("UsdPrimvarReader_float2")
+    reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+    vector = target in {"diffuseColor", "normal", "emissiveColor", "specularColor"}
+    channel = "rgb" if vector else "r"
+    tex.CreateOutput(channel, Sdf.ValueTypeNames.Float3 if vector else Sdf.ValueTypeNames.Float)
+    preview.GetInput(target).ConnectToSource(tex.ConnectableAPI(), channel)
+    report["textures"] += 1
+
+
+def _constant(preview, target, value):
+    from pxr import Sdf
+
+    kind = Sdf.ValueTypeNames.Float
+    if isinstance(value, tuple):
+        kind = Sdf.ValueTypeNames.Normal3f if target == "normal" else Sdf.ValueTypeNames.Color3f
+    preview.CreateInput(target, kind).Set(value)
+
+
+def _legacy(stage, preview, shader, family, report):
+    mappings = (
+        ("BaseColor", "diffuseColor", (1, 1, 1, 1)),
+        ("Metallic", "metallic", (0, 0, 0, 1)),
+        ("Gloss", "roughness", (0.1, 0.1, 0.1, 1)),
+        ("Emissive", "emissiveColor", (1, 1, 1, 1)),
+    )
+    for prefix, target, default in mappings:
+        value = _value(shader, prefix + "_Color", default)
+        gain = float(_value(shader, "EmissiveIntensity", 0)) if prefix == "Emissive" else 1.0
+        vector = target in {"diffuseColor", "emissiveColor"}
+        value = tuple(v * gain for v in _rgb(value)) if vector else float(value[0])
+        if prefix == "Gloss":
+            value = 1 - value
+        _constant(preview, target, value)
+        if abs(float(_value(shader, "Is" + prefix + "Tex", 0)) - 1) < 1e-5 and gain != 0:
+            scale, bias = ((-1, -1, -1, 1), (1, 1, 1, 0)) if prefix == "Gloss" else ((gain,) * 3 + (1,), None)
+            _texture(
+                stage,
+                preview,
+                shader,
+                prefix + "_Tex",
+                target,
+                report,
+                uv=_uv_transform(shader, prefix, False),
+                color=True,
+                scale=scale,
+                bias=bias,
+            )
+    _constant(preview, "opacity", float(_value(shader, "Opacity", 1)))
+    _constant(preview, "ior", float(_value(shader, "FresnelB", 1.5)))
+    if float(_value(shader, "IsNormalTex", 0)) == 1:
+        _constant(preview, "normal", (0.0, 0.0, 1.0))
+        _texture(
+            stage,
+            preview,
+            shader,
+            "Normal_Tex",
+            "normal",
+            report,
+            uv=_uv_transform(shader, "Normal", False),
+            scale=(2, 2, 2, 1),
+            bias=(-1, -1, -1, 0),
+        )
+    if "Translucent" in family:
+        report["issues"].append(
+            {
+                "kind": "approximation",
+                "shader": str(shader.GetPath()),
+                "detail": "MDL transmission approximated by PreviewSurface opacity and IOR",
+            }
+        )
+
+
+def _modern(stage, preview, shader, family, report):
+    for prefix, target, default in (
+        ("Color", "diffuseColor", (1.0, 1.0, 1.0)),
+        ("Emission", "emissiveColor", (0.0, 0.0, 0.0)),
+        ("Metallic", "metallic", 0.0),
+        ("Roughness", "roughness", 0.0),
+        ("Opacity", "opacity", 0.0 if "Translucent" in family else 1.0),
+    ):
+        vector = isinstance(default, tuple)
+        value = _value(shader, prefix + ("Color" if vector else "Float"), default)
+        mode = float(_value(shader, prefix + "IsTexType", 0))
+        if mode >= 2:
+            # PreviewSurface cannot express the MDL template's angle-dependent
+            # two-lobe Fresnel blend. Retain its front-facing branch explicitly.
+            mode = float(_value(shader, prefix + "FalloffValue1Type", 0))
+            if mode >= 2:
+                front = float(_value(shader, prefix + "FalloffFloat", 0))
+                value = (front,) * 3 if vector else front
+            report["issues"].append(
+                {
+                    "kind": "approximation",
+                    "shader": str(shader.GetPath()),
+                    "detail": prefix + " Fresnel blend uses front-facing branch",
+                }
+            )
+        _constant(preview, target, _rgb(value) if vector else float(value))
+        if abs(mode - 1) < 1e-5:
+            _texture(
+                stage,
+                preview,
+                shader,
+                prefix + "Tex",
+                target,
+                report,
+                uv=_uv_transform(shader, prefix, True),
+                color=True,
+            )
+    if float(_value(shader, "IsNormal", 0)) == 1:
+        gain = float(_value(shader, "NormalIntensity", 0))
+        if gain:
+            _constant(preview, "normal", (0.0, 0.0, 1.0))
+            _texture(
+                stage,
+                preview,
+                shader,
+                "NormalTex",
+                "normal",
+                report,
+                uv=_uv_transform(shader, "Normal", True),
+                scale=(2 * gain, 2 * gain, 2, 1),
+                bias=(-gain, -gain, -1, 0),
+            )
+
+
+def _mdl_texture(shader, filename, report):
+    """Resolve texture literals in a known MDL template at that module's layer."""
+    module = _module_path(shader, report)
+    if module:
+        path = module.parent / "Textures" / filename
+        if path.is_file():
+            return path
+    report["issues"].append({"kind": "missing_texture", "shader": str(shader.GetPath()), "asset": filename})
+    return None
+
+
+def _world_grid(stage, preview, shader, report, directory):
+    """Bake the shipped grid template's three-frequency mask into one UV tile.
+
+    This procedural template has a two-UV-unit period. Its algebra comes from
+    WorldGridMaterial.mdl; the 1024px bake is explicitly a sampled approximation.
+    """
+    import hashlib
+
+    import numpy as np
+    from PIL import Image
+    from scipy.ndimage import map_coordinates
+
+    path = _mdl_texture(shader, "T_Default_Material_Grid_M.png", report)
+    if path is None:
+        return False
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    target = directory / "textures" / ("grid-" + digest)
+    diffuse = target.with_name(target.name + "-color.png")
+    roughness = target.with_name(target.name + "-rough.png")
+    if not diffuse.is_file() or not roughness.is_file():
+        mask = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255
+        size = 1024
+        u, v = np.meshgrid((np.arange(size) + 0.5) / size * 2, (np.arange(size) + 0.5) / size * 2)
+
+        def sample(frequency):
+            coordinates = [(v * frequency % 1) * mask.shape[0] - 0.5, (u * frequency % 1) * mask.shape[1] - 0.5]
+            return np.stack(
+                [map_coordinates(mask[..., c], coordinates, order=1, mode="grid-wrap") for c in range(3)], axis=-1
+            )
+
+        fine, medium, coarse = sample(20), sample(5), sample(0.5)
+        a = 0.4 + 0.6 * fine[..., 0]
+        mixed = a * (1 - medium[..., 1]) + (1 - a) * medium[..., 1]
+        color = mixed * (0.295 + 0.365 * (0.5 * (coarse[..., 1] + medium[..., 1]) + 0.25)) * 0.5
+        rough = np.clip(0.5 * coarse[..., 1] + 0.7 + 0.3 * medium[..., 1], 0, 1)
+        # Store color in sRGB; numeric roughness remains linear.
+        srgb = np.where(color <= 0.0031308, 12.92 * color, 1.055 * color ** (1 / 2.4) - 0.055)
+        diffuse.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.uint8(np.clip(srgb, 0, 1) * 255)).convert("RGB").save(diffuse)
+        Image.fromarray(np.uint8(rough * 255)).convert("RGB").save(roughness)
+    for name, path, color in (("diffuseColor", diffuse, True), ("roughness", roughness, False)):
+        _constant(preview, name, (0.1, 0.1, 0.1) if color else 0.8)
+        _texture(stage, preview, shader, "", name, report, path=path, color=color, uv=((0.5, 0.5), 0.0, (0.0, 0.0)))
+    normal = _mdl_texture(shader, "T_Default_Material_Grid_N.png", report)
+    if normal:
+        _constant(preview, "normal", (0.0, 0.0, 1.0))
+        _texture(
+            stage,
+            preview,
+            shader,
+            "",
+            "normal",
+            report,
+            path=normal,
+            uv=((10.0, 10.0), 0.0, (0.0, 0.0)),
+            scale=(0.6, 0.6, 2, 1),
+            bias=(-0.3, -0.3, -1, 0),
+        )
+    report["issues"].append(
+        {
+            "kind": "approximation",
+            "shader": str(shader.GetPath()),
+            "detail": "WorldGridMaterial procedural color and roughness baked to a 1024px periodic tile",
+        }
+    )
+    return True
+
+
+def _other(stage, preview, shader, family, report, directory):
+    if family == "BasicShapeMaterial":
+        _constant(preview, "diffuseColor", _rgb(_value(shader, "Color", (0.9, 0.9, 0.9))))
+        _constant(preview, "roughness", float(_value(shader, "Roughness", 0.6407)))
+    elif family == "OmniGlass":
+        _constant(preview, "diffuseColor", _rgb(_value(shader, "glass_color", (1, 1, 1))))
+        _constant(preview, "roughness", float(_value(shader, "frosting_roughness", 0)))
+        _constant(preview, "ior", float(_value(shader, "glass_ior", 1.5)))
+        _constant(preview, "opacity", 0.15)
+        report["issues"].append(
+            {
+                "kind": "approximation",
+                "shader": str(shader.GetPath()),
+                "detail": "OmniGlass volume absorption/transmission replaced by thin transparent PreviewSurface opacity=0.15",
+            }
+        )
+    elif family == "OmniSurface":
+        _constant(preview, "diffuseColor", _rgb(_value(shader, "diffuse_reflection_color", (0.8, 0.8, 0.8))))
+        _constant(preview, "roughness", float(_value(shader, "specular_reflection_roughness", 0.5)))
+        image = shader.GetInput("diffuse_reflection_color_image").Get()
+        if image and image.path:
+            _texture(stage, preview, shader, "diffuse_reflection_color_image", "diffuseColor", report, color=True)
+        report["issues"].append(
+            {
+                "kind": "approximation",
+                "shader": str(shader.GetPath()),
+                "detail": "OmniSurface subsurface and diffuse transmission are not supported by PreviewSurface",
+            }
+        )
+    elif family in CLOTH:
+        diffuse_filename, roughness_input, uv_scale = CLOTH[family]
+        gain = float(_value(shader, roughness_input, 0.2))
+        for target, filename, color, scale, bias in (
+            ("diffuseColor", diffuse_filename, True, None, None),
+            ("roughness", "3d66Mat-10966853-maps-2.png", True, (gain, gain, gain, 1), None),
+            ("normal", "22.png", False, (2, 2, 2, 1), (-1, -1, -1, 0)),
+        ):
+            _constant(
+                preview,
+                target,
+                0.2 if target == "roughness" else (0.0, 0.0, 1.0) if target == "normal" else (0.5, 0.5, 0.5),
+            )
+            path = _mdl_texture(shader, filename, report)
+            if path:
+                _texture(
+                    stage,
+                    preview,
+                    shader,
+                    "",
+                    target,
+                    report,
+                    path=path,
+                    color=color,
+                    scale=scale,
+                    bias=bias,
+                    uv=(uv_scale, 0.0, (0.0, 1 - uv_scale[1])),
+                )
+    elif family in {MIRROR, "boli"}:
+        glass = family == "boli"
+        _constant(
+            preview,
+            "diffuseColor",
+            _rgb(
+                _value(
+                    shader,
+                    "GeneratedName_26377" if glass else "GeneratedName_11172",
+                    (0.008078, 0.041667, 0.023266) if glass else (1, 1, 1),
+                )
+            ),
+        )
+        _constant(preview, "metallic", float(_value(shader, "Metallic", 1)))
+        _constant(
+            preview,
+            "roughness",
+            float(_value(shader, "GeneratedName_18017" if glass else "GeneratedName_8822", 0.01 if glass else 0)),
+        )
+        if glass:
+            _constant(preview, "opacity", min(1.0, 0.15 * float(_value(shader, "GeneratedName_2663", 1.5))))
+            report["issues"].append(
+                {
+                    "kind": "approximation",
+                    "shader": str(shader.GetPath()),
+                    "detail": "boli view-dependent opacity uses its front-facing Fresnel value",
+                }
+            )
+    elif family == EMISSION:
+        path = _mdl_texture(shader, "T_5f0d8e6ed849e100010ee906_emission.png", report)
+        for target, gain in (("diffuseColor", 1), ("emissiveColor", 2)):
+            _constant(preview, target, (0.0, 0.0, 0.0))
+            if path:
+                _texture(stage, preview, shader, "", target, report, path=path, color=True, scale=(gain, gain, gain, 1))
+    elif family == "WorldGridMaterial":
+        return _world_grid(stage, preview, shader, report, directory)
+    else:
+        return False
+    return True
+
+
+def prepare_materials(source: Path, directory: Path) -> tuple[Path, dict]:
+    """Repair unsupported surface families before Nyx substitutes default gray.
+
+    Supported materials and original files stay unchanged. Unknown graphs remain
+    visible in the report and are NOT counted as repaired. The returned layer
+    carries only material overrides; source transforms/geometry are referenced.
+    """
+    from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+    source = Path(source).resolve(strict=True)
+    original = Usd.Stage.Open(str(source))
+    if original is None:
+        raise ValueError(f"Cannot inspect USD materials: {source}")
+    report: dict[str, Any] = {
+        "source": str(source),
+        "converted": 0,
+        "textures": 0,
+        "materials": [],
+        "remaining": [],
+        "issues": [],
+        "baked_textures": [],
+        "texture_directory": str(Path(directory).resolve() / "textures"),
+    }
+    stage = Usd.Stage.CreateInMemory()
+    stage.GetRootLayer().subLayerPaths = [str(source)]
+    # Stage metadata does not compose from a sublayer. Without copying units,
+    # metre-scale rooms become centimetre-scale and appear to vanish in Nyx.
+    UsdGeom.SetStageMetersPerUnit(stage, UsdGeom.GetStageMetersPerUnit(original))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.GetStageUpAxis(original))
+    if original.GetDefaultPrim():
+        stage.SetDefaultPrim(stage.GetPrimAtPath(original.GetDefaultPrim().GetPath()))
+    # Work on this disposable composition, deinstancing only when authoring an
+    # override inside an instance is necessary. Original assets stay instanceable.
+    materials = [
+        p.GetPath() for p in Usd.PrimRange.Stage(original, Usd.TraverseInstanceProxies()) if p.IsA(UsdShade.Material)
+    ]
+    for path in materials:
+        material = UsdShade.Material(stage.GetPrimAtPath(path))
+        shader, _, _ = material.ComputeSurfaceSource()
+        if not shader:
+            shader, _, _ = material.ComputeSurfaceSource("mdl")
+        if not shader:
+            continue
+        family = str(shader.GetShaderId() or shader.GetSourceAssetSubIdentifier("mdl"))
+        if family in SUPPORTED:
+            continue
+        known = family in LEGACY | MODERN | set(CLOTH) | {
+            "BasicShapeMaterial",
+            "OmniGlass",
+            "OmniSurface",
+            "boli",
+            MIRROR,
+            EMISSION,
+            "WorldGridMaterial",
+        }
+        if not known:
+            report["remaining"].append({"path": str(path), "family": family})
+            continue
+        ancestors = []
+        shader_path = shader.GetPath()
+        parent = material.GetPrim().GetParent()
+        while parent and not parent.IsPseudoRoot():
+            ancestors.append(parent.GetPath())
+            parent = parent.GetParent()
+        for parent_path in reversed(ancestors):
+            parent = stage.GetPrimAtPath(parent_path)
+            if parent.IsInstance():
+                stage.OverridePrim(parent_path).SetInstanceable(False)
+        # Deinstancing invalidates handles to the old instance proxies.
+        material = UsdShade.Material(stage.GetPrimAtPath(path))
+        shader = UsdShade.Shader(stage.GetPrimAtPath(shader_path))
+        preview = UsdShade.Shader.Define(stage, path.AppendChild("__NyxPreviewSurface"))
+        preview.CreateIdAttr("UsdPreviewSurface")
+        if family in LEGACY:
+            _legacy(stage, preview, shader, family, report)
+        elif family in MODERN:
+            _modern(stage, preview, shader, family, report)
+        elif not _other(stage, preview, shader, family, report, Path(directory).resolve()):
+            stage.RemovePrim(preview.GetPath())
+            report["remaining"].append({"path": str(path), "family": family, "reason": "missing_template_texture"})
+            continue
+        material.CreateSurfaceOutput().ConnectToSource(preview.ConnectableAPI(), "surface")
+        preview.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        report["converted"] += 1
+        report["materials"].append({"path": str(path), "from": family, "to": "UsdPreviewSurface"})
+    if report["remaining"]:
+        logger.warning(
+            "Nyx material repair: %d unknown surface shaders remain unsupported; see material report",
+            len(report["remaining"]),
+        )
+    if report["converted"]:
+        directory = Path(directory).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / "nyx-materials.usda"
+        if destination == source:
+            raise ValueError("Material repair cannot overwrite its source")
+        stage.GetRootLayer().Export(str(destination))
+        (directory / "material-repair.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        logger.info(
+            "Nyx material repair: %d converted, %d textures, %d unsupported",
+            report["converted"],
+            report["textures"],
+            len(report["remaining"]),
+        )
+        return destination, report
+    return source, report

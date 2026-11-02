@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -151,7 +152,22 @@ class SceneRenderer:
         self.entity_pairs = entity_pairs
         self.appearance = {"color_management": color_management}
         if source is not None:
-            # Keep authored materials and texture references for the renderer to interpret.
+            if TYPE_CHECKING or __package__:
+                from .material_repair import prepare_materials
+            else:
+                from material_repair import prepare_materials
+
+            source, repair = prepare_materials(source, directory / "materials")
+            # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
+            # paths and bake manifests on disk instead of sending megabytes.
+            self.appearance["material_repair"] = {
+                "converted": repair["converted"],
+                "textures": repair["textures"],
+                "remaining": len(repair["remaining"]),
+                "issues": dict(Counter(item["kind"] for item in repair["issues"])),
+                "baked_textures": len(repair["baked_textures"]),
+                "report_path": str(directory / "materials/material-repair.json") if repair["converted"] else None,
+            }
             asset = nps.SceneAsset()
             if not nps.import_scene_file(path, asset):
                 raise RuntimeError("无法创建 Nyx 背景场景。")

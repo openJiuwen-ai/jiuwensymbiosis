@@ -155,9 +155,9 @@ assert "genesis" not in sys.modules
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from jiuwensymbiosis.simulators.genesis import appearance, source_lighting, usd_probe
+from jiuwensymbiosis.simulators.genesis import appearance, material_baking, material_repair, source_lighting, usd_probe
 root = Path(sys.argv[1])
-for module in (appearance, source_lighting, usd_probe):
+for module in (appearance, material_baking, material_repair, source_lighting, usd_probe):
     assert Path(module.__file__).is_relative_to(root)
 for path in (appearance.PROFILE_PATH, source_lighting.PROFILE_PATH):
     assert path.is_relative_to(root) and path.is_file()
