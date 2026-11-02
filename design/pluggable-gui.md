@@ -534,7 +534,10 @@ lease；部分获取失败回滚。该接口不暴露到 agent 工具列表，�
 
 TraceRail 继续拥有既有轨迹及帧文件；runtime 登记引用并提供实时事件。
 提取 bridge 时复用已有观测/采集出口，避免再为同一步独立采一份相机图像。
-现有历史回放格式不改；HTTP 路由、JPEG/data URI 展示编码留在插件宿主。
+现有历史回放格式不改；本节 runtime bridge 的 HTTP 路由、JPEG/data URI 展示编码留在插件宿主。
+Genesis 独立后端是明确例外：可选 `simulators/genesis/web.routes` 与 `stream` 持有
+可复用的回环 HTTP/WebRTC 协议，宿主负责显式挂载和生命周期；普通包导入不加载
+HTTP/媒体/GPU SDK，也不反向依赖 NiceGUI/工作台。该例外不改变通用 runtime bridge 的归属。
 
 | 数据 | 保留/读取方式 |
 |---|---|

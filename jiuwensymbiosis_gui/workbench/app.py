@@ -226,11 +226,14 @@ def run(
     from nicegui import app as _ng_app
     from nicegui import ui
 
+    from jiuwensymbiosis.simulators.genesis.web.routes import install_genesis_routes
     from jiuwensymbiosis_gui.workbench.app_host import AppHost
     from jiuwensymbiosis_gui.workbench.app_state import AppState
     from jiuwensymbiosis_gui.workbench.layout import build_layout
 
     application = AppHost()
+    genesis_stream = install_genesis_routes(_ng_app)
+    _ng_app.on_shutdown(genesis_stream.stop)
 
     def close_application():
         report = application.close()
@@ -258,7 +261,7 @@ def run(
                 raise ValueError(f"工作台未注册配置对应的本体: {adapter}")
             state.current_body = body.key
             state.current_config_file = str(_LAUNCH_OPTIONS.config_path)
-        build_layout(state)
+        build_layout(state, genesis_status=genesis_stream.status, genesis_preview=genesis_stream.preview)
 
     @_ng_app.get("/_jiuwen/instance")
     def _instance() -> dict:

@@ -31,6 +31,19 @@ class TestModelSpec:
 
 
 class TestBuildModel:
+    def test_threaded_callers_can_disable_shared_http_pool_without_changing_profile(self, monkeypatch):
+        from unittest.mock import Mock
+
+        factory = Mock()
+        monkeypatch.setattr("jiuwensymbiosis.agent.config.Model", factory)
+        spec = ModelSpec(model_name="shared-selection")
+        build_model(spec, use_shared_http_client=False)
+        config = factory.call_args.kwargs
+        assert config["model_client_config"].use_shared_llm_http_client is False
+        assert config["model_config"].model_name == spec.model_name
+        build_model(spec)
+        assert factory.call_args.kwargs["model_client_config"].use_shared_llm_http_client is True
+
     def test_returns_model(self):
         from jiuwensymbiosis.agent.abstractions import Model
 
