@@ -67,7 +67,7 @@ env:
       # 保活订阅，规避 cruzr-inprocess-dds-shm 老坑(持久订阅拖垮 SDK/相机流→no_color_frame)。真机验证中：
       # 若仍 no_color_frame，可能 SDK 已被此前持久订阅拖垮，需先 reboot 机器人再测。
       resident_workers: true
-      ros_python: /home/riemann/.local/bin/cruzr_ros_python
+      ros_python: ~/.local/bin/cruzr_ros_python
       camera_fastdds_profiles_file: ""
       viz_detections: true   # 调试：把腰/头两路检测(prompt+画面+mask)显示到一个 cv2 窗口
       # 头部搜索 pan 角度(rad, 左正)：部署用【左右各看一次】完成一个朝向的搜寻(未命中再转底盘180°)。
@@ -92,7 +92,7 @@ env:
       waist_color_topic: /sensor/camera/waist_front_rgbd/color/raw
       waist_depth_topic: /sensor/camera/waist_front_rgbd/depth/raw
       waist_camera_info_topic: /sensor/camera/waist_front_rgbd/color/info
-      nav_python: /home/riemann/.local/bin/cruzr_ros_python
+      nav_python: ~/.local/bin/cruzr_ros_python
       camera_calib_path: cruzr_camera_calib.json  # 相对本 YAML 所在目录
       # 机器人描述（ROS 包，在本仓之外）。`~` 与 `$VAR` 会被展开，所以同一份配置
       # 可以在不同机器上用；工作区不在 ~/Robot/Cruzr_ws 时改这两行即可。
