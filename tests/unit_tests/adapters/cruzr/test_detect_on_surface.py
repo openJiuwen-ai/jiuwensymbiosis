@@ -69,7 +69,7 @@ def test_picks_the_target_on_the_reference(monkeypatch):
     monkeypatch.setattr(scene3d, "_sense_surface_plain", lambda _api, name, *a, **k: _REF)
     # cand A on the table (x,y inside footprint, above top); cand B off the table (x too far)
     _patch_geoms(monkeypatch, [_geo((650.0, 50.0, 650.0)), _geo((1500.0, 800.0, 650.0))])
-    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda *a, **kw: (_EMPTY_FRAME, None))
+    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda *a: (_EMPTY_FRAME, None))
     r = scene3d.locate_for_grasp(api, "white box", "brown table", "on")
     assert r["ok"] is True
     assert r["center_mm"] == [650.0, 50.0, 650.0]  # the on-surface one
@@ -142,7 +142,7 @@ def test_picks_the_surface_holding_the_reference(monkeypatch):
         "_candidate_geometries",
         lambda _api, name, *a, **k: [(cup, {})] if name == "water cup" else [(table_a, {}), (table_b, {})],
     )
-    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda *a, **kw: (_EMPTY_FRAME, None))
+    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda *a: (_EMPTY_FRAME, None))
     r = scene3d.locate_for_place(api, "table", "water cup", "under")
     assert r["ok"] is True
     assert r["center_mm"][1] == 0.0  # the table that has the cup

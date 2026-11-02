@@ -26,13 +26,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.motion import diff_drive, settling
+from jiuwensymbiosis.motion import diff_drive
 from jiuwensymbiosis.ros2 import image_decode
 
 MODULE_PATH = Path(image_decode.__file__)
 # Every module a bare-interpreter worker loads by path. Adding one here is what
 # keeps the next author from importing the agent stack into it by accident.
-STANDALONE_MODULES = [Path(image_decode.__file__), Path(diff_drive.__file__), Path(settling.__file__)]
+STANDALONE_MODULES = [Path(image_decode.__file__), Path(diff_drive.__file__)]
 
 
 def _load_by_path(path: Path = MODULE_PATH):

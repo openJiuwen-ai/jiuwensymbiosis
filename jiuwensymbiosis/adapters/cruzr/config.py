@@ -11,14 +11,12 @@ one place so the agent-facing API can stay semantic.
 from __future__ import annotations
 
 import dataclasses
-import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
 from jiuwensymbiosis.adapters._common.config import load_yaml_config
-from jiuwensymbiosis.motion.settling import StopMonitor
 from jiuwensymbiosis.perception.config import DetectorConfig, parse_detector_config
 from jiuwensymbiosis.perception.config import DetectorServerConfig as DetectorServerConfig
 
@@ -129,10 +127,6 @@ class CruzrConfig:
     camera_tf_timeout_s: float = 8.0
     camera_calib_path: str | None = None
     base_frame: str = "base_link"
-    # Bounds enclosing the entire robot in every permitted approach posture, in base-frame
-    # metres: [[min_x, min_y, min_z], [max_x, max_y, max_z]]. No guessed envelope:
-    # without a measured/configured profile, RGB-D target approach cannot turn.
-    target_body_bounds_m: list[list[float]] | None = None
     camera_optical_frame: str = "waist_front_rgbd_color_optical_frame"
     # Path to the Cruzr URDF used by the FK checker and motion planning, and the mesh package
     # root pinocchio+coal resolve ``package://`` collision meshes against. Both default to
@@ -297,12 +291,6 @@ class CruzrConfig:
     base_lidar_self_floor_m: float = 0.25  # 忽略比此更近的雷达回波(自身/近场噪声)
     base_lidar_sector_deg: float = 25.0  # 只看行进方向 ±此角度内的雷达
     base_move_timeout_s: float = 20.0  # 单段(转/进)超时
-    # 实测停车窗口：默认值待按真机 odom 噪声/制动特性标定，不能由零轮速指令代替。
-    base_stop_linear_m_s: float = 0.02
-    base_stop_angular_rad_s: float = 0.03
-    base_stop_hold_s: float = 0.6
-    base_stop_timeout_s: float = 2.0
-    base_odom_max_age_s: float = 0.25
 
     # --- 传感器引导换向（face_surface/face_object）：转向目标/放置面时按感知方位转，替代盲转固定角
     face_surface_tol_rad: float = 0.10  # |感知方位| 小于此即视为已正对，不转
@@ -443,32 +431,6 @@ class CruzrConfig:
             self.ros_domain_id = int(self.ros_domain_id)
         if isinstance(self.ros_domain_id, bool) or not isinstance(self.ros_domain_id, int) or self.ros_domain_id < 0:
             raise ValueError("ros_domain_id must be a non-negative integer")
-        bounds = self.target_body_bounds_m
-        if bounds is not None:
-            if (
-                not isinstance(bounds, (list, tuple))
-                or len(bounds) != 2
-                or any(not isinstance(row, (list, tuple)) or len(row) != 3 for row in bounds)
-                or any(
-                    isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
-                    for row in bounds
-                    for v in row
-                )
-                or any(lo >= hi for lo, hi in zip(bounds[0], bounds[1], strict=True))
-            ):
-                raise ValueError("target_body_bounds_m must contain finite ordered 3-D bounds")
-        StopMonitor(
-            linear_limit=self.base_stop_linear_m_s,
-            angular_limit=self.base_stop_angular_rad_s,
-            hold_s=self.base_stop_hold_s,
-            max_age_s=self.base_odom_max_age_s,
-        )
-        if (
-            isinstance(self.base_stop_timeout_s, bool)
-            or not math.isfinite(self.base_stop_timeout_s)
-            or not self.base_stop_hold_s < self.base_stop_timeout_s <= 4.0
-        ):
-            raise ValueError("base_stop_timeout_s must exceed the hold and be at most 4 seconds")
         for name in ("ros_workspace", "urdf_path", "urdf_package_dir"):
             value = getattr(self, name)
             if value:

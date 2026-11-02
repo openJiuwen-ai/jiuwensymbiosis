@@ -67,10 +67,6 @@ env:
       # 保活订阅，规避 cruzr-inprocess-dds-shm 老坑(持久订阅拖垮 SDK/相机流→no_color_frame)。真机验证中：
       # 若仍 no_color_frame，可能 SDK 已被此前持久订阅拖垮，需先 reboot 机器人再测。
       resident_workers: true
-      # 通用 approach_target 转向所需的全身包络：覆盖所有允许的接近姿态。
-      # 单位米、base 前/左/上坐标系，格式 [[min_x,min_y,min_z],[max_x,max_y,max_z]]。
-      # 必须按真机测量配置；缺失时拒绝该接近动作中的转向，不猜测尺寸。
-      target_body_bounds_m: null
       ros_python: /home/riemann/.local/bin/cruzr_ros_python
       camera_fastdds_profiles_file: ""
       viz_detections: true   # 调试：把腰/头两路检测(prompt+画面+mask)显示到一个 cv2 窗口

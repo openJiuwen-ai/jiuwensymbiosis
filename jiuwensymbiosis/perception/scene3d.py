@@ -345,7 +345,10 @@ def candidate_geometries(
             m, depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam), min_z_mm=min_z_mm, debug_label=object_name
         )
         if g.ok or include_invalid:
-            geos.append((g, {"mask": m, "box": r.get("box"), "score": r.get("score"), "label": r.get("label")}))
+            detection = {"mask": m, "box": r.get("box"), "score": r.get("score")}
+            if distinct:
+                detection["label"] = r.get("label")
+            geos.append((g, detection))
     return geos
 
 
@@ -763,7 +766,11 @@ def _locate_geometry(
     bad = _unknown_relation(relation, object_name)
     if bad is not None:
         return bad
-    frame, fail = _calibrated_frame_or_reason(api, object_name, target=unique)
+    frame, fail = (
+        _calibrated_frame_or_reason(api, object_name, target=True)
+        if unique
+        else _calibrated_frame_or_reason(api, object_name)
+    )
     if fail is not None:
         return fail
     if unique:
@@ -786,7 +793,8 @@ def _locate_geometry(
     if validate_target is not None:
         validate_target(frame)
     if result.get("ok"):
-        result.update(frame_id=frame.frame_id, captured_monotonic_s=frame.captured_monotonic_s)
+        if unique:
+            result.update(frame_id=frame.frame_id, captured_monotonic_s=frame.captured_monotonic_s)
         api.last_detection = result
     return result
 

@@ -97,7 +97,7 @@ def test_cruzr_close_stops_uncollected_continuous_worker(monkeypatch):
     nav = CruzrNav(CruzrConfig())
     proc = Mock(returncode=0)
     proc.poll.side_effect = [None, 0]
-    proc.communicate.return_value = ('{"ok":true,"settled":true,"stop_confirmation":"measured"}', "")
+    proc.communicate.return_value = ('{"ok":true}', "")
     monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: proc)
     nav.start_drive()
     nav.close()

@@ -46,8 +46,6 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from jiuwensymbiosis.perception.frame import CameraFrame
-
 
 @runtime_checkable
 class RobotDriver(Protocol):
@@ -268,34 +266,6 @@ class CameraDriver(Protocol):
 
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Grab one aligned ``(rgb_uint8, depth_m_float32)`` pair, or ``None`` if unavailable."""
-
-
-@runtime_checkable
-class CalibratedCameraDriver(Protocol):
-    """Optional timestamped RGB-D acquisition, alongside the legacy array pair."""
-
-    def grab_calibrated_frame(self, camera: str | None = None) -> CameraFrame | None:
-        """Aligned RGB/optical-Z metres, K and base-from-camera (translation mm).
-
-        Preserve acquisition identity/time and alignment metadata. Return None
-        when no frame is available; never invent a new identity for cached data.
-        """
-        ...
-
-
-@runtime_checkable
-class BaseFeedbackDriver(Protocol):
-    """Optional fresh self-motion feedback for RGB-D target association."""
-
-    def read_base_state(self, *, after_stamp_ns: int = 0) -> dict:
-        """Wait for fresh odom newer than ``after_stamp_ns`` or raise.
-
-        Carries position_m, body_yaw_rad, linear_velocity_m_s,
-        angular_velocity_rad_s, odom_frame/base_frame, stamp_ns,
-        measured_at (host monotonic seconds), and motion_generation (advances
-        when the body moves). Observing must not issue motion commands.
-        """
-        ...
 
 
 @runtime_checkable

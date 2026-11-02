@@ -163,18 +163,45 @@ def test_invalid_goal_rejected_before_any_command(distance):
     assert scene.commands == []
 
 
-def test_cruzr_and_genesis_bindings_share_the_same_rgbd_geometry():
-    from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
+def test_genesis_binding_uses_the_rgbd_geometry():
     from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionApi
 
     env = Scene(bearing=0.0)
-    cruzr = CruzrApi(env, detector_client=env.segment)
-    cruzr._grab_calibrated_frame = env.grab_calibrated_frame
+    api = BaseRobotApi(env)
+    api._seg_fn = env.segment
     genesis = GenesisPerceptionApi(env, env.segment)
-    first = cruzr.locate_target("box")
+    first = locate_target(api, "box")
     second = genesis.locate_target("box")
     for key in ("point_base_mm", "distance_m", "bearing_rad", "near_surface_x_m", "n_points"):
         assert first[key] == second[key]
+
+
+def test_target_tools_are_exposed_for_genesis_but_not_cruzr():
+    from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
+    from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionMotionApi
+    from jiuwensymbiosis.tools.builder import build_robot_tools
+
+    env = Scene(bearing=0.0)
+    genesis = GenesisPerceptionMotionApi(env, env.segment)
+    cruzr = CruzrApi(env, detector_client=env.segment)
+    target_tools = {"locate_target", "approach_target"}
+    assert target_tools <= {tool.card.name for tool in build_robot_tools(genesis, env=env)}
+    assert target_tools.isdisjoint(tool.card.name for tool in build_robot_tools(cruzr, env=env))
+
+
+def test_existing_grasp_location_keeps_its_result_shape():
+    from jiuwensymbiosis.perception.scene3d import locate_for_grasp
+
+    api, _ = make_api(bearing=0.0)
+    grasp = locate_for_grasp(api, "box")
+    assert grasp["ok"]
+    assert "frame_id" not in grasp
+    assert "captured_monotonic_s" not in grasp
+    target = locate_target(api, "box")
+    assert target["ok"]
+    assert target["point_base_mm"] == grasp["center_mm"]
+    assert target["frame_id"]
+    assert target["captured_monotonic_s"] > 0
 
 
 def test_target_location_reports_model_label_instead_of_turning_query_into_identity():

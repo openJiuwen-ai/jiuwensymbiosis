@@ -196,20 +196,16 @@ class ResidentWorker:
         *,
         label: str,
         env_fn: Callable[[list[str]], dict[str, str] | None] | None = None,
-        validate_stop: Callable[[dict | None], None] | None = None,
     ) -> None:
         """
         Args:
             make_cmd: builds the full ``--serve`` argv; called again on each restart.
             label: log prefix identifying the caller.
             env_fn: optional environment for the subprocess, derived from the argv.
-            validate_stop: actuator owner checks the final shutdown JSON. A clean
-                process exit alone is insufficient when physical stop is required.
         """
         self._make_cmd = make_cmd
         self._label = label
         self._env_fn = env_fn
-        self._validate_stop = validate_stop
         self._proc: subprocess.Popen | None = None
         self._stop_uncertainty: BaseException | None = None
         self._channel_closed = False
@@ -313,7 +309,7 @@ class ResidentWorker:
             raise error
 
         try:
-            output, _err = proc.communicate(input="stop\n", timeout=5.0)
+            proc.communicate(input="stop\n", timeout=5.0)
         except Exception as exc:  # noqa: BLE001 - force it down; the process must not survive
             logger.warning("%s resident worker ignored stop (%s); terminating", self._label, exc)
             escalation_errors: list[BaseException] = []
@@ -366,10 +362,4 @@ class ResidentWorker:
             error = RuntimeError(f"{self._label} resident worker exited before a stop was confirmed")
             self._stop_uncertainty = error
             raise error
-        if self._validate_stop is not None:
-            try:
-                self._validate_stop(_last_json_line(output or ""))
-            except Exception as exc:
-                self._stop_uncertainty = exc
-                raise
         self._stop_uncertainty = None

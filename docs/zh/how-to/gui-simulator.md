@@ -154,7 +154,8 @@ Agent 控制期间手动运动按钮的请求会被拒绝，手动停止仍可�
 单张 RGB 图像不能提供精确距离或三维位置。
 
 **感知 · RGB-D 目标定位与接近**：使用 Nyx 头部 RGB、对齐深度和 GroundingDINO + SAM2，
-与 Cruzr 共用 `locate_target` 和 `approach_target` 的动作契约、定位与接近实现。
+通过 `locate_target` 和 `approach_target` 完成定位与接近；当前仅接入仿真中的 MOZ1，
+不改变 Cruzr 真机的动作、相机采集或底盘控制流程。
 检测模型预测可能错误，Agent 需要先核对同帧原图和分割覆盖图，不能把查询词当作已验证的物体类别。
 
 1. 展开「GroundingDINO + SAM2 配置」，选择「连接已有服务」，填写服务地址并点击「应用感知配置」。
