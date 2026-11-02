@@ -1,0 +1,79 @@
+/* Scoped to the simulation workspace; the rest of the workbench keeps its theme. */
+.genesis-workspace { width: 100%; min-width: 0; color: #253447; }
+.q-tab-panel:has(> .genesis-workspace) { padding-top: 8px; padding-bottom: 8px; }
+.genesis-heading { align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.genesis-mark { color: #0f766e; background: #e7f4f1; border-radius: 10px; padding: 6px; font-size: 18px; }
+.genesis-title { font-size: 17px; line-height: 1.25; font-weight: 650; letter-spacing: -.02em; }
+.genesis-eyebrow { font-size: 9px; letter-spacing: .12em; color: #8593a3; margin-top: 3px; }
+.genesis-heading .q-btn { color: #536478; font-size: 12px; border-radius: 8px; }
+.genesis-workspace .q-btn.text-primary { color: #4c6378 !important; }
+.genesis-badge { color: #4b807a; font-size: 10px; border-color: #c4dfdb; border-radius: 5px; }
+.genesis-stage { width: 100%; height: clamp(450px, calc(100dvh - 230px), 1100px); }
+.genesis-stage > .q-splitter__panel { min-width: 0; overflow: hidden; }
+.genesis-stage > .q-splitter__before { padding-right: 6px; }
+.genesis-stage > .q-splitter__after { padding-left: 6px; }
+.genesis-stage > .q-splitter__separator { background: #d5e0e6; width: 4px; border-radius: 4px; }
+.genesis-stage > .q-splitter__separator:hover { background: #137f75; }
+.genesis-player { display: block; width: 100%; height: 100%; min-width: 0; border: 0; border-radius: 14px; background: #111820; box-shadow: 0 5px 24px #152a4010; }
+.genesis-chat { width: 100%; height: 100%; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: white; border: 1px solid #e2e8ee; border-radius: 14px; overflow: hidden; }
+.genesis-chat-header { flex-shrink: 0; width: 100%; gap: 5px; padding: 10px 12px 9px; border-bottom: 1px solid #edf0f4; }
+.genesis-chat-header .q-btn { color: #718296; }
+.genesis-model-label { font-size: 12px; color: #5e7288; max-width: 235px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.genesis-muted { color: #7d8b9b; font-size: 11px; line-height: 1.5; }
+.genesis-messages { width: 100%; flex: 1 1 0; min-height: 0; background: #fbfcfe; }
+.genesis-welcome { width: 100%; align-items: flex-start; gap: 6px; padding: 8px 4px; font-size: 13px; }
+.genesis-welcome-icon { color: #5b8b87; margin-bottom: 4px; }
+.genesis-suggestion.q-btn { width: 100%; justify-content: flex-start; text-align: left; background: white; border: 1px solid #e4eaf0; border-radius: 8px; color: #4c6378; padding: 6px 10px; font-size: 12px; }
+.genesis-suggestion .q-btn__content { justify-content: flex-start; }
+.genesis-composer { width: 100%; flex-shrink: 0; padding: 12px; gap: 8px; border-top: 1px solid #e9eef3; background: white; }
+.genesis-composer .q-field__control { border-radius: 10px; min-height: 68px; }
+.genesis-composer textarea { font-size: 13px; line-height: 1.6; resize: none; }
+.genesis-composer .q-field__bottom { display: none; }
+.genesis-composer .q-btn { border-radius: 8px; padding: 5px 10px; background: #137f75 !important; color: white !important; font-size: 12px; }
+.genesis-chat .q-message-container, .genesis-chat .q-message-text, .genesis-chat .q-message-text-content { min-width: 0; max-width: 100%; }
+.genesis-chat .q-message { font-size: 13px; }
+.genesis-chat .q-message-name { color: #748499; font-size: 11px; margin-bottom: 4px; }
+.genesis-chat .q-message-text { border-radius: 10px; box-shadow: none; background: #edf3f7; }
+.genesis-chat .q-message-sent .q-message-text { background: #e0f3ed; }
+.genesis-chat .q-message-text:last-child::before { display: none; }
+.genesis-reply { overflow-wrap: anywhere; line-height: 1.65; min-width: 0; }
+.genesis-reply p { margin: .4em 0; }
+.genesis-reply ul, .genesis-reply ol { padding-left: 1.5em; margin: .4em 0; }
+.genesis-reply ul { list-style: disc; } .genesis-reply ol { list-style: decimal; }
+.genesis-reply pre, .genesis-reply .table-scroll { overflow-x: auto; max-width: 100%; }
+.genesis-reply table { border-collapse: collapse; }
+.genesis-reply td, .genesis-reply th { border: 1px solid #c9d5df; padding: .35em .5em; }
+.genesis-reply h1, .genesis-reply h2, .genesis-reply h3 { font-size: 1.1em; font-weight: 650; }
+.genesis-state-dialog { width: 760px; max-width: 94vw !important; border-radius: 14px; gap: 12px; }
+.genesis-workspace.genesis-focus { position: fixed; inset: 0; z-index: 3000; padding: 16px; background: #f5f7fa; display: flex; flex-direction: column; }
+.genesis-focus .genesis-heading { flex-shrink: 0; }
+.genesis-focus .genesis-stage { flex: 1; min-height: 0; height: auto; }
+.genesis-focus .genesis-stage > .q-splitter__before { width: 100% !important; padding: 0; }
+.genesis-focus .genesis-stage > .q-splitter__after, .genesis-focus .genesis-stage > .q-splitter__separator { display: none; }
+.genesis-focus .genesis-chat { display: none; }
+
+@media (max-width: 1000px) {
+  .genesis-stage { flex-direction: column; height: auto; gap: 12px; }
+  .genesis-stage > .q-splitter__panel { width: 100% !important; padding: 0; }
+  .genesis-stage > .q-splitter__separator { display: none; }
+  .genesis-player { height: clamp(350px, calc(56.25vw + 145px), 680px); }
+  .genesis-chat { height: 520px; }
+  .genesis-focus .genesis-player { height: 100%; }
+}
+@media (max-width: 600px) {
+  .genesis-heading { gap: 10px; }
+  .genesis-heading > .q-gutter-x-sm { justify-content: flex-start; }
+  .genesis-mark { font-size: 20px; padding: 8px; }
+  .genesis-title { font-size: 18px; }
+  .genesis-stage { gap: 12px; }
+  .genesis-player { height: 385px; border-radius: 10px; }
+}
+
+.genesis-state-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: 100%; }
+.genesis-state-item { border: 1px solid #e2e8ee; border-radius: 8px; padding: 12px; gap: 4px; font-size: 13px; }
+.genesis-chat-collapsed .genesis-stage > .q-splitter__before { width: 100% !important; padding: 0; }
+.genesis-chat-collapsed .genesis-stage > .q-splitter__after,
+.genesis-chat-collapsed .genesis-stage > .q-splitter__separator { display: none; }
+
+.genesis-stop.q-btn { color: #a54437 !important; border: 1px solid #e5b9b1; background: #fff6f4; }
+.genesis-stop.q-btn:hover { background: #fce6e1; }

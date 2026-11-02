@@ -88,6 +88,14 @@ ruff check .            # lint; ruff check --fix . to auto-fix
 mypy jiuwensymbiosis/
 ```
 
+## Generated Results
+
+Use `outputs/<topic>/` for generated reports, benchmark results, and retained acceptance artifacts.
+Command examples and evidence-directory environment variables must use `outputs/`; do not create
+a repository-root `output/` directory. Put disposable intermediate files in `tmp/` or the system
+temporary directory. Existing runtime workspace, trace, log, and calibration paths keep their
+own documented contracts.
+
 ## Critical: Proxy Hygiene
 
 `clear_proxy_env()` (defined in `jiuwensymbiosis/utils/proxy.py`, exported from `jiuwensymbiosis.utils` and `jiuwensymbiosis`) **must** be called before `import openjiuwen`. HTTP proxy env vars cause `httpx` to require `socksio` and route localhost through proxy, breaking local vLLM/detection calls. Core and workbench test-suite conftests perform proxy cleanup; root `tests/conftest.py` keeps shared fixtures lazy for the launcher suite.

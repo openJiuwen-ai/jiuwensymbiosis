@@ -23,6 +23,7 @@ from jiuwensymbiosis_gui.workbench import ABOUT_TEXT, APP_NAME, registry
 from jiuwensymbiosis_gui.workbench.app_state import AppState, ConfigLoadError
 from jiuwensymbiosis_gui.workbench.config_model import ConfigModel
 from jiuwensymbiosis_gui.workbench.pages.config_view import ConfigView
+from jiuwensymbiosis_gui.workbench.pages.genesis_view import GenesisView
 from jiuwensymbiosis_gui.workbench.pages.history_view import HistoryView
 from jiuwensymbiosis_gui.workbench.pages.home_view import HomeView
 from jiuwensymbiosis_gui.workbench.pages.model_view import ModelView
@@ -36,6 +37,7 @@ __all__ = ["build_layout", "Layout"]
 _HISTORY = "历史"
 _CONFIG = "配置"
 _TOOLS = "工具"
+_SIMULATION = "仿真"
 
 _APPLY_ONLY = "apply"
 _APPLY_AND_SAVE = "save"
@@ -51,8 +53,12 @@ _DROP_JS = (
 class Layout:
     """一个客户端连接的整页布局。"""
 
-    def __init__(self, state: AppState) -> None:
+    def __init__(
+        self, state: AppState, *, genesis_status: Callable[[], dict[str, Any]] | None = None, genesis_preview=None
+    ) -> None:
         self._state = state
+        self._genesis_status = genesis_status or (lambda: {"state": "unavailable"})
+        self._genesis_preview = genesis_preview
         self._build()
 
     def _build(self) -> None:
@@ -73,6 +79,7 @@ class Layout:
             self._home_tab = ui.tab("主页")
             self._config_tab = ui.tab("配置")
             self._run_tab = ui.tab("运行")
+            self._simulation_tab = ui.tab(_SIMULATION)
             self._tools_tab = ui.tab(_TOOLS)
             self._history_tab = ui.tab(_HISTORY)
             self._model_tab = ui.tab("模型")
@@ -97,6 +104,13 @@ class Layout:
                 )
             with ui.tab_panel(self._tools_tab):
                 self._tools = ToolsView(self._state, on_open_config=self._open_config_field)
+            with ui.tab_panel(self._simulation_tab):
+                self._genesis = GenesisView(
+                    status=self._genesis_status,
+                    model=lambda: self._models.selected(),
+                    open_models=lambda: self._goto(self._model_tab),
+                    preview=self._genesis_preview,
+                )
             with ui.tab_panel(self._model_tab):
                 self._models = ModelView(model_config=self._current_model_config)
             with ui.tab_panel(self._history_tab):
@@ -255,6 +269,8 @@ class Layout:
 
     def _on_nav(self, e: object) -> None:
         val = getattr(e, "value", None)
+        if val not in (_SIMULATION, self._simulation_tab):
+            self._genesis.deactivate()
         if val != _TOOLS:
             # 离开工具页即请求停掉相机预览,释放 RealSense/CAN,免得正常运行时相机被占用。
             self._tools.release_hardware(wait=False)
@@ -477,6 +493,8 @@ class Layout:
         return dialog
 
 
-def build_layout(state: AppState) -> Layout:
+def build_layout(
+    state: AppState, *, genesis_status: Callable[[], dict[str, Any]] | None = None, genesis_preview=None
+) -> Layout:
     """在当前客户端页面里构建整页布局。"""
-    return Layout(state)
+    return Layout(state, genesis_status=genesis_status, genesis_preview=genesis_preview)
