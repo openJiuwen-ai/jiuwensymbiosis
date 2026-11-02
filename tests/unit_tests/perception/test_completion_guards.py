@@ -79,7 +79,7 @@ def test_scene_geometry_cancel_clears_staged_caches(monkeypatch):
     client.bind_cancel_token(token)
     api = SimpleNamespace(_seg_fn=client, last_detection=None, last_surface=None)
     frame = CameraFrame(np.zeros((10, 10, 3), dtype=np.uint8), np.ones((10, 10)), np.eye(3), np.eye(4))
-    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda api, name: (frame, None))
+    monkeypatch.setattr(scene3d, "_calibrated_frame_or_reason", lambda api, name, **kw: (frame, None))
 
     def geometry(*args, **kwargs):
         api.last_surface = {"ok": True, "old": True}

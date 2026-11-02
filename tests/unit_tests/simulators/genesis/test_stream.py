@@ -41,6 +41,9 @@ class CpuPreview:
         self.state = "stopped"
         return self.status()
 
+    def close(self):
+        self.detached = True
+
     def set_streaming(self, enabled):
         if enabled:
             self.encoder = None
@@ -319,3 +322,57 @@ async def test_disconnected_backend_does_not_skip_local_media_cleanup():
     assert watcher.cancelled()
     track.stop.assert_called_once()
     peer.close.assert_awaited_once()
+
+
+async def test_shutdown_detaches_without_stopping_resident_backend():
+    preview = CpuPreview()
+    service = PreviewStream(preview)
+    await service.start()
+    await service.close()
+    assert preview.detached and preview.stops == 0
+
+
+async def test_reset_between_frame_and_status_discards_old_world_packet():
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.simulators.genesis.stream import make_video_track
+
+    preview = CpuPreview()
+    now = time.monotonic()
+    samples = iter(
+        [
+            {
+                "sequence": 1,
+                "h264": b"old-world",
+                "scene_instance_id": "before",
+                "config_revision": 0,
+                "stream_epoch": 0,
+                "keyframe": True,
+                "captured_at": now,
+            },
+            {
+                "sequence": 2,
+                "h264": b"new-world",
+                "scene_instance_id": "after",
+                "config_revision": 0,
+                "stream_epoch": 1,
+                "keyframe": True,
+                "captured_at": now,
+            },
+        ]
+    )
+    preview.latest_frame = lambda: next(samples)
+    preview.status = lambda: {
+        "state": "ready",
+        "scene": {"instance_id": "after"},
+        "config_revision": 0,
+        "stream_epoch": 1,
+    }
+    preview.acknowledge_frame = Mock()
+    track = make_video_track(preview)
+    try:
+        assert bytes(await track.recv()) == b"new-world"
+        assert preview.keyframe_requests == 1
+        assert preview.acknowledge_frame.call_count == 2
+    finally:
+        track.stop()

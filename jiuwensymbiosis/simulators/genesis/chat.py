@@ -13,8 +13,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from jiuwensymbiosis.agent.config import ModelSpec, build_model
+from jiuwensymbiosis.perception.config import DetectorConfig
 from jiuwensymbiosis.simulators.genesis.base_motion import MOZ1_SUPPORTS_LATERAL
-from jiuwensymbiosis.simulators.genesis.visual_policy import OBSERVATION_POLICY, visual_history
+from jiuwensymbiosis.simulators.genesis.visual_policy import visual_history
 from jiuwensymbiosis.utils.logging import get_logger
 
 __all__ = ["GenesisChat", "ChatError", "state_snapshot"]
@@ -115,6 +116,9 @@ class GenesisChat:
         self._generation = 0
         self.preview = preview
         self._actions_enabled = False
+        self._observation_mode = "visual"
+        self._detector_config = DetectorConfig()
+        self._history_scene: tuple[str | None, int] | None = None
         self._action_task: asyncio.Task | None = None
         self._action_cancel: threading.Event | None = None
         self._task_has_motion = False
@@ -133,6 +137,43 @@ class GenesisChat:
     @property
     def motion_running(self) -> bool:
         return self.action_running and self._task_has_motion
+
+    @property
+    def observation_mode(self) -> str:
+        return self._observation_mode
+
+    @observation_mode.setter
+    def observation_mode(self, mode: str) -> None:
+        from jiuwensymbiosis.simulators.genesis.observation_policy import policy_id
+
+        policy_id(mode)
+        if mode == self._observation_mode:
+            return
+        if self.busy:
+            raise ChatError("请等待当前任务退出后再切换观测模式。")
+        if mode == "ground_truth" and self.preview is None:
+            raise ChatError("当前页面没有连接仿真查询接口。")
+        self.reset()
+        self._observation_mode = mode
+
+    @property
+    def detector_config(self) -> DetectorConfig:
+        """A copy: changing configuration must invalidate this conversation explicitly."""
+        return deepcopy(self._detector_config)
+
+    def configure_detector(self, config: DetectorConfig) -> bool:
+        """Freeze detection settings for the next Session without starting a model."""
+        if self.busy:
+            raise ChatError("请等待当前任务退出后再修改感知配置。")
+        if not isinstance(config, DetectorConfig):
+            raise ValueError("Expected DetectorConfig")
+        if config.local is not None and not config.local.use_sam2:
+            raise ValueError("RGB-D 感知需要启用 SAM2 分割。")
+        if config == self._detector_config:
+            return False
+        self.reset()
+        self._detector_config = deepcopy(config)
+        return True
 
     @property
     def actions_enabled(self) -> bool:
@@ -188,6 +229,7 @@ class GenesisChat:
         self.last_snapshot = None
         self.last_execution = None
         self.last_vision = None
+        self._history_scene = None
 
     async def recognize(self, spec: ModelSpec) -> dict[str, Any]:
         """One explicit image-only request, even when motion permission is enabled.
@@ -290,11 +332,13 @@ class GenesisChat:
             self._pending = None
 
     def _remember(self, query: str, text: str, spec: ModelSpec) -> str:
+        from jiuwensymbiosis.simulators.genesis.observation_policy import policy_id
+
         if spec.api_key and spec.api_key != "EMPTY":
             text = text.replace(spec.api_key, "[已隐藏]")
         text = text[:16000]
         self._history.extend(
-            {"role": role, "content": content, "observation_policy": OBSERVATION_POLICY}
+            {"role": role, "content": content, "observation_policy": policy_id(self.observation_mode)}
             for role, content in (("user", query), ("assistant", text))
         )
         while len(self._history) > 12 or sum(len(m["content"]) for m in self._history) > 48000:
@@ -304,7 +348,12 @@ class GenesisChat:
     async def _send_agent(self, query: str, spec: ModelSpec, *, on_frame: Callable | None = None) -> str:
         if self.preview is None:
             raise ChatError("当前页面没有连接机器人控制接口。")
-        snapshot = state_snapshot(self._status(), actions_enabled=self.actions_enabled)
+        status = self._status()
+        scene_binding = (status.get("scene", {}).get("instance_id"), status.get("cycle", 0))
+        if self._history_scene is not None and scene_binding != self._history_scene:
+            self._history.clear()
+        self._history_scene = scene_binding
+        snapshot = state_snapshot(status, actions_enabled=self.actions_enabled)
         self.last_snapshot = snapshot
         if self.actions_enabled and not snapshot["fresh"]:
             raise ChatError("仿真后台未就绪或状态已过期，请启动后台并等待就绪。")
@@ -330,12 +379,14 @@ class GenesisChat:
                 query,
                 cancelled=cancelled,
                 actions_enabled=self.actions_enabled,
+                observation_mode=self.observation_mode,
+                detector_config=self.detector_config,
                 history=deepcopy(self._history),
                 on_frame=lambda frame: loop.call_soon_threadsafe(deliver, frame),
             )
         )
         try:
-            async with asyncio.timeout(240):
+            async with asyncio.timeout(600 if self.observation_mode == "ground_truth" else 240):
                 execution: dict = await asyncio.shield(self._action_task)
                 self.last_execution = execution
             self.last_snapshot = state_snapshot(self._status(), actions_enabled=self.actions_enabled)

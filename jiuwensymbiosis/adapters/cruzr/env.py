@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import time
 from typing import Any
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
@@ -17,6 +19,63 @@ logger = logging.getLogger(__name__)
 
 class CruzrEnv(BaseRobotEnv):
     """Cruzr robot controlled through ROS 2 joint commands."""
+
+    def check_target_step(self, forward_m: float, turn_rad: float, frame_id: str, tuning) -> str | None:
+        from jiuwensymbiosis.perception.frame import check_observed_corridor, check_observed_rotation
+
+        frame = getattr(self, "target_frame", None)
+        if frame is None or frame.frame_id != frame_id:
+            return "stale_target_frame"
+        self.validate_target_frame(frame)
+        refusal = check_observed_rotation(frame, turn_rad, self.cfg.target_body_bounds_m, tuning.min_clearance_m)
+        if refusal:
+            return refusal
+        return check_observed_corridor(frame, forward_m, tuning.body_radius_m, tuning.min_clearance_m)
+
+    def grab_target_frame(self, camera: str | None = None):
+        """Strict target sensing retains acquisition time and stationary odometry."""
+        if camera not in {None, "waist"}:
+            return None
+        frame = self.low_level.grab_calibrated_frame(camera="waist")
+        if frame is not None:
+            self.validate_target_frame(frame)
+            self.target_frame = frame
+        return frame
+
+    def validate_target_frame(self, frame) -> None:
+        from jiuwensymbiosis.perception.frame import FrameValidationError
+
+        meta = frame.metadata
+        now = time.monotonic()
+        if (
+            frame.captured_monotonic_s is None
+            or not 0 <= now - frame.captured_monotonic_s <= 5.0
+            or not meta.get("color_stamp_ns")
+            or not meta.get("depth_stamp_ns")
+            or meta.get("depth_sync_delta_ms") is None
+            or not 0 <= meta["depth_sync_delta_ms"] <= 120.0
+        ):
+            raise FrameValidationError("stale_or_unsynchronized_rgbd")
+        if meta.get("tf_used_latest") is not False:
+            raise FrameValidationError("camera_tf_not_at_capture_time")
+        before, captured = meta.get("base_before"), meta.get("base_sample")
+        if before is None or captured is None:
+            raise FrameValidationError("capture_odometry_unavailable")
+        try:
+            current = self.low_level.read_base_state(after_stamp_ns=captured["stamp_ns"])
+        except RuntimeError as exc:
+            raise FrameValidationError("stale_odometry") from exc
+        for sample in (before, captured, current):
+            if (
+                sample["odom_frame"] != before["odom_frame"]
+                or sample["base_frame"] != self.cfg.base_frame
+                or sample["motion_generation"] != before["motion_generation"]
+                or math.dist(sample["position_m"], before["position_m"]) > 0.005
+                or abs(math.remainder(sample["body_yaw_rad"] - before["body_yaw_rad"], 2 * math.pi)) > 0.01
+                or math.hypot(*sample["linear_velocity_m_s"]) >= self.cfg.base_stop_linear_m_s
+                or math.hypot(*sample["angular_velocity_rad_s"]) >= self.cfg.base_stop_angular_rad_s
+            ):
+                raise FrameValidationError("base_moved_during_sensing")
 
     capabilities = frozenset(
         {

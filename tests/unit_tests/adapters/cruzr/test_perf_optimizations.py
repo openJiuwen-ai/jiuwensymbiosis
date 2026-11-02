@@ -17,6 +17,7 @@ from jiuwensymbiosis.kinematics import ik_pinocchio
 
 # ---- optimization 2: connect-time warm-ups -------------------------------------------------
 
+
 def test_ik_warm_is_noop_without_pinocchio(monkeypatch):
     monkeypatch.setattr(ik_pinocchio, "_PIN_OK", False)
     assert ik_pinocchio.warm("/nonexistent.urdf") is False
@@ -52,9 +53,10 @@ def test_warm_camera_async_grabs_waist_and_head():
 
 # ---- optimization 4: resident_workers routing ----------------------------------------------
 
+
 class _FakeProc:
     returncode = 0
-    stdout = '{"ok": true, "dist_traveled": 0.5}'
+    stdout = '{"ok": true, "dist_traveled": 0.5, "settled": true, "stop_confirmation": "measured"}'
     stderr = ""
 
 
@@ -69,8 +71,7 @@ def test_navigate_relative_uses_resident_when_enabled():
     cfg.resident_workers = True
     nav = _nav(cfg)
     seen = {}
-    nav._resident_move_request = lambda dx, dyaw, kr, krs, kf: (
-        seen.update(dx=dx, dyaw=dyaw), {"ok": True})[1]
+    nav._resident_move_request = lambda dx, dyaw, kr, krs, kf: (seen.update(dx=dx, dyaw=dyaw), {"ok": True})[1]
     out = nav.navigate_relative(0.5, 0.0, 0.2)
     assert out == {"ok": True}
     assert seen == {"dx": 0.5, "dyaw": 0.2}
@@ -81,8 +82,7 @@ def test_navigate_relative_uses_oneshot_when_disabled(monkeypatch):
     nav = _nav(cfg)
     called = {"resident": False, "run": False}
     nav._resident_move_request = lambda *a, **k: called.__setitem__("resident", True) or {"ok": True}
-    monkeypatch.setattr(ll_mod.subprocess, "run",
-                        lambda *a, **k: (called.__setitem__("run", True), _FakeProc())[1])
+    monkeypatch.setattr(ll_mod.subprocess, "run", lambda *a, **k: (called.__setitem__("run", True), _FakeProc())[1])
     nav.navigate_relative(0.5, 0.0, 0.0)
     assert called["run"] is True and called["resident"] is False
 

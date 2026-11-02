@@ -33,7 +33,7 @@ function viewer() {
     backendState: 'ready', viewState: null, peer: null, session: null, selection: null, selecting: false,
     observedConfig: -1, decodedFps: null, presentedFps: null, performance,
     backendMetrics: {update: noop, reset: noop}, decodedRate: {reset: noop}, presentedRate: {reset: noop},
-    showQuality: noop, showBackend: noop, showMetrics: noop, buttons: noop, sampleVideoMetrics: async () => {},
+    showQuality: noop, showBackend: noop, showLoading: noop, showMetrics: noop, buttons: noop, sampleVideoMetrics: async () => {},
     showError: error => { throw error; },
     fetch: async () => ({ok: true, json: async () => context.state}),
     post: async (path, action, options) => { context.sent = options; return {state: 'starting'}; },

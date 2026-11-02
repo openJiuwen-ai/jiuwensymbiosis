@@ -10,6 +10,7 @@ from fractions import Fraction
 from typing import Any
 
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
 from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -23,7 +24,7 @@ class StreamError(Exception):
         self.status_code = status_code
 
 
-def make_video_track(preview: GenesisPreview) -> Any:
+def make_video_track(preview: GenesisPreview | ResidentPreview) -> Any:
     """Create a track without importing any simulator SDK into the GUI process."""
     from aiortc import VideoStreamTrack
     from aiortc.mediastreams import MediaStreamError
@@ -40,21 +41,32 @@ def make_video_track(preview: GenesisPreview) -> Any:
         async def recv(self):
             await asyncio.sleep(0)
             while self.readyState == "live":
-                sample = preview.latest_frame()
-                state = preview.status()["state"]
-                if state == "reconfiguring":
+                sample = await asyncio.to_thread(preview.latest_frame)
+                status = await asyncio.to_thread(preview.status)
+                state = status["state"]
+                if state in {"reconfiguring", "resetting"}:
                     await asyncio.sleep(0.01)
                     continue
                 if state != "ready":
                     raise MediaStreamError
                 if sample is not None and sample["sequence"] != self.sequence:
                     self.sequence = sample["sequence"]
+                    identity = status.get("scene", {}).get("instance_id")
+                    if identity and (
+                        sample.get("scene_instance_id") != identity
+                        or sample.get("config_revision") != status.get("config_revision")
+                        or sample.get("stream_epoch") != status.get("stream_epoch")
+                    ):
+                        await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
+                        await asyncio.to_thread(preview.request_keyframe)
+                        self.waiting_keyframe = True
+                        continue
                     if time.monotonic() - sample["captured_at"] >= 2:
                         preview.request_keyframe()
                         self.waiting_keyframe = True
                     if self.waiting_keyframe:
                         if not sample.get("keyframe") or time.monotonic() - sample["captured_at"] >= 2:
-                            preview.acknowledge_frame(self.sequence)
+                            await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
                             await asyncio.sleep(0)
                             continue
                         self.waiting_keyframe = False
@@ -62,7 +74,7 @@ def make_video_track(preview: GenesisPreview) -> Any:
                         self.epoch = sample["captured_at"]
                     frame = Packet(sample["h264"])
                     self.keyframes += bool(sample.get("keyframe"))
-                    preview.acknowledge_frame(self.sequence)
+                    await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
                     frame.pts = round((sample["captured_at"] - self.epoch) * 90000)
                     frame.time_base = Fraction(1, 90000)
                     return frame
@@ -75,8 +87,8 @@ def make_video_track(preview: GenesisPreview) -> Any:
 class PreviewStream:
     """Own signaling, a single viewer and cleanup, independently of the scene lifetime."""
 
-    def __init__(self, preview: GenesisPreview | None = None) -> None:
-        self.preview = preview or GenesisPreview()
+    def __init__(self, preview: GenesisPreview | ResidentPreview | None = None) -> None:
+        self.preview = preview or ResidentPreview()
         self._lock = asyncio.Lock()
         self._peer: Any = None
         self._track: Any = None
@@ -95,7 +107,8 @@ class PreviewStream:
         async with self._lock:
             if options is not None:
                 width, height = map(int, options["resolution"].split("x"))
-                self.preview.configure(
+                await asyncio.to_thread(
+                    self.preview.configure,
                     width=width,
                     height=height,
                     fps=options["fps"],
@@ -111,6 +124,21 @@ class PreviewStream:
         async with self._lock:
             await self._close_peer()
             return await asyncio.to_thread(self.preview.stop)
+
+    async def close(self) -> None:
+        """GUI shutdown releases this viewer and client lease; the resident world remains."""
+        async with self._lock:
+            try:
+                await self._close_peer()
+            finally:
+                await asyncio.to_thread(self.preview.close)
+
+    async def reset_scene(self) -> dict:
+        async with self._lock:
+            try:
+                return await asyncio.to_thread(self.preview.reset_scene)
+            except (ValueError, RuntimeError, TimeoutError) as exc:
+                raise StreamError(str(exc), 409) from exc
 
     async def configure(self, options: dict) -> dict[str, Any]:
         """Keep the peer and RTP clock; the worker resumes with a new IDR/SPS."""
@@ -249,7 +277,7 @@ class PreviewStream:
                 and time.monotonic() - self._offered_at > 15
             )
             preview_stale = (
-                status["state"] not in {"ready", "reconfiguring"}
+                status["state"] not in {"ready", "reconfiguring", "resetting"}
                 or (status["state"] == "ready" and status.get("frame_age_ms", 0) > 10000)
                 or status.get("switch_elapsed_s", 0) > 180
             )

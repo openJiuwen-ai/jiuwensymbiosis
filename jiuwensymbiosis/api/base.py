@@ -52,6 +52,7 @@ class BaseRobotApi:
         # whether a location exists at all.
         self._last_detection: dict | None = None
         self._last_surface: dict | None = None
+        self.target_observation: Any | None = None
 
     # Scene3D and the motion/approach loops both read and write this state, so it is a
     # cross-object contract: these accessors say so instead of exposing the underscore.
@@ -63,6 +64,8 @@ class BaseRobotApi:
     @last_detection.setter
     def last_detection(self, value: dict | None) -> None:
         self._last_detection = value
+        if value is None:
+            self.target_observation = None
 
     @property
     def last_surface(self) -> dict | None:
@@ -83,6 +86,7 @@ class BaseRobotApi:
         """
         self._last_detection = None
         self._last_surface = None
+        self.target_observation = None
 
     # ``home`` lives here rather than on a capability mixin because returning to a
     # safe posture is not an optional capability — every body owes one, and

@@ -332,6 +332,9 @@ def test_worker_environment_keeps_gpu_paths_without_host_credentials(manager, mo
     monkeypatch.setenv("LD_LIBRARY_PATH", "/test/cuda/lib")
     monkeypatch.setenv("GS_CACHE_FILE_PATH", "/test/genesis/cache")
     monkeypatch.setenv("QD_NUM_THREADS", "2")
+    monkeypatch.setenv("QD_OFFLINE_CACHE_FILE_PATH", "relative-quadrants-cache")
+    monkeypatch.setenv("QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES", "2147483647")
+    monkeypatch.setenv("QD_OFFLINE_CACHE", "0")
     original = preview.subprocess.Popen
     captured = {}
 
@@ -347,6 +350,9 @@ def test_worker_environment_keeps_gpu_paths_without_host_credentials(manager, mo
     assert captured["LD_LIBRARY_PATH"] == "/test/cuda/lib"
     assert captured["GS_CACHE_FILE_PATH"] == "/test/genesis/cache"
     assert captured["QD_NUM_THREADS"] == "2"
+    assert captured["QD_OFFLINE_CACHE_FILE_PATH"] == str((preview.Path.cwd() / "relative-quadrants-cache").resolve())
+    assert captured["QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES"] == "2147483647"
+    assert "QD_OFFLINE_CACHE" not in captured  # Do not expand the allowlist to arbitrary QD flags.
     assert preview.Path(captured["JIUWENSYMBIOSIS_SIMULATOR_HOME"]).is_absolute()
 
 

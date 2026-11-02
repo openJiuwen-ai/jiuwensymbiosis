@@ -55,6 +55,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # happens to be in front of it. Says nothing about the camera: RGB or RGBD,
         # wide or narrow — searching only ever reports a BEARING.
         "vision.search",
+        "simulation.truth",  # explicit simulator-only state queries
         "sorting.command",  # opaque sorting protocol (no Cartesian motion)
         "speech.tts",  # text-to-speech available
         "motion.base",  # planar relative motion; lateral support is a per-body constraint

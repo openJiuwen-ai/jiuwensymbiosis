@@ -151,6 +151,14 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
         guard(request, "stop")
         return await service.stop()
 
+    @app.post("/genesis/backend/reset")
+    async def reset_scene(request: Request):
+        guard(request, "reset")
+        try:
+            return await service.reset_scene()
+        except StreamError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
     @app.post("/genesis/backend/configure")
     async def configure(request: Request, body: StartOptions):
         guard(request, "configure")

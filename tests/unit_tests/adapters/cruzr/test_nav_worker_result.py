@@ -24,7 +24,11 @@ def test_navigate_relative_parses_result(monkeypatch):
 
     def _fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return _fake_proc(json.dumps({"ok": True, "yaw_reached": 0.1, "dist_traveled": 0.4}))
+        return _fake_proc(
+            json.dumps(
+                {"ok": True, "yaw_reached": 0.1, "dist_traveled": 0.4, "settled": True, "stop_confirmation": "measured"}
+            )
+        )
 
     monkeypatch.setattr(nav_mod.subprocess, "run", _fake_run)
     out = CruzrNav(CruzrConfig()).navigate_relative(0.4, 0.0, 0.1)
@@ -51,7 +55,11 @@ def test_navigate_relative_gain_overrides_reach_worker(monkeypatch):
 
     def _fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return _fake_proc(json.dumps({"ok": True, "yaw_reached": 0.0, "dist_traveled": 0.0}))
+        return _fake_proc(
+            json.dumps(
+                {"ok": True, "yaw_reached": 0.0, "dist_traveled": 0.0, "settled": True, "stop_confirmation": "measured"}
+            )
+        )
 
     monkeypatch.setattr(nav_mod.subprocess, "run", _fake_run)
     cfg = CruzrConfig()
@@ -73,7 +81,11 @@ def test_navigate_relative_lidar_blocked(monkeypatch):
     monkeypatch.setattr(
         nav_mod.subprocess,
         "run",
-        lambda cmd, **k: _fake_proc(json.dumps({"ok": False, "reason": "lidar_blocked", "range": 0.3})),
+        lambda cmd, **k: _fake_proc(
+            json.dumps(
+                {"ok": False, "reason": "lidar_blocked", "range": 0.3, "settled": True, "stop_confirmation": "measured"}
+            )
+        ),
     )
     out = CruzrNav(CruzrConfig()).navigate_relative(0.4)
     assert out["ok"] is False
@@ -126,7 +138,12 @@ class _FakePopen:
     def communicate(self, input=None, timeout=None):
         self.returncode = self._polled = 0
         self.communicated = input
-        return (json.dumps({"ok": True, "stopped": True, "yaw_turned": 1.23}), "")
+        return (
+            json.dumps(
+                {"ok": True, "stopped": True, "yaw_turned": 1.23, "settled": True, "stop_confirmation": "measured"}
+            ),
+            "",
+        )
 
     def terminate(self):
         self._polled = 0
@@ -238,7 +255,12 @@ class _FakeDrivePopen(_FakePopen):
     def communicate(self, input=None, timeout=None):
         self.returncode = self._polled = 0
         self.communicated = input
-        return (json.dumps({"ok": True, "stopped": True, "dist_traveled": 0.9}), "")
+        return (
+            json.dumps(
+                {"ok": True, "stopped": True, "dist_traveled": 0.9, "settled": True, "stop_confirmation": "measured"}
+            ),
+            "",
+        )
 
 
 def test_start_drive_builds_interruptible_worker(monkeypatch):

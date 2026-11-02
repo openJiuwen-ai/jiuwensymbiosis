@@ -70,7 +70,8 @@ def test_command_workers_use_configured_domain(monkeypatch, operation):
     nav = CruzrNav(cfg)
     monkeypatch.setenv("ROS_DOMAIN_ID", "42")
     spawn = Mock(return_value=Mock())
-    run = Mock(return_value=SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr=""))
+    stopped = '{"ok":true,"settled":true,"stop_confirmation":"measured"}'
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout=stopped, stderr=""))
     monkeypatch.setattr(lowlevel.subprocess, "Popen", spawn)
     monkeypatch.setattr(lowlevel.subprocess, "run", run)
     if operation == "move":
@@ -82,7 +83,7 @@ def test_command_workers_use_configured_domain(monkeypatch, operation):
     elif operation == "drive":
         nav.start_drive()
     else:
-        monkeypatch.setattr(lowlevel.ros2_worker, "read_line", lambda *a: '{"ok":true}')
+        monkeypatch.setattr(lowlevel.ros2_worker, "read_line", lambda *a: stopped)
         nav.navigate_relative(0.1)
     call = run.call_args if operation in {"move", "arc"} else spawn.call_args
     assert call.kwargs["env"]["ROS_DOMAIN_ID"] == "27"

@@ -299,6 +299,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
             waiting = [s for s in mailbox.states if s.get('rendered_frames') == 0]
             assert waiting and all(s['state'] == 'starting' for s in waiting)
             assert all(s['startup']['state'] == 'running' for s in waiting)
+            assert all(s['loading']['state'] == 'running' for s in waiting)
             assert ready[0]['startup']['first_frame_ms'] is not None
             assert ready[0]['startup']['total_ms'] >= ready[0]['startup']['first_frame_ms']
             assert ready[0]['startup']['total_ms'] == ready[-1]['startup']['total_ms']

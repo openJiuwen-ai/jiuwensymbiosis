@@ -42,9 +42,11 @@
     <button id="start" class="primary">启动仿真</button><button id="connect" class="primary" disabled>连接视频</button><button id="disconnect" title="仅断开画面，后台继续运行" disabled>断开视频</button>
   </div>
   <span id="backend" role="status">正在检查后台…</span>
+  <div id="loading" role="status" hidden><span id="loading-label"></span> <span id="loading-elapsed"></span><progress id="loading-progress" max="1" aria-label="当前加载阶段进度"></progress></div>
   <div class="session-buttons">
     <button id="diagnostics" class="icon-button" title="串流详情" aria-label="串流详情"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18v-5m5 5V6m6 12V9m5 9V3"/></svg></button>
-    <button id="stop" class="danger" title="停止物理仿真与渲染进程" disabled>关闭仿真</button>
+    <button id="world-reset" title="保留已构建的世界与渲染器，恢复初始状态" disabled>复位世界</button>
+    <button id="stop" class="danger" title="停止所有 GUI 共享的物理仿真与渲染后台" disabled>释放后台资源</button>
   </div>
 </footer>
 <dialog id="scene-dialog">
@@ -96,7 +98,7 @@
   <p class="muted">移动速度随场景大小调整。USD 按模型选择，名称来自资产节点；黄色框为三维包围盒。相机可以穿过背景几何。</p>
   <p>场景、画质和帧率可在运行中切换，视频自动恢复。切换场景会重置场景状态。</p>
   <p>渲染质量：均衡使用 32 次光追采样，适合室内机器人实时控制；精细使用 64 次采样，保留更多光照细节。两者均开启降噪，模型、贴图和碰撞相同。演示场景使用 8 次采样。切换渲染质量保留机器人位姿。</p>
-  <p>MOZ1 移动：选择 MOZ1 资产和“MOZ1 底盘物理”，连接视频后使用底盘按钮。方向以机器人自身为准，单击最多运行 1 秒；断开视频会停止轮速指令。此模式锁定上身，使用 URDF 滚子碰撞代理与地面接触，尚不支持机械臂或避障。</p>
+  <p>MOZ1 移动：选择 MOZ1 资产和“MOZ1 底盘物理”，连接视频后使用底盘按钮。方向以机器人自身为准，单击最多运行 1 秒；断开视频会停止轮速指令。此模式通过关节位置控制保持上身姿态，使用 URDF 滚子碰撞代理与地面接触，尚不支持机械臂或避障。</p>
   <p>断开视频后，仿真后台继续运行；“关闭仿真”才会结束仿真。</p>
   <p class="muted">室内移动：选择 USD 场景，再在“场景机器人”中选择 MOZ1。系统自动寻找地面上的空闲出生点，并从场景网格生成固定碰撞体；家具不会被推动，也不提供自动避障。不添加机器人时仍为纯视觉预览。空场景或超过 500 万可见三角形会显示具体原因。</p>
 </dialog>

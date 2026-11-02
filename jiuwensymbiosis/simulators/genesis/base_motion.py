@@ -169,6 +169,8 @@ class RelativeMotion:
                     ok=settled and self.failure is None,
                     reason=self.failure or "reached",
                     settled=settled,
+                    stop_confirmation="measured" if settled else "unknown",
+                    stable_duration_s=self.stable,
                     after=state,
                     end_step=step,
                     duration_sim_s=self.elapsed,

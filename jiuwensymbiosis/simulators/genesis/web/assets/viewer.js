@@ -1,6 +1,7 @@
 import {ViewportNavigation} from './navigation.mjs';
 import {contentRect, pickCoordinates, boxPath} from './selection.mjs';
 import {CounterRate, BackendMetrics} from './metrics.mjs';
+import {loadingView} from './loading.mjs';
 const byId = (id) => document.getElementById(id);
 const video = byId('video');
 const observing = () => (viewState?.settings?.camera_name || 'observer') === 'observer';
@@ -27,10 +28,11 @@ async function post(path, action, body = {}, keepalive = false) {
 }
 function showError(error) { byId('notice').textContent = error.message || String(error); }
 function buttons() {
+  byId('world-reset').disabled = busy || backendState !== 'ready';
   if (busy || backendState !== 'ready' || !session || peer?.connectionState !== 'connected') navigation.stop();
   document.body.dataset.connected = String(peer?.connectionState === 'connected');
-  for (const id of ['resolution', 'fps', 'scene', 'scene-search', 'robot-mode', 'robot', 'render-quality']) byId(id).disabled = busy || ['starting', 'reconfiguring', 'stopping'].includes(backendState);
-  byId('start').disabled = busy || ['starting', 'ready', 'reconfiguring', 'stopping'].includes(backendState);
+  for (const id of ['resolution', 'fps', 'scene', 'scene-search', 'robot-mode', 'robot', 'render-quality']) byId(id).disabled = busy || ['starting', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
+  byId('start').disabled = busy || ['starting', 'ready', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
   byId('stop').disabled = busy || ['stopped', 'unknown', 'unavailable'].includes(backendState);
   byId('connect').disabled = busy || backendState !== 'ready' || !!peer || connecting;
   byId('disconnect').disabled = !peer && !connecting;
@@ -60,6 +62,15 @@ function showBackend(state) {
     ? `后台运行中 · ${mode}`
     : state.message;
   byId('backend').title = state.message || '';
+}
+function showLoading(state) {
+  const progress = loadingView(state.loading || state.startup);
+  byId('loading').hidden = !progress.visible;
+  if (!progress.visible) return;
+  byId('loading-label').textContent = progress.label;
+  byId('loading-elapsed').textContent = progress.elapsed;
+  if (progress.value === null) byId('loading-progress').removeAttribute('value');
+  else byId('loading-progress').value = progress.value;
 }
 async function disconnect(keepalive = false) {
   navigation.stop();
@@ -130,7 +141,7 @@ async function connect() {
 async function backendAction(action) {
   configGeneration += 1;
   busy = true; buttons(); byId('notice').textContent = '';
-  byId('backend').textContent = action === 'start' ? '正在启动 Genesis / Nyx…' : action === 'configure' ? '正在切换，视频将自动恢复…' : '正在停止 Genesis…';
+  byId('backend').textContent = action === 'start' ? '正在启动 Genesis / Nyx…' : action === 'configure' ? '正在切换，视频将自动恢复…' : action === 'reset' ? '正在复位当前世界…' : '正在释放 Genesis 后台…';
   try {
     if (action === 'stop') await disconnect();
     const options = action !== 'stop' ? {resolution: byId('resolution').value, fps: Number(byId('fps').value), scene_id: byId('scene').value, robot_mode: byId('robot-mode').value, robot_id: byId('robot').value, render_quality: byId('render-quality').value, camera_name: byId('camera-source').value} : {};
@@ -246,6 +257,7 @@ for (const id of ['scene', 'resolution', 'fps', 'robot-mode', 'robot', 'render-q
   if (backendState === 'ready') backendAction('configure');
 };
 byId('stop').onclick = () => backendAction('stop');
+byId('world-reset').onclick = () => backendAction('reset');
 byId('connect').onclick = () => connect().catch(showError);
 byId('disconnect').onclick = () => disconnect().catch(showError);
 byId('reset').onclick = () => { navigation.stop(); camera('reset'); };
@@ -302,6 +314,7 @@ async function poll() {
     const response = await fetch('/genesis/backend', {cache: 'no-store'});
     if (!response.ok) throw new Error('无法读取后台状态。');
     const state = await response.json();
+    showLoading(state);
     if (busy || configToken !== configGeneration) return;
     backendState = state.state;
     if (state.state === 'ready') {
@@ -310,7 +323,7 @@ async function poll() {
       viewState = {...state, camera};
       if (!sameScene || (!selecting && selectionToken === selectionGeneration)) selection = state.selection;
     }
-    if (state.state === 'reconfiguring') {
+    if (['reconfiguring', 'resetting'].includes(state.state)) {
       byId('placeholder').hidden = false;
     } else if (state.state === 'ready' && peer?.connectionState === 'connected') {
       byId('placeholder').hidden = video.readyState >= 2;
@@ -343,7 +356,7 @@ async function poll() {
     backendMetrics.update(state, performance.now());
     showQuality();
     if (!busy) showBackend(state);
-    byId('placeholder').textContent = state.state === 'reconfiguring' ? '正在切换，视频将自动恢复…' : state.state === 'ready' ? '后台已就绪，点击“连接视频”' : state.state === 'starting' ? '后台初始化中，请稍候…' : state.state === 'failed' ? '后台启动或运行失败，请查看下方提示' : '启动后台，等待就绪后连接视频';
+    byId('placeholder').textContent = state.state === 'resetting' ? '正在复位，视频将自动恢复…' : state.state === 'reconfiguring' ? '正在切换，视频将自动恢复…' : state.state === 'ready' ? '后台已就绪，点击“连接视频”' : state.state === 'starting' ? '后台初始化中，请稍候…' : state.state === 'failed' ? '后台启动或运行失败，请查看下方提示' : '启动后台，等待就绪后连接视频';
     byId('details').textContent = JSON.stringify(state, null, 2);
     if (session && Date.now() - lastHeartbeat > 2000) {
       lastHeartbeat = Date.now();

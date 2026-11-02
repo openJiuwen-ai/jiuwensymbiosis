@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +28,7 @@ import numpy as np
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
-from jiuwensymbiosis.perception.frame import CameraFrame
+from jiuwensymbiosis.perception.frame import CameraFrame, FrameValidationError
 from jiuwensymbiosis.ros2 import worker as ros2_worker
 from jiuwensymbiosis.ros2.image_decode import decode_image_msg as decode_image_msg  # re-export
 
@@ -53,6 +55,10 @@ class CruzrLowLevel:
         self._node_added = False
         self._node_removed = False
         self._latest_joints: dict[str, float] = {}
+        self._odom_subscription = None
+        self._base_state: dict[str, Any] | None = None
+        self._base_motion_generation = 0
+        self._odom_clock_offset_s: float | None = None
         self._lock = threading.RLock()
         self._head_fk_cache: tuple | None = None  # (urdf_path, model, data, frame_id), built on first use
 
@@ -143,6 +149,108 @@ class CruzrLowLevel:
         if frame is None:
             return None
         return frame.rgb, frame.depth_m, frame.intrinsics, frame.tf_base_cam
+
+    def grab_calibrated_frame(self, camera: str | None = None) -> CameraFrame | None:
+        """Keep the camera's acquisition identity and bracket it with live odometry.
+
+        This strict path is used by target approach. Legacy grasp/place capture
+        retains its existing four-array interface through ``grab_frames``.
+        """
+        before = self.read_base_state()
+        frame = self.camera.grab(camera or "waist")
+        if frame is None:
+            return None
+        after = self.read_base_state(after_stamp_ns=max(before["stamp_ns"], frame.metadata.get("color_stamp_ns", 0)))
+        stamp = frame.metadata.get("color_stamp_ns", 0)
+        if not stamp or stamp < before["stamp_ns"] - 120_000_000:
+            raise FrameValidationError("rgb_predates_capture_request")
+        # Camera/TF/odom stamps share the robot ROS clock. The workstation's
+        # wall clock may differ: map through odom, never subtract host ROS time.
+        frame.captured_monotonic_s = after["measured_at"] - (after["stamp_ns"] - stamp) / 1e9
+        frame.metadata["capture_time_basis"] = "robot_stamp_to_odom_monotonic"
+        frame.metadata.update(base_before=before, base_sample=after)
+        return frame
+
+    def read_base_state(self, *, after_stamp_ns: int = 0) -> dict:
+        """Fresh odom readback; observing does not issue a wheel command."""
+        with self._lock:
+            if self._closed or self._node is None:
+                raise RuntimeError("Cruzr odometry reader is closed")
+            if self._odom_subscription is None:
+                from nav_msgs.msg import Odometry
+                from rclpy.qos import qos_profile_sensor_data
+
+                self._odom_subscription = self._node.create_subscription(
+                    Odometry, self.cfg.odom_topic, self._on_base_odom, qos_profile_sensor_data
+                )
+        deadline = time.monotonic() + 1.0
+        while True:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("Cruzr odometry reader is closed")
+                sample = dict(self._base_state) if self._base_state else None
+            if (
+                sample is not None
+                and sample["stamp_ns"] > after_stamp_ns
+                and 0 <= time.monotonic() - sample["measured_at"] <= self.cfg.base_odom_max_age_s
+            ):
+                return sample
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Fresh Cruzr odometry is unavailable")
+            time.sleep(0.01)
+
+    def _on_base_odom(self, msg: Any) -> None:
+        """Reject delayed/duplicate odometry and remember any motion during inference."""
+        stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        received = time.monotonic()
+        p, q, twist = msg.pose.pose.position, msg.pose.pose.orientation, msg.twist.twist
+        values = [
+            p.x,
+            p.y,
+            p.z,
+            q.x,
+            q.y,
+            q.z,
+            q.w,
+            twist.linear.x,
+            twist.linear.y,
+            twist.linear.z,
+            twist.angular.x,
+            twist.angular.y,
+            twist.angular.z,
+        ]
+        if stamp <= 0 or not all(map(math.isfinite, values)):
+            return
+        norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+        if norm < 1e-6:
+            return
+        x, y, z, w = q.x / norm, q.y / norm, q.z / norm, q.w / norm
+        linear = [float(twist.linear.x), float(twist.linear.y), float(twist.linear.z)]
+        angular = [float(twist.angular.x), float(twist.angular.y), float(twist.angular.z)]
+        with self._lock:
+            if self._base_state is not None and stamp <= self._base_state["stamp_ns"]:
+                return
+            offset = received - stamp / 1e9
+            baseline = self._odom_clock_offset_s
+            if baseline is not None and offset - baseline > self.cfg.base_odom_max_age_s:
+                return  # Increasing stamps in a delayed backlog are still stale.
+            self._odom_clock_offset_s = offset if baseline is None else min(offset, baseline)
+            if (
+                math.hypot(*linear) >= self.cfg.base_stop_linear_m_s
+                or math.hypot(*angular) >= self.cfg.base_stop_angular_rad_s
+            ):
+                self._base_motion_generation += 1
+            self._base_state = {
+                "position_m": [float(p.x), float(p.y), float(p.z)],
+                "body_yaw_rad": math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)),
+                "linear_velocity_m_s": linear,
+                "angular_velocity_rad_s": angular,
+                "stamp_ns": stamp,
+                "measured_at": stamp / 1e9 + self._odom_clock_offset_s,
+                "odom_frame": msg.header.frame_id,
+                "base_frame": msg.child_frame_id,
+                "motion_generation": self._base_motion_generation,
+            }
 
     def grab_head_frame(self):
         """抓头部一帧【带组织化点云 + base<-optical TF】(仅 grounded 3D 验证用) ->
@@ -908,7 +1016,16 @@ class CruzrCamera:
             intrinsics = np.asarray(k, dtype=np.float64) if k else None
             tf = meta.get("tf_base_cam")
             tf_base_cam = np.asarray(tf, dtype=np.float64) if tf else None
-            return CameraFrame(rgb=rgb, depth_m=depth, intrinsics=intrinsics, tf_base_cam=tf_base_cam)
+            stamp = meta.get("color_stamp_ns")
+            return CameraFrame(
+                rgb=rgb,
+                depth_m=depth,
+                intrinsics=intrinsics,
+                tf_base_cam=tf_base_cam,
+                frame_id=f"{self.cfg.waist_color_topic}:{stamp}" if stamp else uuid.uuid4().hex,
+                captured_monotonic_s=meta.get("captured_monotonic_s"),
+                metadata=dict(meta),
+            )
 
         return self._run_and_read(build_cmd, _read)
 
@@ -919,7 +1036,12 @@ class CruzrNav:
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
         self._worker = ros2_worker.worker_path("jiuwensymbiosis.adapters.cruzr.ros2.wheel_worker")
-        self._move = ros2_worker.ResidentWorker(self._serve_cmd, label="[CruzrNav] move", env_fn=self._worker_env)
+        self._move = ros2_worker.ResidentWorker(
+            self._serve_cmd,
+            label="[CruzrNav] move",
+            env_fn=self._worker_env,
+            validate_stop=self._validate_resident_stop,
+        )
         self._cleanup_errors: list[BaseException] = []
         self._active_workers: dict[subprocess.Popen, str] = {}
 
@@ -927,12 +1049,48 @@ class CruzrNav:
         if self._cleanup_errors:
             raise HardwareCleanupError("CruzrNav", cleanup_errors=self._cleanup_errors)
 
+    def _checked_stop_result(self, result: dict) -> dict:
+        if result.get("settled") is not True or result.get("stop_confirmation") != "measured":
+            raise HardwareCleanupError("CruzrNav", cleanup_errors=[RuntimeError("Measured wheel stop is unconfirmed")])
+        return result
+
+    @staticmethod
+    def _validate_resident_stop(result: dict | None) -> None:
+        # Only the final shutdown record qualifies. A leftover successful move
+        # response must not certify what happened after that response.
+        if (
+            not result
+            or result.get("reason") != "worker_stopped"
+            or result.get("settled") is not True
+            or result.get("stop_confirmation") != "measured"
+        ):
+            raise HardwareCleanupError(
+                "CruzrNav resident shutdown", cleanup_errors=[RuntimeError("Final measured wheel stop is unconfirmed")]
+            )
+
+    def _stop_args(self) -> list[str]:
+        c = self.cfg
+        return [
+            "--stop-linear-m-s",
+            str(getattr(c, "base_stop_linear_m_s", 0.02)),
+            "--stop-angular-rad-s",
+            str(getattr(c, "base_stop_angular_rad_s", 0.03)),
+            "--stop-hold-s",
+            str(getattr(c, "base_stop_hold_s", 0.6)),
+            "--stop-timeout-s",
+            str(getattr(c, "base_stop_timeout_s", 2.0)),
+            "--odom-max-age-s",
+            str(getattr(c, "base_odom_max_age_s", 0.25)),
+        ]
+
     def _run_once(
         self, cmd: list[str], *, timeout_s: float, label: str, reason_prefix: str, env: dict[str, str]
     ) -> dict:
         self._check_cleanup()
         try:
-            return ros2_worker.run_once(cmd, timeout_s=timeout_s, label=label, reason_prefix=reason_prefix, env=env)
+            return self._checked_stop_result(
+                ros2_worker.run_once(cmd, timeout_s=timeout_s, label=label, reason_prefix=reason_prefix, env=env)
+            )
         except BaseException as exc:
             # Tool/agent code can catch a motion failure. close() must still
             # report the unconfirmed stop to resource admission afterwards.
@@ -973,6 +1131,7 @@ class CruzrNav:
         cmd = [
             getattr(c, "nav_python", "/usr/bin/python3"),
             str(self._worker),
+            *self._stop_args(),
             "--dx",
             str(dx),
             "--dyaw",
@@ -1035,6 +1194,7 @@ class CruzrNav:
         cmd = [
             getattr(c, "nav_python", "/usr/bin/python3"),
             str(self._worker),
+            *self._stop_args(),
             "--arc",
             "--radius",
             str(radius),
@@ -1088,6 +1248,7 @@ class CruzrNav:
             getattr(c, "nav_python", "/usr/bin/python3"),
             str(self._worker),
             "--serve",
+            *self._stop_args(),
             "--command-topic",
             getattr(c, "command_topic", "/mc/sdk/robot_command"),
             "--odom-topic",
@@ -1138,11 +1299,14 @@ class CruzrNav:
         krot_slow = k_rot_slow if k_rot_slow is not None else getattr(c, "base_k_rot_slow_rad", 0.5)
         timeout_s = float(getattr(c, "base_move_timeout_s", 20.0))
         try:
-            return self._move.request_json(
+            result = self._move.request_json(
                 f"{dx} {dyaw} {krot} {kfwd} {krot_slow}",
                 timeout_s * 2 + 20.0,
                 bad_output_reason="wheel_bad_output",
             )
+            # None is the resident owner's explicit, confirmed-clean fallback.
+            # A malformed reply is a dict and must still prove measured stopping.
+            return None if result is None else self._checked_stop_result(result)
         except BaseException as exc:
             # Preserve uncertainty across every command strategy, even if the
             # agent catches this failure and next requests arc/spin/drive.
@@ -1166,7 +1330,7 @@ class CruzrNav:
 
     def _stop_worker(self, proc: subprocess.Popen, kind: str) -> dict:
         try:
-            return ros2_worker.stop_and_collect(proc, label=f"[CruzrNav] {kind}", kind=kind)
+            return self._checked_stop_result(ros2_worker.stop_and_collect(proc, label=f"[CruzrNav] {kind}", kind=kind))
         except BaseException as exc:
             self._cleanup_errors.append(exc)
             raise
@@ -1179,6 +1343,7 @@ class CruzrNav:
         return [
             getattr(c, "nav_python", "/usr/bin/python3"),
             str(self._worker),
+            *self._stop_args(),
             "--spin",
             "--dyaw",
             str(1.0 if direction >= 0 else -1.0),
@@ -1242,6 +1407,7 @@ class CruzrNav:
         return [
             getattr(c, "nav_python", "/usr/bin/python3"),
             str(self._worker),
+            *self._stop_args(),
             "--forward",
             "--command-topic",
             getattr(c, "command_topic", "/mc/sdk/robot_command"),

@@ -18,8 +18,9 @@ import importlib.util
 import json
 import select
 import sys
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 def _import_msg(type_str: str):
@@ -60,28 +61,36 @@ def _rectify_cruzr_stereo_left(rgb):
         raise ValueError(f"expected Cruzr stereo RGB 720x1280x3, got {rgb.shape}")
 
     half = np.ascontiguousarray(rgb[::2, ::2])
-    k = np.array([
-        [218.46993685643483, 0.0, 320.2900599103507],
-        [0.0, 217.28944658903572, 182.1195864900839],
-        [0.0, 0.0, 1.0],
-    ])
-    d = np.array([
-        -0.06877947211660146,
-        0.0007721139992952977,
-        -0.001185811100523145,
-        -0.0016183623674533986,
-        0.0,
-    ])
-    r = np.array([
-        [0.9974925941474858, 0.012441576760204938, -0.06966872891505414],
-        [-0.012494853600762267, 0.9999218821541679, -0.00032897228131833724],
-        [0.06965919361013943, 0.0011986479826396406, 0.9975701278549789],
-    ])
-    p = np.array([
-        [246.05646885806817, 0.0, 380.4923095703125],
-        [0.0, 246.05646885806817, 175.3212432861328],
-        [0.0, 0.0, 1.0],
-    ])
+    k = np.array(
+        [
+            [218.46993685643483, 0.0, 320.2900599103507],
+            [0.0, 217.28944658903572, 182.1195864900839],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    d = np.array(
+        [
+            -0.06877947211660146,
+            0.0007721139992952977,
+            -0.001185811100523145,
+            -0.0016183623674533986,
+            0.0,
+        ]
+    )
+    r = np.array(
+        [
+            [0.9974925941474858, 0.012441576760204938, -0.06966872891505414],
+            [-0.012494853600762267, 0.9999218821541679, -0.00032897228131833724],
+            [0.06965919361013943, 0.0011986479826396406, 0.9975701278549789],
+        ]
+    )
+    p = np.array(
+        [
+            [246.05646885806817, 0.0, 380.4923095703125],
+            [0.0, 246.05646885806817, 175.3212432861328],
+            [0.0, 0.0, 1.0],
+        ]
+    )
     map_x, map_y = cv2.initUndistortRectifyMap(k, d, r, p, (640, 360), cv2.CV_32FC1)
     return cv2.remap(half, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
 
@@ -108,22 +117,31 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", required=True)
     p.add_argument("--base-frame", default="base_link")
     p.add_argument("--camera-optical-frame", default="waist_front_rgbd_color_optical_frame")
-    p.add_argument("--tf-timeout-s", type=float, default=2.0,
-                   help="Poll this long for the live base->camera TF before giving up.")
-    p.add_argument("--ensure-rgb", action="store_true",
-                   help="If the decoded frame is 2-D (grayscale), stack it to HxWx3.")
-    p.add_argument("--rectify-cruzr-stereo-left", action="store_true",
-                   help="Rectify the vendor head RGB into the organized stereo-cloud projection.")
-    p.add_argument("--sync-tolerance-s", type=float, default=0.12,
-                   help="Maximum color/point-cloud timestamp delta when a cloud is requested.")
-    p.add_argument("--serve", action="store_true",
-                   help="Resident mode: init rclpy + subscriptions once, then loop reading 'grab <outdir>' "
-                        "request lines from stdin, grab one frame into <outdir> per line and emit one meta JSON "
-                        "each. 'stop'/EOF exits. Keeps node/TF warm across grabs (avoids per-grab cold start).")
+    p.add_argument(
+        "--tf-timeout-s", type=float, default=2.0, help="Poll this long for the live base->camera TF before giving up."
+    )
+    p.add_argument(
+        "--ensure-rgb", action="store_true", help="If the decoded frame is 2-D (grayscale), stack it to HxWx3."
+    )
+    p.add_argument(
+        "--rectify-cruzr-stereo-left",
+        action="store_true",
+        help="Rectify the vendor head RGB into the organized stereo-cloud projection.",
+    )
+    p.add_argument(
+        "--sync-tolerance-s", type=float, default=0.12, help="Maximum color/depth or color/point-cloud timestamp delta."
+    )
+    p.add_argument(
+        "--serve",
+        action="store_true",
+        help="Resident mode: init rclpy + subscriptions once, then loop reading 'grab <outdir>' "
+        "request lines from stdin, grab one frame into <outdir> per line and emit one meta JSON "
+        "each. 'stop'/EOF exits. Keeps node/TF warm across grabs (avoids per-grab cold start).",
+    )
     return p
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: list | None = None) -> int:
     args = _build_parser().parse_args(argv)
     out = Path(args.output_dir)
 
@@ -168,6 +186,7 @@ def main(argv: Optional[list] = None) -> int:
 
     # Set up TF buffer for live base->camera transform lookup.
     from tf2_ros import Buffer, TransformListener
+
     tf_buffer = Buffer()
     TransformListener(tf_buffer, node)
 
@@ -187,16 +206,29 @@ def main(argv: Optional[list] = None) -> int:
         state["depth"] = None
         state["K"] = None
         state["cloud"] = None
-        subs = [node.create_subscription(color_msg_cls, args.color_topic, lambda m: state.__setitem__("color", m), qos)]
+        state["color_received_at"] = None
+
+        def on_color(message):
+            state["color"] = message
+            state["color_received_at"] = time.monotonic()
+
+        subs = [node.create_subscription(color_msg_cls, args.color_topic, on_color, qos)]
         if depth_msg_cls is not None:
-            subs.append(node.create_subscription(depth_msg_cls, args.depth_topic,
-                                                 lambda m: state.__setitem__("depth", m), qos))
+            subs.append(
+                node.create_subscription(depth_msg_cls, args.depth_topic, lambda m: state.__setitem__("depth", m), qos)
+            )
         if args.camera_info_topic:
-            subs.append(node.create_subscription(CameraInfo, args.camera_info_topic,
-                                                 lambda m: state.__setitem__("K", list(m.k)), info_qos))
+            subs.append(
+                node.create_subscription(
+                    CameraInfo, args.camera_info_topic, lambda m: state.__setitem__("K", list(m.k)), info_qos
+                )
+            )
         if want_cloud:
-            subs.append(node.create_subscription(PointCloud2, args.pointcloud_topic,
-                                                 lambda m: state.__setitem__("cloud", m), qos))
+            subs.append(
+                node.create_subscription(
+                    PointCloud2, args.pointcloud_topic, lambda m: state.__setitem__("cloud", m), qos
+                )
+            )
         try:
             return _grab_body(dst)
         finally:
@@ -211,18 +243,19 @@ def main(argv: Optional[list] = None) -> int:
             (dst / "meta.json").write_text(json.dumps(meta))
             return meta
 
-        deadline = node.get_clock().now().nanoseconds + int(args.timeout_s * 1e9)
-        while state["color"] is None and node.get_clock().now().nanoseconds < deadline:
+        deadline = time.monotonic() + args.timeout_s
+        while state["color"] is None and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
         # color 拿到后，再给 depth/camera_info/pointcloud 一个短窗口（尽力而为）。
-        grace = node.get_clock().now().nanoseconds + int(0.5 * 1e9)
-        while ((state["depth"] is None or state["K"] is None or (want_cloud and state["cloud"] is None))
-               and node.get_clock().now().nanoseconds < grace):
+        grace = min(deadline, time.monotonic() + 0.5)
+        while (
+            state["depth"] is None or state["K"] is None or (want_cloud and state["cloud"] is None)
+        ) and time.monotonic() < grace:
             rclpy.spin_once(node, timeout_sec=0.05)
 
         if want_cloud:
             tolerance_ns = max(0, int(args.sync_tolerance_s * 1e9))
-            while node.get_clock().now().nanoseconds < deadline:
+            while time.monotonic() < deadline:
                 color_stamp_ns = _stamp_ns(state["color"])
                 cloud_stamp_ns = _stamp_ns(state["cloud"])
                 if color_stamp_ns and cloud_stamp_ns and abs(color_stamp_ns - cloud_stamp_ns) <= tolerance_ns:
@@ -242,19 +275,45 @@ def main(argv: Optional[list] = None) -> int:
         if state["color"] is None:
             return _persist({"ok": False, "reason": "no_color_frame", "has_depth": False, "K": None})
 
+        if args.depth_topic:
+            while time.monotonic() < deadline:
+                color_stamp_ns, depth_stamp_ns = _stamp_ns(state["color"]), _stamp_ns(state["depth"])
+                if (
+                    color_stamp_ns
+                    and depth_stamp_ns
+                    and abs(color_stamp_ns - depth_stamp_ns) <= args.sync_tolerance_s * 1e9
+                ):
+                    break
+                rclpy.spin_once(node, timeout_sec=0.05)
+        # Retain the exact messages before TF polling spins the subscriber again.
+        # The RGB decoded here must not later be paired with a newer depth image.
+        sample = dict(state)
+        color_stamp_ns = _stamp_ns(sample["color"])
+        depth_stamp_ns = _stamp_ns(sample["depth"])
+        cloud_stamp_ns = _stamp_ns(sample["cloud"])
+        sync_delta_ns = abs(color_stamp_ns - cloud_stamp_ns) if color_stamp_ns and cloud_stamp_ns else None
+        if sync_delta_ns is None or sync_delta_ns > args.sync_tolerance_s * 1e9:
+            sample["cloud"] = None
+        depth_sync_ms = abs(color_stamp_ns - depth_stamp_ns) / 1e6 if color_stamp_ns and depth_stamp_ns else None
+        if depth_sync_ms is None or depth_sync_ms > args.sync_tolerance_s * 1000:
+            sample["depth"] = None
+        # This is receipt time only. The strict driver maps the sensor stamp
+        # through robot odometry before allowing target localization/motion.
+        captured_at = sample["color_received_at"]
+
         if args.color_msg_type.endswith("/CompressedImage"):
             import cv2
-            encoded = np.frombuffer(bytes(state["color"].data), dtype=np.uint8)
+
+            encoded = np.frombuffer(bytes(sample["color"].data), dtype=np.uint8)
             bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
             if bgr is None:
                 return _persist({"ok": False, "reason": "compressed_decode_failed", "has_depth": False, "K": None})
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         else:
             try:
-                rgb = decode_image_msg(state["color"], depth_scale=args.depth_scale)
+                rgb = decode_image_msg(sample["color"], depth_scale=args.depth_scale)
             except ValueError as exc:
-                return _persist({"ok": False, "reason": f"unsupported_encoding:{exc}",
-                                 "has_depth": False, "K": None})
+                return _persist({"ok": False, "reason": f"unsupported_encoding:{exc}", "has_depth": False, "K": None})
         if args.rectify_cruzr_stereo_left:
             try:
                 rgb = _rectify_cruzr_stereo_left(rgb)
@@ -272,11 +331,11 @@ def main(argv: Optional[list] = None) -> int:
         tf_base_cam = None
         tf_used_latest = False
         if args.camera_optical_frame:
-            tf_time = rclpy.time.Time()
-            if state["cloud"] is not None and _stamp_ns(state["cloud"]):
-                tf_time = rclpy.time.Time.from_msg(state["cloud"].header.stamp)
-            tf_deadline = node.get_clock().now().nanoseconds + int(args.tf_timeout_s * 1e9)
-            while node.get_clock().now().nanoseconds < tf_deadline:
+            tf_time = rclpy.time.Time.from_msg(sample["color"].header.stamp) if color_stamp_ns else rclpy.time.Time()
+            if sample["cloud"] is not None and _stamp_ns(sample["cloud"]):
+                tf_time = rclpy.time.Time.from_msg(sample["cloud"].header.stamp)
+            tf_deadline = time.monotonic() + args.tf_timeout_s
+            while time.monotonic() < tf_deadline:
                 tr = None
                 # A fresh worker cannot receive dynamic TF samples older than its
                 # subscription.  Prefer the cloud timestamp, then use the newest
@@ -286,9 +345,7 @@ def main(argv: Optional[list] = None) -> int:
                     (rclpy.time.Time(), True),
                 ):
                     try:
-                        tr = tf_buffer.lookup_transform(
-                            args.base_frame, args.camera_optical_frame, query_time
-                        )
+                        tr = tf_buffer.lookup_transform(args.base_frame, args.camera_optical_frame, query_time)
                         tf_used_latest = used_latest
                         break
                     except Exception:  # noqa: BLE001 — try latest / keep spinning
@@ -308,9 +365,9 @@ def main(argv: Optional[list] = None) -> int:
                 break
 
         has_depth = False
-        if state["depth"] is not None:
+        if sample["depth"] is not None:
             try:
-                depth = decode_image_msg(state["depth"], depth_scale=args.depth_scale)
+                depth = decode_image_msg(sample["depth"], depth_scale=args.depth_scale)
                 np.save(dst / "depth.npy", depth)
                 has_depth = True
             except ValueError:
@@ -322,9 +379,9 @@ def main(argv: Optional[list] = None) -> int:
         # consumer degrades to bearing-only). is_bigendian honoured; assumes float32 x/y/z.
         has_cloud = False
         cloud_h = cloud_w = None
-        if state["cloud"] is not None:
+        if sample["cloud"] is not None:
             try:
-                msg = state["cloud"]
+                msg = sample["cloud"]
                 cloud_h, cloud_w = int(msg.height), int(msg.width)
                 step_floats = int(msg.point_step) // 4
                 dt = ">f4" if getattr(msg, "is_bigendian", False) else "<f4"
@@ -336,18 +393,32 @@ def main(argv: Optional[list] = None) -> int:
                 cloud_h = cloud_w = None
 
         k_mat = None
-        if state["K"] is not None and len(state["K"]) == 9:
-            k = state["K"]
+        if sample["K"] is not None and len(sample["K"]) == 9:
+            k = sample["K"]
             k_mat = [[k[0], k[1], k[2]], [k[3], k[4], k[5]], [k[6], k[7], k[8]]]
 
-        return _persist({"ok": True, "has_depth": has_depth, "K": k_mat,
-                         "tf_base_cam": tf_base_cam,
-                         "tf_used_latest": tf_used_latest,
-                         "has_cloud": has_cloud, "cloud_frame": args.camera_optical_frame or None,
-                         "cloud_h": cloud_h, "cloud_w": cloud_w,
-                         "color_stamp_ns": color_stamp_ns, "cloud_stamp_ns": cloud_stamp_ns or None,
-                         "sync_delta_ms": None if sync_delta_ns is None else sync_delta_ns / 1e6,
-                         "width": int(rgb.shape[1]), "height": int(rgb.shape[0])})
+        return _persist(
+            {
+                "ok": True,
+                "has_depth": has_depth,
+                "K": k_mat,
+                "tf_base_cam": tf_base_cam,
+                "tf_used_latest": tf_used_latest,
+                "has_cloud": has_cloud,
+                "cloud_frame": args.camera_optical_frame or None,
+                "cloud_h": cloud_h,
+                "cloud_w": cloud_w,
+                "color_stamp_ns": color_stamp_ns,
+                "cloud_stamp_ns": cloud_stamp_ns or None,
+                "depth_stamp_ns": depth_stamp_ns or None,
+                "depth_sync_delta_ms": depth_sync_ms,
+                "captured_monotonic_s": captured_at,
+                "capture_time_basis": "sensor_receipt",
+                "sync_delta_ms": None if sync_delta_ns is None else sync_delta_ns / 1e6,
+                "width": int(rgb.shape[1]),
+                "height": int(rgb.shape[0]),
+            }
+        )
 
     try:
         # ---- resident serve mode: idle until a "grab <outdir>" line, grab one frame, emit meta, loop.
@@ -356,16 +427,16 @@ def main(argv: Optional[list] = None) -> int:
         if args.serve:
             while True:
                 r, _, _ = select.select([sys.stdin], [], [], 0.2)
-                rclpy.spin_once(node, timeout_sec=0.0)   # keep TF warm while idle
+                rclpy.spin_once(node, timeout_sec=0.0)  # keep TF warm while idle
                 if not r:
                     continue
                 line = sys.stdin.readline()
-                if line == "" or line.strip() == "stop":   # EOF (parent gone) or sentinel
+                if line == "" or line.strip() == "stop":  # EOF (parent gone) or sentinel
                     break
                 toks = line.split()
                 if not toks:
                     continue
-                _emit(_grab_once(Path(toks[-1])))   # last token = requested output dir
+                _emit(_grab_once(Path(toks[-1])))  # last token = requested output dir
             return 0
 
         _emit(_grab_once(out))
