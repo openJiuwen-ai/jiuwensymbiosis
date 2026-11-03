@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from jiuwensymbiosis.api.actions import ActionSpec, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.api.world_state import WorldState, current_tokens
@@ -50,35 +52,55 @@ class _Api(BaseRobotApi):
         super().__init__(env)
         self.detection_ok = True
 
-    @implements(ActionSpec(name="detect", description="sense", produces_location=True,
-                           capability="vision.detection"))
+    @implements(ActionSpec(name="detect", description="sense", produces_location=True, capability="vision.detection"))
     def detect(self, object_name: str) -> dict:
         if not self.detection_ok:
             return {"ok": False, "reason": "not_in_view", "object": object_name}
         return {"ok": True, "object": object_name, "position": [100.0, 0.0, 50.0]}
 
-    @implements(ActionSpec(name="drive", description="drive", invalidates_locations=True,
-                           capability="motion.base", tags=("motion",)))
+    @implements(
+        ActionSpec(
+            name="drive", description="drive", invalidates_locations=True, capability="motion.base", tags=("motion",)
+        )
+    )
     def drive(self, dx_m: float) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(
-        name="grip", description="grip", requires=("payload.clear",), provides=("payload.held",),
-        capability="grasp.parallel", tags=("grasp",),
-    ))
+    @implements(
+        ActionSpec(
+            name="grip",
+            description="grip",
+            requires=("payload.clear",),
+            provides=("payload.held",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def grip(self) -> dict:
-        return {"ok": True}
+        return {"ok": True, "grasp_confirmed": True}
 
-    @implements(ActionSpec(
-        name="stow", description="raise the held payload to travel height",
-        requires=("payload.held",), provides=("payload.stowed",),
-        capability="motion.base", tags=("motion",),
-    ))
+    @implements(
+        ActionSpec(
+            name="stow",
+            description="raise the held payload to travel height",
+            requires=("payload.held",),
+            provides=("payload.stowed",),
+            capability="motion.base",
+            tags=("motion",),
+        )
+    )
     def stow(self) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(name="release", description="release", provides=("payload.clear",),
-                           capability="grasp.parallel", tags=("grasp",)))
+    @implements(
+        ActionSpec(
+            name="release",
+            description="release",
+            provides=("payload.clear",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def release(self) -> dict:
         return {"ok": True}
 
@@ -342,14 +364,64 @@ class TestSensedLocationsCarryReachability:
 
     def test_unknown_reach_is_omitted_not_rendered_as_out_of_reach(self):
         block = WorldState(
-            locations=[{"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0,
-                        "position_mm": [100.0, 0.0, 50.0]}]
+            locations=[
+                {"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0, "position_mm": [100.0, 0.0, 50.0]}
+            ]
         ).as_prompt_block()
         assert "够不着" not in block and "够得着" not in block
 
     def test_out_of_reach_says_what_to_do(self):
         block = WorldState(
-            locations=[{"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0,
-                        "position_mm": [100.0, 0.0, 50.0], "reachable": False}]
+            locations=[
+                {
+                    "referent": "box",
+                    "sensed_by": "locate_for_grasp",
+                    "age_s": 1.0,
+                    "position_mm": [100.0, 0.0, 50.0],
+                    "reachable": False,
+                }
+            ]
         ).as_prompt_block()
         assert "够不着，需先移动过去" in block
+
+
+def test_empty_close_never_establishes_payload_held():
+    from jiuwensymbiosis.api.actions import CLOSE_GRIPPER
+    from jiuwensymbiosis.api.decorators import ToolMeta
+
+    s = _fresh()
+    s.api.memory.observe(ToolMeta(CLOSE_GRIPPER, {}), {}, {"ok": True, "contact": False})
+    assert "payload.held" not in WorldState.snapshot(s).tokens
+
+
+def test_unmeasured_close_never_establishes_payload_held():
+    from jiuwensymbiosis.api.actions import CLOSE_GRIPPER
+    from jiuwensymbiosis.api.decorators import ToolMeta
+
+    s = _fresh()
+    s.api.memory.observe(ToolMeta(CLOSE_GRIPPER, {}), {}, {"ok": True, "state": "closed"})
+    assert "payload.held" not in WorldState.snapshot(s).tokens
+
+
+@pytest.mark.parametrize(
+    "result,hook,observed,expected",
+    [
+        ({"ok": True, "state": "closed"}, None, None, None),
+        ({"ok": True, "contact": True}, None, None, None),
+        ({"grasp_confirmed": True}, None, None, True),
+        ({"grasp_confirmed": True}, None, False, False),
+        ({"contact": False}, True, True, False),
+        ({}, True, None, True),
+        ({}, None, True, True),
+        ({"grasp_confirmed": "true"}, None, None, None),
+    ],
+)
+def test_grasp_confirmation_requires_evidence_and_respects_contradictions(result, hook, observed, expected):
+    from types import SimpleNamespace
+
+    from jiuwensymbiosis.tools.robot_control_tool import read_grasp_confirmation
+
+    api = SimpleNamespace(env=SimpleNamespace(holding_payload=observed))
+    if hook is not None:
+        api.is_grasp_confirmed = lambda result: hook
+    assert read_grasp_confirmation(api, result) is expected

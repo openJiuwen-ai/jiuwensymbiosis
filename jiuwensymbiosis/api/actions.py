@@ -283,7 +283,8 @@ OPEN_GRIPPER = ActionSpec(
 CLOSE_GRIPPER = ActionSpec(
     name="close_gripper",
     description="Close the parallel gripper onto the target. Call it only once the tip is at the grasp "
-    "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
+    "pose. A successful close command alone does not establish payload.held; measured grasp confirmation "
+    "is required. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("force_n",),
     requires=("payload.clear",),

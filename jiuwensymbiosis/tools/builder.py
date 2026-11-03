@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
-from jiuwensymbiosis.tools.robot_control_tool import record_action
+from jiuwensymbiosis.tools.robot_control_tool import action_scope, record_action
 
 
 def _recording(api: Any, bound: Callable[..., Any]) -> Callable[..., Any]:
@@ -36,7 +36,8 @@ def _recording(api: Any, bound: Callable[..., Any]) -> Callable[..., Any]:
 
         @functools.wraps(bound)
         async def run_async(*args: Any, **kwargs: Any) -> Any:
-            result = await bound(*args, **kwargs)
+            with action_scope(api, bound, kwargs):
+                result = await bound(*args, **kwargs)
             record_action(api, bound, kwargs, result)
             return result
 
@@ -44,7 +45,8 @@ def _recording(api: Any, bound: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(bound)
     def run(*args: Any, **kwargs: Any) -> Any:
-        result = bound(*args, **kwargs)
+        with action_scope(api, bound, kwargs):
+            result = bound(*args, **kwargs)
         record_action(api, bound, kwargs, result)
         return result
 
@@ -60,8 +62,6 @@ def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
     # (a URDF → planning.reachability) on top of what it declares.
     env_caps = getattr(env, "effective_capabilities", None) or getattr(env, "capabilities", None) or frozenset()
     return frozenset(api_caps) & frozenset(env_caps)
-
-
 
 
 def build_robot_tools(

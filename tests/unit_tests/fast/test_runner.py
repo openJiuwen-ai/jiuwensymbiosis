@@ -56,7 +56,7 @@ class _FakeApi:
 
     def close_gripper(self):
         self.calls.append(("close",))
-        return {"ok": True}
+        return {"ok": True, "grasp_confirmed": True}
 
     def get_grasp_info_simple(self, object_name):
         return self.objects.get(object_name, {"ok": False, "reason": "not_found"})
@@ -1189,3 +1189,18 @@ class TestTrackMissError:
         err = runner_module._track_miss_error(session, "banana")
         assert "no_camera" not in str(err)
         assert "not detected" in str(err)
+
+
+def test_unmeasured_close_cannot_continue_to_lift():
+    class UnmeasuredApi(_FakeApi):
+        def close_gripper(self):
+            self.calls.append(("close",))
+            return {"ok": True, "state": "closed"}
+
+    api = UnmeasuredApi({})
+    steps = [ActionStep(op="close_gripper", params={}), ActionStep(op="goto_xyzr", params={"x": 100, "y": 0, "z": 200})]
+    result = run_sequence(_session(api), steps, action_index=_index(api), recovery_enabled=False)
+    assert result["ok"] is False
+    assert result["steps_done"] == 1
+    assert "grasp_confirmation_unknown" in result["steps"][0]["reason"]
+    assert api.calls == [("close",)]

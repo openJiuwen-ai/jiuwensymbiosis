@@ -28,15 +28,54 @@ from __future__ import annotations
 import inspect
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import Tool, ToolCard, ToolOutput
 from jiuwensymbiosis.api.decorators import ToolMeta
-from jiuwensymbiosis.api.memory import ExecutionMemory, action_succeeded
+from jiuwensymbiosis.api.memory import ExecutionMemory, action_succeeded, payload_confirmation
 from jiuwensymbiosis.errors import error_code
 
 logger = logging.getLogger(__name__)
+
+
+def begin_action(api: Any, method: Callable[..., Any]) -> None:
+    """Invalidate before calling a physical action; failure cannot restore old geometry."""
+    meta = getattr(method, "__tool_meta__", None)
+    memory = getattr(api, "memory", None)
+    if isinstance(memory, ExecutionMemory):
+        memory.begin(meta)
+    if meta is not None and meta.invalidates_locations:
+        clear = getattr(api, "invalidate_sensing_cache", None)
+        if callable(clear):
+            clear()
+
+
+@contextmanager
+def action_scope(api: Any, method: Callable[..., Any], params: dict[str, Any]) -> Iterator[None]:
+    """Invalidate around dispatch without absorbing cancellation or process interrupts."""
+    begin_action(api, method)
+    completed = False
+    try:
+        yield
+        completed = True
+    finally:
+        if not completed:
+            record_action(api, method, params, {"ok": False})
+
+
+def read_grasp_confirmation(api: Any, result: Any) -> bool | None:
+    """Combine explicit evidence and body readback; contradiction wins over belief."""
+    evidence = [payload_confirmation(result)]
+    confirm = getattr(api, "is_grasp_confirmed", None)
+    if callable(confirm):
+        evidence.append(confirm(result))
+    env = getattr(api, "env", None)
+    evidence.append(getattr(env, "holding_payload", None))
+    if any(value is False for value in evidence):
+        return False
+    return True if any(value is True for value in evidence) else None
 
 
 def record_action(api: Any, method: Callable[..., Any], params: dict[str, Any], result: Any) -> None:
@@ -51,9 +90,13 @@ def record_action(api: Any, method: Callable[..., Any], params: dict[str, Any], 
         return
     meta = getattr(method, "__tool_meta__", None)
     try:
-        memory.observe(meta, params, result)
+        confirmed = None
+        if meta is not None and "payload.held" in meta.provides and action_succeeded(result):
+            confirmed = read_grasp_confirmation(api, result)
+        memory.observe(meta, params, result, grasp_confirmed=confirmed)
         _stale_sensing_cache(api, meta, result)
     except Exception as exc:  # noqa: BLE001 - state bookkeeping must not break dispatch
+        memory.observe(meta, params, {"ok": False})
         logger.warning("[memory] failed to record %s: %s", getattr(method, "__name__", method), exc)
 
 
@@ -70,9 +113,9 @@ def _stale_sensing_cache(api: Any, meta: ToolMeta | None, result: Any) -> None:
     throw away the fresh reading — this mirrors the net effect ``observe`` gets by
     invalidating before it records.
     """
-    if meta is None or not meta.invalidates_locations or meta.produces_location:
+    if meta is None or not meta.invalidates_locations:
         return
-    if not action_succeeded(result):
+    if meta.produces_location and action_succeeded(result):
         return
     clear = getattr(api, "invalidate_sensing_cache", None)
     if callable(clear):
@@ -201,9 +244,10 @@ class RobotControlTool(Tool):
                 error=(f"unknown action '{action}'; available={self.available_actions}"),
             )
         try:
-            result = method(**params)
-            if inspect.isawaitable(result):
-                result = await result
+            with action_scope(self._api, method, params):
+                result = method(**params)
+                if inspect.isawaitable(result):
+                    result = await result
             record_action(self._api, method, params, result)
             return ToolOutput(
                 success=True,

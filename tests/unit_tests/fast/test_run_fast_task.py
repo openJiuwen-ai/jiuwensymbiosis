@@ -40,7 +40,10 @@ _FIXED_SEQUENCE = [
 
 
 def _make_session():
-    return make_mock_session(name="piper_mock")
+    session = make_mock_session(name="piper_mock")
+    # This trace fixture simulates a confirmed grip; it does not exercise contact physics.
+    session.api.is_grasp_confirmed = lambda result: result.get("state") == "closed"
+    return session
 
 
 def _install_fast_agent_doubles(monkeypatch, session):
