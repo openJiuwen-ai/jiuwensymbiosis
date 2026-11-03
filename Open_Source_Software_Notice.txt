@@ -913,3 +913,11 @@ Source: https://pypi.org/pypi/gs-nyx-plugin/0.1.9/json
 The Apache-2.0 license of the public genesis-nyx documentation/examples
 repository has not been established as the license of these two distributions.
 The Nyx dependency-license requirement remains incomplete.
+
+Software: coacd 1.0.14 (declared ==1.0.14)
+Copyright notice:
+Copyright (c) 2022 Xinyue Wei, Minghua Liu
+
+License: MIT License
+Please see above
+Source: https://pypi.org/pypi/coacd/1.0.14/json

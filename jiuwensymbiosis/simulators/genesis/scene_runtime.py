@@ -37,6 +37,8 @@ class RuntimeScene:
         startup: StartupDiagnostics | None = None,
     ) -> None:
         self.settings = settings
+        self._model_directory: Path | None = None
+        self._evidence_directory = Path(directory)
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
@@ -192,6 +194,14 @@ class RuntimeScene:
                 )
             else:
                 self.scene.add_entity(morph=gs.morphs.Plane(), surface=gs.surfaces.Rough(color=(0.32, 0.36, 0.4)))
+            self.info["robot_model_instance_id"] = self.info["instance_id"]
+            self._model_directory = (
+                self._evidence_directory / "robot-models" / str(self.info["robot_model_instance_id"])
+            )
+            self.info["model_admission"] = {
+                "status": "pending",
+                "report": str(self._model_directory / "loaded-model.json"),
+            }
             with self._phase("robot_entity"):
                 self.robot = Moz1Base(
                     self.scene,
@@ -200,6 +210,7 @@ class RuntimeScene:
                     name=self.robot_asset.asset.name,
                     render_urdf=validate_material_bundle(self.robot_asset),
                     spawn=spawn,
+                    model_directory=self._model_directory,
                 )
         elif self.info["mode"] == "robot_preview":
             from robot_preview import RobotPreview
@@ -237,6 +248,10 @@ class RuntimeScene:
             with self._phase("robot_controller"):
                 self.robot.build()
             if self.info["mode"] == "robot_mobile":
+                self.info["model_admission"] = {
+                    "status": self.robot.model_audit["status"],
+                    "report": str(self.robot.path.parent / "loaded-model.json"),
+                }
                 with self._phase("settle"):
                     for _ in range(round(2 / self.settings.dt)):
                         self.robot.before_step(self.settings.dt)
@@ -443,4 +458,6 @@ class RuntimeScene:
                 self.scene.destroy()
                 self.scene = None
             self.bodies = []
+            if self._model_directory is not None and self._model_directory.exists():
+                (self._model_directory / "closed").touch()
             self._directory.cleanup()

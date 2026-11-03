@@ -88,6 +88,13 @@ ruff check .            # lint; ruff check --fix . to auto-fix
 mypy jiuwensymbiosis/
 ```
 
+## Robot model admission
+
+`simulators/genesis/robot_model.py`, `collision_preparation.py` and `collision_audit.py`
+provide body-independent preparation and fail-closed loaded-model admission. Keep robot policy examples
+in `configs/simulators/collision/`; do not add body names or gains to the generic modules.
+See [model admission](docs/en/how-to/audit-robot-models.md) for supported assets and evidence lifecycle.
+
 ## Generated Results
 
 Use `outputs/<topic>/` for generated reports, benchmark results, and retained acceptance artifacts.
@@ -315,7 +322,8 @@ jiuwensymbiosis/          # Main package
   perception/             # Body-agnostic vision: frame, calibration, object_geometry, scene3d
   motion/                 # Body-agnostic motion: base_goal, approach, diff_drive, dual_arm, lift
   simulators/             # Genesis/Nyx simulator: assets index, scene runtime + worker,
-                          #   material repair/baking (rules declared per root in assets.yaml), occupancy export
+                          #   material repair/baking (rules declared per root in assets.yaml), occupancy export,
+                          #   generic robot-model preparation and loaded-collision admission
   adapters/
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)

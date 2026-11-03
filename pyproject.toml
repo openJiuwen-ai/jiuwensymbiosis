@@ -131,6 +131,11 @@ simulator-scenes = [
     "rtree>=1",
     "pillow>=11.3",
 ]
+simulator-collision = [
+    # CPU geometry preparation; POSIX cache locks. Genesis is a separate extra.
+    "coacd==1.0.14",
+    "trimesh>=4.8.2,<6",
+]
 simulator-media = [
     # CPU WebRTC/H264 verification; no Genesis or CUDA runtime.
     "aiortc==1.15.0",

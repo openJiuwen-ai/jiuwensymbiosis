@@ -73,3 +73,10 @@ Nyx 投影仅接受代码已验证的 SDK 0.1.7 / plugin 0.1.9 组合；其他�
 + 依赖哈希报告）。它是评估导出：`sensor_derived=False`、无足迹膨胀、不证明与
 物理碰撞等价；运行时规划以 `navigation.NavigationMap` 为准（两者使用相同的
 高度带边界，占据图的地面层按面积投票独立推导）。
+
+## 机器人模型准入
+
+移动模式在电机初始化前准备和审计碰撞模型；失败阻止进入运动状态。默认不加载 MOZ1 示例策略。
+`info.model_admission` 提供报告路径，`robot_model_instance_id` 在 reset 后保持不变。
+持久化证据位于状态目录 `robot-models/`，关闭后标记 `closed`，由运维归档，不随渲染缓存删除。
+支持范围、实际导入参数与清理要求见[模型准入指南](../how-to/audit-robot-models.md)。
