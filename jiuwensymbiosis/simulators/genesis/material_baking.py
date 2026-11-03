@@ -1,6 +1,6 @@
 """Texture operations omitted by Nyx's limited USD shader importer.
 
-Sample known MDL UV transforms on the unit tile. This is exact in periodicity
+Sample caller-provided UV transforms on the unit tile. This is exact in periodicity
 only when the affine matrix maps the integer UV lattice onto itself; otherwise
 the repeated tile outside [0, 1] is an explicitly reported approximation.
 """
@@ -49,7 +49,7 @@ def bake_texture(path: Path, directory: Path, target: str, uv, color, scale, bia
     if output.is_file():
         return output, bool(color and not scalar and not normal and not hdr), detail
     if path.suffix.lower() in {".exr", ".hdr"}:
-        # Pillow cannot decode the EXR scalar textures shipped in InteriorAgent.
+        # Pillow cannot decode EXR textures.
         # OpenCV's bundled OpenEXR codec requires this explicit runtime opt-in.
         os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
         import cv2
