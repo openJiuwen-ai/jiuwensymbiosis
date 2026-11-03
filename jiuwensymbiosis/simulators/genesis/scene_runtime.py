@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from camera import OrbitCamera, PreviewSettings
 from rendering import SceneRenderer
-from scene_catalog import resolve_scene, validate_material_bundle
+from scene_catalog import material_rules_for_asset, resolve_scene, validate_material_bundle
 from selection import UsdPickIndex
 from source_lighting import load_source_lighting, make_environment
 from usd_scene import initial_camera, prepare_static_stage
@@ -285,6 +285,7 @@ class RuntimeScene:
             robot=self.robot.entity if self.robot is not None else None,
             cameras=self.cameras,
             startup=self._startup,
+            material_rules=material_rules_for_asset(self.asset),
         )
         self.info["appearance"] = self.renderer.appearance
         self.settings = settings

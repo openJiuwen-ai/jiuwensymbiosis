@@ -35,8 +35,18 @@ else:
     ResolvedAsset = assets.ResolvedAsset
     validate_material_bundle = assets.validate_material_bundle
 
+if TYPE_CHECKING:
+    from .material_repair import MaterialRules
+
 DEMO = "demo"
-__all__ = ["DEMO", "resolve_scene", "scene_catalog", "scene_path", "validate_material_bundle"]
+__all__ = [
+    "DEMO",
+    "material_rules_for_asset",
+    "resolve_scene",
+    "scene_catalog",
+    "scene_path",
+    "validate_material_bundle",
+]
 
 
 def scene_catalog() -> list[dict[str, str]]:
@@ -71,3 +81,14 @@ def resolve_scene(scene_id: str) -> ResolvedAsset:
 
 def scene_path(scene_id: str) -> Path:
     return resolve_scene(scene_id).preview_path
+
+
+def material_rules_for_asset(asset: ResolvedAsset | None) -> MaterialRules | None:
+    """Select recipes from indexed provenance, never paths or shader names."""
+    if asset is None or asset.asset.root_id != "interioragent":
+        return None
+    if TYPE_CHECKING or __package__:
+        from .material_rules.interioragent import RULES
+    else:
+        from material_rules.interioragent import RULES
+    return RULES

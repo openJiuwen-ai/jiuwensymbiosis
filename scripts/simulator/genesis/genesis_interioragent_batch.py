@@ -66,10 +66,11 @@ def render_scene(scene_id: str, output: Path) -> dict:
     from PIL import Image
     from pxr import Usd
     from rendering import SceneRenderer
-    from scene_catalog import resolve_scene
+    from scene_catalog import material_rules_for_asset, resolve_scene
     from usd_scene import initial_camera, prepare_static_stage
 
-    source = resolve_scene(scene_id).preview_path
+    asset = resolve_scene(scene_id)
+    source = asset.preview_path
     report = {
         "scene_id": scene_id,
         "source": str(source),
@@ -109,7 +110,16 @@ def render_scene(scene_id: str, output: Path) -> dict:
             raise RuntimeError("Cannot write preview environment")
         env.texture = str(hdr)
         env.layout = nps.EEnvMapLayout.LongLat
-        renderer = SceneRenderer(scene, output / "static.usda", output, settings, pose, env, exposure=0)
+        renderer = SceneRenderer(
+            scene,
+            output / "static.usda",
+            output,
+            settings,
+            pose,
+            env,
+            exposure=0,
+            material_rules=material_rules_for_asset(asset),
+        )
         for _ in range(8):
             rgb = renderer.read_rgb().cpu().numpy()
         Image.fromarray(rgb).save(output / "genesis.png")

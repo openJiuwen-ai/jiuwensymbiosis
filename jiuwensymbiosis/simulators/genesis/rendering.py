@@ -8,6 +8,9 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from .material_repair import MaterialRules
+
 
 class SceneRenderer:
     """Own the Nyx renderer; caller owns the already-built Genesis scene."""
@@ -28,6 +31,7 @@ class SceneRenderer:
         robot=None,
         cameras=None,
         startup=None,
+        material_rules: MaterialRules | None = None,
     ):
         import gs_nyx.nyx_py_renderer as npr
         import gs_nyx.nyx_py_sdk as nps
@@ -157,7 +161,7 @@ class SceneRenderer:
             else:
                 from material_repair import prepare_materials
 
-            source, repair = prepare_materials(source, directory / "materials")
+            source, repair = prepare_materials(source, directory / "materials", rules=material_rules)
             # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
             # paths and bake manifests on disk instead of sending megabytes.
             self.appearance["material_repair"] = {

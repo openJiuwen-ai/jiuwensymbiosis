@@ -25,7 +25,7 @@ def run_one(scene_id: str, output: Path) -> None:
     else:
         from genesis_interioragent_batch import render_scene
     from material_repair import prepare_materials
-    from scene_catalog import resolve_scene
+    from scene_catalog import material_rules_for_asset, resolve_scene
 
     output.mkdir(parents=True, exist_ok=True)
     try:
@@ -37,8 +37,10 @@ def run_one(scene_id: str, output: Path) -> None:
     except Exception as exc:
         traceback.print_exc()
         # Conversion still covers a scene whose full render exceeds the cap.
-        source = resolve_scene(scene_id).preview_path
-        path, repair = prepare_materials(source, output / "materials")
+        asset = resolve_scene(scene_id)
+        path, repair = prepare_materials(
+            asset.preview_path, output / "materials", rules=material_rules_for_asset(asset)
+        )
         report = {
             "scene_id": scene_id,
             "render_ok": False,
