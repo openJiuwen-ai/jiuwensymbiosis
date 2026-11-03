@@ -36,6 +36,7 @@ class RuntimeScene:
         startup: StartupDiagnostics | None = None,
     ) -> None:
         self.settings = settings
+        self._evidence_directory = Path(directory)
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
@@ -193,6 +194,7 @@ class RuntimeScene:
                     name=self.robot_asset.asset.name,
                     render_urdf=validate_material_bundle(self.robot_asset),
                     spawn=spawn,
+                    model_directory=self._evidence_directory / "robot-models" / str(self.info["instance_id"]),
                 )
         elif self.info["mode"] == "robot_preview":
             from robot_preview import RobotPreview

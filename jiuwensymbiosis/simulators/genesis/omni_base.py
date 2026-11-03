@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -245,12 +246,19 @@ class Moz1Base:
         name: str = "MOZ1",
         render_urdf: Path | None = None,
         spawn: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        collision_policy: dict | None = None,
+        model_directory: Path | None = None,
     ) -> None:
         import genesis as gs
 
         self.layout = OmniWheelLayout.from_urdf(source)
         self.path = directory / "moz1-mobile.urdf"
         targets = prepare_mobile_urdf(source, self.path, self.layout)
+        model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
+        self.model_manifest = model_module.prepare_robot_model(
+            source, model_directory if model_directory is not None else directory / "model", policy=collision_policy
+        )
+        self.path = Path(self.model_manifest["urdf"])
         self.source, self.name, self.render_urdf = source, name, render_urdf
         self.entity = scene.add_entity(
             morph=gs.morphs.URDF(
@@ -272,6 +280,10 @@ class Moz1Base:
         self.upper_body = UpperBodyHold(self.entity, self.path, targets)
 
     def build(self) -> None:
+        audit_module = import_module(f"{__package__}.collision_audit" if __package__ else "collision_audit")
+        self.model_audit = audit_module.audit_loaded_model(
+            self.entity, self.model_manifest, self.path.parent / "loaded-model.json"
+        )
         self.wheels = [self.entity.get_joint(name).dofs_idx_local[0] for name in WHEEL_NAMES]
         stride = self.wheels[1] - self.wheels[0]
         if stride > 0 and all(b - a == stride for a, b in zip(self.wheels, self.wheels[1:], strict=False)):

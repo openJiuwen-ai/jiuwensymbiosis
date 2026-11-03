@@ -93,7 +93,7 @@ def test_unsupported_asset_fails_before_simulation(urdf):
 
 
 @pytest.mark.parametrize("indices", [[6, 17, 28, 39], [6, 17, 29, 40]])
-def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
+def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices, tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     entity = Mock()
@@ -102,6 +102,8 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
     robot.entity = entity
     robot.upper_body = Mock()
     robot.stop = Mock()
+    robot.model_manifest, robot.path = {}, tmp_path / "robot.urdf"
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.collision_audit.audit_loaded_model", Mock())
     robot.build()
     assert list(robot.wheels) == indices
     for call in (entity.set_dofs_kp.call_args, entity.set_dofs_kv.call_args):
@@ -110,7 +112,7 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
         assert isinstance(robot.wheels, range)  # No per-step CUDA index allocation.
 
 
-def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_path):
+def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     tree = ET.parse(urdf)
@@ -139,6 +141,8 @@ def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_pa
     robot = Moz1Base.__new__(Moz1Base)
     robot.entity, robot.layout, robot.upper_body = entity, layout, hold
     robot._wheel_hold = None
+    robot.model_manifest, robot.path = {}, tmp_path / "robot.urdf"
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.collision_audit.audit_loaded_model", Mock())
     robot.build()
     assert hold.dofs == [50, 51] and hold.motor_dofs == [50]
     assert ET.parse(target).find("joint[@name='tn__RightArm0_tD']/limit").get("effort") == "0"
