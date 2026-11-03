@@ -642,10 +642,20 @@ class GenesisPreview:
         validate_move(dx, dy, dyaw)
         return self._execute_motion(owner, {"dx": dx, "dy": dy, "dyaw": dyaw}, cancelled=cancelled)
 
-    def move_arm(self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, cancelled=None) -> dict:
+    def move_arm(
+        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+    ) -> dict:
         if not self.settings.planning_profile:
             raise RuntimeError("No arm planning profile configured")
-        payload = {"kind": "arm", "targets": targets, "poses": poses, "group": group, "speed": speed}
+        payload = {
+            "kind": "arm",
+            "targets": targets,
+            "poses": poses,
+            "group": group,
+            "speed": speed,
+            "effector": effector,
+            "opened": opened,
+        }
         if len(json.dumps(payload, allow_nan=False).encode()) > 2048:
             raise ValueError("Arm request too large")
         return self._execute_motion(owner, payload, cancelled=cancelled)

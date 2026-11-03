@@ -194,6 +194,7 @@ class EntityRegistry:
                     planning_groups=arm.profile["groups"],
                     planning_base_link=arm.profile["base_link"],
                     tool_poses_base_m_wxyz=arm.tool_poses(),
+                    effectors=arm.effectors.report(),
                 )
 
         result = {

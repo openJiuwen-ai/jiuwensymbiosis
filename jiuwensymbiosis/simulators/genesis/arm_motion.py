@@ -35,10 +35,16 @@ class ArmMotion:
         self.anchor = None
         self.reason = None
         self.stable = self.elapsed = 0.0
+        configurations = self.profile.get("effectors", {})
+        motors = {n for config in configurations.values() for n in config["joints"]}
+        if any(motors.intersection(group["joints"]) for group in self.profile["groups"].values()):
+            raise ValueError("arm groups and effector motors must be disjoint")
+        self.effectors = sibling("end_effectors").EndEffectors(self.entity, self.planner.root, configurations)
+        self.gripper_request = None
 
     @property
     def active(self):
-        return self.phase in {"planning", "executing", "braking", "confirming"}
+        return self.phase in {"planning", "executing", "gripping", "braking", "confirming"}
 
     def snapshot(self):
         # mmap status is bounded. Detailed arrays stay in retained artifacts.
@@ -54,6 +60,10 @@ class ArmMotion:
             "failure_stage",
             "backend_success",
             "max_tracking_error",
+            "grasp_confirmed",
+            "holding_payload",
+            "contact_confirmed",
+            "placement_confirmed",
         )
         result = {key: self.result[key] for key in keys if key in self.result}
         if result.get("reason"):
@@ -85,6 +95,10 @@ class ArmMotion:
         )
         q, _ = self.read()
         changed |= any(abs(q[n] - v) > 0.01 for n, v in self.static.items())
+        if getattr(self, "captured", None) is not None:
+            changed |= not sibling("arm_collision").world_unchanged(self.entity, self.captured)
+            changed |= any(e.state == "unknown" for e in self.effectors.evidence.values())
+            changed |= not self.effectors.unchanged(self.payloads)
         return "changed" if changed else f"{self.runtime.info['instance_id']}:{self.planner.model_id}"
 
     def tool_poses(self):
@@ -168,6 +182,16 @@ class ArmMotion:
             raise ValueError("base and joints must be measured stopped before planning")
         self.runtime.robot.stop()
         state, _ = self.read()
+        self.goal_poses = None
+        self.captured = None
+        self.gripper_request = None
+        if request.get("effector") is not None:
+            if request.get("targets") is not None or request.get("poses") is not None:
+                raise ValueError("effector and arm goals are exclusive")
+            self.effectors.start(request["effector"], opened=request.get("opened"))
+            self.gripper_request = (request["effector"], request["opened"])
+            self.phase = "gripping"
+            return
         group = request.get("group")
         if group is None:
             wanted = set(request.get("targets") or {})
@@ -203,7 +227,9 @@ class ArmMotion:
             errors[name] = {"position_m": position, "rotation_rad": angle}
             if position > 0.002 or angle > 0.005:
                 raise ValueError("Genesis tool FK differs from planning model")
-        captured = sibling("arm_collision").snapshot(self.entity, self.profile)
+        self.payloads = self.effectors.attachments()
+        captured = sibling("arm_collision").snapshot(self.entity, self.profile, self.payloads)
+        self.captured = captured
         self.result["fk_errors"] = errors
         self.phase = "planning"
         self.started = time.monotonic()
@@ -244,18 +270,33 @@ class ArmMotion:
             return
         self.reason = reason
         self._stop_planner()
+        self.effectors.cancel()
         self.follower.cancel(reason)
         self.runtime.robot.stop()
         self.phase = "braking"
         self.stable = self.elapsed = 0.0
 
     def tick(self, dt):
+        try:
+            self.effectors.tick(dt)
+        except Exception as exc:
+            self.effectors.invalidate()
+            if self.active:
+                self.cancel(f"payload_readback_failed: {exc}")
         if not self.active:
             return
         self.runtime.robot.stop()
         self.elapsed += dt
-        if self.phase == "planning":
-            if time.monotonic() - self.started > 90:
+        if self.phase == "gripping":
+            if self.effectors.command is None:
+                self.result.update(self.effectors.result)
+                self.reason = self.effectors.result.get("reason")
+                self.phase = "confirming"
+                self.stable = self.elapsed = 0.0
+        elif self.phase == "planning":
+            if self.binding() == "changed":
+                self.cancel("planning_world_or_payload_changed")
+            elif time.monotonic() - self.started > 90:
                 self.cancel("planning_timeout_result_discarded")
             elif self.process.poll() is not None:
                 try:
@@ -285,11 +326,27 @@ class ArmMotion:
                 self.stable = self.elapsed = 0.0
         else:
             self.follower.tick(dt)
+            if self.phase == "confirming" and self.captured is not None and self.binding() == "changed":
+                self.reason = "world_or_payload_changed_during_settle"
             self.stable = self.stable + dt if self.stopped() else 0.0
             if self.stable >= 0.25 or self.elapsed > 5.0:
                 settled = self.stable >= 0.25 and not self.follower.terminal
                 if settled and self.reason is None:
                     self.check_tool_goal()
+                    if self.gripper_request is not None:
+                        name, opened = self.gripper_request
+                        evidence = self.effectors.evidence[name]
+                        self.result.update(evidence.report())
+                        confirmed = (
+                            (
+                                evidence.holding is False
+                                and (evidence.object_id is None or evidence.report()["placement_confirmed"])
+                            )
+                            if opened
+                            else evidence.state in {"contact", "held"} and evidence.contact_time >= evidence.contact_s
+                        )
+                        if not confirmed:
+                            self.reason = "grasp_or_release_confirmation_lost"
                 self.result.update(
                     status="completed",
                     ok=settled and self.reason is None,
@@ -298,6 +355,16 @@ class ArmMotion:
                     settled=settled,
                     stop_confirmation="measured" if settled else "unknown",
                 )
+                states = list(self.effectors.evidence.values())
+                if states:
+                    held = (
+                        True
+                        if any(e.holding is True for e in states)
+                        else False
+                        if all(e.holding is False for e in states)
+                        else None
+                    )
+                    self.result.update(holding_payload=held, grasp_confirmed=held is True)
                 self.phase = "completed"
                 self.execution_path.write_text(json.dumps(self.result, indent=2, allow_nan=False))
                 if not settled:

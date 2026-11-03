@@ -125,6 +125,19 @@ class GraspFailure(TypedDict):
     error_code: NotRequired[str]
 
 
+class GripperCommandResult(TypedDict):
+    """Actuation success is separate from measured grasp and placement."""
+
+    ok: bool
+    settled: bool
+    stop_confirmation: str
+    reason: str | None
+    holding_payload: bool | None
+    grasp_confirmed: bool
+    contact_confirmed: bool
+    placement_confirmed: bool
+
+
 class GraspResult(TypedDict, total=False):
     """Success shape returned by ``get_grasp_info_simple``.
 

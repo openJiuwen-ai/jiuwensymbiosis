@@ -36,6 +36,11 @@ class RuntimeScene:
         startup: StartupDiagnostics | None = None,
     ) -> None:
         self.settings = settings
+        self._planning_profile = {}
+        if settings.planning_profile:
+            from planning_profile import load_profile
+
+            self._planning_profile = load_profile(Path(settings.planning_profile))
         self._evidence_directory = Path(directory)
         self._startup = startup
         self.scene: Any = None
@@ -117,13 +122,14 @@ class RuntimeScene:
                 self.motion = RelativeMotion(self.robot)
                 if settings.planning_profile:
                     from arm_motion import ArmMotion
-                    from planning_profile import load_profile
 
-                    profile = load_profile(Path(settings.planning_profile))
                     self.arm_motion = ArmMotion(
-                        self, profile, self._evidence_directory / "arm-plans" / str(self.info["instance_id"])
+                        self,
+                        self._planning_profile,
+                        self._evidence_directory / "arm-plans" / str(self.info["instance_id"]),
                     )
                     self.info["arm_planning_ready"] = True
+                    self.info["effectors_ready"] = bool(self.arm_motion.effectors.evidence)
             if self.robot is not None:
                 self.info["robot_bounds_m"] = self.robot.bounds
                 if self.source is None:
@@ -158,6 +164,11 @@ class RuntimeScene:
             },
             "rigid": {"enable_self_collision": not room_physics or self.info["mode"] == "robot_mobile"},
         }
+        if self.settings.planning_profile:
+            contact_solver = self._planning_profile.get("contact_solver", {})
+            if set(contact_solver) - {"noslip_iterations"}:
+                raise ValueError("unsupported manipulation contact solver setting")
+            options["rigid"].update(contact_solver)
         if self.source is not None:
             from scene_cache import RoomSceneCache
 
@@ -381,6 +392,10 @@ class RuntimeScene:
                 self.arm_motion.tick(self.settings.dt)
                 if self.arm_motion.active and self.motion.active:
                     self.motion.cancel("arm_motion_exclusive")
+                if any(e.holding is not False for e in self.arm_motion.effectors.evidence.values()):
+                    # Base carrying requires its own swept payload envelope.
+                    self.motion.cancel("base_payload_envelope_unavailable")
+                    self.robot.stop()
             self.motion.tick(self.settings.dt, self.steps)
             self.robot.before_step(self.settings.dt)
         self.scene.step()
@@ -405,7 +420,9 @@ class RuntimeScene:
         if self.motion is not None and self.motion.active:
             raise RuntimeError("运动任务仍在执行，不能复位。")
         if getattr(self, "arm_motion", None) is not None and (
-            self.arm_motion.active or self.arm_motion.follower.terminal
+            self.arm_motion.active
+            or self.arm_motion.follower.terminal
+            or any(e.holding is not False for e in self.arm_motion.effectors.evidence.values())
         ):
             raise RuntimeError("Arm motion active or stopping unconfirmed; cannot reset")
         with phase("reset_stop"):

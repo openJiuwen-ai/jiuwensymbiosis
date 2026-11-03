@@ -57,6 +57,7 @@ from jiuwensymbiosis.contracts import (
     BasePoint,
     GraspFailure,
     GraspResult,
+    GripperCommandResult,
     NavigationResult,
     ObjectGeometryResult,
     PlannedMotionResult,
@@ -317,6 +318,17 @@ CLOSE_GRIPPER = ActionSpec(
     params=("force_n",),
     requires=("payload.clear",),
     provides=("payload.held",),
+    tags=("grasp",),
+)
+
+SET_GRIPPER = ActionSpec(
+    name="set_gripper",
+    description="Open or close one named parallel effector. Contact alone is provisional: inspect measured "
+    "holding_payload after a trial lift. Opening a held object requires stable external support; "
+    "placement_confirmed requires stable support after release. No payload fact is inferred from this command.",
+    capability="grasp.parallel",
+    params=("effector", "opened"),
+    result=GripperCommandResult,
     tags=("grasp",),
 )
 
@@ -746,6 +758,7 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     GET_JOINT_POSITIONS,
     OPEN_GRIPPER,
     CLOSE_GRIPPER,
+    SET_GRIPPER,
     ACTIVATE_SUCTION,
     DEACTIVATE_SUCTION,
     GET_IMAGE,

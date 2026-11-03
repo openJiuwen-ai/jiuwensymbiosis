@@ -557,6 +557,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             if runtime.motion is not None
                             else {}
                         ),
+                        "effectors": runtime.arm_motion.effectors.report()
+                        if getattr(runtime, "arm_motion", None) is not None
+                        else {},
                         "base_observation": (measure(runtime.robot) if runtime.motion is not None else None),
                         "streaming": streaming,
                         "object_positions": [body.get_pos()[0].cpu().tolist() for body in runtime.bodies],

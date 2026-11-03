@@ -151,5 +151,56 @@
     "MOZ1__Geometry__base_link__OmniWheel_04__joints__wheel_passive_7_joint",
     "MOZ1__Geometry__base_link__OmniWheel_04__joints__wheel_passive_8_joint",
     "MOZ1__Geometry__base_link__OmniWheel_04__joints__wheel_passive_9_joint"
-  ]
+  ],
+  "effectors": {
+    "left": {
+      "tool": "left_gripper_base_link",
+      "joints": {
+        "left_hand_narrow1_joint": {
+          "open": -0.61,
+          "close": -0.0095,
+          "velocity": 0.6,
+          "effort": 16.5,
+          "kp": 120.0,
+          "kd": 5.0,
+          "tolerance": 0.03,
+          "preload": 0.01
+        }
+      },
+      "contact_groups": [
+        [
+          "left_hand_narrow3_Link"
+        ],
+        [
+          "left_hand_wide3_Link"
+        ]
+      ]
+    },
+    "right": {
+      "tool": "right_gripper_base_link",
+      "joints": {
+        "right_hand_narrow1_joint": {
+          "open": -0.61,
+          "close": -0.0095,
+          "velocity": 0.6,
+          "effort": 16.5,
+          "kp": 120.0,
+          "kd": 5.0,
+          "tolerance": 0.03,
+          "preload": 0.01
+        }
+      },
+      "contact_groups": [
+        [
+          "right_hand_narrow3_Link"
+        ],
+        [
+          "right_hand_wide3_Link"
+        ]
+      ]
+    }
+  },
+  "contact_solver": {
+    "noslip_iterations": 5
+  }
 }

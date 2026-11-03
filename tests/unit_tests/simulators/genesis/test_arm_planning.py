@@ -191,6 +191,92 @@ def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(tmp_path):
     assert gate.coverage()["tip"][0]["uncovered"] == len(box.vertices) + len(box.faces)
 
 
+def test_payload_contact_permission_does_not_hide_world_collision(tmp_path):
+    pytest.importorskip("fcl")
+    import trimesh
+
+    from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate
+
+    manifest, profile = model(tmp_path)
+    root = ET.parse(manifest["urdf"]).getroot()
+    box = trimesh.creation.box(extents=[0.04] * 3)
+    geometry = {"vertices": box.vertices, "faces": box.faces, "pose": np.eye(4), "convex": True}
+    captured = {
+        "geometries": {
+            1: dict(geometry, link="tip", payload=True, contact_links=["tip"]),
+            2: dict(geometry, link="tip"),
+            3: dict(geometry, link=None),
+        },
+        "pairs": [(1, 2)],
+    }
+    gate = CollisionGate(root, profile, captured)
+    gate.check_state({"slide": 0.0})
+    captured["pairs"].append((1, 3))
+    with pytest.raises(ValueError, match="physical_geometry_collision"):
+        gate.check_state({"slide": 0.0})
+
+
+def test_world_binding_rejects_velocity_before_displacement():
+    from types import SimpleNamespace
+
+    from jiuwensymbiosis.simulators.genesis.arm_collision import world_unchanged
+
+    link = SimpleNamespace(idx=8, get_vel=lambda: np.array([[0.1, 0.0, 0.0]]), get_ang=lambda: np.zeros((1, 3)))
+    entity = SimpleNamespace(solver=SimpleNamespace(entities=[SimpleNamespace(links=[link])]))
+    assert not world_unchanged(entity, {"dynamic": {8: np.eye(4)}})
+
+
+def test_named_gripper_uses_shared_session_transport(monkeypatch, tmp_path):
+    import time
+
+    from jiuwensymbiosis.simulators.genesis.agent import make_session
+    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+
+    preview = GenesisPreview(
+        state_dir=tmp_path, settings=PreviewSettings(robot_mode="moz1_wheels", planning_profile="/profile.json")
+    )
+    state = {
+        "state": "ready",
+        "measured_at": time.monotonic(),
+        "scene": {"instance_id": "scene", "arm_planning_ready": True, "effectors_ready": True},
+        "robot": {"control_mode": "wheel_velocity_physics"},
+        "base_motion": {},
+        "effectors": {"arbitrary_name": {"holding_payload": None}},
+    }
+    monkeypatch.setattr(preview, "status", lambda: state)
+    requests = []
+
+    def worker():
+        request = preview._motion_request
+        if request:
+            requests.append(request.copy())
+            state["base_motion"] = {
+                "id": request["id"],
+                "status": "completed",
+                "ok": True,
+                "settled": True,
+                "stop_confirmation": "measured",
+                "holding_payload": None,
+                "grasp_confirmed": False,
+                "contact_confirmed": True,
+            }
+
+    monkeypatch.setattr(preview, "_send_control", worker)
+    session = make_session(preview, observation_mode="ground_truth")
+    session.strict_capabilities = True
+    session.connect()
+    try:
+        result = session.api.set_gripper("arbitrary_name", False)
+        assert result["ok"] and not result["grasp_confirmed"]
+        assert result["holding_payload"] is None
+        assert requests[-1]["kind"] == "arm" and requests[-1]["effector"] == "arbitrary_name"
+        assert requests[-1]["opened"] is False
+        assert session.env.holding_payload is None
+    finally:
+        session.disconnect()
+
+
 def test_uncontrolled_support_exception_cannot_hide_arm_motion(tmp_path):
     manifest, profile = model(tmp_path)
     profile["uncontrolled_support_joints"] = ["slide"]

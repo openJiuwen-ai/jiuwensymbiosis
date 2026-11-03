@@ -26,7 +26,12 @@ def history_for(mode: str, history: list[dict[str, str]] | None) -> list[dict[st
 
 
 def allowed_tools(
-    mode: str, actions_enabled: bool, *, detector_enabled: bool = False, planning_enabled: bool = False
+    mode: str,
+    actions_enabled: bool,
+    *,
+    detector_enabled: bool = False,
+    planning_enabled: bool = False,
+    grasp_enabled: bool = False,
 ) -> frozenset[str]:
     policy_id(mode)
     names = {"capture_camera"}
@@ -42,6 +47,8 @@ def allowed_tools(
             names.update({"navigate_to_pose", "navigate_to_entity"})
             if planning_enabled:
                 names.update({"move_joint", "move_tool_poses"})
+                if grasp_enabled:
+                    names.add("set_gripper")
     return frozenset(names)
 
 

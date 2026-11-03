@@ -30,13 +30,19 @@ from jiuwensymbiosis.api.actions import (
     NAVIGATE_TO_POSE,
     ROTATE_BASE,
     SEARCH_TARGET,
+    SET_GRIPPER,
     SIM_GET_ENTITY_STATE,
     SIM_GET_ROBOT_STATE,
     SIM_LIST_ENTITIES,
     implements,
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.contracts import NavigationResult, PlannedMotionResult, SimulationSnapshotResult
+from jiuwensymbiosis.contracts import (
+    GripperCommandResult,
+    NavigationResult,
+    PlannedMotionResult,
+    SimulationSnapshotResult,
+)
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.perception.config import DetectorConfig
 from jiuwensymbiosis.perception.frame import CameraFrame
@@ -177,7 +183,18 @@ class GenesisDriver:
         self.results.append(result)
         return {
             key: result.get(key)
-            for key in ("ok", "plan_success", "goal_reached", "settled", "stop_confirmation", "reason")
+            for key in (
+                "ok",
+                "plan_success",
+                "goal_reached",
+                "settled",
+                "stop_confirmation",
+                "reason",
+                "holding_payload",
+                "grasp_confirmed",
+                "contact_confirmed",
+                "placement_confirmed",
+            )
         }
 
     def accept_camera_observation(self, camera_name: str, captured_at: float) -> None:
@@ -237,6 +254,8 @@ class GenesisEnv(BaseRobotEnv):
                 if state.get("scene", {}).get("arm_planning_ready"):
                     self.capabilities |= {"motion.joint", "motion.tool_pose"}
                     self.joint_units = "rad"
+                    if state.get("scene", {}).get("effectors_ready"):
+                        self.capabilities |= {"grasp.parallel"}
 
     def connect(self) -> None:
         self.driver.connect()
@@ -276,6 +295,23 @@ class GenesisEnv(BaseRobotEnv):
 
     def move_tool_poses(self, group: str, poses: dict[str, list[float]], speed: float = 1.0) -> dict:
         return self.driver.move_arm(group=group, poses=poses, speed=speed)
+
+    @property
+    def holding_payload(self) -> bool | None:
+        state = self.driver.preview.status()
+        if state.get("state") != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
+            return None
+        values = [e.get("holding_payload") for e in state.get("effectors", {}).values()]
+        return True if True in values else False if values and all(v is False for v in values) else None
+
+    def set_gripper(self, opened: bool, effector: str | None = None) -> dict:
+        state = self.driver.preview.status()
+        names = list(state.get("effectors", {}))
+        if effector is None:
+            if len(names) != 1:
+                raise ValueError("Specify an effector name for a body with multiple effectors")
+            effector = names[0]
+        return self.driver.move_arm(effector=effector, opened=opened)
 
     def get_observation(self) -> RobotObservation:
         # Preserve freshness/ownership validation without exposing simulator truth
@@ -485,6 +521,12 @@ class GenesisArmMotionApi(GenesisTruthMotionApi):
         return cast(PlannedMotionResult, self.env.move_tool_poses(group, poses, speed))
 
 
+class GenesisManipulationApi(GenesisArmMotionApi):
+    @implements(SET_GRIPPER)
+    def set_gripper(self, effector: str, opened: bool) -> GripperCommandResult:
+        return cast(GripperCommandResult, self.env.set_gripper(opened, effector))
+
+
 def make_session(
     preview: GenesisPreview,
     *,
@@ -501,7 +543,7 @@ def make_session(
     detector_config = detector_config or DetectorConfig()
     if observation_mode == "ground_truth":
         if actions_enabled and "motion.tool_pose" in env.capabilities:
-            api = GenesisArmMotionApi(env)
+            api = GenesisManipulationApi(env) if "grasp.parallel" in env.capabilities else GenesisArmMotionApi(env)
         else:
             api = GenesisTruthMotionApi(env) if actions_enabled else GenesisTruthApi(env)
     elif observation_mode == "perception" and detector_config.mode != "disabled":
@@ -606,6 +648,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             actions_enabled,
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
             planning_enabled="motion.tool_pose" in session.env.capabilities,
+            grasp_enabled="grasp.parallel" in session.env.capabilities,
         ),
         execution={
             "mode": "stepagent",

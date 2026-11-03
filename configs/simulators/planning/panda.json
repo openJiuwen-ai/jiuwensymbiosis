@@ -41,5 +41,33 @@
     "panda_joint7": {
       "effort": 12.0
     }
+  },
+  "contact_solver": {
+    "noslip_iterations": 5
+  },
+  "effectors": {
+    "hand": {
+      "tool": "panda_hand",
+      "joints": {
+        "panda_finger_joint1": {
+          "open": 0.04,
+          "close": 0.0,
+          "velocity": 0.03,
+          "effort": 20.0,
+          "kp": 4000.0,
+          "kd": 100.0,
+          "tolerance": 0.002,
+          "preload": 0.002
+        }
+      },
+      "contact_groups": [
+        [
+          "panda_leftfinger"
+        ],
+        [
+          "panda_rightfinger"
+        ]
+      ]
+    }
   }
 }

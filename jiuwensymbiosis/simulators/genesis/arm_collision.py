@@ -25,19 +25,25 @@ def array(value):
     return result
 
 
-def snapshot(entity, profile):
+def snapshot(entity, profile, attachments=None):
     """Call on the scene owner thread after build, before background planning."""
     planning = _planning()
     base = entity.get_link(profile["base_link"])
     world_from_base = planning.transform(array(base.get_pos())[0], array(base.get_quat())[0])
     base_from_world = np.linalg.inv(world_from_base)
     own = {g.idx for link in entity.links for g in link.geoms}
+    attachments = attachments or {}
+    carried = {
+        g.idx for body in entity.solver.entities if body.idx in attachments for link in body.links for g in link.geoms
+    }
     pairs = array(entity.solver.collider._valid_collision_pairs).astype(int).reshape(-1, 2)  # noqa: SLF001 -- pinned Genesis 1.4.4
-    pairs = [tuple(map(int, p)) for p in pairs if p[0] in own or p[1] in own]
+    pairs = [tuple(map(int, p)) for p in pairs if p[0] in own | carried or p[1] in own | carried]
     needed = {idx for pair in pairs for idx in pair} | own
     geometries = {}
     world = {"cuboid": {}}
+    dynamic = {}
     for other in entity.solver.entities:
+        attachment = attachments.get(other.idx)
         for link in other.links:
             pose = base_from_world @ planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
             for geom in link.geoms:
@@ -47,8 +53,23 @@ def snapshot(entity, profile):
                 is_robot = geom.idx in own
                 kind = getattr(geom.type, "name", str(geom.type)).upper()
                 if not is_robot and not link.is_fixed:
-                    raise ValueError("planning requires a static environment; dynamic obstacle unsupported")
+                    if attachment is None:
+                        if (
+                            np.linalg.norm(array(link.get_vel())) > 0.008
+                            or np.linalg.norm(array(link.get_ang())) > 0.02
+                        ):
+                            raise ValueError("moving obstacle unsupported")
+                        dynamic[int(link.idx)] = planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
                 record = {"link": link.name if is_robot else None, "pose": local if is_robot else pose @ local}
+                if attachment is not None:
+                    record.update(
+                        link=attachment["tool"],
+                        pose=attachment["relative"] @ local,
+                        payload=True,
+                        contact_links=attachment["contact_links"],
+                        object_id=other.idx,
+                        support_geoms=attachment.get("support_geoms", []),
+                    )
                 if "PLANE" in kind:
                     record["plane"] = True
                     # Planning box bounds the accepted workspace; exact halfspace
@@ -64,7 +85,7 @@ def snapshot(entity, profile):
                         faces=array(geom.init_faces).astype(int),
                         convex=bool(geom.is_convex),
                     )
-                    if not is_robot:
+                    if not is_robot and attachment is None:
                         lo, hi = record["vertices"].min(0), record["vertices"].max(0)
                         center = record["pose"] @ np.r_[(lo + hi) / 2, 1.0]
                         quat = planning.Rotation.from_matrix(record["pose"][:3, :3]).as_quat(scalar_first=True)
@@ -75,7 +96,38 @@ def snapshot(entity, profile):
                 geometries[int(geom.idx)] = record
     if needed - geometries.keys():
         raise ValueError("incomplete physical collision snapshot")
-    return {"geometries": geometries, "pairs": pairs, "world": world, "world_from_base": world_from_base}
+    # cuRobo's enclosing payload spheres overlap a real supporting surface at
+    # contact. Remove only measured support shapes from that coarse backend;
+    # the full-geometry gate retains them for robot and payload on every sample.
+    for attachment in attachments.values():
+        for idx in attachment.get("support_geoms", []):
+            world["cuboid"].pop(f"geom_{idx}", None)
+    return {
+        "geometries": geometries,
+        "pairs": pairs,
+        "world": world,
+        "world_from_base": world_from_base,
+        "dynamic": dynamic,
+    }
+
+
+def world_unchanged(entity, captured):
+    """Recheck resting obstacles throughout planning and physical execution."""
+    planning = _planning()
+    links = {link.idx: link for body in entity.solver.entities for link in body.links}
+    for idx, original in captured.get("dynamic", {}).items():
+        link = links.get(int(idx))
+        if link is None:
+            return False
+        if np.linalg.norm(array(link.get_vel())) > 0.008 or np.linalg.norm(array(link.get_ang())) > 0.02:
+            return False
+        current = planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
+        if (
+            np.linalg.norm(current[:3, 3] - original[:3, 3]) > 0.002
+            or planning.Rotation.from_matrix(current[:3, :3] @ original[:3, :3].T).magnitude() > 0.02
+        ):
+            return False
+    return True
 
 
 class CollisionGate:
@@ -113,7 +165,7 @@ class CollisionGate:
         result = {}
         for record in self.captured["geometries"].values():
             link = record["link"]
-            if link is None or record.get("plane"):
+            if link is None or record.get("plane") or record.get("payload"):
                 continue
             vertices = record["vertices"] @ record["pose"][:3, :3].T + record["pose"][:3, 3]
             # Vertices plus triangle centroids: quantitative samples, not a
@@ -145,12 +197,28 @@ class CollisionGate:
             self.objects[idx].setTransform(self.fcl.Transform(pose[:3, :3], pose[:3, 3]))
         for first, second in self.captured["pairs"]:
             a, b = self.captured["geometries"][first], self.captured["geometries"][second]
+            if (a.get("payload") and b["link"] in a["contact_links"] and not b.get("payload")) or (
+                b.get("payload") and a["link"] in b["contact_links"] and not a.get("payload")
+            ):
+                continue
             # Only authored support links may touch the floor. This is not an
             # exemption from self-collision or from any other world obstacle.
             if (a["link"] in self.support and b.get("plane")) or (b["link"] in self.support and a.get("plane")):
                 continue
             result = self.fcl.CollisionResult()
-            if self.fcl.collide(self.objects[first], self.objects[second], self.fcl.CollisionRequest(), result):
+            request = self.fcl.CollisionRequest(num_max_contacts=1000, enable_contact=True)
+            if self.fcl.collide(self.objects[first], self.objects[second], request, result):
+                support_contact = (a.get("payload") and second in a.get("support_geoms", [])) or (
+                    b.get("payload") and first in b.get("support_geoms", [])
+                )
+                up = np.asarray(self.captured.get("world_from_base", np.eye(4)))[:3, :3].T @ np.array([0.0, 0.0, 1.0])
+                if (
+                    support_contact
+                    and result.contacts
+                    and len(result.contacts) < 1000
+                    and all(c.penetration_depth <= 0.001 and abs(np.dot(c.normal, up)) >= 0.9 for c in result.contacts)
+                ):
+                    continue
                 raise ValueError(f"physical_geometry_collision: {a['link'] or first} / {b['link'] or second}")
 
     def check(self, trajectory, *, max_joint_step=0.01):

@@ -23,6 +23,15 @@ def main(path: Path):
             for field in ("vertices", "faces", "pose"):
                 if field in geom:
                     geom[field] = np.array(geom[field], dtype=int if field == "faces" else float)
+            if geom.get("payload"):
+                # Conservatively enclose actual loaded geometry in the measured
+                # tool frame. Full geometry remains independently checked below.
+                points = geom["vertices"] @ geom["pose"][:3, :3].T + geom["pose"][:3, 3]
+                center = (points.max(0) + points.min(0)) / 2
+                radius = float(np.linalg.norm(points - center, axis=1).max()) + 0.003
+                planner.profile["collision_spheres"].setdefault(geom["link"], []).append(
+                    {"center": center.tolist(), "radius": radius}
+                )
         gate = CollisionGate(planner.root, planner.profile, captured)
         coverage = gate.coverage()
         (path.parent / "coverage.json").write_text(json.dumps(coverage, indent=2, allow_nan=False))
