@@ -163,6 +163,24 @@ class GraspResult(TypedDict, total=False):
     grasp_width_mm: float  # object extent along the gripper closing axis; top-surface grasp only
 
 
+class CloseEffectorResult(TypedDict, total=False):
+    """Result shape of ``close_gripper`` / ``activate_suction``.
+
+    ``ok`` / ``state`` are the command-level shape every body returns. The
+    evidence fields are what a body with a measured channel adds — they assert
+    the close stopped on object contact, and only they (or the body's
+    ``is_grasp_confirmed`` hook) establish ``payload.held``: a successful
+    command alone does not. A body with no measured channel declares
+    ``trust_command_grasp`` instead (adapter reference, grasp evidence).
+    """
+
+    ok: Literal[True]
+    state: str
+    grasp_confirmed: bool
+    contact: bool
+    holding_payload: bool
+
+
 # =============================================================================
 # 3-D Scene Sensing
 # =============================================================================

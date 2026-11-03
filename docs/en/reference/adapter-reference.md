@@ -167,6 +167,15 @@ The Api subclasses `BaseRobotApi` and binds each action with `@implements(SPEC)`
 
 A visual adapter explicitly binds `pixel_to_base_xyz(u, v, depth_m)` with `@implements(PIXEL_TO_BASE_XYZ)`: eye-in-hand bodies may forward to `perception/vision.default_pixel_to_base_xyz` with a `pose_to_tf` callback (combining live `T_base_flange @ T_flange_cam` and applying calibration XY correction), while eye-to-hand bodies implement it with `T_base_cam`. `locate_for_grasp`/`locate_for_place`/`analyze_scene` are shared by `perception/scene3d` and consume a calibrated `CameraFrame` plus detector hook directly; `search_target`/`approach_for_grasp`/`approach_for_place` are shared by `motion/approach`. An adapter supplies camera/calibration/detector hooks and overrides only body-specific geometry.
 
+### Grasp evidence
+
+A successful `close_gripper` / `activate_suction` command is **not** the same as holding: fastagent establishes `payload.held` only from measured evidence, and unknown confirmation fails closed. Evidence is aggregated with contradiction winning:
+
+1. Explicit evidence fields in the result dict: `grasp_confirmed`, `holding_payload`, `contact` (`contact` counts in both directions — `False` means it closed on empty space, `True` that it stopped on something; see `contracts.CloseEffectorResult`).
+2. The optional Api hook `is_grasp_confirmed(result) -> bool` (so101-style: the driver's conservative contact judgement).
+
+A body whose end effector has no measured channel declares `trust_command_grasp = True` on its Api class: a successful command is then accepted as evidence (logged as a warning at runtime, so the acceptance is auditable). This is an **explicit downgrade declaration** — the fail-closed default is unchanged; remove it and provide measured evidence once the driver gains a feedback channel. `env.holding_payload` takes no part in this decision; it remains the coarse RecoveryRail-only flag.
+
 ## 6. Config and Session builder
 
 Declare source-relative mapping keys in Config `path_fields: ClassVar[tuple[str, ...]]` (omit for pathless configs). `from_yaml` uses `adapters._common.config.load_yaml_config`, sharing `parse_config` with Runtime and smoke. Flat and legacy nested layouts use the same rules; missing targets never revert to the working directory.

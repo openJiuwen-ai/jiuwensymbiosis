@@ -168,6 +168,15 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 
 视觉适配器实现 `@implements(PIXEL_TO_BASE_XYZ)` 的 `pixel_to_base_xyz(u, v, depth_m)` 投影动作：eye-in-hand 可转发 `perception/vision.default_pixel_to_base_xyz`（提供 `pose_to_tf` 回调，组合实时 `T_base_flange @ T_flange_cam`，并按标定应用 XY 校正），eye-to-hand 使用 `T_base_cam`。`locate_for_grasp`/`locate_for_place`/`analyze_scene` 已由 `perception/scene3d` 共享实现（`api/defaults` 转发），直接消费标定 `CameraFrame` 与检测器钩子；`search_target`/`approach_for_grasp`/`approach_for_place` 已由 `motion/approach` 共享实现——适配器只提供相机/标定/检测钩子，并在需要机型专属几何时覆写。
 
+### 抓取证据（grasp evidence）
+
+`close_gripper` / `activate_suction` 指令成功**不等于**已持物：fastagent 只在拿到实测证据时才建立 `payload.held`，证据未知即失败关闭（fail closed）。证据按以下优先级聚合，任一否定证据（矛盾）优先：
+
+1. 结果字典里的显式证据字段：`grasp_confirmed`、`holding_payload`、`contact`（`contact` 双向计数——`False` 表示空闭合，`True` 表示停在物体上；见 `contracts.CloseEffectorResult`）。
+2. Api 上的可选钩子 `is_grasp_confirmed(result) -> bool`（so101 风格：由驱动给出保守的接触判定）。
+
+末端没有实测通道的本体，在 Api 类上声明 `trust_command_grasp = True`：指令成功即被接受为证据（运行时打 warning 日志，可审计）。这是**显式降级声明**——默认 fail closed 不变；驱动获得反馈通道后删除该声明并改为提供实测证据。`env.holding_payload` 不参与该判定，它仍是 RecoveryRail 专用的粗粒度标志。
+
 ## 6. Config 与 Session Builder
 
 路径字段由 Config 的 `path_fields: ClassVar[tuple[str, ...]]` 声明（无路径可省略）。`from_yaml` 使用 `adapters._common.config.load_yaml_config`，与 Runtime、smoke 共用 `parse_config`；解析支持扁平及历史嵌套配置，不因文件暂不存在而退回当前工作目录。

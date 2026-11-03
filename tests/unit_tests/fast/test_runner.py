@@ -30,6 +30,7 @@ from jiuwensymbiosis.api.actions import GET_GRASP_INFO_SIMPLE, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.errors import error_code
+from jiuwensymbiosis.tools.robot_control_tool import record_action
 
 
 class _FakeApi:
@@ -56,7 +57,7 @@ class _FakeApi:
 
     def close_gripper(self):
         self.calls.append(("close",))
-        return {"ok": True}
+        return {"ok": True, "grasp_confirmed": True}
 
     def get_grasp_info_simple(self, object_name):
         return self.objects.get(object_name, {"ok": False, "reason": "not_found"})
@@ -160,6 +161,21 @@ class TestPrescanRecordsWhatItDid:
     def test_the_prescan_home_reaches_the_memory(self):
         api, _ = self._prescan()
         assert "body.home" in api.memory.self_state
+
+    def test_a_failed_prescan_home_still_invalidates_what_was_sensed_before(self):
+        class HalfMovedEnv(MockArmEnv):
+            def home(self) -> None:
+                raise RuntimeError("half-moved")
+
+        api = self._Api(HalfMovedEnv())
+        # Sensed before the pre-scan, from wherever the body stood: a home that failed
+        # mid-motion may already have moved it, so this must not survive the failure.
+        record_action(api, api.get_grasp_info_simple, {"object_name": "box"}, api.get_grasp_info_simple("box"))
+        assert api.memory.get("box") is not None
+        session = types.SimpleNamespace(api=api, env=api.env)
+        steps = [ActionStep(op=TRACK_DETECT, params={"object_name": "banana"}, bind="banana")]
+        runner_module._prescan(session, steps)
+        assert api.memory.get("box") is None, "a half-moved home left earlier positions trusted"
 
     def test_a_miss_establishes_nothing(self):
         # Same rule as every other dispatch: only a successful action tells us anything.
@@ -1189,3 +1205,34 @@ class TestTrackMissError:
         err = runner_module._track_miss_error(session, "banana")
         assert "no_camera" not in str(err)
         assert "not detected" in str(err)
+
+
+def test_unmeasured_close_cannot_continue_to_lift():
+    class UnmeasuredApi(_FakeApi):
+        def close_gripper(self):
+            self.calls.append(("close",))
+            return {"ok": True, "state": "closed"}
+
+    api = UnmeasuredApi({})
+    steps = [ActionStep(op="close_gripper", params={}), ActionStep(op="goto_xyzr", params={"x": 100, "y": 0, "z": 200})]
+    result = run_sequence(_session(api), steps, action_index=_index(api), recovery_enabled=False)
+    assert result["ok"] is False
+    assert result["steps_done"] == 1
+    assert "grasp_confirmation_unknown" in result["steps"][0]["reason"]
+    assert api.calls == [("close",)]
+
+
+def test_declared_trust_lets_an_unmeasured_close_proceed():
+    class TrustedApi(_FakeApi):
+        # The body declares it has no measured channel: command success is its evidence.
+        trust_command_grasp = True
+
+        def close_gripper(self):
+            self.calls.append(("close",))
+            return {"ok": True, "state": "closed"}
+
+    api = TrustedApi({})
+    steps = [ActionStep(op="close_gripper", params={}), ActionStep(op="goto_xyzr", params={"x": 100, "y": 0, "z": 200})]
+    result = run_sequence(_session(api), steps, action_index=_index(api), recovery_enabled=False)
+    assert result["ok"] is True
+    assert result["steps_done"] == 2

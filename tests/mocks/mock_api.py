@@ -32,6 +32,10 @@ class MockApi(BaseRobotApi):
     # BaseRobotEnv annotation so those calls type-check.
     env: MockArmEnv
 
+    # A mock has no physics to measure a close against; declaring trust keeps its pick
+    # flows on the same command-success semantics piper uses.
+    trust_command_grasp = True
+
     def __init__(self, env, *, detection_result: dict | None = None, pixel_result: dict | None = None) -> None:
         super().__init__(env)
         self._call_log: list[str] = []
@@ -73,8 +77,9 @@ class MockApi(BaseRobotApi):
         }
 
     @implements(GOTO_XYZR)
-    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
-                  orientation_policy: str = "top_down") -> None:
+    def goto_xyzr(
+        self, x: float, y: float, z: float, r: float | None = None, orientation_policy: str = "top_down"
+    ) -> None:
         self._call_log.append(f"goto_xyzr({x},{y},{z},{r})")
         self.env.move(x, y, z, r)
 
