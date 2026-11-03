@@ -155,6 +155,11 @@ genesis = [
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
 ]
+genesis-planning = [
+    # cuRobo V2 is installed separately from its pinned upstream checkout.
+    "python-fcl==0.7.0.11",
+    "scipy>=1.14,<2",
+]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。

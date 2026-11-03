@@ -335,3 +335,14 @@ class BasePoint(TypedDict):
     x: float
     y: float
     z: float
+
+
+class PlannedMotionResult(TypedDict):
+    """Planning, physical arrival and stopping are separate observations."""
+
+    ok: bool
+    plan_success: bool
+    goal_reached: bool
+    settled: bool
+    stop_confirmation: str
+    reason: str | None

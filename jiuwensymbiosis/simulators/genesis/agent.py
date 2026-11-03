@@ -23,6 +23,8 @@ from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     APPROACH_TARGET,
     LOCATE_TARGET,
+    MOVE_JOINT,
+    MOVE_TOOL_POSES,
     NAVIGATE_RELATIVE,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
@@ -34,7 +36,7 @@ from jiuwensymbiosis.api.actions import (
     implements,
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.contracts import NavigationResult, SimulationSnapshotResult
+from jiuwensymbiosis.contracts import NavigationResult, PlannedMotionResult, SimulationSnapshotResult
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.perception.config import DetectorConfig
 from jiuwensymbiosis.perception.frame import CameraFrame
@@ -157,6 +159,27 @@ class GenesisDriver:
             else motion_feedback(result)
         )
 
+    def move_joints_blocking(self, targets: dict[str, float]) -> dict:
+        return self.move_arm(targets=targets)
+
+    def move_arm(self, **goal) -> dict:
+        self.require_motion()
+        owner = self.owner
+        if owner is None:
+            raise RuntimeError("Genesis session is not connected")
+        try:
+            result = self.preview.move_arm(owner, cancelled=self.cancelled, **goal)
+        except Exception:
+            self.fail_stop_confirmation()
+            raise
+        if result.get("stop_confirmation") != "measured" or not result.get("settled"):
+            self.fail_stop_confirmation()
+        self.results.append(result)
+        return {
+            key: result.get(key)
+            for key in ("ok", "plan_success", "goal_reached", "settled", "stop_confirmation", "reason")
+        }
+
     def accept_camera_observation(self, camera_name: str, captured_at: float) -> None:
         """Unlock movement only after a post-stop head image reaches model context."""
         if (
@@ -209,6 +232,11 @@ class GenesisEnv(BaseRobotEnv):
             self.capabilities |= {"simulation.truth"}
             if driver.actions_enabled:
                 self.capabilities |= {"motion.goal"}
+                read_status = getattr(driver.preview, "status", None)
+                state = read_status() if read_status is not None else {}
+                if state.get("scene", {}).get("arm_planning_ready"):
+                    self.capabilities |= {"motion.joint", "motion.tool_pose"}
+                    self.joint_units = "rad"
 
     def connect(self) -> None:
         self.driver.connect()
@@ -245,6 +273,9 @@ class GenesisEnv(BaseRobotEnv):
                     "frame_id": frame.frame_id,
                 }
         return self.driver.navigate_relative(dx_m, dy_m, dyaw_rad)
+
+    def move_tool_poses(self, group: str, poses: dict[str, list[float]], speed: float = 1.0) -> dict:
+        return self.driver.move_arm(group=group, poses=poses, speed=speed)
 
     def get_observation(self) -> RobotObservation:
         # Preserve freshness/ownership validation without exposing simulator truth
@@ -327,7 +358,9 @@ class GenesisEnv(BaseRobotEnv):
         return self._last_frame
 
     def home(self) -> None:
-        # Upper body is already locked at home. Do not drive the base back to its spawn point.
+        # Home is unavailable for configured arm planning until payload-aware recovery exists.
+        if "motion.joint" in self.capabilities:
+            raise RuntimeError("Automatic arm homing is not configured")
         result = self.navigate_relative(0.0)
         if not result["ok"]:
             raise RuntimeError("Cannot confirm stationary home posture")
@@ -442,6 +475,16 @@ class GenesisTruthMotionApi(GenesisTruthApi):
         return navigate(self.env.low_level, {"entity_id": entity_id, "stand_off_m": stand_off_m})
 
 
+class GenesisArmMotionApi(GenesisTruthMotionApi):
+    @implements(MOVE_JOINT)
+    def move_joint(self, targets: dict[str, float]) -> PlannedMotionResult:
+        return cast(PlannedMotionResult, defaults.move_joint(self, targets))
+
+    @implements(MOVE_TOOL_POSES)
+    def move_tool_poses(self, group: str, poses: dict[str, list[float]], speed: float = 1.0) -> PlannedMotionResult:
+        return cast(PlannedMotionResult, self.env.move_tool_poses(group, poses, speed))
+
+
 def make_session(
     preview: GenesisPreview,
     *,
@@ -457,7 +500,10 @@ def make_session(
     starters = []
     detector_config = detector_config or DetectorConfig()
     if observation_mode == "ground_truth":
-        api = GenesisTruthMotionApi(env) if actions_enabled else GenesisTruthApi(env)
+        if actions_enabled and "motion.tool_pose" in env.capabilities:
+            api = GenesisArmMotionApi(env)
+        else:
+            api = GenesisTruthMotionApi(env) if actions_enabled else GenesisTruthApi(env)
     elif observation_mode == "perception" and detector_config.mode != "disabled":
         from jiuwensymbiosis.adapters._common.builder import make_detector_sidecar
         from jiuwensymbiosis.perception.detector_client import create_detector_client
@@ -559,6 +605,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             observation_mode,
             actions_enabled,
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
+            planning_enabled="motion.tool_pose" in session.env.capabilities,
         ),
         execution={
             "mode": "stepagent",

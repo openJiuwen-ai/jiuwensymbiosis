@@ -46,6 +46,7 @@ class RuntimeScene:
         self.cameras: dict[str, RobotCamera] = {}
         self.indoor: Any = None
         self.motion: Any = None
+        self.arm_motion: Any = None
         self.asset: Any = None
         self.steps = self.cycle = 0
         self._directory = tempfile.TemporaryDirectory(prefix="scene-", dir=directory)
@@ -114,6 +115,15 @@ class RuntimeScene:
                 from base_motion import RelativeMotion
 
                 self.motion = RelativeMotion(self.robot)
+                if settings.planning_profile:
+                    from arm_motion import ArmMotion
+                    from planning_profile import load_profile
+
+                    profile = load_profile(Path(settings.planning_profile))
+                    self.arm_motion = ArmMotion(
+                        self, profile, self._evidence_directory / "arm-plans" / str(self.info["instance_id"])
+                    )
+                    self.info["arm_planning_ready"] = True
             if self.robot is not None:
                 self.info["robot_bounds_m"] = self.robot.bounds
                 if self.source is None:
@@ -367,6 +377,10 @@ class RuntimeScene:
             for i, body in enumerate(self.bodies):
                 body.set_pos((-0.34 + i * 0.34, 0.04 * (i % 2), 1.1 + i * 0.35), zero_velocity=True)
         if self.info["mode"] == "robot_mobile":
+            if getattr(self, "arm_motion", None) is not None:
+                self.arm_motion.tick(self.settings.dt)
+                if self.arm_motion.active and self.motion.active:
+                    self.motion.cancel("arm_motion_exclusive")
             self.motion.tick(self.settings.dt, self.steps)
             self.robot.before_step(self.settings.dt)
         self.scene.step()
@@ -390,6 +404,10 @@ class RuntimeScene:
         before = self.info["instance_id"]
         if self.motion is not None and self.motion.active:
             raise RuntimeError("运动任务仍在执行，不能复位。")
+        if getattr(self, "arm_motion", None) is not None and (
+            self.arm_motion.active or self.arm_motion.follower.terminal
+        ):
+            raise RuntimeError("Arm motion active or stopping unconfirmed; cannot reset")
         with phase("reset_stop"):
             if self.motion is not None:
                 self.robot.stop()
@@ -431,6 +449,9 @@ class RuntimeScene:
 
     def close(self) -> None:
         try:
+            if getattr(self, "arm_motion", None) is not None:
+                self.arm_motion.close()
+                self.arm_motion = None
             self.close_renderer()
         finally:
             if self.scene is not None:

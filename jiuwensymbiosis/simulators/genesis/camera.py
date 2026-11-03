@@ -20,6 +20,7 @@ class PreviewSettings:
     robot_id: str = ""
     render_mode: str = "reference"
     camera_name: str = "observer"
+    planning_profile: str = ""
 
     def __post_init__(self) -> None:
         if (self.width, self.height) not in {(960, 540), (1280, 720), (1920, 1080)}:
@@ -40,6 +41,10 @@ class PreviewSettings:
             raise ValueError("机器人资产 ID 无效。")
         if self.robot_id and (self.scene_id == "demo" or self.robot_mode != "moz1_wheels"):
             raise ValueError("室内机器人需要 USD 场景和 MOZ1 底盘物理模式。")
+        if not isinstance(self.planning_profile, str) or len(self.planning_profile) > 4096:
+            raise ValueError("Invalid planning profile path")
+        if self.planning_profile and self.robot_mode != "moz1_wheels":
+            raise ValueError("Arm planning requires a physical robot controller")
         if self.robot_mode not in {"inspection", "moz1_wheels"}:
             raise ValueError("机器人模式无效。")
 

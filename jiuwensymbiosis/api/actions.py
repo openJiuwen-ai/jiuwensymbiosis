@@ -59,6 +59,7 @@ from jiuwensymbiosis.contracts import (
     GraspResult,
     NavigationResult,
     ObjectGeometryResult,
+    PlannedMotionResult,
     SceneScanResult,
     SearchResult,
     SensingFailure,
@@ -221,6 +222,33 @@ HOME = ActionSpec(
 # =============================================================================
 # Joint motion — motion.joint
 # =============================================================================
+MOVE_TOOL_POSES = ActionSpec(
+    name="move_tool_poses",
+    description=(
+        "Plan and execute one coupled motion for all named tools of a configured joint group. "
+        "poses maps each tool-frame name to [x,y,z,qw,qx,qy,qz], metres and unit quaternion, "
+        "relative to the body's configured planning base_link. Provide every tool in the group. "
+        "Non-group joints are held; the mobile base must be stopped. Read configured group, "
+        "tool and base-frame names from this body's state. speed is a positive timing multiplier; "
+        "velocity, acceleration and jerk limits take precedence. Planning success alone is not arrival."
+    ),
+    capability="motion.tool_pose",
+    params=("group", "poses", "speed"),
+    required_params=("group", "poses"),
+    param_schema={
+        "group": {"type": "string"},
+        "poses": {
+            "type": "object",
+            "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 7, "maxItems": 7},
+        },
+        "speed": {"type": "number", "exclusiveMinimum": 0},
+    },
+    result=PlannedMotionResult,
+    invalidates=("body.home",),
+    tags=("motion",),
+)
+
+
 MOVE_JOINT = ActionSpec(
     name="move_joint",
     description=(
@@ -713,6 +741,7 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     GET_HOME_POSE,
     HOME,
     MOVE_JOINT,
+    MOVE_TOOL_POSES,
     MOVE_NAMED_JOINT,
     GET_JOINT_POSITIONS,
     OPEN_GRIPPER,

@@ -175,3 +175,9 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
 曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
+
+## 可选机械臂规划
+
+`planning/moz1.json` 与 `planning/panda.json` 是 cuRobo V2 的机器人语义模板。
+配置解析、公共动作、坐标约定、停止语义与适用范围见
+[Genesis 通用机械臂规划](../../docs/zh/how-to/genesis-arm-planning.md)。
