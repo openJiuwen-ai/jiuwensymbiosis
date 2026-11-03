@@ -17,6 +17,43 @@ from jiuwensymbiosis.serving.http_support import InferenceAdmission
 from jiuwensymbiosis.utils.service_http import HttpServiceClient
 
 
+@pytest.mark.parametrize("label_key", ["text_labels", "labels"])
+@pytest.mark.parametrize(
+    "n,labels,valid",
+    [(0, [""], True), (0, None, True), (1, ["bed"], True), (1, [17], False), (1, [["bed"]], False), (1, None, False)],
+)
+def test_decoded_labels_describe_predictions_and_empty_detection_is_not_server_error(
+    monkeypatch, n, labels, valid, label_key
+):
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    class Inputs(dict):
+        def to(self, device):
+            return self
+
+    class Processor:
+        def __call__(self, **kwargs):
+            return Inputs(input_ids=[])
+
+        def post_process_grounded_object_detection(self, *args, **kwargs):
+            return [{"boxes": np.zeros((n, 4)), "scores": np.ones(n), label_key: labels}]
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad=nullcontext, Tensor=type("Tensor", (), {})))
+    monkeypatch.setattr(server, "_GDINO_PROCESSOR", Processor())
+    monkeypatch.setattr(server, "_GDINO_MODEL", lambda **kwargs: object())
+    if not valid:
+        with pytest.raises(RuntimeError, match="decoded text labels"):
+            server._gdino_detect(Image.new("RGB", (10, 10)), "wardrobe")
+        return
+    boxes, scores, actual = server._gdino_detect(Image.new("RGB", (10, 10)), "wardrobe")
+    assert len(boxes) == len(scores) == n
+    assert actual == ([] if n == 0 else ["bed"])
+
+
 @pytest.mark.parametrize(
     "entry", ["local", "remote", "old_local_yaml", "old_remote_yaml", "old_python", "init_detector"]
 )
@@ -151,6 +188,7 @@ def test_edge_boxes_are_clipped_before_segmentation_and_client_validation(monkey
                 dtype=float,
             ),
             np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4]),
+            ["chair", "bed", "discarded", "discarded", "discarded", "discarded"],
         ),
     )
     sam_boxes = []
@@ -168,5 +206,6 @@ def test_edge_boxes_are_clipped_before_segmentation_and_client_validation(monkey
         results = client(np.zeros((10, 10, 3), dtype=np.uint8), "box")
     expected = [[0, 2, 2, 8], [8, 0, 10, 10]]
     assert [result["box"] for result in results] == expected
+    assert [result["label"] for result in results] == ["chair", "bed"]
     assert all(result["mask"].any() and result["mask"].shape == (10, 10) for result in results)
     assert sam_boxes == (expected if use_sam2 else [])

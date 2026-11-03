@@ -311,6 +311,8 @@ def candidate_geometries(
     object_name: str,
     min_z_mm: float | None = None,
     score_threshold: float = DEFAULT_SCORE_MIN,
+    distinct: bool = False,
+    include_invalid: bool = False,
 ) -> list[tuple[Any, dict]]:
     """All ``object_name`` detections in the frame → colour-verified base-frame geometries.
 
@@ -330,7 +332,10 @@ def candidate_geometries(
         return []
     cw = extract_color_word(object_name)
     geos = []
-    for r in seg_fn(rgb, text_prompt=object_name):
+    detections = seg_fn(rgb, text_prompt=object_name)
+    if distinct:
+        detections = _distinct_masks(detections, np.asarray(depth_m).shape)
+    for r in detections:
         if r.get("score", 0.0) < score_threshold:
             continue
         m = np.asarray(r["mask"])
@@ -339,9 +344,112 @@ def candidate_geometries(
         g = object_geometry_from_mask(
             m, depth_m, np.asarray(intrinsics), np.asarray(tf_base_cam), min_z_mm=min_z_mm, debug_label=object_name
         )
-        if g.ok:
-            geos.append((g, {"mask": m, "box": r.get("box"), "score": r.get("score")}))
+        if g.ok or include_invalid:
+            detection = {"mask": m, "box": r.get("box"), "score": r.get("score")}
+            if distinct:
+                detection["label"] = r.get("label")
+            geos.append((g, detection))
     return geos
+
+
+def _distinct_masks(detections: list[dict], shape: tuple[int, int]) -> list[dict]:
+    """Collapse repeated/nested masks of the same visible instance, highest score first."""
+    import numpy as np
+
+    from jiuwensymbiosis.perception.frame import FrameValidationError
+    from jiuwensymbiosis.perception.object_geometry import _resize_mask_nearest
+
+    kept: list[dict] = []
+    for item in sorted(detections, key=lambda d: d.get("score", 0), reverse=True):
+        mask = np.asarray(item["mask"], dtype=bool)
+        if mask.ndim != 2 or min(mask.shape) == 0:
+            raise FrameValidationError("invalid_target_mask")
+        mask = _resize_mask_nearest(mask, *shape)
+        area = int(mask.sum())
+        if not area:
+            continue
+        duplicate = False
+        for other in kept:
+            previous = np.asarray(other["mask"], dtype=bool)
+            overlap = int(np.count_nonzero(mask & previous))
+            # Two detections of a complete object and its visible part should
+            # not be counted as two separate approach targets.
+            if overlap / min(area, int(np.count_nonzero(previous))) >= 0.9:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append({**item, "mask": mask})
+    return kept
+
+
+def _unique_target_geometry(
+    api: Any,
+    object_name: str,
+    reference: str | None,
+    relation: str,
+    frame: CameraFrame,
+    observer: Callable | None = None,
+) -> dict:
+    """Resolve one observable instance before local motion; never choose nearest on ambiguity."""
+    import numpy as np
+
+    def candidates(name):
+        return candidate_geometries(
+            frame.rgb,
+            frame.depth_m,
+            frame.intrinsics,
+            frame.tf_base_cam,
+            seg_fn=_seg_fn(api, frame),
+            object_name=name,
+            distinct=True,
+            include_invalid=True,
+        )
+
+    targets = candidates(object_name)
+    if not targets:
+        return {"ok": False, "reason": "no_detection", "object": object_name}
+    if any(not geo.ok for geo, _ in targets):
+        return {"ok": False, "reason": "too_few_points", "object": object_name}
+    if reference:
+        refs = candidates(reference)
+        if len(refs) != 1 or not refs[0][0].ok:
+            return {
+                "ok": False,
+                "reason": "reference_ambiguous_or_unmeasured",
+                "object": object_name,
+                "reference": reference,
+            }
+        targets = [(g, d) for g, d in targets if relation_holds(g, refs[0][0], relation, **_relation_thresholds(api))]
+    if len(targets) != 1:
+        return {
+            "ok": False,
+            "reason": "ambiguous_target" if targets else "no_target_matching_reference",
+            "object": object_name,
+            "candidate_count": len(targets),
+        }
+    geo, detection = targets[0]
+    mask = np.asarray(detection["mask"], dtype=bool)
+    # The calibrated-frame gate has already required depth for this path.
+    depth = cast(np.ndarray, frame.depth_m)
+    valid = mask & np.isfinite(depth) & (depth > 0)
+    y, x = np.nonzero(valid)
+    my, mx = np.nonzero(mask)
+    # Enough points concentrated in one corner cannot locate the visible object reliably.
+    if np.ptp(x) < 0.5 * np.ptp(mx) or np.ptp(y) < 0.5 * np.ptp(my):
+        return {"ok": False, "reason": "insufficient_depth_coverage", "object": object_name}
+    if observer is not None:
+        observer(frame, detection["mask"])
+    _viz(api, _scene_camera(api), object_name, frame.rgb, {"ok": True, **detection})
+    return {
+        "ok": True,
+        "object": object_name,
+        "reference": reference,
+        "relation": relation,
+        "detection_label": detection.get("label"),
+        "detection_score": detection.get("score"),
+        "box_px": detection.get("box"),
+        **object_geometry_fields(geo),
+    }
 
 
 def _best_geometry(
@@ -537,10 +645,11 @@ def _scene_camera(api: Any) -> Any:
     return getattr(api, "scene_camera", "scene")
 
 
-def _grab_frame(api: Any, camera: str | None = None) -> Any:
+def _grab_frame(api: Any, camera: str | None = None, *, target: bool = False) -> Any:
     """One rgb + depth + intrinsics + base<-camera frame (default: the Env verb)."""
     started = time.monotonic()
-    override = getattr(api, "_grab_calibrated_frame", None)
+    override = getattr(api, "_grab_target_frame", None) if target else None
+    override = override or getattr(api, "_grab_calibrated_frame", None)
     frame = override(camera) if override else api.env.grab_calibrated_frame(camera)
     if frame is not None and getattr(frame, "captured_monotonic_s", None) is not None:
         detector = _seg_fn(api)
@@ -572,6 +681,9 @@ def _check_frame_completion(api: Any, frame: CameraFrame) -> None:
     if isinstance(detector, DetectorClient):
         captured = frame.captured_monotonic_s
         detector.check_frame_age(time.monotonic() if captured is None else captured, frame.frame_id or "")
+    validate = getattr(api.env, "validate_frame", None)
+    if validate is not None:
+        validate(frame)
 
 
 def _viz(api: Any, camera: str, prompt: str, rgb: Any, best: dict | None) -> None:
@@ -606,8 +718,14 @@ def _service_result(fn: Callable) -> Callable:
 
     @wraps(fn)
     def run(api: Any, *args: Any, **kwargs: Any) -> dict:
+        from jiuwensymbiosis.perception.frame import FrameValidationError
+
         try:
             return cast(dict, fn(api, *args, **kwargs))
+        except FrameValidationError as exc:
+            api.last_detection = None
+            api.last_surface = None
+            return {"ok": False, "reason": exc.reason}
         except InferenceServiceError as exc:
             api.last_detection = None
             api.last_surface = None
@@ -635,16 +753,34 @@ def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None =
     a coarse-to-fine grounding that disambiguates same-class targets (see
     ``_detect_related``).
     """
+    return _locate_geometry(api, object_name, reference, relation)
+
+
+def _locate_geometry(
+    api: Any,
+    object_name: str,
+    reference: str | None,
+    relation: str,
+    *,
+    unique: bool = False,
+    observer: Callable | None = None,
+) -> dict:
     # Invalidate any prior detection up front: a failed detect must not leave a stale
     # geometry that the next grasp would then act on. Only a fresh success re-fills it.
     api.last_detection = None
     bad = _unknown_relation(relation, object_name)
     if bad is not None:
         return bad
-    frame, fail = _calibrated_frame_or_reason(api, object_name)
+    frame, fail = (
+        _calibrated_frame_or_reason(api, object_name, target=True)
+        if unique
+        else _calibrated_frame_or_reason(api, object_name)
+    )
     if fail is not None:
         return fail
-    if reference:  # fine-grained: keep only the candidate related to the reference
+    if unique:
+        result = _unique_target_geometry(api, object_name, reference, relation, frame, observer)
+    elif reference:  # fine-grained: keep only the candidate related to the reference
         result = _detect_related(api, object_name, reference, relation, frame)
     else:
         result = detect_object_geometry(
@@ -658,9 +794,58 @@ def locate_for_grasp(api: Any, object_name: str = "box", reference: str | None =
             on_pick=lambda best: _viz(api, _scene_camera(api), object_name, frame.rgb, best),
         )
     _check_frame_completion(api, frame)
+    validate_target = getattr(api.env, "validate_target_frame", None) if unique else None
+    if validate_target is not None:
+        validate_target(frame)
     if result.get("ok"):
+        if unique:
+            result.update(frame_id=frame.frame_id, captured_monotonic_s=frame.captured_monotonic_s)
         api.last_detection = result
     return result
+
+
+@_service_result
+def locate_target(
+    api: Any, object_name: str, reference: str | None = None, relation: str = "on", *, previous=None
+) -> dict:
+    """Visible-point geometry for local approach; makes no graspability claim."""
+    from jiuwensymbiosis.perception.frame import FrameValidationError
+    from jiuwensymbiosis.perception.target_identity import TargetObservation
+
+    pending = None
+
+    def observed(frame, mask):
+        nonlocal pending
+        pending = TargetObservation.from_frame((object_name, reference, relation), frame, mask)
+        if previous is not None:
+            reason = previous.mismatch(pending) if pending is not None else "association_odometry_unavailable"
+            if reason:
+                raise FrameValidationError(reason)
+
+    result = _locate_geometry(api, object_name, reference, relation, unique=True, observer=observed)
+    if not result.get("ok"):
+        return result
+    api.target_observation = pending
+    point = result["center_mm"]
+    return {
+        "ok": True,
+        "object": object_name,
+        "reference": reference,
+        "relation": relation,
+        "detection_label": result.get("detection_label"),
+        "detection_score": result.get("detection_score"),
+        "box_px": result.get("box_px"),
+        "point_base_mm": point,
+        "distance_m": math.hypot(point[0], point[1]) / 1000,
+        "bearing_rad": math.atan2(point[1], point[0]),
+        "near_surface_x_m": result["front_x_mm"] / 1000,
+        "n_points": result["n_points"],
+        "frame_id": result["frame_id"],
+        "captured_monotonic_s": result["captured_monotonic_s"],
+        "source": "rgbd_perception",
+        "frame": "base_forward_left_up",
+        "point_kind": "visible_point_median",
+    }
 
 
 @_service_result
@@ -717,7 +902,7 @@ def analyze_scene(api: Any, object_name: str = "box") -> dict:
 # ------------------------------------------------------ shared internals
 
 
-def _calibrated_frame_or_reason(api: Any, object_name: str) -> tuple[Any, dict | None]:
+def _calibrated_frame_or_reason(api: Any, object_name: str, *, target: bool = False) -> tuple[Any, dict | None]:
     """The first frame carrying everything 3-D needs, or ``(None, failure_dict)``.
 
     Every camera is asked, and the one that answers is whichever FRAME turns out to
@@ -732,7 +917,7 @@ def _calibrated_frame_or_reason(api: Any, object_name: str) -> tuple[Any, dict |
     """
     fail = {"ok": False, "reason": "no_camera", "object": object_name}
     for camera in getattr(api.env, "cameras", None) or (_scene_camera(api),):
-        frame = _grab_frame(api, camera)
+        frame = _grab_frame(api, camera, target=target)
         if frame is None:
             fail = {"ok": False, "reason": "no_camera", "object": object_name}
         elif frame.depth_m is None:

@@ -46,6 +46,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
+from jiuwensymbiosis.contracts import MeasuredBaseMotionResult
+
 
 @runtime_checkable
 class RobotDriver(Protocol):
@@ -190,6 +192,7 @@ class BaseDriver(Protocol):
 
     Both verbs are blocking and return ``{ok, reason, ...}``. Distances are
     METRES here (detections are millimetres) — the framework's convention.
+    Target approach additionally requires the ``MeasuredBaseDriver`` contract.
     """
 
     def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
@@ -197,6 +200,23 @@ class BaseDriver(Protocol):
 
     def navigate_arc(self, radius_m: float, dyaw_rad: float) -> dict:
         """Drive ONE constant-curvature arc, turning while advancing."""
+
+
+@runtime_checkable
+class MeasuredBaseDriver(Protocol):
+    """Optional measured-stop extension for RGB-D target approach.
+
+    May be supplied by a driver or its Env wrapper. Existing base adapters do
+    not acquire this stronger guarantee merely by declaring ``motion.base``.
+    """
+
+    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> MeasuredBaseMotionResult:
+        """Turn then translate in metres/radians, block and report measured stop.
+
+        All-zero arguments request a stop and its measurement, not a no-op
+        acknowledgement. Unknown stopping must return ``settled=False`` and
+        ``stop_confirmation='unknown'``; it must never permit another step.
+        """
 
 
 @runtime_checkable

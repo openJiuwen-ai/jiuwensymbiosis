@@ -65,8 +65,67 @@ home() -> None
 - `planning.reachability`
 - `sorting.command`
 - `speech.tts`
+- `simulation.truth`
 
 实际词表以 `jiuwensymbiosis.env.base.KNOWN_CAPABILITIES` 为准。
+
+## RGB-D 目标定位与接近
+
+`locate_target(object_name, reference=None, relation="on")` 由 `vision.detection` 门控。
+返回 `source="rgbd_perception"`、底座前/左/上坐标系下的 `point_base_mm`、水平距离
+`distance_m`、方位角 `bearing_rad`（向左为正）、帧 ID 和采集时间。测量点是可见表面的
+中位点（`point_kind="visible_point_median"`），不代表完整物体中心。
+`object` 回显查询；`detection_label`、`detection_score` 和 `box_px` 是模型预测。
+决定接近前应检查同帧 RGB/分割叠图。缺失、歧义或深度不足均失败；不能简单丢弃无法
+测量的候选，再选择另一个同类对象。
+
+`approach_target(object_name, target_distance_m=1.2, reference=None, relation="on")`
+由 `motion.goal` 门控，以有限的转向/前进步和每次决策前两帧新鲜关联观测闭环接近。
+成功需要到达目标范围且**实测停车**；预算耗尽是失败，不提供全局寻路或抓取。
+单个能力标签不验证全部前提：适配器绑定只有在标定 RGB-D、分割、实测底座位姿、
+运动净空检查和实测停车均可用时才能提供该动作。旧 `motion.goal` 适配器不会自动获得它。
+
+### 绑定扩展契约
+
+| 扩展点 | 契约与缺失行为 |
+|---|---|
+| `env.navigate_relative(dx_m, dy_m=0, dyaw_rad=0)` 或 `api.nav_relative` | 遵循 `env.protocol.MeasuredBaseDriver`，返回 `contracts.MeasuredBaseMotionResult`。先转后平移，阻塞并实测停车；`(0, 0, 0)` 也必须请求停车确认。只有 `ok=True`、缺少字段或停车未知均阻止感知/下一步，返回 `stop_unconfirmed`。 |
+| `env.check_target_step(forward, turn, frame_id, tuning) -> str \| None` | 遵循 `motion.target_approach.TargetStepGuard`；任何非零动作（含纯转向）前必需。核对指定帧的新鲜度/参考系代次与完整本体扫掠空间；`None` 放行，非空原因拒绝。缺少钩子返回 `clearance_unavailable`，缺失/遮挡证据必须拒绝。 |
+| `api._grab_target_frame(camera) -> CameraFrame \| None` | 可选目标采集覆盖；否则依次回退到 `_grab_calibrated_frame(camera)`、`env.grab_calibrated_frame(camera)`。必须返回实际对齐传感数据。 |
+| `env.validate_frame(frame) -> None` | 可选附加参考系代次/新鲜度校验，在感知结束、发布缓存前调用；无效时抛出 `FrameValidationError(reason)`。也用于共享场景感知。 |
+| `env.validate_target_frame(frame) -> None` | 同一缓存发布边界上的可选目标专用校验；无效时抛出 `FrameValidationError(reason)`。缺少校验器不会增加适配器检查；本体重置/生命周期需要附加检查时由绑定层提供。 |
+
+共享层保留几何、帧顺序和关联检查，DetectorClient 还检查采集年龄。可选钩子不替代
+这些检查；自定义采集/检测器绑定必须确保实际采集新鲜度。旧驱动不能用命令确认或
+时间流逝伪造 `settled=True`、`stop_confirmation="measured"`。
+
+`CameraFrame` 保存对齐 RGB/深度、内参和 `tf_base_cam`（相机→底座，平移为**毫米**；
+深度为**米**）。应提供唯一 `frame_id` 和主机单调时钟上的采集时间，自动生成的
+ID/时间不能证明缓冲帧新鲜。目标关联额外消费与采集对齐的 `metadata`：
+
+| 字段 | 含义 |
+|---|---|
+| `base_sample.position_m` | 稳定参考系下的实测底座位置，有限三维向量，米。 |
+| `base_sample.body_yaw_rad` | 同一参考系下的有限实数偏航角，弧度。 |
+| `base_sample.odom_frame` | 稳定里程计参考系/代次 ID；里程计重置时必须更新。 |
+| `scene_instance_id` | 可选场景/重置代次 ID，与里程计独立。 |
+
+至少需要一个参考系 ID。仅有场景 ID 时，底座位姿必须使用该稳定场景坐标系，且每次
+坐标重置均更新 ID。两者同时提供时必须分别一致；变化、出现或消失都会使关联失效。
+对象真值不能替代传感证据或实测底座位姿。
+
+默认最小目标距离 0.8 米表示到可见中位点的距离，不保证表面净空。前进前，两帧中
+更近的可见表面减去本体半径及净空后，须至少剩余 `min(forward, distance_tolerance_m)`。
+默认值满足 `0.8 >= 0.55 + 0.15 + 0.05`；突出几何或较大本体仍可能触发
+`insufficient_target_clearance`，应保留该拒绝行为。
+
+`simulation.truth` 门控 `sim_list_entities`、`sim_get_robot_state`、`sim_get_entity_state`，
+返回明确标注 `simulation_ground_truth` 的快照，不是 marker 能力或传感替代品。
+`navigate_to_pose`、`navigate_to_entity` 是另外两项 `motion.goal` 契约。
+本层提供共享契约/算法，Genesis 生产绑定后续接入。检测器工厂会转发 `required_backend`，
+但只有调用方显式传值才校验后端一致性。GroundingDINO 接受与框对齐的已解码
+`text_labels` 或字符串 `labels`；缺失、数值或长度不符的标签视为服务失败，不能降级为
+空检测或将请求文本当作预测标签。
 
 ## `@implements(SPEC)`
 

@@ -46,14 +46,18 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 | `motion.base_servo` | (continuous base-drive primitive) |
 | `motion.lift` | `set_lift_pose`, `lift_to_clearance` |
 | `motion.waist` | `turn_waist` |
-| `motion.goal` | `approach_for_grasp`, `approach_for_place` |
+| `motion.goal` | `approach_for_grasp`, `approach_for_place`, `approach_target`, `navigate_to_pose`, `navigate_to_entity` |
 | `motion.dual_arm` | `dual_arm_grasp`, `dual_arm_place` |
 | `grasp.parallel` | `open_gripper`, `close_gripper` |
 | `grasp.suction` | `activate_suction`, `deactivate_suction` |
 | `grasp.paddle` | (implemented via `dual_arm_grasp`) |
 | `vision.camera` | `get_image`, `pixel_to_base_xyz` |
-| `vision.detection` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene` |
+| `vision.detection` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene`, `locate_target` |
 | `vision.search` | `search_target` |
+| `simulation.truth` | `sim_list_entities`, `sim_get_robot_state`, `sim_get_entity_state` |
+
+New RGB-D/goal/simulation contracts do not automatically bind existing adapters.
+See [target approach binding prerequisites](robot-api.md#rgb-d-target-location-and-approach).
 
 The Env manually declares hardware capabilities; the Api **derives** its own from the specs of the actions it implements (plus declared marker-capability class attributes); the effective tool set is their intersection. An Env may declare marker capabilities with no corresponding action; an Api capability absent from the Env never becomes a tool.
 
@@ -71,6 +75,7 @@ Protocols are defined in `jiuwensymbiosis/env/protocol.py`, **sliced by capabili
 | `NamedJointDriver` | `motion.joint` (named, partial command) | `get_joint_positions()`, `move_joints_blocking(targets, timeout_s=...)` |
 | `ServoDriver` | `motion.servo` | `servo_to_pose(pose)` (non-blocking) |
 | `BaseDriver` | `motion.base`/`motion.goal` | `navigate_relative(dx_m, dy_m=0, dyaw_rad=0)`, `navigate_arc(radius_m, dyaw_rad)` |
+| `MeasuredBaseDriver` (optional) | RGB-D target approach extension | `navigate_relative(...) -> MeasuredBaseMotionResult`, including measured stopping for zero-distance requests |
 | `ContinuousBaseDriver` | `motion.base_servo` | `start_base_drive()`, `base_drive_running(handle)`, `steer_base_drive(handle, bearing_rad)`, `hold_base_drive(handle)`, `stop_base_drive(handle)` |
 | `LifterDriver` | `motion.lift` | `set_lifter(q_lifter)` |
 | `WaistDriver` | `motion.waist` | `turn_waist(delta_rad)` |

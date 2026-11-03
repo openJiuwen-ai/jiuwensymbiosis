@@ -78,8 +78,12 @@ def _validate_detection(item: Any, width: int, height: int) -> dict[str, Any]:
 class DetectorClient:
     """Callable detector plus explicitly owned transport and readiness probe."""
 
-    def __init__(self, config: DetectorConfig, *, request_scoped: bool = False) -> None:
+    def __init__(
+        self, config: DetectorConfig, *, request_scoped: bool = False, required_backend: str | None = None
+    ) -> None:
         self.config = config
+        self.required_backend = required_backend
+        self._backend_checked = False
         endpoint = config.endpoint
         if config.mode == "local":
             endpoint = HttpEndpointConfig(url=cast(str, config.url))
@@ -109,6 +113,8 @@ class DetectorClient:
         try:
             if self._http is not None:
                 self._http.open(lazy=lazy)
+            if not lazy:
+                self._check_backend()
         except BaseException:
             self.close()
             raise
@@ -122,6 +128,18 @@ class DetectorClient:
     def close(self, timeout_s: float = 5.0) -> None:
         if self._http is not None:
             self._http.close(timeout_s=timeout_s)
+        self._backend_checked = False
+
+    def _check_backend(self) -> None:
+        if self.required_backend is not None and not self._backend_checked:
+            result = self.readiness()
+            if result.get("backend") != self.required_backend:
+                raise InferenceServiceError(
+                    f"Vision requires backend {self.required_backend}",
+                    code="inference_backend_mismatch",
+                    service="vision",
+                )
+            self._backend_checked = True
 
     def __enter__(self) -> DetectorClient:
         return self.open()
@@ -173,6 +191,7 @@ class DetectorClient:
         if width <= 0 or height <= 0 or width * height > MAX_PIXELS:
             raise ValueError("image exceeds pixel limit")
         self.check_frame_age(started, request_id)
+        self._check_backend()
         encoded = _encode_image(image)
         payload = {
             "schema_version": 1,
@@ -234,9 +253,9 @@ def check_detection_completion(
             raise
 
 
-def create_detector_client(config: DetectorConfig) -> DetectorClient:
+def create_detector_client(config: DetectorConfig, *, required_backend: str | None = None) -> DetectorClient:
     """Construct a lazy per-session client; never probes or starts a model."""
-    return DetectorClient(config)
+    return DetectorClient(config, required_backend=required_backend)
 
 
 def segment_image(

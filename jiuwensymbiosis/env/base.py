@@ -55,6 +55,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # happens to be in front of it. Says nothing about the camera: RGB or RGBD,
         # wide or narrow — searching only ever reports a BEARING.
         "vision.search",
+        "simulation.truth",  # explicit simulator-only state queries
         "sorting.command",  # opaque sorting protocol (no Cartesian motion)
         "speech.tts",  # text-to-speech available
         "motion.base",  # planar relative motion; lateral support is a per-body constraint
@@ -564,6 +565,8 @@ class BaseRobotEnv(ABC):
 
         Blocking; returns ``{ok, reason, ...}``. Metres here, millimetres in detections —
         the framework's convention. Envs declaring ``motion.base`` implement it.
+        Binding ``approach_target`` additionally requires ``MeasuredBaseDriver``
+        semantics: even a zero-distance request must confirm stopping by measurement.
         """
         raise NotImplementedError(f"{self.name}: navigate_relative not implemented (declare/implement 'motion.base').")
 
