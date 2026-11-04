@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 import yaml
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
@@ -170,3 +173,17 @@ def test_waist_fields_defaults():
 
     cfg = CruzrConfig()
     assert cfg.waist_yaw_joint == "waist_yaw_joint"
+
+
+@pytest.mark.parametrize("field", ["ros_python", "nav_python"])
+@pytest.mark.parametrize(
+    "value", ["~/.local/bin/cruzr_ros_python", "$CRUZR_TEST_BIN/python", "/usr/bin/python3", "python3"]
+)
+def test_worker_interpreter_paths_expand_at_config_boundary(field, value, monkeypatch, tmp_path):
+    monkeypatch.setenv("CRUZR_TEST_BIN", str(tmp_path))
+    cfg = CruzrConfig.from_dict({"env": {"cfg": {"low_level": {field: value}}}})
+    expected = {
+        "~/.local/bin/cruzr_ros_python": str(Path.home() / ".local/bin/cruzr_ros_python"),
+        "$CRUZR_TEST_BIN/python": str(tmp_path / "python"),
+    }.get(value, value)
+    assert getattr(cfg, field) == expected
