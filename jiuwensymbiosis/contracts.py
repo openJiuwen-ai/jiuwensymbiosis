@@ -138,6 +138,14 @@ class GripperCommandResult(TypedDict):
     placement_confirmed: bool
 
 
+class PickTargetResult(GripperCommandResult):
+    """A physical lift can report measured height and continuous hold duration."""
+
+    goal_reached: bool
+    lift_m: NotRequired[float]
+    held_s: NotRequired[float]
+
+
 class GraspResult(TypedDict, total=False):
     """Success shape returned by ``get_grasp_info_simple``.
 

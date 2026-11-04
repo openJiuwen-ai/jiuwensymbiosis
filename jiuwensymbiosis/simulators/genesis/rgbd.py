@@ -33,7 +33,7 @@ def rectified_grid(camera, native_size: tuple[int, int], focal: float) -> np.nda
 
 
 def sample_depth(
-    native, camera, world_from_camera: np.ndarray, *, stride: int, check: Callable[[], None]
+    native, camera, world_from_camera: np.ndarray, *, stride: int, check: Callable[[], None], region=None
 ) -> np.ndarray:
     """Ray-cast a regular rectified grid at the already-rendered physical state.
 
@@ -46,8 +46,19 @@ def sample_depth(
     if type(stride) is not int or not 4 <= stride <= 32:
         raise ValueError("RGB-D sampling stride must be an integer in [4, 32]")
     width, height = camera.resolution
-    xs = np.unique(np.r_[np.arange(0, width, stride), width - 1])
-    ys = np.unique(np.r_[np.arange(0, height, stride), height - 1])
+    if region is None:
+        xs = np.unique(np.r_[np.arange(0, width, stride), width - 1])
+        ys = np.unique(np.r_[np.arange(0, height, stride), height - 1])
+    else:
+        if len(region) != 4 or any(type(i) is not int for i in region):
+            raise ValueError("invalid rectified depth region")
+        x0, y0, x1, y1 = region
+        if not 0 <= x0 < x1 <= width or not 0 <= y0 < y1 <= height:
+            raise ValueError("depth region outside frame")
+        spacing = 1
+        while math.ceil((x1 - x0) / spacing) * math.ceil((y1 - y0) / spacing) > 4096:
+            spacing += 1
+        xs, ys = np.arange(x0, x1, spacing), np.arange(y0, y1, spacing)
     u, v = np.meshgrid(xs, ys)
     k = camera.intrinsic
     directions = np.stack(((u.ravel() - k[0, 2]) / k[0, 0], (v.ravel() - k[1, 2]) / k[1, 1], np.ones(u.size)), axis=1)

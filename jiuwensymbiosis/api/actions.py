@@ -60,6 +60,7 @@ from jiuwensymbiosis.contracts import (
     GripperCommandResult,
     NavigationResult,
     ObjectGeometryResult,
+    PickTargetResult,
     PlannedMotionResult,
     SceneScanResult,
     SearchResult,
@@ -319,6 +320,18 @@ CLOSE_GRIPPER = ActionSpec(
     requires=("payload.clear",),
     provides=("payload.held",),
     tags=("grasp",),
+)
+
+PICK_TARGET = ActionSpec(
+    name="pick_target",
+    description="Pick and lift one target using the configured grasp pose backend. Supply a unique visible object description in perception mode or an entity_id in ground-truth mode. Success requires measured held payload after lift.",
+    capability="grasp.parallel",
+    params=("target",),
+    requires=("payload.clear",),
+    provides=("payload.held",),
+    result=PickTargetResult,
+    invalidates=("body.home",),
+    tags=("motion", "grasp"),
 )
 
 SET_GRIPPER = ActionSpec(
@@ -759,6 +772,7 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     OPEN_GRIPPER,
     CLOSE_GRIPPER,
     SET_GRIPPER,
+    PICK_TARGET,
     ACTIVATE_SUCTION,
     DEACTIVATE_SUCTION,
     GET_IMAGE,

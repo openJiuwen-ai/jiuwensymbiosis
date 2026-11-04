@@ -263,7 +263,7 @@ class SceneRenderer:
             self.last_camera.update(D=[0.0] * 5, distortion_model="rectified_pinhole")
         return warped[0].permute(1, 2, 0).round().clamp_(0, 255).to(rgb.dtype).contiguous()
 
-    def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None):
+    def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None, region=None):
         """One state, one calibrated rectified RGB image and optical-Z depth map."""
         import numpy as np
         from rgbd import sample_depth
@@ -278,8 +278,11 @@ class SceneRenderer:
             np.asarray(self.last_camera["T_world_camera"]),
             stride=stride,
             check=check,
+            region=region,
         )
         self.last_camera.update(depth_type="optical_z", depth_unit="m", depth_sampling_stride=stride)
+        if region is not None:
+            self.last_camera.update(depth_sampling_region=region, depth_sampling_stride=None)
         return rgb, depth
 
     def close(self):

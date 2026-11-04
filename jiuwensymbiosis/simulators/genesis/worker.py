@@ -378,16 +378,22 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             pixels, depth = runtime.renderer.read_rgbd(
                                 name,
                                 stride=capture.get("depth_stride", 8),
+                                **({"region": capture["depth_region"]} if capture.get("depth_region") else {}),
                                 check=check_capture,
                             )
                             base_sample = measure(runtime.robot)
                             runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
                                 np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
                             ).tolist()
+                            if runtime.arm_motion is not None:
+                                runtime.renderer.last_camera["T_planning_base_camera_m"] = (
+                                    np.linalg.inv(runtime.arm_motion.base_pose())
+                                    @ np.asarray(runtime.renderer.last_camera["T_world_camera"])
+                                ).tolist()
                             capture_result.update(
                                 base_sample=base_sample,
                                 body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
-                                motion_id=runtime.motion.result.get("id"),
+                                motion_id=motion.result.get("id"),
                             )
                             depth_path = directory / f"capture-{capture['id']}.npz"
                             np.savez(depth_path, rgb=pixels, depth_m=depth)
@@ -416,7 +422,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         capture_duration_ms=(time.monotonic() - captured_at) * 1000,
                     )
                 except Exception as exc:
-                    logger.warning("Genesis image capture failed (%s)", type(exc).__name__)
+                    logger.warning("Genesis image capture failed (%s): %s", type(exc).__name__, exc)
                     capture_result["error"] = "capture_failed"
                 next_status = 0
             if mailbox.stopping():

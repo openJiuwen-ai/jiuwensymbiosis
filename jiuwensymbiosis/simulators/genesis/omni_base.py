@@ -116,7 +116,9 @@ def validate_twist(vx: float, vy: float, wz: float) -> None:
         raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
 
 
-def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> dict[str, float]:
+def prepare_mobile_urdf(
+    source: Path, target: Path, layout: OmniWheelLayout, *, initial_posture=None
+) -> dict[str, float]:
     """Keep articulated joints and mimic constraints; return the upper-body home.
 
     Only mesh paths change in this disposable copy. Zero exported motor limits
@@ -127,6 +129,10 @@ def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> 
     active = set(WHEEL_NAMES) | set(layout.roller_names)
     positions: dict[str, float] = {}
     pending = list(root.findall("joint"))
+    initial_posture = initial_posture or {}
+    independent = {j.get("name") for j in pending if j.get("type") == "revolute" and j.find("mimic") is None} - active
+    if set(initial_posture) - independent:
+        raise ValueError("initial posture requires independent upper-body joint names")
     while pending:
         progressed = False
         for joint in pending[:]:
@@ -134,7 +140,7 @@ def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> 
             if mimic is not None and mimic.get("joint") not in positions:
                 continue
             value = (
-                0.0
+                initial_posture.get(joint.attrib["name"], 0.0)
                 if mimic is None
                 else (
                     float(mimic.get("multiplier", "1")) * positions[mimic.attrib["joint"]]
@@ -247,13 +253,14 @@ class Moz1Base:
         render_urdf: Path | None = None,
         spawn: tuple[float, float, float] = (0.0, 0.0, 0.0),
         collision_policy: dict | None = None,
+        initial_posture: dict | None = None,
         model_directory: Path | None = None,
     ) -> None:
         import genesis as gs
 
         self.layout = OmniWheelLayout.from_urdf(source)
         self.path = directory / "moz1-mobile.urdf"
-        targets = prepare_mobile_urdf(source, self.path, self.layout)
+        targets = prepare_mobile_urdf(source, self.path, self.layout, initial_posture=initial_posture)
         model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
         self.model_manifest = model_module.prepare_robot_model(
             source, model_directory if model_directory is not None else directory / "model", policy=collision_policy

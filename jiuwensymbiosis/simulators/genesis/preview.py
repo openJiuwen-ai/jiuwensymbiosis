@@ -53,6 +53,7 @@ _WORKER_ENV_KEYS = frozenset(
         "TORCH_EXTENSIONS_DIR",
         "NUMBA_CACHE_DIR",
         "MPLCONFIGDIR",
+        "MOZ1_XRDF",
         "PYTHONDONTWRITEBYTECODE",
         "NVIDIA_VISIBLE_DEVICES",
         "NVIDIA_DRIVER_CAPABILITIES",
@@ -270,6 +271,7 @@ class GenesisPreview:
         cancelled: threading.Event | None = None,
         include_depth: bool = False,
         depth_stride: int = 8,
+        depth_region: tuple[int, int, int, int] | None = None,
     ) -> dict[str, Any]:
         """Capture a named camera JPEG and calibration, independently of video.
 
@@ -283,6 +285,10 @@ class GenesisPreview:
             camera_name == "observer" or type(depth_stride) is not int or not 4 <= depth_stride <= 32
         ):
             raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
+        if depth_region is not None and (
+            not include_depth or len(depth_region) != 4 or any(type(i) is not int for i in depth_region)
+        ):
+            raise ValueError("invalid depth region")
         with self._lock:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("相机采样已取消。")
@@ -307,6 +313,7 @@ class GenesisPreview:
                 **binding,
                 "include_depth": include_depth,
                 "depth_stride": depth_stride,
+                "depth_region": depth_region,
                 "expires_at": time.monotonic() + 12,
             }
             self._capture_request = request
@@ -643,7 +650,17 @@ class GenesisPreview:
         return self._execute_motion(owner, {"dx": dx, "dy": dy, "dyaw": dyaw}, cancelled=cancelled)
 
     def move_arm(
-        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+        self,
+        owner: str,
+        *,
+        targets=None,
+        poses=None,
+        group=None,
+        speed=1.0,
+        effector=None,
+        opened=None,
+        pick_lift=None,
+        cancelled=None,
     ) -> dict:
         if not self.settings.planning_profile:
             raise RuntimeError("No arm planning profile configured")
@@ -656,6 +673,8 @@ class GenesisPreview:
             "effector": effector,
             "opened": opened,
         }
+        if pick_lift is not None:
+            payload["pick_lift"] = pick_lift
         if len(json.dumps(payload, allow_nan=False).encode()) > 2048:
             raise ValueError("Arm request too large")
         return self._execute_motion(owner, payload, cancelled=cancelled)
@@ -689,13 +708,25 @@ class GenesisPreview:
             }
             self._motion_request = request
             self._send_control()
-        deadline = time.monotonic() + (180 if payload.get("kind") == "arm" else 100)
+        started = time.monotonic()
+        deadline = started + (180 if payload.get("kind") == "arm" else 100)
+        slow_arm = payload.get("kind") == "arm" and bool(state.get("scene", {}).get("grasp_pose_backends"))
+        last_step = state.get("steps", 0)
         try:
             while time.monotonic() < deadline:
                 with self._lock:
                     state = self.status()
                     result: dict = state.get("base_motion", {})
                     fresh = time.monotonic() - state.get("measured_at", 0) <= 2
+                    if (
+                        slow_arm
+                        and fresh
+                        and result.get("id") == request["id"]
+                        and result.get("plan_success")
+                        and state.get("steps", 0) > last_step
+                    ):
+                        last_step = state["steps"]
+                        deadline = min(started + 900, time.monotonic() + 180)
                     if result.get("id") == request["id"] and result.get("status") == "completed" and fresh:
                         return result
                     if state["state"] != "ready" or not fresh or self._config_revision != request["config_revision"]:

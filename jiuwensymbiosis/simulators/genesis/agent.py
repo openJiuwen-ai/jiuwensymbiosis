@@ -28,6 +28,7 @@ from jiuwensymbiosis.api.actions import (
     NAVIGATE_RELATIVE,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
+    PICK_TARGET,
     ROTATE_BASE,
     SEARCH_TARGET,
     SET_GRIPPER,
@@ -40,6 +41,7 @@ from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.contracts import (
     GripperCommandResult,
     NavigationResult,
+    PickTargetResult,
     PlannedMotionResult,
     SimulationSnapshotResult,
 )
@@ -181,11 +183,12 @@ class GenesisDriver:
         if result.get("stop_confirmation") != "measured" or not result.get("settled"):
             self.fail_stop_confirmation()
         self.results.append(result)
-        return {
+        feedback = {
             key: result.get(key)
             for key in (
                 "ok",
                 "plan_success",
+                "failure_stage",
                 "goal_reached",
                 "settled",
                 "stop_confirmation",
@@ -196,6 +199,9 @@ class GenesisDriver:
                 "placement_confirmed",
             )
         }
+
+        feedback.update({k: result[k] for k in ("held_s", "lift_m") if k in result})
+        return feedback
 
     def accept_camera_observation(self, camera_name: str, captured_at: float) -> None:
         """Unlock movement only after a post-stop head image reaches model context."""
@@ -241,6 +247,7 @@ class GenesisEnv(BaseRobotEnv):
     def __init__(self, driver: GenesisDriver):
         self.driver = driver
         self.low_level = driver
+        self.grasp_backend = None
         self._last_frame: CameraFrame | None = None
         self.on_rgbd_frame: Callable | None = None
         self.on_detection: Callable | None = None
@@ -319,12 +326,17 @@ class GenesisEnv(BaseRobotEnv):
         self.driver.observe()
         return RobotObservation()
 
-    def grab_calibrated_frame(self, camera: str | None = None) -> CameraFrame:
+    def grab_calibrated_frame(self, camera: str | None = None, *, depth_region=None) -> CameraFrame:
         import numpy as np
 
         if self.driver.observation_mode != "perception" or camera not in {None, "head_cam"}:
             raise ValueError("Perception is restricted to the head RGB-D camera")
-        capture = self.driver.preview.capture_image("head_cam", cancelled=self.driver.cancelled, include_depth=True)
+        capture = self.driver.preview.capture_image(
+            "head_cam",
+            cancelled=self.driver.cancelled,
+            include_depth=True,
+            **({"depth_region": depth_region} if depth_region else {}),
+        )
         calibration = capture["camera"]
         frame = CameraFrame(
             rgb=capture["rgb"],
@@ -335,6 +347,7 @@ class GenesisEnv(BaseRobotEnv):
             captured_monotonic_s=capture["captured_at"],
             metadata={
                 "body_bounds_m": capture.get("body_bounds_m"),
+                "T_planning_base_camera_m": calibration.get("T_planning_base_camera_m"),
                 **{
                     key: capture[key]
                     for key in ("scene_instance_id", "config_revision", "step", "motion_id", "base_sample")
@@ -527,6 +540,22 @@ class GenesisManipulationApi(GenesisArmMotionApi):
         return cast(GripperCommandResult, self.env.set_gripper(opened, effector))
 
 
+class GenesisPerceptionPickApi(GenesisPerceptionMotionApi):
+    @implements(PICK_TARGET)
+    def pick_target(self, target: str) -> PickTargetResult:
+        from jiuwensymbiosis.simulators.genesis.grasp_pick import pick_target
+
+        return cast(PickTargetResult, pick_target(self.env, self.env.grasp_backend, target, self._seg_fn))
+
+
+class GenesisTruthPickApi(GenesisManipulationApi):
+    @implements(PICK_TARGET)
+    def pick_target(self, target: str) -> PickTargetResult:
+        from jiuwensymbiosis.simulators.genesis.grasp_pick import pick_target
+
+        return cast(PickTargetResult, pick_target(self.env, self.env.grasp_backend, target))
+
+
 def make_session(
     preview: GenesisPreview,
     *,
@@ -541,9 +570,26 @@ def make_session(
     api: BaseRobotApi
     starters = []
     detector_config = detector_config or DetectorConfig()
+    if actions_enabled and (
+        observation_mode == "ground_truth" or (observation_mode == "perception" and detector_config.mode != "disabled")
+    ):
+        scene = getattr(preview, "status", lambda: {})().get("scene", {})
+        if (
+            observation_mode in scene.get("grasp_pose_backends", ())
+            and scene.get("arm_planning_ready")
+            and scene.get("effectors_ready")
+        ):
+            from jiuwensymbiosis.simulators.genesis.grasp_pose import GraspPoseBackend
+
+            descriptor = preview.query_scene("grasp_descriptor", {"mode": observation_mode}, cancelled=cancelled)
+            if descriptor["scene_instance_id"] != scene["instance_id"]:
+                raise RuntimeError("Scene changed while binding grasp backend")
+            env.grasp_backend = GraspPoseBackend(descriptor["config"])
     if observation_mode == "ground_truth":
         if actions_enabled and "motion.tool_pose" in env.capabilities:
             api = GenesisManipulationApi(env) if "grasp.parallel" in env.capabilities else GenesisArmMotionApi(env)
+            if env.grasp_backend:
+                api = GenesisTruthPickApi(env)
         else:
             api = GenesisTruthMotionApi(env) if actions_enabled else GenesisTruthApi(env)
     elif observation_mode == "perception" and detector_config.mode != "disabled":
@@ -553,7 +599,11 @@ def make_session(
         if detector_config.local is not None and not detector_config.local.use_sam2:
             raise ValueError("RGB-D perception requires SAM2 segmentation")
         client = create_detector_client(detector_config, required_backend="gdino_sam2")
-        api = (GenesisPerceptionMotionApi if actions_enabled else GenesisPerceptionApi)(env, client)
+        perception_api = GenesisPerceptionMotionApi if actions_enabled else GenesisPerceptionApi
+        if env.grasp_backend:
+            perception_api = GenesisPerceptionPickApi
+            env.capabilities |= {"grasp.parallel"}
+        api = perception_api(env, client)
         env.capabilities |= {"vision.camera", "vision.depth", "vision.detection", "vision.search"}
         if actions_enabled:
             env.capabilities |= {"motion.goal"}
@@ -633,6 +683,8 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
         prompt = TRUTH_PROMPT
     elif observation_mode == "perception":
         prompt = PERCEPTION_PROMPT
+    if session.env.grasp_backend is not None and hasattr(session.api, "pick_target"):
+        prompt += "\n已启用 pick_target。用户要求抓取时，感知模式传唯一可见目标英文名，真值模式传实体 ID；仅以提升后的实测持物作为成功。"
     config = RobotAgentConfig(
         model_spec=spec,
         # run_robot_task owns a short-lived event loop in this worker thread.
@@ -647,6 +699,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             observation_mode,
             actions_enabled,
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
+            pick_enabled=hasattr(session.api, "pick_target"),
             planning_enabled="motion.tool_pose" in session.env.capabilities,
             grasp_enabled="grasp.parallel" in session.env.capabilities,
         ),

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "arm_profile": "moz1.json",
+  "grasp_pose_configs": {
+    "perception": "../grasp/moz1-right-rgbd.json",
+    "ground_truth": "../grasp/moz1-right-ground_truth.json"
+  },
+  "tabletop_fixture": true,
+  "fixture_posture": {
+    "tn__LegWaist1_tD": 1.04888,
+    "tn__LegWaist2_tD": -1.5708,
+    "tn__LegWaist3_tD": 0.523597,
+    "tn__LeftArm0_eC": 0.6,
+    "tn__RightArm0_tD": 2.0666100029731593,
+    "tn__LeftArm1_eC": -0.35,
+    "tn__RightArm1_tD": -0.2026314164940064,
+    "tn__RightArm2_tD": -2.7958935131870986,
+    "tn__LeftArm3_eC": -1.8,
+    "tn__RightArm3_tD": 1.3857639387580012,
+    "tn__LeftArm4_eC": 0.35,
+    "tn__RightArm4_tD": -3.0033219262153628,
+    "tn__RightArm5_tD": 0.3664797528173029,
+    "tn__LeftArm6_eC": -0.6,
+    "tn__RightArm6_tD": -0.6198388934219875,
+    "left_hand_narrow1_joint": -0.61,
+    "right_hand_narrow1_joint": -0.61
+  },
+  "robot_collision_policy": "../../../jiuwensymbiosis/simulators/genesis/data/moz1_right_collision.yaml"
+}

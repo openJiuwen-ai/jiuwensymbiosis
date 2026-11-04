@@ -15,8 +15,8 @@ from pathlib import Path
 
 _CONTROL = 8
 _STATUS = 4104
-_FRAME = 20488
-_PIXELS = 24584
+_FRAME = _STATUS + 32 * 1024  # Camera calibration, robot and manipulation telemetry may coexist.
+_PIXELS = _FRAME + 4096
 
 
 class Mailbox:
@@ -47,7 +47,7 @@ class Mailbox:
         return json.loads(self._data[start:end]) if size else {}
 
     def _write(self, offset: int, limit: int, value: dict) -> None:
-        data = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+        data = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
         if len(data) + 4 > limit:
             raise ValueError("Mailbox metadata exceeds its fixed budget")
         struct.pack_into("<I", self._data, offset, len(data))

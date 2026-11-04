@@ -32,6 +32,7 @@ def allowed_tools(
     detector_enabled: bool = False,
     planning_enabled: bool = False,
     grasp_enabled: bool = False,
+    pick_enabled: bool = False,
 ) -> frozenset[str]:
     policy_id(mode)
     names = {"capture_camera"}
@@ -49,6 +50,8 @@ def allowed_tools(
                 names.update({"move_joint", "move_tool_poses"})
                 if grasp_enabled:
                     names.add("set_gripper")
+    if pick_enabled and actions_enabled and (mode == "ground_truth" or (mode == "perception" and detector_enabled)):
+        names.add("pick_target")
     return frozenset(names)
 
 

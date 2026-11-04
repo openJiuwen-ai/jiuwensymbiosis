@@ -19,6 +19,8 @@ def sibling(name):
 
 
 class ArmMotion:
+    pick_lift = None
+
     def __init__(self, runtime, profile: dict, directory: Path):
         if find_spec("curobo") is None or find_spec("fcl") is None:
             raise RuntimeError("Arm planning requires cuRobo V2 and python-fcl in the simulation environment")
@@ -40,11 +42,12 @@ class ArmMotion:
         if any(motors.intersection(group["joints"]) for group in self.profile["groups"].values()):
             raise ValueError("arm groups and effector motors must be disjoint")
         self.effectors = sibling("end_effectors").EndEffectors(self.entity, self.planner.root, configurations)
+        self.pick_lift = None
         self.gripper_request = None
 
     @property
     def active(self):
-        return self.phase in {"planning", "executing", "gripping", "braking", "confirming"}
+        return self.phase in {"planning", "executing", "closing_for_lift", "gripping", "braking", "confirming"}
 
     def snapshot(self):
         # mmap status is bounded. Detailed arrays stay in retained artifacts.
@@ -64,6 +67,8 @@ class ArmMotion:
             "holding_payload",
             "contact_confirmed",
             "placement_confirmed",
+            "lift_m",
+            "held_s",
         )
         result = {key: self.result[key] for key in keys if key in self.result}
         if result.get("reason"):
@@ -98,7 +103,8 @@ class ArmMotion:
         if getattr(self, "captured", None) is not None:
             changed |= not sibling("arm_collision").world_unchanged(self.entity, self.captured)
             changed |= any(e.state == "unknown" for e in self.effectors.evidence.values())
-            changed |= not self.effectors.unchanged(self.payloads)
+            if not self.pick_lift or not self.pick_lift.started:
+                changed |= not self.effectors.unchanged(self.payloads)
         return "changed" if changed else f"{self.runtime.info['instance_id']}:{self.planner.model_id}"
 
     def tool_poses(self):
@@ -184,6 +190,7 @@ class ArmMotion:
         state, _ = self.read()
         self.goal_poses = None
         self.captured = None
+        self.pick_lift = None
         self.gripper_request = None
         if request.get("effector") is not None:
             if request.get("targets") is not None or request.get("poses") is not None:
@@ -205,6 +212,34 @@ class ArmMotion:
             group = min(candidates)[1]
         settings = self.profile["groups"][group]
         self.goal_poses = request.get("poses")
+        trial = request.get("pick_lift")
+        if trial is not None:
+            if self.goal_poses or request.get("targets") or "grasp_pose_backends" not in self.profile:
+                raise ValueError("trial lift requires a configured grasp backend and a vertical goal")
+            effector = trial["effector"]
+            tool = self.profile["effectors"][effector]["tool"]
+            if settings["tools"] != [tool]:
+                raise ValueError("invalid lift group")
+            self.pick_lift = sibling("pick_lift").PickLift(self, effector, trial["center_m"])
+            target = self.tool_poses()[tool]
+            target[:3] = (np.asarray(target[:3]) + self.base_pose()[:3, :3].T @ [0.0, 0.0, 0.08]).tolist()
+            self.goal_poses = {tool: target}
+            if "joint_goal" in trial:
+                q = trial["joint_goal"]
+                if set(q) != set(settings["joints"]) or not np.isfinite(list(q.values())).all():
+                    raise ValueError("invalid trial lift joint goal")
+                fk = sibling("arm_planning").forward_kinematics(self.planner.root, state | q)
+                predicted = np.linalg.inv(fk[self.profile["base_link"]]) @ fk[tool]
+                goal = sibling("arm_planning").transform(target[:3], target[3:])
+                delta = np.linalg.inv(goal) @ predicted
+                if (
+                    np.linalg.norm(delta[:3, 3]) > 0.005
+                    or sibling("arm_planning").Rotation.from_matrix(delta[:3, :3]).magnitude() > 0.02
+                ):
+                    raise ValueError("trial lift joint goal does not match the vertical lift")
+                request = {**request, "targets": q}
+            else:
+                request = {**request, "poses": self.goal_poses}
         self.anchor = self.base_pose()
         self.static = {
             n: v for n, v in state.items() if n not in settings["joints"] and n not in self.planner.uncontrolled
@@ -227,7 +262,13 @@ class ArmMotion:
             errors[name] = {"position_m": position, "rotation_rad": angle}
             if position > 0.002 or angle > 0.005:
                 raise ValueError("Genesis tool FK differs from planning model")
-        self.payloads = self.effectors.attachments()
+        self.payloads = self.pick_lift.payload if self.pick_lift else self.effectors.attachments()
+        if self.pick_lift:
+            motors = self.effectors.configurations[self.pick_lift.name]["joints"]
+            for n, joint in self.planner.joints.items():
+                mimic = joint.find("mimic")
+                if n in motors or (mimic is not None and mimic.get("joint") in motors):
+                    self.static.pop(n, None)
         captured = sibling("arm_collision").snapshot(self.entity, self.profile, self.payloads)
         self.captured = captured
         self.result["fk_errors"] = errors
@@ -269,6 +310,8 @@ class ArmMotion:
         if self.phase == "braking":
             return
         self.reason = reason
+        if self.pick_lift:
+            self.pick_lift.uncertain()
         self._stop_planner()
         self.effectors.cancel()
         self.follower.cancel(reason)
@@ -278,7 +321,16 @@ class ArmMotion:
 
     def tick(self, dt):
         try:
-            self.effectors.tick(dt)
+            if (
+                self.pick_lift
+                and self.pick_lift.started
+                and self.phase in {"closing_for_lift", "executing", "confirming"}
+            ):
+                self.effectors.drive_closing(dt)
+                if self.phase == "confirming":
+                    self.pick_lift.measure(dt)
+            else:
+                self.effectors.tick(dt)
         except Exception as exc:
             self.effectors.invalidate()
             if self.active:
@@ -313,9 +365,18 @@ class ArmMotion:
                     validation = result["collision_validation"]
                     self.follower.start(trajectory)
                     self.result.update(plan_success=True, trajectory_path=str(path), collision_validation=validation)
-                    self.phase = "executing"
+                    if self.pick_lift:
+                        self.pick_lift.close()
+                        self.phase = "closing_for_lift"
+                    else:
+                        self.phase = "executing"
                 except Exception as exc:
                     self.cancel(f"{type(exc).__name__}: {exc}")
+        elif self.phase == "closing_for_lift":
+            if self.binding() == "changed":
+                self.cancel("scene_or_base_changed")
+            elif self.pick_lift.name not in self.effectors.closing:
+                self.phase = "executing"
         elif self.phase == "executing":
             self.follower.tick(dt)
             if not self.follower.active:
@@ -329,10 +390,20 @@ class ArmMotion:
             if self.phase == "confirming" and self.captured is not None and self.binding() == "changed":
                 self.reason = "world_or_payload_changed_during_settle"
             self.stable = self.stable + dt if self.stopped() else 0.0
-            if self.stable >= 0.25 or self.elapsed > 5.0:
+            hold_window = 2.0 if self.pick_lift and self.pick_lift.started and self.phase == "confirming" else 0.0
+            if (self.stable >= 0.25 and self.elapsed >= hold_window) or self.elapsed > 5.0:
                 settled = self.stable >= 0.25 and not self.follower.terminal
+                if self.pick_lift and self.pick_lift.started:
+                    self.result.update(lift_m=self.pick_lift.rise, held_s=self.pick_lift.stable_s)
+                if not settled and self.reason is None:
+                    self.reason = "stop_unconfirmed"
                 if settled and self.reason is None:
                     self.check_tool_goal()
+                    if self.pick_lift and self.pick_lift.started:
+                        if self.pick_lift.finish():
+                            self.result.update(self.effectors.evidence[self.pick_lift.name].report())
+                        else:
+                            self.reason = "target_hold_unconfirmed"
                     if self.gripper_request is not None:
                         name, opened = self.gripper_request
                         evidence = self.effectors.evidence[name]
@@ -347,6 +418,8 @@ class ArmMotion:
                         )
                         if not confirmed:
                             self.reason = "grasp_or_release_confirmation_lost"
+                if self.pick_lift and (self.reason or not settled):
+                    self.pick_lift.uncertain()
                 self.result.update(
                     status="completed",
                     ok=settled and self.reason is None,

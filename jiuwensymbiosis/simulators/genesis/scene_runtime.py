@@ -46,6 +46,7 @@ class RuntimeScene:
         self.scene: Any = None
         self.renderer: Any = None
         self.bodies: list[Any] = []
+        self.grasp_targets: dict[str, Any] = {}
         self.robot: Any = None
         self.robot_asset: Any = None
         self.cameras: dict[str, RobotCamera] = {}
@@ -128,6 +129,7 @@ class RuntimeScene:
                         self._planning_profile,
                         self._evidence_directory / "arm-plans" / str(self.info["instance_id"]),
                     )
+                    self.info["grasp_pose_backends"] = list(self._planning_profile.get("grasp_pose_backends", {}))
                     self.info["arm_planning_ready"] = True
                     self.info["effectors_ready"] = bool(self.arm_motion.effectors.evidence)
             if self.robot is not None:
@@ -164,6 +166,14 @@ class RuntimeScene:
             },
             "rigid": {"enable_self_collision": not room_physics or self.info["mode"] == "robot_mobile"},
         }
+        fixture = (
+            self._planning_profile.get("tabletop_fixture")
+            and self.source is None
+            and self.info["mode"] == "robot_mobile"
+        )
+        if fixture:
+            options["sim"]["substeps"] = 8
+            options["rigid"]["enable_torsional_friction"] = True
         if self.settings.planning_profile:
             contact_solver = self._planning_profile.get("contact_solver", {})
             if set(contact_solver) - {"noslip_iterations"}:
@@ -215,7 +225,24 @@ class RuntimeScene:
                     name=self.robot_asset.asset.name,
                     render_urdf=validate_material_bundle(self.robot_asset),
                     spawn=spawn,
+                    **(
+                        {"collision_policy": self._planning_profile["robot_collision_policy"]}
+                        if "robot_collision_policy" in self._planning_profile
+                        else {}
+                    ),
+                    **(
+                        {"initial_posture": self._planning_profile.get("fixture_posture")}
+                        if self._planning_profile.get("tabletop_fixture") and self.source is None
+                        else {}
+                    ),
                     model_directory=self._evidence_directory / "robot-models" / str(self.info["instance_id"]),
+                )
+            if self._planning_profile.get("tabletop_fixture") and self.source is None:
+                self.scene.add_entity(morph=gs.morphs.Box(size=(0.4, 0.35, 0.04), pos=(-0.25, -0.5, 0.8), fixed=True))
+                self.grasp_targets["orange cube"] = self.scene.add_entity(
+                    morph=gs.morphs.Box(size=(0.04, 0.04, 0.04), pos=(-0.25, -0.5, 0.841)),
+                    material=gs.materials.Rigid(rho=400, friction=1.0),
+                    surface=gs.surfaces.Default(color=(0.95, 0.25, 0.06)),
                 )
         elif self.info["mode"] == "robot_preview":
             from robot_preview import RobotPreview
@@ -249,6 +276,21 @@ class RuntimeScene:
             ]
         with self._phase("scene_build"):
             self.scene.build(n_envs=1)
+        if fixture:
+            # Resolve compliant jaw contacts at this fixture's solver timestep.
+            # The ordinary penetration and payload evidence limits still apply.
+            links = {
+                link
+                for cfg in self._planning_profile["effectors"].values()
+                for group in cfg["contact_groups"]
+                for link in group
+            }
+            geoms = [g for body in self.grasp_targets.values() for g in body.geoms]
+            geoms.extend(g for name in links for g in self.robot.entity.get_link(name).geoms)
+            for geom in geoms:
+                params = geom.get_sol_params().cpu().numpy().copy()
+                params[0] = max(0.0021, 2.01 * self.settings.dt / options["sim"]["substeps"])
+                geom.set_sol_params(params)
         if self.robot is not None:
             with self._phase("robot_controller"):
                 self.robot.build()
@@ -340,7 +382,7 @@ class RuntimeScene:
             )
             self.selected_entity = entity
             labels = (
-                ["地面", self.robot.name]
+                ["地面", self.robot.name, "平台", *getattr(self, "grasp_targets", {})]
                 if self.robot is not None
                 else ["地面", "平台", "金色球", "蓝色方块", "铜色球"]
             )
@@ -366,6 +408,18 @@ class RuntimeScene:
         return self.selection
 
     def query_truth(self, operation: str, params: dict) -> dict:
+        if operation == "grasp_descriptor":
+            config = self._planning_profile["grasp_pose_backends"][params["mode"]]
+            return {"scene_instance_id": self.info["instance_id"], "config": config}
+        if operation == "grasp_ik":
+            from grasp_ik import screen
+
+            if self.arm_motion is None or not self.info.get("grasp_pose_backends"):
+                raise ValueError("grasp backend disabled")
+            return {
+                "scene_instance_id": self.info["instance_id"],
+                "targets": screen(self.arm_motion, params["group"], params["tool"], params["poses"]),
+            }
         if self.truth is None:
             from truth import EntityRegistry
 

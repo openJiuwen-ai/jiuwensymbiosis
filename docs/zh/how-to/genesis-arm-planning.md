@@ -28,7 +28,7 @@ resolved.write_text(json.dumps(profile, indent=2))
 
 ## 公共动作与坐标
 
-配置被实际场景接纳后，ground-truth Agent 才获得 `motion.joint` 和 `motion.tool_pose`。纯视觉与 RGB-D 感知模式本批不开放机械臂动作。
+配置被实际场景接纳后，ground-truth Agent 才获得 `motion.joint` 和 `motion.tool_pose`。选择 GraspGenX 扩展配置后，RGB-D 感知模式另提供目标级抓取动作。见[使用 GraspGenX 抓取](genesis-graspgenx.md)。
 
 - `move_joint(targets)` 沿用共享动作，按名字指定绝对弧度值；省略的关节必须保持。规划器如果产生了省略关节的偏移，轨迹会被拒绝。
 - `move_tool_poses(group, poses, speed=1.0)` 为一个组中的所有工具联合求解。`poses` 格式为 `{tool_name: [x,y,z,qw,qx,qy,qz]}`，长度单位米、单位四元数，参考系为配置的 **URDF `base_link`**。它不是底盘导航的 forward/left 坐标，也不是旧 `goto_pose` 的 mm/deg 格式。

@@ -140,6 +140,8 @@ class EntityRegistry:
             )
         if runtime.source is None:
             self._add("ground", "地面", kind="ground", collision=True)
+        for name, body in getattr(runtime, "grasp_targets", {}).items():
+            self._add(f"grasp-target/{name}", name, body=body, collision=True)
         if runtime.bodies:
             self._add(
                 "platform", "平台", position=(0, 0, 0.06), bounds=[[-0.8, -0.55, 0], [0.8, 0.55, 0.12]], collision=True
@@ -237,6 +239,32 @@ class EntityRegistry:
                 "total": len(entities),
                 "next_offset": offset + limit if offset + limit < len(entities) else None,
             }
+        if operation == "grasp_cloud":
+            if params.get("snapshot_id"):
+                raise ValueError("grasp cloud requires a fresh physical snapshot")
+            arm = self.runtime.arm_motion
+            body = self.bodies.get(params.get("entity_id"))
+            if (
+                arm is None
+                or body is None
+                or body is self.runtime.robot.entity
+                or len(body.links) != 1
+                or body.links[0].is_fixed
+            ):
+                raise ValueError("target must be a registered movable single rigid body")
+            if __package__:
+                from .grasp_pose import mesh_points
+            else:
+                from grasp_pose import mesh_points
+            vertices, faces = [], []
+            offset = 0
+            for geom in body.geoms:
+                points = geom.get_verts().detach().cpu().numpy().reshape(-1, 3)
+                vertices.append(points)
+                faces.append(np.asarray(geom.init_faces) + offset)
+                offset += len(points)
+            cloud = mesh_points(np.concatenate(vertices), np.concatenate(faces), np.linalg.inv(arm.base_pose()))
+            return {**metadata, "frame": arm.profile["base_link"], "points_m": cloud.tolist(), "body_idx": body.idx}
         if operation == "robot_state":
             if snapshot["robot"] is None:
                 raise ValueError("mobile_robot_state_unavailable")

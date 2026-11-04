@@ -116,3 +116,20 @@ def test_body_envelope_is_robot_geometry_in_base_metres():
         np.array([[0.7, 1.6, 0.1], [1.3, 2.4, 2.1]]), {"position_m": [1, 2, 0.2], "body_yaw_rad": math.pi / 2}
     )
     np.testing.assert_allclose(result, [[-0.4, -0.3, -0.1], [0.4, 0.3, 1.9]], atol=1e-10)
+
+
+def test_depth_region_samples_only_rectified_requested_pixels(ray_sdk):
+    from jiuwensymbiosis.simulators.genesis.rgbd import sample_depth
+
+    camera = SimpleNamespace(resolution=(64, 48), intrinsic=np.diag([30.0, 30.0, 1.0]), clipping=(0.1, 4.0))
+    calls = []
+
+    def trace(origin, direction, limits, hit, ref):
+        calls.append(1)
+        return False
+
+    native = SimpleNamespace(trace_ray=trace)
+    depth = sample_depth(native, camera, np.eye(4), stride=8, check=lambda: None, region=[2, 5, 14, 15])
+    assert depth.shape == (48, 64) and len(calls) == 120
+    with pytest.raises(ValueError, match="outside"):
+        sample_depth(native, camera, np.eye(4), stride=8, check=lambda: None, region=[-1, 5, 14, 15])

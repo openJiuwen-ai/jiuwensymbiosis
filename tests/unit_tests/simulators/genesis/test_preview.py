@@ -382,7 +382,7 @@ def test_oversized_status_preserves_previous_snapshot_and_allows_failure_report(
     try:
         mailbox.write_status({"state": "ready"})
         with pytest.raises(ValueError):
-            mailbox.write_status({"payload": "x" * 16384})
+            mailbox.write_status({"payload": "x" * 32768})
         assert mailbox.read_status() == {"state": "ready"}
         mailbox.write_status({"state": "failed", "message": "status capacity exceeded"})
         assert mailbox.read_status()["state"] == "failed"
