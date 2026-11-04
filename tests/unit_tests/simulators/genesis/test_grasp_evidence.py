@@ -100,7 +100,7 @@ def test_midair_contact_does_not_create_a_verified_grasp():
     assert evidence.holding is None
 
 
-def test_retry_and_cancel_preserve_latched_grip_target():
+def test_close_ramps_to_endpoint_through_contact_completion_and_idle():
     from types import SimpleNamespace
 
     from jiuwensymbiosis.simulators.genesis.end_effectors import EndEffectors
@@ -120,7 +120,6 @@ def test_retry_and_cancel_preserve_latched_grip_target():
                     "close": 0.0,
                     "velocity": 0.03,
                     "tolerance": 0.002,
-                    "preload": 0.002,
                 }
             }
         }
@@ -128,14 +127,23 @@ def test_retry_and_cancel_preserve_latched_grip_target():
     controller.evidence = {"arbitrary": GraspEvidence(state="held", object_id=4, contact_time=0.3)}
     controller.ids = {"arbitrary": [0]}
     controller.targets = {"arbitrary": np.array([0.018])}
-    controller.latched = {"arbitrary": True}
+    controller.closing = set()
     controller.opening = {}
     controller.measure = lambda dt: None
     for _ in range(3):
         controller.start("arbitrary", opened=False)
         controller.tick(0.01)
         controller.cancel()
-    assert np.allclose(writes, [[0.018]] * 3)
+    assert np.allclose(writes, [[0.0177], [0.0174], [0.0171]])
+    controller.start("arbitrary", opened=False)
+    for _ in range(100):
+        controller.tick(0.01)
+    assert controller.result["ok"]
+    assert controller.command is None
+    assert not controller.closing
+    assert writes[-1][0] == 0.0
+    assert all(after <= before for before, after in zip(writes[:-1], writes[1:], strict=True))
+
     with pytest.raises(ValueError, match="stable support"):
         controller.start("arbitrary", opened=True)
 

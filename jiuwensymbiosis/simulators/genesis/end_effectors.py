@@ -29,7 +29,7 @@ class EndEffectors:
         self.ids = {}
         self.groups = {}
         self.opening = {}
-        self.latched = {}
+        self.closing = set()
         self.support_geoms = {}
         joints = {joint.get("name"): joint for joint in root.findall("joint")}
         links = {link.name: link for link in entity.links}
@@ -58,9 +58,6 @@ class EndEffectors:
                     or values[0] == values[1]
                 ):
                     raise ValueError("invalid effector motor settings")
-                preload = motor.get("preload", 0.0)
-                if not np.isfinite(preload) or not 0 <= preload <= abs(motor["close"] - motor["open"]) / 4:
-                    raise ValueError("invalid effector contact preload")
                 if limit is None or any(
                     not float(limit.get("lower")) <= q <= float(limit.get("upper")) for q in values[:2]
                 ):
@@ -78,9 +75,8 @@ class EndEffectors:
             self.groups[name] = [{links[link].idx for link in group} for group in groups]
             ids = [entity.get_joint(j).dofs_idx_local[0] for j in motors]
             self.ids[name] = ids
-            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1)
+            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1).astype(float)
             self.opening[name] = False
-            self.latched[name] = False
             self.support_geoms[name] = set()
             self.evidence[name] = sibling("grasp_evidence").GraspEvidence()
         # Validate every effector before changing any motor configuration.
@@ -209,15 +205,34 @@ class EndEffectors:
             evidence.released_time = evidence.support_time = 0.0
         self.opening[name] = opened
         if opened:
-            self.latched[name] = False
+            self.closing.discard(name)
+        else:
+            self.closing.add(name)
         self.elapsed = self.stable = 0.0
         self.result = {}
 
     def cancel(self):
-        # Keep the last bounded motor target. Never open on cancellation.
+        # Cancel result tracking. An accepted close keeps squeezing until release.
         self.command = None
 
+    def _advance_target(self, name, opened, dt):
+        motors = self.configurations[name]["joints"].values()
+        endpoint = np.array([m["open" if opened else "close"] for m in motors])
+        step = np.array([m["velocity"] for m in motors]) * dt
+        current = self.targets[name]
+        current[:] = np.clip(endpoint, current - step, current + step)
+        self.entity.control_dofs_position(current, self.ids[name])
+        return np.array_equal(current, endpoint)
+
+    def drive_closing(self, dt):
+        # A grasp report may finish before the velocity-limited setpoint ramp.
+        # Genesis retains the final PD target throughout arm motion and idle.
+        for name in tuple(self.closing):
+            if self._advance_target(name, False, dt):
+                self.closing.remove(name)
+
     def tick(self, dt):
+        self.drive_closing(dt)
         self.measure(dt)
         name = self.command
         if name is None:
@@ -229,17 +244,8 @@ class EndEffectors:
             self.result = {**evidence.report(), "ok": False, "reason": evidence.reason or "payload_unknown"}
             self.command = None
             return
-        target = np.array([m["open" if opened else "close"] for m in motors])
-        # Stop advancing at sustained contact; retries retain exactly this target.
-        if opened or (not self.latched[name] and evidence.contact_time < 0.025):
-            rate = np.array([m["velocity"] for m in motors]) * dt
-            self.targets[name] += np.clip(target - self.targets[name], -rate, rate)
-        elif not self.latched[name]:
-            q = sibling("arm_collision").array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
-            preload = np.array([m.get("preload", 0.0) for m in motors])
-            self.targets[name] = q + np.sign(target - q) * np.minimum(preload, abs(target - q))
-            self.latched[name] = True
-        self.entity.control_dofs_position(self.targets[name], self.ids[name])
+        if opened:
+            self._advance_target(name, True, dt)
         array = sibling("arm_collision").array
         q = array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
         v = array(self.entity.get_dofs_velocity(self.ids[name])).reshape(-1)

@@ -163,8 +163,7 @@
           "effort": 16.5,
           "kp": 120.0,
           "kd": 5.0,
-          "tolerance": 0.03,
-          "preload": 0.01
+          "tolerance": 0.03
         }
       },
       "contact_groups": [
@@ -186,8 +185,7 @@
           "effort": 16.5,
           "kp": 120.0,
           "kd": 5.0,
-          "tolerance": 0.03,
-          "preload": 0.01
+          "tolerance": 0.03
         }
       },
       "contact_groups": [

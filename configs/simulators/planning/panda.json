@@ -54,10 +54,9 @@
           "close": 0.0,
           "velocity": 0.03,
           "effort": 20.0,
-          "kp": 4000.0,
-          "kd": 100.0,
-          "tolerance": 0.002,
-          "preload": 0.002
+          "kp": 5000.0,
+          "kd": 500.0,
+          "tolerance": 0.002
         }
       },
       "contact_groups": [
