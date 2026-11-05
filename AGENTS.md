@@ -153,6 +153,7 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 - end effector — `grasp.suction`, `grasp.parallel`, `grasp.paddle` (two flat plates clamping a face on each side)
 - sensing / planning — `vision.camera`, `vision.depth`, `vision.detection`, `vision.eye_to_hand`, `vision.search`, `planning.reachability`
 - misc — `sorting.command`, `speech.tts`
+- simulation — `simulation.truth` (explicit ground-truth snapshots; never sensor evidence)
 
 ### Safety & Auxiliary Rails
 

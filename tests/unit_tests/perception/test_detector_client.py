@@ -29,6 +29,22 @@ def test_png_preserves_binary_mask():
     assert np.array_equal(decode_mask_png(encode_mask_png(mask), width=12, height=10), mask)
 
 
+def test_required_backend_remains_lazy_for_maintenance_but_blocks_inference(monkeypatch):
+    config = parse_detector_config({"detector": {"mode": "remote", "endpoint": {"url": "http://vision"}}})
+    client = create_detector_client(config, required_backend="gdino_sam2")
+    health = Mock(return_value={"backend": "gdino"})
+    monkeypatch.setattr(client, "readiness", health)
+    client.open(lazy=True)
+    health.assert_not_called()
+    try:
+        with pytest.raises(InferenceServiceError) as exc:
+            client(np.zeros((10, 10, 3), dtype=np.uint8), "chair")
+        assert exc.value.code == "inference_backend_mismatch"
+        health.assert_called_once()
+    finally:
+        client.close()
+
+
 def test_empty_detection_and_service_failure_are_distinct():
     def response(method, path, payload, **kwargs):
         assert path == "/v1/segment"

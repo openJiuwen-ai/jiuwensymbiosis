@@ -46,14 +46,18 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | `motion.base_servo` | （连续底盘驱动原语） |
 | `motion.lift` | `set_lift_pose`、`lift_to_clearance` |
 | `motion.waist` | `turn_waist` |
-| `motion.goal` | `approach_for_grasp`、`approach_for_place` |
+| `motion.goal` | `approach_for_grasp`、`approach_for_place`、`approach_target`、`navigate_to_pose`、`navigate_to_entity` |
 | `motion.dual_arm` | `dual_arm_grasp`、`dual_arm_place` |
 | `grasp.parallel` | `open_gripper`、`close_gripper` |
 | `grasp.suction` | `activate_suction`、`deactivate_suction` |
 | `grasp.paddle` | （经 `dual_arm_grasp` 实现） |
 | `vision.camera` | `get_image`、`pixel_to_base_xyz` |
-| `vision.detection` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene` |
+| `vision.detection` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene`、`locate_target` |
 | `vision.search` | `search_target` |
+| `simulation.truth` | `sim_list_entities`、`sim_get_robot_state`、`sim_get_entity_state` |
+
+新增 RGB-D、导航、仿真契约不会自动为旧适配器提供实现，绑定前提见
+[目标定位与接近](robot-api.md#rgb-d-目标定位与接近)。
 
 Env 手动声明硬件能力；Api 的能力**反推自它实现的动作的 spec**（加上声明的 marker 能力类属性）；有效工具能力为二者交集。Env 可声明无对应动作的标记能力，Api 有而 Env 无的能力不会生成工具。
 
@@ -71,6 +75,7 @@ Protocol 定义在 `jiuwensymbiosis/env/protocol.py`，**按能力切片**——
 | `NamedJointDriver` | `motion.joint`（命名式，可部分命令） | `get_joint_positions()`、`move_joints_blocking(targets, timeout_s=...)` |
 | `ServoDriver` | `motion.servo` | `servo_to_pose(pose)`（非阻塞） |
 | `BaseDriver` | `motion.base`/`motion.goal` | `navigate_relative(dx_m, dy_m=0, dyaw_rad=0)`、`navigate_arc(radius_m, dyaw_rad)` |
+| `MeasuredBaseDriver`（可选） | RGB-D 目标接近扩展 | `navigate_relative(...) -> MeasuredBaseMotionResult`，零位移请求也须实测停车 |
 | `ContinuousBaseDriver` | `motion.base_servo` | `start_base_drive()`、`base_drive_running(handle)`、`steer_base_drive(handle, bearing_rad)`、`hold_base_drive(handle)`、`stop_base_drive(handle)` |
 | `LifterDriver` | `motion.lift` | `set_lifter(q_lifter)` |
 | `WaistDriver` | `motion.waist` | `turn_waist(delta_rad)` |
