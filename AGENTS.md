@@ -8,6 +8,33 @@ nearby code and tests over assumptions.
 settings. `CLAUDE.md` imports this file (`@AGENTS.md`) and adds
 Claude-specific pointers only.
 
+<!-- codegraph:start -->
+## Code discovery with CodeGraph
+
+Prefer CodeGraph MCP for code discovery in indexed projects. Start with
+`codegraph_explore(query="<symbols or question>", projectPath="<absolute repo path>")`.
+Use `codegraph_search` to locate symbols, `codegraph_node` for source,
+`codegraph_callers` / `codegraph_callees` for direct relationships, and
+`codegraph_impact` for change impact. Use a file path to disambiguate names.
+`codegraph_status` checks index health; it is not necessary before every query.
+
+Indexes live in `.codegraph/`. If a project is not indexed, initialize that
+specific repository with `codegraph init <absolute repo path> --yes`; never
+initialize a home directory or filesystem root. Active MCP sessions maintain
+indexes automatically. Use `codegraph sync <absolute repo path>` only to recover
+or reconcile an inactive index. Keep generated indexes out of Git.
+
+Treat graph edges as navigation evidence, not proof of complete execution.
+Read source when results are absent, ambiguous, stale, or important to a safety
+or architecture conclusion. In Python, verify dynamic registry/getattr dispatch,
+factory/property receivers, typed delegation, and callbacks such as
+`asyncio.to_thread`; a missing edge does not prove absence, and a reference does
+not prove execution. Use targeted text search for literals, configuration,
+non-code files, or gaps in graph results. Do not silently trust same-name matches.
+
+Telemetry must remain disabled: `DO_NOT_TRACK=1` and `CODEGRAPH_TELEMETRY=0`.
+<!-- codegraph:end -->
+
 ## Project Overview
 
 JiuwenSymbiosis is an embodied agent framework built on `openjiuwen` for robotics. It provides hardware-agnostic tools, safety policies, and multi-agent collaboration. The core design principle is **a shared action vocabulary (ActionSpec) + capability gating**: a single codebase adapts to different robot form factors (6-DoF arm, mobile dual-arm, suction cup, gripper) through one contract per action and per-body `@implements` bindings — new hardware only needs a YAML config + 6 adapter files.
