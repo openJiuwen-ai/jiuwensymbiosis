@@ -11,6 +11,7 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
     WHEEL_NAMES,
     Moz1Base,
     OmniWheelLayout,
+    UpperBodyHold,
     prepare_mobile_urdf,
 )
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
@@ -72,14 +73,15 @@ def test_disposable_copy_retains_rollers_mass_and_mimic_posture(urdf, tmp_path):
     before = urdf.read_bytes()
     layout = OmniWheelLayout.from_urdf(urdf)
     target = tmp_path / "mobile.urdf"
-    prepare_mobile_urdf(urdf, target, layout)
+    targets = prepare_mobile_urdf(urdf, target, layout)
     assert urdf.read_bytes() == before
     root = ET.parse(target)
     moving = [j.get("name") for j in root.findall("joint") if j.get("type") != "fixed"]
-    assert set(moving) == set(WHEEL_NAMES) | set(layout.roller_names)
+    assert set(moving) == set(WHEEL_NAMES) | set(layout.roller_names) | {"arm", "finger"}
+    assert targets == {"arm": 0.0, "finger": 0.03}
     finger = root.find("joint[@name='finger']")
-    assert np.fromstring(finger.find("origin").get("xyz"), sep=" ") == pytest.approx([0, 0.03, 0])
-    assert finger.find("mimic") is None
+    assert finger.get("type") == "prismatic"
+    assert finger.find("mimic").attrib == {"joint": "arm", "offset": ".03", "multiplier": "-1"}
 
 
 def test_unsupported_asset_fails_before_simulation(urdf):
@@ -98,6 +100,7 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
     entity.get_joint.side_effect = [SimpleNamespace(dofs_idx_local=[i]) for i in indices]
     robot = Moz1Base.__new__(Moz1Base)
     robot.entity = entity
+    robot.upper_body = Mock()
     robot.stop = Mock()
     robot.build()
     assert list(robot.wheels) == indices
@@ -105,6 +108,91 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
         assert list(call.args[1]) == indices
     if indices == [6, 17, 28, 39]:
         assert isinstance(robot.wheels, range)  # No per-step CUDA index allocation.
+
+
+def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_path):
+    from unittest.mock import Mock
+
+    tree = ET.parse(urdf)
+    arm = tree.find("joint[@name='arm']")
+    arm.set("name", "tn__RightArm0_tD")
+    arm.set("type", "revolute")
+    ET.SubElement(arm, "limit", lower="-1", upper="1", effort="0", velocity="0")
+    finger = tree.find("joint[@name='finger']")
+    finger.set("type", "revolute")
+    finger.find("mimic").set("joint", "tn__RightArm0_tD")
+    tree.write(urdf)
+    target = tmp_path / "mobile.urdf"
+    layout = OmniWheelLayout.from_urdf(urdf)
+    targets = prepare_mobile_urdf(urdf, target, layout)
+    entity = Mock()
+    indices = dict(zip(WHEEL_NAMES, (6, 17, 28, 39), strict=True)) | {"tn__RightArm0_tD": 50, "finger": 51}
+    entity.get_joint.side_effect = lambda name: SimpleNamespace(dofs_idx_local=[indices[name]])
+    positions = np.zeros(52)
+
+    def tensor(values):
+        return SimpleNamespace(clone=lambda: values.copy(), cpu=lambda: SimpleNamespace(numpy=lambda: values.copy()))
+
+    entity.get_dofs_position.side_effect = lambda dofs: [tensor(positions[list(dofs)])]
+    entity.get_dofs_velocity.side_effect = lambda dofs: [tensor(np.zeros(len(dofs)))]
+    hold = UpperBodyHold(entity, target, targets)
+    robot = Moz1Base.__new__(Moz1Base)
+    robot.entity, robot.layout, robot.upper_body = entity, layout, hold
+    robot._wheel_hold = None
+    robot.build()
+    assert hold.dofs == [50, 51] and hold.motor_dofs == [50]
+    assert ET.parse(target).find("joint[@name='tn__RightArm0_tD']/limit").get("effort") == "0"
+    # A loaded joint drifts. Stop/reset must retain home, not capture that drift.
+    positions[50:52] = [0.02, 0.01]
+    robot.command(0.1, 0, 0, duration_s=0.01)
+    robot.before_step(0.01)
+    robot.before_step(0.01)
+    robot.stop()
+    robot.reset_controller()
+    entity.set_dofs_position.assert_called_once()
+    initial, initial_dofs = entity.set_dofs_position.call_args.args
+    assert list(initial) == [0, 0.03] and initial_dofs == [50, 51]
+    upper_commands = [c for c in entity.control_dofs_position.call_args_list if c.args[1] == [50]]
+    assert len(upper_commands) == 2  # Initial hold and checkpoint recovery.
+    assert all(c.args[0].tolist() == [0] for c in upper_commands)
+    assert all(set(c.args[1]) <= set(indices.values()) - {51} for c in entity.control_dofs_position.call_args_list)
+    sample = hold.snapshot()
+    assert sample["error_rad"] == pytest.approx([0.02, -0.02])
+    assert sample["mimic_followers"] == 1
+    assert sample["force_limit_nm"] == [120.0]
+
+
+@pytest.mark.parametrize("home", [2.0, float("nan")])
+def test_upper_hold_rejects_invalid_home_before_any_motor_write(tmp_path, home):
+    from unittest.mock import Mock
+
+    path = tmp_path / "upper.urdf"
+    path.write_text(
+        '<robot><joint name="tn__LegWaist0_tD" type="revolute"><limit lower="-1" upper="1"/></joint></robot>'
+    )
+    entity = Mock()
+    with pytest.raises(ValueError, match="outside joint limits"):
+        UpperBodyHold(entity, path, {"tn__LegWaist0_tD": home})
+    assert not entity.mock_calls
+
+
+def test_collision_state_reads_solver_flags_instead_of_a_fixed_label():
+    solver = SimpleNamespace(
+        _enable_collision=True,
+        _enable_self_collision=True,
+        _enable_adjacent_collision=False,
+        _enable_neutral_collision=False,
+    )
+    robot = Moz1Base.__new__(Moz1Base)
+    robot.entity = SimpleNamespace(solver=solver)
+    assert robot.collision_settings() == {
+        "enabled": True,
+        "self_collision": True,
+        "adjacent_collision": False,
+        "neutral_collision": False,
+    }
+    solver._enable_self_collision = False
+    assert robot.collision_settings()["self_collision"] is False
 
 
 def test_repeated_velocity_preserves_expiry_and_reapplies_after_stop(urdf):

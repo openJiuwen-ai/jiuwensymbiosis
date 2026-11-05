@@ -88,6 +88,17 @@ def test_static_layer_preserves_source_and_removes_motion(usd, tmp_path):
         prepare_static_stage(usd, usd)
 
 
+def test_resident_process_reloads_usd_modified_on_disk(usd):
+    from pxr import Usd, UsdGeom
+
+    cached = Usd.Stage.Open(str(usd))
+    assert inspect_stage(usd)["bounds_m"] == [[0, 0, 0], [1, 0, 1]]
+    # An editor writes the source while this process still holds its prior layer.
+    usd.write_text(usd.read_text().replace("(100, 0, 0)", "(200, 0, 0)"))
+    assert UsdGeom.Mesh(cached.GetPrimAtPath("/World/Table")).GetPointsAttr().Get()[1][0] == 100
+    assert inspect_stage(usd)["bounds_m"] == [[0, 0, 0], [2, 0, 1]]
+
+
 def test_hidden_only_stage_is_rejected(usd, tmp_path):
     from pxr import Usd, UsdGeom
 

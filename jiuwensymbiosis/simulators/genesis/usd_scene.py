@@ -20,6 +20,8 @@ def inspect_stage(source: Path) -> dict[str, Any]:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
     stage = Usd.Stage.Open(str(source))
+    if stage:
+        stage.Reload()
     if not stage or not stage.GetDefaultPrim():
         raise ValueError("USD 缺少有效的 defaultPrim。")
     shaders: Counter[str] = Counter()
