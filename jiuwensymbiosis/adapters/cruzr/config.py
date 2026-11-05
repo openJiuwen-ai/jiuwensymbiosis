@@ -431,7 +431,7 @@ class CruzrConfig:
             self.ros_domain_id = int(self.ros_domain_id)
         if isinstance(self.ros_domain_id, bool) or not isinstance(self.ros_domain_id, int) or self.ros_domain_id < 0:
             raise ValueError("ros_domain_id must be a non-negative integer")
-        for name in ("ros_workspace", "urdf_path", "urdf_package_dir"):
+        for name in ("ros_workspace", "urdf_path", "urdf_package_dir", "ros_python", "nav_python"):
             value = getattr(self, name)
             if value:
                 setattr(self, name, str(Path(os.path.expandvars(value)).expanduser()))

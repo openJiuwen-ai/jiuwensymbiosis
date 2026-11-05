@@ -202,6 +202,10 @@ jiuwensymbiosis_gui = [
     "workbench/assets/*",
 ]
 
+[tool.uv]
+# coverage 7.17.1 fails to combine data with SQLite 3.26 (coveragepy/coveragepy#2357).
+constraint-dependencies = ["coverage!=7.17.1"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
