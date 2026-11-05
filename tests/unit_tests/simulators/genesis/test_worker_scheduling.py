@@ -129,6 +129,7 @@ def worker_loop(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: state.now, sleep=advance))
     state.run = lambda: worker.run_preview(mailbox, tmp_path)
     state.directory = tmp_path
+    state.runtime = runtime
     return state
 
 
@@ -214,3 +215,59 @@ def test_encoder_rebuild_cannot_apply_a_stale_motion_lease(worker_loop):
     assert state.commands == []
     assert state.steps == [None]
     assert all(status["state"] != "failed" for status in state.statuses)
+
+
+@pytest.mark.parametrize(
+    "mode,base_active,arm_active,accepted",
+    [
+        ("action", True, False, False),
+        ("spatial_memory", True, False, True),
+        ("spatial_memory", True, True, False),
+        ("action", False, False, True),
+    ],
+)
+def test_rgbd_motion_mode_preserves_action_and_arm_guards(
+    worker_loop, monkeypatch, mode, base_active, arm_active, accepted
+):
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.simulators.genesis import capture_status
+
+    state = worker_loop
+    runtime = state.runtime
+    runtime.info["mode"] = "robot_mobile"
+    runtime.motion = Mock(active=base_active, result={"id": "move"})
+    runtime.arm_motion = Mock(active=arm_active)
+    runtime.arm_motion.base_pose.return_value = np.eye(4)
+    runtime.arm_motion.effectors.report.return_value = {}
+    rgbd = ModuleType("rgbd")
+    rgbd.base_body_bounds = lambda *args: np.zeros((2, 3))
+    rgbd.base_from_camera = lambda *args: np.eye(4)
+    monkeypatch.setitem(sys.modules, "rgbd", rgbd)
+    monkeypatch.setitem(sys.modules, "capture_status", capture_status)
+    runtime.robot.bounds = np.zeros((2, 3))
+    runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
+
+    def read_rgbd(name, **kwargs):
+        kwargs["check"]()
+        return np.zeros((8, 8, 3), np.uint8), np.ones((8, 8), np.float32)
+
+    runtime.renderer.read_rgbd = read_rgbd
+    state.command["capture"] = {
+        **capture_request(),
+        "include_depth": True,
+        "camera_name": "head_cam",
+        "capture_mode": mode,
+    }
+    state.run()
+    assert not any(s["state"] == "failed" for s in state.statuses)
+    result = state.statuses[-1]["capture_result"]
+    assert ("error" not in result) is accepted
+    if accepted and mode == "spatial_memory":
+        assert result["motion_active"] is True
+        assert result["synchronization"] == {
+            "kind": "single_physics_state",
+            "rgb_step": result["step"],
+            "depth_step": result["step"],
+            "pose_step": result["step"],
+        }

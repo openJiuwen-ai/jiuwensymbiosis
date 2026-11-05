@@ -272,12 +272,17 @@ class GenesisPreview:
         include_depth: bool = False,
         depth_stride: int = 8,
         depth_region: tuple[int, int, int, int] | None = None,
+        capture_mode: str = "action",
     ) -> dict[str, Any]:
         """Capture a named camera JPEG and calibration, independently of video.
 
         Call off the ASGI loop. Bind the request to the scene, configuration and
         requested camera so a concurrent switch cannot silently supply an old view.
         """
+        if capture_mode not in {"action", "spatial_memory"}:
+            raise ValueError("Unknown capture mode")
+        if capture_mode == "spatial_memory" and (not include_depth or camera_name != "head_cam"):
+            raise ValueError("Spatial memory requires calibrated head-camera RGB-D")
         request_id = uuid.uuid4().hex
         path = self.state_dir / f"capture-{request_id}.jpg"
         depth_path = self.state_dir / f"capture-{request_id}.npz"
@@ -312,6 +317,7 @@ class GenesisPreview:
                 "id": request_id,
                 **binding,
                 "include_depth": include_depth,
+                "capture_mode": capture_mode,
                 "depth_stride": depth_stride,
                 "depth_region": depth_region,
                 "expires_at": time.monotonic() + 12,

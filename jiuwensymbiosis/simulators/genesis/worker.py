@@ -357,15 +357,29 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         if capture.get("include_depth", False):
                             from rgbd import base_body_bounds, base_from_camera
 
+                            memory_capture = capture.get("capture_mode") == "spatial_memory"
+                            if memory_capture and name != "head_cam":
+                                raise ValueError("Spatial memory requires head_cam")
                             if (
                                 runtime.motion is None
-                                or runtime.motion.active
+                                or (runtime.motion.active and not memory_capture)
                                 or (getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active)
                             ):
                                 raise ValueError("RGB-D requires a stationary supported mobile robot")
                             deadline = min(capture["expires_at"], captured_at + 2.0)
 
-                            def check_capture(deadline=deadline, capture=capture, revision=revision):
+                            from capture_status import refresh_capture_status
+
+                            last_capture_status = time.monotonic()
+
+                            def check_capture(
+                                deadline=deadline,
+                                capture=capture,
+                                revision=revision,
+                                memory_capture=memory_capture,
+                                runtime=runtime,
+                            ):
+                                nonlocal last_capture_status
                                 current = mailbox.read_control()
                                 if (
                                     mailbox.stopping()
@@ -374,7 +388,11 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                     or current.get("config_revision", 0) != revision
                                 ):
                                     raise ValueError("RGB-D capture cancelled or expired")
+                                if memory_capture and time.monotonic() - last_capture_status >= 0.2:
+                                    refresh_capture_status(runtime, mailbox, measure_base=measure, now=time.monotonic)
+                                    last_capture_status = time.monotonic()
 
+                            sensor_step = runtime.steps
                             pixels, depth = runtime.renderer.read_rgbd(
                                 name,
                                 stride=capture.get("depth_stride", 8),
@@ -382,6 +400,19 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                 check=check_capture,
                             )
                             base_sample = measure(runtime.robot)
+                            if runtime.steps != sensor_step:
+                                raise ValueError("Physics advanced during RGB-D capture")
+                            if memory_capture:
+                                capture_result.update(
+                                    capture_mode="spatial_memory",
+                                    synchronization={
+                                        "kind": "single_physics_state",
+                                        "rgb_step": sensor_step,
+                                        "depth_step": sensor_step,
+                                        "pose_step": sensor_step,
+                                    },
+                                    motion_active=runtime.motion.active,
+                                )
                             runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
                                 np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
                             ).tolist()

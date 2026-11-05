@@ -158,6 +158,11 @@ class ResidentPreview:
             self._state = {"state": "failed", "message": str(exc)}
         return self._state.copy()
 
+    def connect(self) -> dict:
+        """Attach to an existing backend without launching or configuring it."""
+        self._attach()
+        return self.status()
+
     def start(self) -> dict:
         if self._attached and (self._heartbeat_thread is None or not self._heartbeat_thread.is_alive()):
             self._heartbeat_stop.set()

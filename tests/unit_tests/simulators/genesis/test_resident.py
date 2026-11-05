@@ -212,3 +212,16 @@ def test_already_cancelled_work_is_not_dispatched(service):
     with pytest.raises(RuntimeError, match="取消"):
         client.navigate_relative("unused", 0.1, 0, 0, cancelled=cancelled)
     service.preview.navigate_relative.assert_not_called()
+
+
+def test_sensor_connection_only_attaches_and_preserves_capture_mode(service):
+    client = ResidentPreview(state_dir=service.root)
+    try:
+        assert client.connect()["state"] == "ready"
+        client.capture_image("head_cam", include_depth=True, capture_mode="spatial_memory")
+        assert service.preview.capture_image.call_args.kwargs["capture_mode"] == "spatial_memory"
+        service.preview.start.assert_not_called()
+        service.preview.acquire_motion.assert_not_called()
+    finally:
+        client.close()
+    service.preview.stop.assert_not_called()
