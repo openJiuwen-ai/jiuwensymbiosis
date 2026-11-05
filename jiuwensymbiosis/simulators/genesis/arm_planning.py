@@ -248,6 +248,14 @@ class CuroboPlanner:
         movable = {n for n, j in self.joints.items() if j.get("type") != "fixed"}
         if movable - set(state) or not np.isfinite(list(state.values())).all():
             raise ValueError("complete finite measured state required")
+        # cuRobo's graph feasibility check also tests joint bounds, but reports
+        # every rejected start/end as "in collision". Diagnose measured joint
+        # overtravel before GPU setup; never clamp the actual planning start.
+        for name in self.profile["groups"][group]["joints"]:
+            limit = required_element(self.joints[name], "limit")
+            lower, upper = float(limit.get("lower", "-inf")), float(limit.get("upper", "inf"))
+            if not lower <= state[name] <= upper:
+                raise ValueError(f"start_joint_limit: {name}={state[name]:.9g} outside [{lower:.9g}, {upper:.9g}]")
         if targets is not None:
             expected = set(self.profile["groups"][group]["joints"])
             if not isinstance(targets, dict) or not targets or set(targets) - expected:

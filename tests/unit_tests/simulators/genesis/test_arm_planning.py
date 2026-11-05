@@ -164,6 +164,23 @@ def test_fixed_zero_axis_is_not_normalized():
     assert np.array_equal(forward_kinematics(root, {})["b"], np.eye(4))
 
 
+@pytest.mark.parametrize("position", [-0.0000466, 1.0000466])
+@pytest.mark.parametrize("goal", [{"targets": {"slide": 0.5}}, {"poses": {"tip": [0.5, 0, 0, 1, 0, 0, 0]}}])
+def test_measured_start_outside_limits_is_reported_before_backend(tmp_path, monkeypatch, position, goal):
+    manifest, profile = model(tmp_path)
+    planner = CuroboPlanner(manifest, profile, tmp_path / "plans")
+
+    def unexpected_backend(*args):
+        pytest.fail("an invalid measured start reached cuRobo")
+
+    monkeypatch.setattr(planner, "_prepare", unexpected_backend)
+    state = {"slide": position, "follower": 0.1 - position}
+    original = state.copy()
+    with pytest.raises(ValueError, match="start_joint_limit: slide"):
+        planner.plan("tool", state, {}, "snapshot", **goal)
+    assert state == original  # Never clamp measured state to manufacture feasibility.
+
+
 def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(tmp_path):
     pytest.importorskip("fcl")
     import trimesh
