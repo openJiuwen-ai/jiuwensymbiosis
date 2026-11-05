@@ -27,7 +27,6 @@ SKILL.md.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import uuid
 from collections.abc import Mapping
@@ -42,7 +41,7 @@ from jiuwensymbiosis.api.state import CONTAINMENT_RELATIONS
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_robot_task", "run_fast_task"]
+__all__ = ["run_robot_task", "run_fast_task", "run_session_task"]
 
 
 def _prime_fast_agent(agent: Any) -> None:
@@ -117,21 +116,11 @@ def run_robot_task(
     return asyncio.run(agent.invoke({"query": query, "conversation_id": conv_id}))
 
 
-def _action_param_sig(fn: Any) -> str:
-    """Render a bound action's call params as ``(a, b?)`` — ``?`` = optional (has a
-    default). Feeds the compiler exact param names for every action so it never
-    invents them (e.g. ``target`` instead of ``box``). Object-agnostic: params are
-    the same regardless of which object the task names.
-    """
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return ""
-    parts = [
-        name + ("?" if p.default is not inspect.Parameter.empty else "")
-        for name, p in params.items()
-        if name != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-    ]
+def _action_param_sig(binding: Any) -> str:
+    """Render parameters from the same contract view used by the tool builder."""
+    schema = binding.contract.input_schema
+    required = set(schema.get("required", ()))
+    parts = [name + ("" if name in required else "?") for name in schema.get("properties", {})]
     return "(" + ", ".join(parts) + ")"
 
 
@@ -425,7 +414,8 @@ def run_fast_task(
     from jiuwensymbiosis.agent.fast.ability_exec import build_ability_executor
     from jiuwensymbiosis.agent.fast.planner import parse_task
     from jiuwensymbiosis.api.world_state import WorldState
-    from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
+    from jiuwensymbiosis.tools.bindings import select_bindings
+    from jiuwensymbiosis.tools.builder import _effective_capabilities, robot_action_bindings
 
     config.validate(for_execution=True)
     if config.execution.mode != "fastagent":
@@ -439,8 +429,12 @@ def run_fast_task(
     # planner_only: this index is BOTH the vocabulary the planner is shown and the
     # allow-list ``parse_sequence`` validates against, so narrowing it here is what
     # actually keeps a bring-up tool out of a plan (a prompt instruction would not).
-    action_index = _build_action_index(session.api, planner_only=True)
-    action_sigs = {name: _action_param_sig(fn) for name, fn in action_index.items()}
+    action_index = select_bindings(
+        robot_action_bindings(session.api, env=session.env),
+        _effective_capabilities(session.api, session.env),
+        planner_only=True,
+    )
+    action_sigs = {name: _action_param_sig(binding) for name, binding in action_index.items()}
     skills_md = DEFAULT_REGISTRY.skills_markdown() if config.modules.skills.enabled else []
 
     caps = set(getattr(session.env, "capabilities", frozenset()))
@@ -601,4 +595,81 @@ def run_fast_task(
         result["plan_skills"] = list(planned.skills)
     if planned.reason:
         result["plan_reason"] = planned.reason
+    return result
+
+
+def run_session_task(
+    session: Any,
+    query: str,
+    config: RobotAgentConfig | None = None,
+    *,
+    conversation_id: str | None = None,
+    cancel_token: Any = None,
+    principal: str = "local",
+) -> Any:
+    """Run single instrument sessions through the existing execution modes."""
+    if not callable(getattr(session, "action_bindings", None)):
+        return run_robot_task(session, query, config, conversation_id=conversation_id, cancel_token=cancel_token)
+    from jiuwensymbiosis.agent.builder import MANAGED_SESSION_PROMPT, build_session_agent
+    from jiuwensymbiosis.agent.fast.planner import compose_actions
+    from jiuwensymbiosis.agent.fast.runner import run_bound_sequence
+    from jiuwensymbiosis.tools.bindings import select_bindings
+
+    config = config or RobotAgentConfig()
+    config.validate(for_execution=True)
+    config.logging.configure()
+    conv_id = conversation_id or f"task-{uuid.uuid4().hex}"
+    if cancel_token is not None:
+        session.cancel_token = cancel_token
+    if config.execution.mode == "stepagent":
+        agent = build_session_agent(session, config, principal=principal)
+        return asyncio.run(agent.invoke({"query": query, "conversation_id": conv_id}))
+    catalog = select_bindings(session.action_bindings(), session.capabilities, principal=principal, planner_only=True)
+    spec = config.model_spec
+    if spec is None:
+        return {"ok": False, "reason": "no_model_spec", "query": query}
+    # This is the same compiler/validator and sequential runner as robot fastagent;
+    # only its domain prompt and result handler differ. No robot scene scan occurs.
+    system = (
+        MANAGED_SESSION_PROMPT
+        + """
+Return only a finite JSON array of steps: {"op": "declared_name", "params": {}, "bind": "optional_name"}.
+A later parameter may reference an earlier result as "reading.temperature_c" or
+{"$ref": "reading.temperature_c"}. Bind any declared JSON result without adding fields.
+Use only the supplied catalog. Do not add tracking, loops, recovery or reconciliation tools.
+"""
+    )
+    observe = getattr(session, "observations", None)
+    import json
+
+    def compose() -> list[dict[str, Any]]:
+        state = json.dumps(observe() if observe is not None else {}, ensure_ascii=False)
+        result = compose_actions(
+            query,
+            action_index=catalog,
+            allowed_ops=catalog,
+            api_base=spec.api_base,
+            api_key=spec.api_key,
+            model_name=spec.model_name,
+            temperature=spec.temperature,
+            api_capabilities=sorted(session.capabilities),
+            world_block="Device-scoped observations: " + state,
+            cancel_token=cancel_token,
+            system_prompt=system,
+        )
+        if any(isinstance(step, dict) and "request_key" in step for step in result):
+            raise ValueError("model-generated plans cannot choose persistent action request keys")
+        return result
+
+    raw = compose()
+    result = run_bound_sequence(
+        session,
+        raw,
+        request_key_prefix=conv_id,
+        principal=principal,
+        config=config.execution.fastagent.tracking,
+        recovery_enabled=config.modules.recovery.enabled,
+    )
+    result["sequence"] = raw
+    result["plan_tier"] = "action"
     return result

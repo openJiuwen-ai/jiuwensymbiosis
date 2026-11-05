@@ -158,6 +158,9 @@ class JobRequest:
     options: dict
     lease: ResourceLease
     token: CancelToken
+    request_id: str = ""
+    steps: list[dict] | None = None
+    principal: str = "local"
 
 
 def run_job(request: JobRequest) -> None:
@@ -184,18 +187,29 @@ def run_job(request: JobRequest) -> None:
 
     session = None
     config = None
+    invocation_context = None
     unrecoverable_cleanup: tuple[str, ...] = ()
     outcome = {"ok": False, "error": "execution did not start"}
     log.addHandler(handler)
     try:
         token.raise_if_set()
-        config = build_agent_config(binding, options)
-        handler.setLevel(config.logging.level.upper())
-        config.logging.configure()
+        if request.steps is None:
+            config = build_agent_config(binding, options)
+            handler.setLevel(config.logging.level.upper())
+            config.logging.configure()
         session = binding.build_session()
         session.cancel_token = token
-        config.prepare_session(session)
-        config.extra_rails = [TaskEventRail(emitter, session, should_stop=token.is_set)]
+        session.resource_keys = tuple(binding.resources)
+        managed_tools = callable(getattr(type(session), "action_bindings", None))
+        if managed_tools:
+            from jiuwensymbiosis.runtime.invocations import InvocationContext
+
+            invocation_context = InvocationContext(runtime, job_id, binding.binding_id, lease, token, request.principal)
+            session.bind_execution(invocation_context)
+        if config is not None:
+            if not managed_tools:
+                config.prepare_session(session)
+            config.extra_rails = [TaskEventRail(emitter, session, should_stop=token.is_set)]
         runtime.store.update(job_id, {"phase": "connecting"}, event_kind="connecting", event_data={})
         session.connect()
         token.raise_if_set()
@@ -205,23 +219,42 @@ def run_job(request: JobRequest) -> None:
             event_kind="run_started",
             event_data={"query": sanitize(query), "adapter": binding.adapter},
         )
-        from jiuwensymbiosis.env.protocol import JointDriver
+        if not managed_tools:
+            from jiuwensymbiosis.env.protocol import JointDriver
 
-        try:
-            observation = session.env.get_observation()
-        except Exception as exc:
-            logger.debug("initial observation unavailable: %s", exc)
+            try:
+                observation = session.env.get_observation()
+            except Exception as exc:
+                logger.debug("initial observation unavailable: %s", exc)
+            else:
+                if isinstance(getattr(session.env, "low_level", None), JointDriver) and observation.joints:
+                    pose = {
+                        "binding_id": binding.binding_id,
+                        "adapter": binding.adapter,
+                        "joints": [float(v) for v in observation.joints],
+                    }
+                    runtime.store.update(job_id, {"start_pose": pose}, event_kind="start_pose", event_data=pose)
+                if observation.rgb is not None:
+                    emitter.frame(observation.rgb)
+        if request.steps is not None:
+            from jiuwensymbiosis.agent.fast.runner import run_bound_sequence
+
+            result = run_bound_sequence(
+                session, request.steps, request_key_prefix=request.request_id, principal=request.principal
+            )
+        elif managed_tools:
+            from jiuwensymbiosis.agent.run import run_session_task
+
+            result = run_session_task(
+                session,
+                query,
+                config,
+                conversation_id=f"gui-{job_id}",
+                cancel_token=token,
+                principal=request.principal,
+            )
         else:
-            if isinstance(getattr(session.env, "low_level", None), JointDriver) and observation.joints:
-                pose = {
-                    "binding_id": binding.binding_id,
-                    "adapter": binding.adapter,
-                    "joints": [float(v) for v in observation.joints],
-                }
-                runtime.store.update(job_id, {"start_pose": pose}, event_kind="start_pose", event_data=pose)
-            if observation.rgb is not None:
-                emitter.frame(observation.rgb)
-        result = run_robot_task(session, query, config, conversation_id=f"gui-{job_id}", cancel_token=token)
+            result = run_robot_task(session, query, config, conversation_id=f"gui-{job_id}", cancel_token=token)
         outcome = {
             "ok": True,
             "result": sanitize(result),
@@ -260,9 +293,17 @@ def run_job(request: JobRequest) -> None:
                         connected=report.connected,
                         errors=(*report.errors, *unrecoverable_cleanup),
                     )
+            if invocation_context is not None and invocation_context.pending_work:
+                report = CleanupReport(
+                    pending_work=(*report.pending_work, *invocation_context.pending_work),
+                    connected=report.connected,
+                    errors=report.errors,
+                )
             if not idle:
                 report = CleanupReport(
-                    pending_work=token.pending_work, connected=report.connected, errors=report.errors
+                    pending_work=(*token.pending_work, *report.pending_work),
+                    connected=report.connected,
+                    errors=report.errors,
                 )
             if config is not None:
                 trace_root = (
@@ -300,13 +341,19 @@ def run_job(request: JobRequest) -> None:
             if report.released:
                 detach_log()
             released = runtime.record_cleanup(job_id, lease, report)
-            if not released and report.pending_work:
+            if not released and token.pending_work:
                 token.wait_for_idle(None)
                 if session is not None:
                     session.disconnect()
                     report = session.cleanup_report()
                 else:
                     report = CleanupReport()
+                if invocation_context is not None and invocation_context.pending_work:
+                    report = CleanupReport(
+                        pending_work=(*report.pending_work, *invocation_context.pending_work),
+                        connected=report.connected,
+                        errors=report.errors,
+                    )
                 if unrecoverable_cleanup:
                     report = CleanupReport(
                         pending_work=report.pending_work,
@@ -321,8 +368,8 @@ def run_job(request: JobRequest) -> None:
                 runtime.record_cleanup(job_id, lease, report)
         except Exception as exc:
             runtime.storage_failed(exc)
-            # A persistence failure must not skip resource cleanup. Preserve
-            # uncertain reports, while clean hardware can still be released.
+            # Disconnect remains best-effort, but missing durable execution or
+            # cleanup facts forbid lease release even if socket closure succeeds.
             if session is not None and not lease.released:
                 try:
                     session.disconnect()
@@ -337,9 +384,12 @@ def run_job(request: JobRequest) -> None:
                     connected=report.connected,
                     errors=(*report.errors, *unrecoverable_cleanup),
                 )
+            report = CleanupReport(
+                pending_work=report.pending_work,
+                connected=report.connected,
+                errors=(*report.errors, "Runtime persistence failed; release forbidden"),
+            )
             try:
-                if report.released:
-                    detach_log()
                 runtime.resources.finish(lease, report)
             except Exception:
                 logger.exception("Resource cleanup could not be recorded")

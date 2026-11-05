@@ -178,6 +178,33 @@ explicit configs must set `execution.mode="stepagent"`. Passing `RobotAgentConfi
 raises before building models or tools. Builders preserve explicit module switches; use `run_robot_task` for mode dispatch.
 Full fields and mode restrictions: [Agent configuration](docs/zh/reference/agent-config.md).
 
+### Instrument Adapter
+
+`adapters/instrument/` is the single instrument entry point. Its builder exposes the existing
+`config_factory` and `resource_keys` metadata. Configuration must explicitly select
+`instrument.access: direct` or `mcp`; parsing, paths and resource identities freeze offline.
+Only the selected access implementation is constructed. Legacy instrument selectors/fields
+and any top-level `adapters` list are rejected before device construction.
+
+- `common/`: stable tool names and the shared `instrument.observe/control` capabilities.
+- `direct/`: local profile/config validation, mapping declarations, HTTP JSON/ASCII serial,
+  device states/interlocks, domain policy, static Skill export and `onboarding/`.
+- `mcp/`: SDK transport, remote Schema pins, delegated owner identity and reviewed remote evidence.
+- `tools/ActionBinding` projects domain-owned contracts; it is not a second ActionSpec.
+- Existing Runtime/JobStore owns tasks, admission, persistent invocation intent and dedupe.
+  Direct resource identity remains `physical:<id>`; MCP delegates to
+  `remote-owner:<authority>:physical:<id>`. Unknown never resends or releases without evidence.
+
+Instrument sessions do not inherit RobotSession/Env/API. Robot capability/state vocabularies,
+ActionSpec construction and robot execution/recovery keep their existing contracts. Instrument
+fastagent uses Tier-2 action composition; exported Skills are static declarations, without
+Tier-1 skill discovery. Robot/instrument combined tasks and general multi-adapter lifecycle
+assembly are deferred to a later PR; there is no mixed/composite adapter in this change.
+
+Use the root distribution and existing `instruments` extra. See
+[Instrument reference](docs/zh/reference/instruments.md) for configuration migration,
+known authority-routing/HTTP-owner limitations, provenance and hardware verification boundaries.
+
 ### Two-Tier Autonomous Planning (`execution.mode: fastagent`)
 
 `agent/fast/planner.py:plan_task` turns a task into one flat action sequence, then `run_sequence` executes it with **no per-step LLM call**:
@@ -290,7 +317,7 @@ on the Agent host. This host need not be on the robot: hardware adapters keep th
 serial/USB/CAN/ROS/HTTP links. Remote client extras do not require model Torch; the
 optional SO-101 LeRobot dependency still does. See
 [remote inference](docs/zh/how-to/remote-inference.md) and
-[server deployment](deploy/inference/README.md). MCP is outside this implementation.
+[server deployment](deploy/inference/README.md). Instrument MCP belongs to the instrument adapter, independently of these inference servers.
 
 ### Workspace Resolution
 
@@ -317,6 +344,7 @@ jiuwensymbiosis/          # Main package
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)
     cruzr/                # Cruzr mobile dual-arm (base + lifter + waist + paddle grasp)
+    instrument/           # One adapter: common naming/capabilities, direct mapping/onboarding, MCP access
     _common/              # Shared adapter building blocks (builder, capability_spec, geometry,
                           #   joint_transport, kinematic_driver, kinematics, lerobot_backend)
   calibration/            # Body-agnostic hand-eye calibration subsystem (see above)

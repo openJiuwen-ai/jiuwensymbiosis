@@ -71,9 +71,32 @@ def format_action_contracts(action_index: Mapping[str, Any]) -> str:
     transfers.
     """
     from jiuwensymbiosis.api.decorators import ToolMeta
+    from jiuwensymbiosis.tools.bindings import ActionBinding
 
     lines: list[str] = []
     for name in sorted(action_index):
+        binding = action_index[name]
+        if isinstance(binding, ActionBinding):
+            contract = binding.contract
+            lines.append(f"- {name} [device={binding.device_id}, domain={binding.domain}]: {contract.description}")
+            lines.append("    input=" + json.dumps(contract.input_schema, ensure_ascii=False))
+            lines.append("    output=" + json.dumps(contract.output_schema, ensure_ascii=False))
+            meta = getattr(contract, "meta", None)
+            if isinstance(meta, ToolMeta):
+                lines.append(
+                    "    "
+                    + _format_effects(
+                        {
+                            "requires": meta.requires,
+                            "provides": meta.provides,
+                            "invalidates": meta.invalidates,
+                            "produces_location": meta.produces_location,
+                            "consumes_location": meta.consumes_location,
+                            "invalidates_locations": meta.invalidates_locations,
+                        }
+                    )
+                )
+            continue
         meta = getattr(action_index[name], "__tool_meta__", None)
         if not isinstance(meta, ToolMeta):
             lines.append(f"- {name}()")
@@ -808,6 +831,7 @@ def compose_actions(
     reason: str = "",
     thinking_mode: str | None = "disabled",
     cancel_token: CancelToken | None = None,
+    system_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """Tier 2 — derive an action sequence from the contracts alone, with no SKILL.md.
 
@@ -844,7 +868,7 @@ def compose_actions(
         "请输出你推导出的动作序列 JSON 数组。"
     )
     return _compile_loop(
-        _COMPOSER_SYSTEM,
+        system_prompt or _COMPOSER_SYSTEM,
         user,
         allowed_ops=allowed_ops,
         special_ops=active_special_ops,

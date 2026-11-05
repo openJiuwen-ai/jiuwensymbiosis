@@ -1,0 +1,190 @@
+{
+  "candidate_version": "1",
+  "source_sha256": "b35103ade153e38158d0bf65ab1a7435fa083f86b4de4f18da79e2ffc0d44df2",
+  "review": {
+    "reviewed_by": "synthetic-fixture-author",
+    "reviewed_at": "2000-01-01T00:00:00+00:00"
+  },
+  "extension": {
+    "extension_id": "synthetic_temperature",
+    "version": "1",
+    "actions": [
+      {
+        "name": "temperature_status",
+        "description": "Read fixture state",
+        "parameters_schema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "read_only": true,
+        "source": {
+          "document": "source.md",
+          "section": "## Commands",
+          "sha256": "b35103ade153e38158d0bf65ab1a7435fa083f86b4de4f18da79e2ffc0d44df2",
+          "excerpt": "GET /status returns {\"status\":\"IDLE\"} for the idle fixture."
+        },
+        "completion_rule": "protocol_response_verified",
+        "mapping": {
+          "transport": "http_json",
+          "method": "GET",
+          "path": "/status",
+          "response": {
+            "field": "status",
+            "equals": "IDLE"
+          }
+        }
+      },
+      {
+        "name": "temperature_read",
+        "description": "Read reported temperature",
+        "parameters_schema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "read_only": true,
+        "source": {
+          "document": "source.md",
+          "section": "## Commands",
+          "sha256": "b35103ade153e38158d0bf65ab1a7435fa083f86b4de4f18da79e2ffc0d44df2",
+          "excerpt": "GET /temperature returns {\"temperature_c\":20.0}."
+        },
+        "completion_rule": "protocol_response_verified",
+        "mapping": {
+          "transport": "http_json",
+          "method": "GET",
+          "path": "/temperature",
+          "response": {
+            "checks": [
+              {
+                "path": [
+                  "temperature_c"
+                ],
+                "type": "number"
+              }
+            ]
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "temperature_c": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "temperature_c"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "temperature_setpoint_request",
+        "description": "Request a setpoint; acceptance does not prove temperature reached",
+        "parameters_schema": {
+          "type": "object",
+          "properties": {
+            "temperature_c": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80,
+              "multipleOf": 1,
+              "description": "Synthetic fixture setpoint in degrees Celsius; not a vendor safety range.",
+              "default": 30
+            }
+          },
+          "required": [
+            "temperature_c"
+          ],
+          "additionalProperties": false
+        },
+        "read_only": false,
+        "source": {
+          "document": "source.md",
+          "section": "## Commands",
+          "sha256": "b35103ade153e38158d0bf65ab1a7435fa083f86b4de4f18da79e2ffc0d44df2",
+          "excerpt": "POST /setpoint accepts {\"temperature_c\":N}, where N is a number from 0 through 80; it returns {\"accepted\":true}."
+        },
+        "completion_rule": "protocol_response_verified",
+        "mapping": {
+          "transport": "http_json",
+          "method": "POST",
+          "path": "/setpoint",
+          "body": {
+            "temperature_c": {
+              "$parameter": "temperature_c"
+            }
+          },
+          "response": {
+            "field": "accepted",
+            "equals": true
+          }
+        }
+      }
+    ]
+  },
+  "device": {
+    "device_id": "temperature-demo",
+    "model": "synthetic-temperature-v1",
+    "adapter": "mapped_protocol",
+    "operation_id": "temperature_read",
+    "operation_ids": [
+      "temperature_status",
+      "temperature_read",
+      "temperature_setpoint_request"
+    ],
+    "connection": {
+      "base_url": "http://127.0.0.1:1",
+      "timeout_s": 2
+    },
+    "configured": false,
+    "configuration_evidence": "",
+    "protocol": {
+      "status_action": "temperature_status",
+      "state_path": [
+        "status"
+      ],
+      "state_values": {
+        "IDLE": "idle"
+      },
+      "idle_checks": [
+        {
+          "path": [
+            "status"
+          ],
+          "equals": "IDLE"
+        }
+      ]
+    },
+    "physical_device_id": "synthetic-temperature-fixture"
+  },
+  "coverage": [
+    {
+      "command": "temperature_status",
+      "action": "temperature_status",
+      "status": "implemented",
+      "evidence": "GET /status returns {\"status\":\"IDLE\"} for the idle fixture."
+    },
+    {
+      "command": "temperature_read",
+      "action": "temperature_read",
+      "status": "implemented",
+      "evidence": "GET /temperature returns {\"temperature_c\":20.0}."
+    },
+    {
+      "command": "temperature_setpoint_request",
+      "action": "temperature_setpoint_request",
+      "status": "implemented",
+      "evidence": "POST /setpoint accepts {\"temperature_c\":N}, where N is a number from 0 through 80; it returns {\"accepted\":true}."
+    },
+    {
+      "command": "OPAQUE",
+      "action": null,
+      "status": "blocked",
+      "evidence": "OPAQUE is a deliberately undocumented binary command and remains blocked."
+    }
+  ]
+}

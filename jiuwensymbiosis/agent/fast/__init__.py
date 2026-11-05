@@ -30,7 +30,7 @@ from jiuwensymbiosis.agent.fast.registry import (
     register_skill,
     register_skill_dir,
 )
-from jiuwensymbiosis.agent.fast.runner import TrackingConfig, run_sequence
+from jiuwensymbiosis.agent.fast.runner import TrackingConfig, run_bound_sequence, run_sequence
 from jiuwensymbiosis.agent.fast.sequence import (
     KNOWN_SPECIAL_OPS,
     TRACK_DETECT,
@@ -50,6 +50,7 @@ __all__ = [
     "PlanResult",
     "parse_sequence",
     "run_sequence",
+    "run_bound_sequence",
     "ActionStep",
     "SequenceError",
     "TRACK_DETECT",

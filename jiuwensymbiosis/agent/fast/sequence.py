@@ -38,6 +38,7 @@ numeric expression (e.g. ``"红杯子"``) is left as the literal string.
 from __future__ import annotations
 
 import ast
+import copy
 import math
 import operator
 from collections.abc import Callable, Iterable, Mapping
@@ -156,8 +157,9 @@ def _manipulates(meta: ToolMeta | None) -> bool:
     return meta is not None and bool(set(meta.provides) & PAYLOAD_TOKENS)
 
 
-def _clearing_steps(raw: list[Any], focus: list[tuple[str | None, str | None]],
-                    metas: Mapping[str, ToolMeta]) -> dict[str, int]:
+def _clearing_steps(
+    raw: list[Any], focus: list[tuple[str | None, str | None]], metas: Mapping[str, ToolMeta]
+) -> dict[str, int]:
     """``{referent_key: first index that clears it}`` — the plan's own testimony.
 
     A plan that opens X at step k is *stating* X was shut before k. That makes every
@@ -263,6 +265,8 @@ def _op_metas(allowed_ops: Any) -> dict[str, ToolMeta]:
     metas: dict[str, ToolMeta] = {}
     for name, fn in allowed_ops.items():
         meta = getattr(fn, "__tool_meta__", None)
+        if meta is None and getattr(fn, "domain", None) == "robot":
+            meta = getattr(fn.contract, "meta", None)
         if isinstance(meta, ToolMeta):
             metas[name] = meta
     return metas
@@ -328,6 +332,7 @@ class ActionStep:
     op: str
     params: dict[str, Any] = field(default_factory=dict)
     bind: str | None = None
+    request_key: str | None = None
 
     def is_detection(self) -> bool:
         """True if this step produces a binding (a ``track_detect`` / detect op)."""
@@ -362,6 +367,75 @@ class LoopStep:
     max_iters: int | None = None
 
 
+@dataclass(frozen=True)
+class ResultReference:
+    """Explicit JSON reference, normalized once at the sequence input boundary."""
+
+    expression: str
+
+
+def normalize_references(value: Any) -> Any:
+    """Normalize $ref to the same safe expression grammar as <bind>.field."""
+    if isinstance(value, Mapping):
+        if "$ref" in value:
+            if set(value) != {"$ref"} or not isinstance(value["$ref"], str):
+                raise SequenceError("a result reference must contain only a string $ref")
+            expression = value["$ref"]
+            try:
+                tree = ast.parse(expression, mode="eval")
+            except SyntaxError as exc:
+                raise SequenceError("invalid result reference") from exc
+            if not isinstance(tree.body, (ast.Name, ast.Attribute, ast.Subscript)) or any(
+                not isinstance(node, (ast.Expression, ast.Name, ast.Load, ast.Attribute, ast.Subscript, ast.Constant))
+                for node in ast.walk(tree)
+            ):
+                raise SequenceError("$ref accepts only binding names, fields and indexes")
+            return ResultReference(expression)
+        return {key: normalize_references(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_references(item) for item in value]
+    return value
+
+
+def _is_nonrobot_binding(allowed_ops: Any, name: str) -> bool:
+    binding = allowed_ops.get(name) if isinstance(allowed_ops, Mapping) else None
+    return getattr(binding, "domain", "robot") != "robot"
+
+
+def _contains_reference(value: Any) -> bool:
+    return isinstance(value, ResultReference) or bool(referenced_binding_names(value))
+
+
+def _check_bound_contract(index: int, binding: Any, params: Mapping[str, Any]) -> None:
+    if binding is None or not hasattr(binding, "contract"):
+        return
+    # Robot schemas are historically checked by their existing contract/signature
+    # rules. Instrument JSON schemas may additionally carry reviewed ranges/units.
+    if getattr(binding, "domain", "robot") == "robot":
+        return
+    from jsonschema import Draft202012Validator
+
+    for error in Draft202012Validator(binding.contract.input_schema).iter_errors(params):
+        if _contains_reference(error.instance):
+            # Values are revalidated after resolution by the managed entry point;
+            # required and unknown fields remain decidable now.
+            if error.validator not in {"required", "additionalProperties"}:
+                continue
+        raise SequenceError(f"step {index}: {binding.contract.name}: {error.message}")
+
+
+def _check_result_fields(index: int, params: Mapping[str, Any], producer: Mapping[str, str], allowed_ops: Any) -> None:
+    if not isinstance(allowed_ops, Mapping):
+        return
+    for root, field_name in referenced_fields(params):
+        binding = allowed_ops.get(producer.get(root, ""))
+        if binding is None or not hasattr(binding, "contract") or binding.domain == "robot":
+            continue
+        properties = binding.contract.output_schema.get("properties")
+        if properties and field_name not in properties:
+            raise SequenceError(f"step {index}: {root}.{field_name} is not declared by {binding.contract.name}")
+
+
 def referenced_fields(value: Any) -> set[tuple[str, str]]:
     """``(binding, field)`` pairs a param value reads directly off a binding.
 
@@ -369,6 +443,12 @@ def referenced_fields(value: Any) -> set[tuple[str, str]]:
     ``("obj", "position")``. Detection bindings are flat dicts, so a deeper chain is
     not a field of the binding and is left for runtime to reject.
     """
+    if isinstance(value, ResultReference):
+        value = value.expression
+    if isinstance(value, Mapping):
+        return set().union(*(referenced_fields(item) for item in value.values()))
+    if isinstance(value, (tuple, list)):
+        return set().union(*(referenced_fields(item) for item in value))
     if not isinstance(value, str):
         return set()
     try:
@@ -394,6 +474,13 @@ def referenced_binding_names(value: Any) -> set[str]:
     a detection field" — exactly the shape that must resolve against a prior
     ``track_detect`` bind.
     """
+    if isinstance(value, ResultReference):
+        tree = ast.parse(value.expression, mode="eval")
+        return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    if isinstance(value, Mapping):
+        return set().union(*(referenced_binding_names(item) for item in value.values()))
+    if isinstance(value, (tuple, list)):
+        return set().union(*(referenced_binding_names(item) for item in value))
     if not isinstance(value, str):
         return set()
     try:
@@ -470,6 +557,8 @@ def _parse_loop(
     detect_op = detect.get("op")
     if not isinstance(detect_op, str) or (detect_op not in special_ops and detect_op not in allowed_ops):
         raise SequenceError(f"step {step_i}: loop.detect.op invalid/unknown: {detect_op!r}")
+    if _is_nonrobot_binding(allowed_ops, detect_op):
+        raise SequenceError(f"step {step_i}: perception loops require a robot detection action")
     detect_params = detect.get("params") or {}
     if not isinstance(detect_params, dict):
         raise SequenceError(f"step {step_i}: loop.detect.params must be an object")
@@ -636,12 +725,15 @@ def parse_sequence(
         if validator is not None:
             validator(params, bind, index=i)
 
+        params = normalize_references(params)
+        binding = allowed_ops.get(op) if isinstance(allowed_ops, Mapping) else None
+        _check_bound_contract(i, binding, params)
+        _check_result_fields(i, params, producer, allowed_ops)
         meta = metas.get(op)
         _check_param_names(i, op, params, meta)
         _check_qualifier(i, op, params, meta, grounding or {})
         _check_bindings(i, params, bound=bound, fresh=fresh, producer=producer, metas=metas)
-        _check_location_need(i, op, params, meta, fresh=fresh, bound=bound,
-                             producer=producer, metas=metas)
+        _check_location_need(i, op, params, meta, fresh=fresh, bound=bound, producer=producer, metas=metas)
         if track_state and meta is not None:
             unmet = missing_requirements(state, meta.requires)
             if unmet:
@@ -651,15 +743,31 @@ def parse_sequence(
                 )
         subject, enclosure = focus[i]
         if _manipulates(meta):
-            _check_access(i, op, subject, enclosure, cleared=cleared, clears_at=clears_at,
-                          blocked=blocked, shut_again=shut_again, pending_clear=pending_clear,
-                          metas=metas)
+            _check_access(
+                i,
+                op,
+                subject,
+                enclosure,
+                cleared=cleared,
+                clears_at=clears_at,
+                blocked=blocked,
+                shut_again=shut_again,
+                pending_clear=pending_clear,
+                metas=metas,
+            )
 
-        steps.append(ActionStep(op=op, params=dict(params), bind=bind))
+        request_key = item.get("request_key")
+        if request_key is not None and (not isinstance(request_key, str) or not request_key.strip()):
+            raise SequenceError(f"step {i}: request_key must be non-empty")
+        steps.append(ActionStep(op=op, params=dict(params), bind=bind, request_key=request_key))
         # Effects: staleness first, then this step's own production, so a search-and-
         # sense action (drives, then senses) leaves its own reading fresh.
         if meta is not None and meta.invalidates_locations:
-            fresh.clear()
+            fresh.difference_update(
+                name
+                for name in tuple(fresh)
+                if name == _CACHE_SLOT or not _is_nonrobot_binding(allowed_ops, producer.get(name, ""))
+            )
         produces = meta is None or meta.produces_location
         if bind:
             bound.add(bind)
@@ -722,7 +830,10 @@ def qualifiers_for(grounding: Mapping[str, Any] | None, name: Any) -> tuple[dict
 
 
 def _check_qualifier(
-    index: int, op: str, params: Mapping[str, Any], meta: ToolMeta | None,
+    index: int,
+    op: str,
+    params: Mapping[str, Any],
+    meta: ToolMeta | None,
     grounding: Mapping[str, Any],
 ) -> None:
     """Reject a step that drops or contradicts the spatial qualifier the task stated.
@@ -751,8 +862,11 @@ def _check_qualifier(
         return
     options = " 或 ".join(f"reference={w['reference']!r}, relation={w['relation']!r}" for w in wanted)
     as_stated = " / ".join(f"{w['relation']} {w['reference']!r}" for w in wanted)
-    stated = (f"but it passes reference={got_ref!r}, relation={got_rel!r}"
-              if got_ref is not None or got_rel is not None else "but it passes neither")
+    stated = (
+        f"but it passes reference={got_ref!r}, relation={got_rel!r}"
+        if got_ref is not None or got_rel is not None
+        else "but it passes neither"
+    )
     raise SequenceError(
         f"step {index}: the task locates {obj!r} as {as_stated}, {stated}. "
         f"There may be more than one {obj} in view and this is what tells them apart — "
@@ -952,11 +1066,29 @@ def resolve_value(value: Any, env: Mapping[str, Any]) -> Any:
     parse/evaluate to a number (e.g. an ``object_name`` like ``"红杯子"``), the
     original string is returned as a literal.
     """
+    if isinstance(value, ResultReference):
+        try:
+            return copy.deepcopy(_eval_node(ast.parse(value.expression, mode="eval"), env))
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
+            raise ExprError(f"cannot resolve reference {value.expression!r}") from exc
+    if isinstance(value, Mapping):
+        return {key: resolve_value(item, env) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_value(item, env) for item in value]
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
+        if referenced_binding_names(value):
+            # A plain <bind>.field is a JSON value, not necessarily a detection
+            # coordinate. Arithmetic still uses the existing numeric evaluator.
+            try:
+                tree = ast.parse(value, mode="eval")
+                if isinstance(tree.body, (ast.Attribute, ast.Subscript)):
+                    return copy.deepcopy(_eval_node(tree, env))
+            except (ExprError, KeyError, IndexError, TypeError, AttributeError) as exc:
+                raise ExprError(f"cannot resolve reference {value!r}") from exc
         try:
             return evaluate_expr(value, env)
         except ExprError:

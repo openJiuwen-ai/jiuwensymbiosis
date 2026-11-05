@@ -18,7 +18,7 @@ from typing import Any, Protocol, TypeVar
 
 import yaml
 
-__all__ = ["parse_config", "load_yaml_config"]
+__all__ = ["parse_config", "load_yaml_config", "normalize_config_source"]
 
 ConfigT = TypeVar("ConfigT", covariant=True)
 
@@ -43,6 +43,21 @@ def parse_config(
     A source-less mapping keeps the existing ``from_dict`` semantics. Factories
     without path fields need no declaration. Parsing occurs exactly once; the
     factory cannot mutate the returned source mapping.
+    """
+    normalize = getattr(factory, "normalize_source", None)
+    normalized = (
+        normalize(data, source_dir) if callable(normalize) else normalize_config_source(factory, data, source_dir)
+    )
+    return normalized, factory.from_dict(copy.deepcopy(normalized))
+
+
+def normalize_config_source(
+    factory: _ConfigParser[Any], data: Mapping[str, Any], source_dir: str | Path | None = None
+) -> dict[str, Any]:
+    """Resolve declared source paths without parsing defaults or building devices.
+
+    An adapter delegates its selected source layout to its own factory here;
+    factories still run exactly once when parse_config constructs typed config.
     """
     if not isinstance(data, Mapping):
         raise ValueError("adapter configuration must be a mapping")
@@ -84,8 +99,7 @@ def parse_config(
             return tuple(visit(item) for item in value)
         return value
 
-    normalized = visit(copy.deepcopy(dict(data)))
-    return normalized, factory.from_dict(copy.deepcopy(normalized))
+    return visit(copy.deepcopy(dict(data)))
 
 
 def load_yaml_config(factory: _ConfigParser[ConfigT], path: str | Path) -> ConfigT:
