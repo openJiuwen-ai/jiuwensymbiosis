@@ -15,6 +15,33 @@ import math
 from typing import Any
 
 
+def plan_target_step(
+    point_base_mm: list[float],
+    target_distance_m: float,
+    *,
+    distance_tolerance_m: float,
+    bearing_tolerance_rad: float,
+    max_forward_m: float,
+    max_turn_rad: float,
+) -> tuple[float, float, str]:
+    """Common visible-point approach geometry; rotate before advancing, never reverse blind."""
+    if len(point_base_mm) != 3 or not all(math.isfinite(v) for v in point_base_mm):
+        raise ValueError("Target must be a finite base-frame point")
+    limits = (target_distance_m, distance_tolerance_m, bearing_tolerance_rad, max_forward_m, max_turn_rad)
+    if not all(math.isfinite(value) and value > 0 for value in limits):
+        raise ValueError("Approach distances, bounds and tolerances must be finite and positive")
+    x, y = point_base_mm[0] / 1000, point_base_mm[1] / 1000
+    bearing = math.atan2(y, x)
+    error = math.hypot(x, y) - target_distance_m
+    if error < -distance_tolerance_m:
+        return 0.0, 0.0, "too_close"
+    if abs(bearing) > bearing_tolerance_rad:
+        return max(-max_turn_rad, min(max_turn_rad, bearing)), 0.0, "rotate"
+    if error <= distance_tolerance_m:
+        return 0.0, 0.0, "reached"
+    return 0.0, min(max_forward_m, error), "advance"
+
+
 def plan_base_goal_for_grasp(center_mm: list[float], cfg: Any) -> tuple[float, float, str]:
     """Detected object centre (base-frame mm) → base goal facing it at grasp distance.
 
@@ -131,18 +158,18 @@ def plan_grasp_arc_to_entry(center_mm: list[float], face_normal: tuple[float, fl
         return {"mode": "reject", "reason": "no_normal_line"}
 
     d_e = grasp_d + float(getattr(cfg, "grasp_arc_standoff_m", 0.10))
-    ex, ey = cx + d_e * nx, cy + d_e * ny          # entry point ON the normal line, one standoff out
-    if abs(ey) <= 1e-3:                             # E dead-ahead → no arc needed; loop drives straight-in
+    ex, ey = cx + d_e * nx, cy + d_e * ny  # entry point ON the normal line, one standoff out
+    if abs(ey) <= 1e-3:  # E dead-ahead → no arc needed; loop drives straight-in
         return {"mode": "straight", "E": (ex, ey), "d_e": d_e}
 
-    c = (ex * ex + ey * ey) / (2.0 * ey)           # signed circle centre (0, c)
+    c = (ex * ex + ey * ey) / (2.0 * ey)  # signed circle centre (0, c)
     radius = abs(c)
-    dyaw = 2.0 * math.atan2(ey, ex)                # heading change = twice E's bearing (inscribed angle)
+    dyaw = 2.0 * math.atan2(ey, ex)  # heading change = twice E's bearing (inscribed angle)
 
     # Closest approach of the SWEPT arc to the box centre C (circle centre O=(0,c), radius=radius).
     do = math.hypot(cx, cy - c)
-    a_start = math.atan2(-c, 0.0)                  # position-angle of the origin about O
-    a_c = math.atan2(cy - c, cx)                   # position-angle of C about O
+    a_start = math.atan2(-c, 0.0)  # position-angle of the origin about O
+    a_c = math.atan2(cy - c, cx)  # position-angle of C about O
     rel = math.atan2(math.sin(a_c - a_start), math.cos(a_c - a_start))  # a_c relative to a_start
     in_arc = (0.0 <= rel <= dyaw) if dyaw >= 0.0 else (dyaw <= rel <= 0.0)
     closest = abs(do - radius) if in_arc else min(rng, d_e)
@@ -151,10 +178,17 @@ def plan_grasp_arc_to_entry(center_mm: list[float], face_normal: tuple[float, fl
         return {"mode": "reject", "reason": "radius_too_tight", "R": radius, "dyaw_arc": dyaw}
     if abs(dyaw) > float(getattr(cfg, "grasp_arc_max_dyaw_rad", 1.2)):
         return {"mode": "reject", "reason": "dyaw_too_large", "R": radius, "dyaw_arc": dyaw}
-    if closest < grasp_d:                          # arc path would enter the grasp_d disk around the box
+    if closest < grasp_d:  # arc path would enter the grasp_d disk around the box
         return {"mode": "reject", "reason": "arc_enters_grasp_disk", "closest": closest, "dyaw_arc": dyaw}
-    return {"mode": "arc", "R": radius, "s": 1.0 if dyaw >= 0.0 else -1.0, "dyaw_arc": dyaw,
-            "E": (ex, ey), "closest": closest, "d_e": d_e}
+    return {
+        "mode": "arc",
+        "R": radius,
+        "s": 1.0 if dyaw >= 0.0 else -1.0,
+        "dyaw_arc": dyaw,
+        "E": (ex, ey),
+        "closest": closest,
+        "d_e": d_e,
+    }
 
 
 def plan_grasp_right_angle(center_mm: list[float], face_normal: tuple[float, float], cfg: Any) -> dict:
@@ -181,23 +215,35 @@ def plan_grasp_right_angle(center_mm: list[float], face_normal: tuple[float, flo
     rng = math.hypot(cx, cy)
     grasp_d = float(cfg.grasp_target_forward_m)
     nx, ny = float(face_normal[0]), float(face_normal[1])
-    if nx * (-cx) + ny * (-cy) < 0.0:              # sign-fix: normal points toward the robot (viewer)
+    if nx * (-cx) + ny * (-cy) < 0.0:  # sign-fix: normal points toward the robot (viewer)
         nx, ny = -nx, -ny
     if rng < 1e-6 or (nx * (-cx) + ny * (-cy)) <= 1e-6:
         return {"mode": "reject", "reason": "no_normal_line"}
 
     d_e = grasp_d + float(getattr(cfg, "grasp_arc_standoff_m", 0.25))
-    ex, ey = cx + d_e * nx, cy + d_e * ny          # standoff entry point ON the normal line
-    app_turn = math.atan2(-ny, -nx)                # heading facing the box along the normal
-    s = cx * ny - cy * nx                          # signed ⊥ offset of the robot from the line = (O−C)·(−ny,nx)
+    ex, ey = cx + d_e * nx, cy + d_e * ny  # standoff entry point ON the normal line
+    app_turn = math.atan2(-ny, -nx)  # heading facing the box along the normal
+    s = cx * ny - cy * nx  # signed ⊥ offset of the robot from the line = (O−C)·(−ny,nx)
     app_dist = max(0.0, -(cx * nx + cy * ny) - d_e)  # along −n from the line foot to E (0 if inside standoff)
-    if abs(s) <= float(cfg.base_pos_tol_m):        # already on the line → approach leg only
-        return {"mode": "straight", "lat_turn": 0.0, "lat_dist": 0.0,
-                "app_turn": app_turn, "app_dist": app_dist, "E": (ex, ey)}
-    sgn = 1.0 if s > 0.0 else -1.0                 # lateral direction = −sign(s)·(−ny, nx) = (sgn·ny, −sgn·nx)
+    if abs(s) <= float(cfg.base_pos_tol_m):  # already on the line → approach leg only
+        return {
+            "mode": "straight",
+            "lat_turn": 0.0,
+            "lat_dist": 0.0,
+            "app_turn": app_turn,
+            "app_dist": app_dist,
+            "E": (ex, ey),
+        }
+    sgn = 1.0 if s > 0.0 else -1.0  # lateral direction = −sign(s)·(−ny, nx) = (sgn·ny, −sgn·nx)
     lat_turn = math.atan2(-sgn * nx, sgn * ny)
-    return {"mode": "l", "lat_turn": lat_turn, "lat_dist": abs(s),
-            "app_turn": app_turn, "app_dist": app_dist, "E": (ex, ey)}
+    return {
+        "mode": "l",
+        "lat_turn": lat_turn,
+        "lat_dist": abs(s),
+        "app_turn": app_turn,
+        "app_dist": app_dist,
+        "E": (ex, ey),
+    }
 
 
 def footprint_face_normal(
@@ -227,14 +273,14 @@ def footprint_face_normal(
         return 0.0, 0.0, 1.0
     if hi / lo < float(getattr(cfg, "grasp_square_min_aspect", 1.2)):
         return 0.0, 0.0, 1.0  # near-square footprint → near-face axis ambiguous, skip squaring
-    u = (math.cos(yaw_rad), math.sin(yaw_rad))          # long axis
-    v = (-math.sin(yaw_rad), math.cos(yaw_rad))         # short axis
-    gx, gy = -cx, -cy                                    # box centre → robot
+    u = (math.cos(yaw_rad), math.sin(yaw_rad))  # long axis
+    v = (-math.sin(yaw_rad), math.cos(yaw_rad))  # short axis
+    gx, gy = -cx, -cy  # box centre → robot
     nx, ny = max(
         ((u[0], u[1]), (-u[0], -u[1]), (v[0], v[1]), (-v[0], -v[1])),
         key=lambda n: n[0] * gx + n[1] * gy,
     )
-    return nx, ny, 0.0                                    # unit outward normal, trusted
+    return nx, ny, 0.0  # unit outward normal, trusted
 
 
 def plan_surface_square_turn(
@@ -262,12 +308,12 @@ def plan_surface_square_turn(
         return 0.0, False
     if hi / lo < float(getattr(cfg, "place_square_min_aspect", 1.2)):
         return 0.0, False  # near-square footprint → near-edge axis ambiguous, skip squaring
-    u = (math.cos(yaw_rad), math.sin(yaw_rad))          # long axis
-    v = (-math.sin(yaw_rad), math.cos(yaw_rad))         # short axis
-    gx, gy = -cx, -cy                                    # table centre → robot
+    u = (math.cos(yaw_rad), math.sin(yaw_rad))  # long axis
+    v = (-math.sin(yaw_rad), math.cos(yaw_rad))  # short axis
+    gx, gy = -cx, -cy  # table centre → robot
     # near-edge outward normal = principal axis (either sign) most aligned with table→robot
     nx, ny = max(
         ((u[0], u[1]), (-u[0], -u[1]), (v[0], v[1]), (-v[0], -v[1])),
         key=lambda n: n[0] * gx + n[1] * gy,
     )
-    return math.atan2(-ny, -nx), True                    # face into the table (opposite normal)
+    return math.atan2(-ny, -nx), True  # face into the table (opposite normal)

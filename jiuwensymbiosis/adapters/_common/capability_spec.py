@@ -32,11 +32,24 @@ CAPABILITY_ACTIONS: dict[str, list[str]] = {
     "grasp.parallel": ["open_gripper", "close_gripper"],
     "grasp.suction": ["activate_suction", "deactivate_suction"],
     "vision.camera": ["get_image", "pixel_to_base_xyz"],
-    "vision.detection": ["get_grasp_info_simple", "locate_for_grasp", "locate_for_place", "analyze_scene"],
+    "vision.detection": [
+        "get_grasp_info_simple",
+        "locate_for_grasp",
+        "locate_for_place",
+        "analyze_scene",
+        "locate_target",
+    ],
     "motion.base": ["navigate_relative", "rotate_base", "drive_arc"],
     "motion.lift": ["set_lift_pose", "lift_to_clearance"],
     "motion.waist": ["turn_waist"],
-    "motion.goal": ["approach_for_grasp", "approach_for_place"],
+    "motion.goal": [
+        "approach_for_grasp",
+        "approach_for_place",
+        "approach_target",
+        "navigate_to_pose",
+        "navigate_to_entity",
+    ],
+    "simulation.truth": ["sim_list_entities", "sim_get_robot_state", "sim_get_entity_state"],
     "vision.search": ["search_target"],
     "motion.dual_arm": ["dual_arm_grasp", "dual_arm_place"],
 }
@@ -45,12 +58,26 @@ CAPABILITY_ACTIONS: dict[str, list[str]] = {
 # forwarding one line. Everything else under a declared capability is real work the
 # adapter must write (vendor calibration, IK, end-effector geometry, force confirmation),
 # which is what makes forgetting one worth a warning.
-ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset({
-    "home", "get_pose", "get_home_pose", "goto_xyzr", "move_direction", "move_joint",
-    "activate_suction", "deactivate_suction", "open_gripper", "close_gripper",
-    "get_image", "navigate_relative", "rotate_base", "drive_arc", "set_lift_pose",
-    "turn_waist",
-})
+ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset(
+    {
+        "home",
+        "get_pose",
+        "get_home_pose",
+        "goto_xyzr",
+        "move_direction",
+        "move_joint",
+        "activate_suction",
+        "deactivate_suction",
+        "open_gripper",
+        "close_gripper",
+        "get_image",
+        "navigate_relative",
+        "rotate_base",
+        "drive_arc",
+        "set_lift_pose",
+        "turn_waist",
+    }
+)
 
 # Capability → low-level driver members the Env/Api delegate to (structural
 # driver contract, mirrors env/protocol.py). Used by validate [D-14].

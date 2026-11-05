@@ -57,11 +57,15 @@ from jiuwensymbiosis.contracts import (
     BasePoint,
     GraspFailure,
     GraspResult,
+    NavigationResult,
     ObjectGeometryResult,
     SceneScanResult,
     SearchResult,
     SensingFailure,
+    SimulationSnapshotResult,
     SurfaceGeometryResult,
+    TargetApproachResult,
+    TargetLocationResult,
 )
 
 # ``ActionSpec`` / ``UnknownCapability`` are defined next to ``ToolMeta`` (api/decorators.py)
@@ -346,6 +350,42 @@ GET_GRASP_INFO_SIMPLE = ActionSpec(
     tags=("vision",),
 )
 
+LOCATE_TARGET = ActionSpec(
+    name="locate_target",
+    description=(
+        "Measure a visible target using RGB-D and segmentation. Returns a base-frame visible-point median "
+        "in millimetres, horizontal distance in metres and bearing in radians (+left). This is not the "
+        "unseen object's complete centre and does not certify graspability. reference + relation select "
+        "the intended instance; absent/ambiguous/insufficient-depth observations fail explicitly. "
+        "object echoes the query; detection_label and detection_score are model predictions, not verified "
+        "identity. Inspect the same-frame RGB and segmentation overlay before deciding to approach."
+    ),
+    capability="vision.detection",
+    params=("object_name", "reference", "relation"),
+    param_schema={"relation": {"type": "string", "enum": list(SPATIAL_RELATIONS), "default": "on"}},
+    result=TargetLocationResult | SensingFailure,
+    produces_location=True,
+    tags=("vision",),
+)
+
+APPROACH_TARGET = ActionSpec(
+    name="approach_target",
+    description=(
+        "Approach and face a visible target with bounded rotate/forward steps and fresh RGB-D after each "
+        "step. target_distance_m is the horizontal distance from the base origin to the visible-point "
+        "median, NOT surface clearance. No global routing, grasping or placement. Stops on missing/lost "
+        "target, obstacles, insufficient depth, cancellation or unconfirmed stopping. Success requires "
+        "goal_reached AND settled; exhausting iterations is failure."
+    ),
+    capability="motion.goal",
+    params=("object_name", "target_distance_m", "reference", "relation"),
+    param_schema={"relation": {"type": "string", "enum": list(SPATIAL_RELATIONS), "default": "on"}},
+    result=TargetApproachResult,
+    produces_location=True,
+    invalidates_locations=True,
+    tags=("motion", "vision"),
+)
+
 LOCATE_FOR_GRASP = ActionSpec(
     name="locate_for_grasp",
     description=(
@@ -404,6 +444,80 @@ ANALYZE_SCENE = ActionSpec(
     params=("object_name",),
     result=SceneScanResult | SensingFailure,
     tags=("vision",),
+)
+
+# =============================================================================
+# Simulation observation — simulation.truth
+# =============================================================================
+SIM_LIST_ENTITIES = ActionSpec(
+    name="sim_list_entities",
+    capability="simulation.truth",
+    description=(
+        "List simulator logical entities (including outside the camera view). Filter by authored name query "
+        "or kind; paginate using next_offset and the same snapshot_id. Categories may be unknown. This is "
+        "simulation ground truth, not perception."
+    ),
+    params=("query", "kind", "limit", "offset", "snapshot_id"),
+    result=SimulationSnapshotResult,
+    tags=("simulation",),
+)
+SIM_GET_ROBOT_STATE = ActionSpec(
+    name="sim_get_robot_state",
+    capability="simulation.truth",
+    description=(
+        "Read simulator base position (authored root, metres), body-front yaw (radians) and actual world "
+        "velocities from one physical snapshot. Reuse snapshot_id to compare with an entity at the same step; "
+        "omit it for a new measurement."
+    ),
+    params=("snapshot_id",),
+    result=SimulationSnapshotResult,
+    tags=("simulation",),
+)
+SIM_GET_ENTITY_STATE = ActionSpec(
+    name="sim_get_entity_state",
+    capability="simulation.truth",
+    description=(
+        "Read one simulator entity by stable ID. Distinguishes authored origin, geometry bounds and center. "
+        "frame is world or base (+X forward, +Y left, +Z up, rooted at the robot's authored root). "
+        "Coordinates are metres; reuse snapshot_id for consistent comparisons."
+    ),
+    params=("entity_id", "frame", "snapshot_id"),
+    required_params=("entity_id",),
+    result=SimulationSnapshotResult,
+    tags=("simulation",),
+)
+# =============================================================================
+# Goal navigation — motion.goal
+# =============================================================================
+NAVIGATE_TO_POSE = ActionSpec(
+    name="navigate_to_pose",
+    capability="motion.goal",
+    description=(
+        "Plan and physically navigate to an exact world x_m, y_m and final body-front yaw_rad. Uses a "
+        "supported-floor obstacle map and the whole robot footprint. Unreachable goals fail without moving. "
+        "No hidden target substitution or retry. Completion requires goal_reached and measured settled; "
+        "previous locations become stale."
+    ),
+    params=("x_m", "y_m", "yaw_rad"),
+    required_params=("x_m", "y_m", "yaw_rad"),
+    result=NavigationResult,
+    invalidates_locations=True,
+    tags=("motion",),
+)
+NAVIGATE_TO_ENTITY = ActionSpec(
+    name="navigate_to_entity",
+    capability="motion.goal",
+    description=(
+        "Navigate beside a registered static object and face its bounds center. entity_id comes from scene "
+        "queries. stand_off_m is clearance from the object bounds to the conservative robot footprint, not to "
+        "the object's origin. Selects a reachable perimeter goal, follows one collision-checked route, then "
+        "measures arrival, facing and stopping. Does not grasp or retry automatically."
+    ),
+    params=("entity_id", "stand_off_m"),
+    required_params=("entity_id",),
+    result=NavigationResult,
+    invalidates_locations=True,
+    tags=("motion",),
 )
 
 # =============================================================================
@@ -629,9 +743,16 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     GET_IMAGE,
     PIXEL_TO_BASE_XYZ,
     GET_GRASP_INFO_SIMPLE,
+    LOCATE_TARGET,
+    APPROACH_TARGET,
     LOCATE_FOR_GRASP,
     LOCATE_FOR_PLACE,
     ANALYZE_SCENE,
+    SIM_LIST_ENTITIES,
+    SIM_GET_ROBOT_STATE,
+    SIM_GET_ENTITY_STATE,
+    NAVIGATE_TO_POSE,
+    NAVIGATE_TO_ENTITY,
     NAVIGATE_RELATIVE,
     ROTATE_BASE,
     DRIVE_ARC,

@@ -157,8 +157,8 @@ def _normalize_prompt(text_prompt: str) -> str:
     return text
 
 
-def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.ndarray]:
-    """Return (boxes_xyxy_pixels[N,4], scores[N]) for the caption ``text``."""
+def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Return boxes, scores and decoded labels; a request caption is not a prediction."""
     # _GDINO_PROCESSOR / _GDINO_MODEL are module-level import-guard objects
     # (Any | None); this function runs only after server startup has loaded
     # them, so they are non-None here.
@@ -188,7 +188,16 @@ def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.nda
         )[0]
     boxes = _to_numpy(res["boxes"]).reshape(-1, 4)
     scores = _to_numpy(res["scores"]).reshape(-1)
-    return boxes, scores
+    if len(scores) != len(boxes):
+        raise RuntimeError("GroundingDINO returned inconsistent box and score counts")
+    if boxes.size == 0:
+        # Some tokenizer versions decode an empty phrase batch as [""]. There
+        # are no predictions to label; this is an ordinary empty detection.
+        return boxes, scores, []
+    labels = res.get("text_labels", res.get("labels"))
+    if not isinstance(labels, list) or len(labels) != len(boxes) or any(not isinstance(label, str) for label in labels):
+        raise RuntimeError("GroundingDINO did not return decoded text labels")
+    return boxes, scores, labels
 
 
 def _box_to_mask(box_xyxy: np.ndarray, h: int, w: int) -> np.ndarray:
@@ -249,7 +258,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
     """Run GroundingDINO detection and optional SAM2 segmentation on one image."""
     t0 = time.perf_counter()
     text = _normalize_prompt(text_prompt)
-    boxes, scores = _gdino_detect(pil_image, text)
+    boxes, scores, labels = _gdino_detect(pil_image, text)
     h, w = pil_image.height, pil_image.width
     # GroundingDINO emits cxcywh-derived corners outside the image for edge objects.
     # SAM2 and the HTTP response share the clipped, nonempty image-space boxes.
@@ -259,6 +268,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
     boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h)
     keep = finite & (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
     boxes, scores = boxes[keep], scores[keep]
+    labels = [label for label, valid in zip(labels, keep, strict=True) if valid]
     t_det = time.perf_counter() - t0
     if boxes.shape[0] == 0:
         logger.info("[gdino] /v1/segment prompt=%r det=%.0fms kept=0", text_prompt, t_det * 1000.0)
@@ -266,6 +276,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
 
     order = np.argsort(scores)[::-1][:_SEGMENT_TOPK]
     boxes, scores = boxes[order], scores[order]
+    labels = [labels[int(i)] for i in order]
 
     t1 = time.perf_counter()
     if _USE_SAM2 and _SAM2_MODEL is None:
@@ -277,7 +288,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
     t_seg = time.perf_counter() - t1
 
     items: list[MaskData] = []
-    for b, s, m in zip(boxes, scores, masks, strict=True):
+    for b, s, m, label in zip(boxes, scores, masks, labels, strict=True):
         if not m.any():
             continue
         items.append(
@@ -285,7 +296,7 @@ def _do_segment(pil_image: Image.Image, text_prompt: str) -> list[MaskData]:
                 mask=encode_mask_png(m),
                 box=[float(x) for x in b],
                 score=float(s),
-                label=text_prompt,
+                label=label,
             )
         )
     logger.info(

@@ -72,19 +72,23 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 | `motion.base_servo` | Env 动词 `start_base_drive` 等 | —（连续底盘驱动原语） | — | — | — | ✅ |
 | `motion.lift` | Env 动词 `set_lifter` | `set_lift_pose`、`lift_to_clearance` | — | — | — | ✅ |
 | `motion.waist` | Env 动词 `turn_waist` | `turn_waist` | — | — | — | ✅ |
-| `motion.goal` | `motion/approach` | `approach_for_grasp`、`approach_for_place` | — | — | — | ✅ |
+| `motion.goal` | `motion/approach`、`motion/target_approach` 与导航契约 | `approach_for_grasp`、`approach_for_place`、`approach_target`、`navigate_to_pose`、`navigate_to_entity` | — | — | — | ✅ |
 | `motion.dual_arm` | `motion/dual_arm` | `dual_arm_grasp`、`dual_arm_place` | — | — | — | ✅ |
 | `grasp.parallel` | `GripperDriver` | `open_gripper`、`close_gripper` | ✅ | ✅ | ✅ | — |
 | `grasp.paddle` | 本体 `dual_arm_grasp` | —（经 `dual_arm_grasp` 实现） | — | — | — | ✅ |
 | `grasp.suction` | `SuctionDriver` | `activate_suction`、`deactivate_suction` | — | — | — | — |
 | `vision.camera` | `grab_rgb`/`grab_calibrated_frame` | `get_image`、`pixel_to_base_xyz` | ✅ | ◐ | ◐ | ✅ |
 | `vision.depth` | `grab_calibrated_frame` | —（不单独生成动作） | — | ◐ | ◐ | ✅ |
-| `vision.detection` | 标定 `CameraFrame` + 检测器钩子 + `perception/scene3d` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene` | ✅ | ◐ | ◐ | ◐ |
+| `vision.detection` | 标定 `CameraFrame` + 检测器钩子 + `perception/scene3d` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene`、`locate_target` | ✅ | ◐ | ◐ | ◐ |
 | `vision.eye_to_hand` | 相机安装标记 | —（不生成独立动作） | — | — | ◐ | — |
 | `vision.search` | `motion/approach.search_target` | `search_target` | — | — | — | ✅ |
 | `planning.reachability` | `Reachability`（派生） | —（规划期判据） | — | — | — | ✅ |
 | `sorting.command` | 词表和适配器扩展点 | —（无内置通用工具） | — | — | — | — |
 | `speech.tts` | 词表标记；语音前端独立提供 TTS | —（无内置机器人动作） | — | — | — | — |
+| `simulation.truth` | 显式仿真快照契约 | `sim_list_entities`、`sim_get_robot_state`、`sim_get_entity_state` | — | — | — | — |
+
+新增目标感知/接近和导航动作目前提供契约及共享算法，生产绑定后续接入；现有本体标记
+不代表已支持这些新动作，详见 [RGB-D 绑定前提](robot-api.md#rgb-d-目标定位与接近)。
 
 能力列的 ✅ 表示提供该能力下的动作，不表示实现动作列中的全部动作。Piper 的笛卡尔动作包括 `goto_xyzr`、`move_direction`、`get_pose` 和 `get_home_pose`，其中 `goto_xyzr` 使用标定倾角；完整姿态动作 `goto_pose` 当前由 SO-101 实现。
 

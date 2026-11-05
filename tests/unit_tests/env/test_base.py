@@ -41,6 +41,7 @@ class TestKnownCapabilities:
             # The body can aim a camera by turning something (head / waist / base), so it
             # can look around for a target instead of only seeing what is in front of it.
             "vision.search",
+            "simulation.truth",
         }
         assert KNOWN_CAPABILITIES == expected
 

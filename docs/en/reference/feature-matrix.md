@@ -76,19 +76,24 @@ Capability axes are **orthogonal and freely combinable**: motion (cartesian/join
 | `motion.base_servo` | Env verbs `start_base_drive` etc. | — (continuous base-drive primitive) | — | — | — | ✅ |
 | `motion.lift` | Env verb `set_lifter` | `set_lift_pose`, `lift_to_clearance` | — | — | — | ✅ |
 | `motion.waist` | Env verb `turn_waist` | `turn_waist` | — | — | — | ✅ |
-| `motion.goal` | `motion/approach` | `approach_for_grasp`, `approach_for_place` | — | — | — | ✅ |
+| `motion.goal` | `motion/approach`, `motion/target_approach`; navigation contracts | `approach_for_grasp`, `approach_for_place`, `approach_target`, `navigate_to_pose`, `navigate_to_entity` | — | — | — | ✅ |
 | `motion.dual_arm` | `motion/dual_arm` | `dual_arm_grasp`, `dual_arm_place` | — | — | — | ✅ |
 | `grasp.parallel` | `GripperDriver` | `open_gripper`, `close_gripper` | ✅ | ✅ | ✅ | — |
 | `grasp.paddle` | Body `dual_arm_grasp` | — (implemented via `dual_arm_grasp`) | — | — | — | ✅ |
 | `grasp.suction` | `SuctionDriver` | `activate_suction`, `deactivate_suction` | — | — | — | — |
 | `vision.camera` | `grab_rgb`/`grab_calibrated_frame` | `get_image`, `pixel_to_base_xyz` | ✅ | ◐ | ◐ | ✅ |
 | `vision.depth` | `grab_calibrated_frame` | — (no standalone action) | — | ◐ | ◐ | ✅ |
-| `vision.detection` | Calibrated `CameraFrame` + detector hook + `perception/scene3d` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene` | ✅ | ◐ | ◐ | ◐ |
+| `vision.detection` | Calibrated `CameraFrame` + detector hook + `perception/scene3d` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene`, `locate_target` | ✅ | ◐ | ◐ | ◐ |
 | `vision.eye_to_hand` | Camera-mount marker | — (no standalone action) | — | — | ◐ | — |
 | `vision.search` | `motion/approach.search_target` | `search_target` | — | — | — | ✅ |
 | `planning.reachability` | `Reachability` (derived) | — (planning-time judge) | — | — | — | ✅ |
 | `sorting.command` | Vocabulary and adapter extension point | — (no built-in generic tool) | — | — | — | — |
 | `speech.tts` | Vocabulary marker; voice front end provides TTS separately | — (no built-in robot action) | — | — | — | — |
+| `simulation.truth` | Explicit simulator snapshot contracts | `sim_list_entities`, `sim_get_robot_state`, `sim_get_entity_state` | — | — | — | — |
+
+The new target and navigation actions are contracts/shared algorithms awaiting production
+bindings; the existing body marks do not claim support for them. See
+[RGB-D binding requirements](robot-api.md#rgb-d-target-location-and-approach).
 
 A ✅ capability entry means the body provides actions under that capability, not every action in the action column. Piper's Cartesian actions are `goto_xyzr`, `move_direction`, `get_pose`, and `get_home_pose`; `goto_xyzr` uses the calibrated tilt. SO-101 currently implements the full-pose action `goto_pose`.
 

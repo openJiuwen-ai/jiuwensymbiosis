@@ -44,14 +44,70 @@ __all__ = [
     "ObjectGeometryResult",
     "SurfaceGeometryResult",
     "SceneScanResult",
+    "TargetLocationResult",
     "SPATIAL_RELATIONS",
     # Base approach
     "ApproachResult",
     "ApproachFailure",
     "SearchResult",
+    "TargetApproachResult",
+    "MeasuredBaseMotionResult",
     # Frame projection
     "BasePoint",
+    "SimulationSnapshotResult",
+    "NavigationResult",
 ]
+
+
+class SimulationSnapshotResult(TypedDict):
+    """Explicit simulator truth; never a substitute for a sensor observation."""
+
+    source: Literal["simulation_ground_truth"]
+    scene_instance_id: str
+    reset_generation: int
+    snapshot_id: str
+    step: int
+    sim_time: float
+    captured_at: float
+    frame: str
+    units: dict
+    robot: NotRequired[dict]
+    entity: NotRequired[dict]
+    entities: NotRequired[list[dict]]
+    total: NotRequired[int]
+    next_offset: NotRequired[int | None]
+
+
+class MeasuredBaseMotionResult(TypedDict):
+    """Blocking base step with observed stopping, including a zero-distance step.
+
+    ``ok`` alone is not evidence of stopping. Only ``settled=True`` together
+    with ``stop_confirmation='measured'`` permits target sensing/another step.
+    A command acknowledgement or elapsed duration cannot establish these fields.
+    """
+
+    ok: bool
+    settled: bool
+    stop_confirmation: Literal["measured", "unknown"]
+    reason: NotRequired[str]
+
+
+class NavigationResult(TypedDict):
+    """Goal completion and measured stopping are separate facts."""
+
+    ok: bool
+    goal_reached: bool
+    settled: bool
+    stop_confirmation: Literal["measured", "unknown"]
+    reason: str
+    position_error_m: NotRequired[float]
+    yaw_error_rad: NotRequired[float]
+    final_state: NotRequired[dict]
+    plan: NotRequired[dict]
+    source: NotRequired[str]
+    scene_instance_id: NotRequired[str]
+    reset_generation: NotRequired[int]
+    recoverable: NotRequired[bool]
 
 
 # =============================================================================
@@ -204,6 +260,51 @@ class ApproachFailure(TypedDict, total=False):
     turn_rad: float
     forward_m: float
     iters: int
+
+
+class TargetLocationResult(TypedDict, total=False):
+    """RGB-D visible-point measurement; never the unseen object's full centre."""
+
+    ok: bool
+    reason: str
+    error_code: str
+    candidate_count: int
+    object: str
+    reference: str | None
+    relation: str
+    detection_label: str | None
+    detection_score: float | None
+    box_px: list[float] | None
+    point_base_mm: list[float]
+    distance_m: float
+    bearing_rad: float
+    near_surface_x_m: float
+    n_points: int
+    frame_id: str
+    captured_monotonic_s: float
+    source: Literal["rgbd_perception"]
+    frame: Literal["base_forward_left_up"]
+    point_kind: Literal["visible_point_median"]
+
+
+class TargetApproachResult(TypedDict, total=False):
+    """Target arrival and measured stopping are independently reported."""
+
+    ok: bool
+    goal_reached: bool
+    settled: bool
+    stop_confirmation: str
+    reason: str
+    iterations: int
+    observations: int
+    observation_retries: list[dict]
+    target_distance_m: float
+    distance_error_m: float
+    bearing_error_rad: float
+    measurement: TargetLocationResult
+    confirmation_failure: TargetLocationResult
+    confirmation_frame_ids: list[str]
+    steps: list[dict]
 
 
 class ApproachResult(TypedDict, total=False):
