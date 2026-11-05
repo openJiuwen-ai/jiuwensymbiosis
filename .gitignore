@@ -22,6 +22,8 @@ configs/*/calibration/
 /outputs/
 # Machine-specific asset roots and registrations.
 /configs/simulators/assets.yaml
+# Local model weights for optional spatial-memory appearance descriptors.
+/models/
 
 # Local SDK-dependent export entry point.
 /jiuwensymbiosis/simulators/genesis/export_urdf.py
