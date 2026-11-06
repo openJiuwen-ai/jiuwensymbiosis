@@ -22,6 +22,7 @@ here. Adding a new task = adding a SKILL.md; this runner is unchanged.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import math
 import time
@@ -40,7 +41,9 @@ from jiuwensymbiosis.agent.fast.sequence import (
     TRACK_GRASP,
     ActionStep,
     LoopStep,
+    SequenceError,
     normalize_detection,
+    parse_sequence,
     referenced_binding_names,
     resolve_params,
 )
@@ -57,6 +60,7 @@ from jiuwensymbiosis.errors import (
     is_inference_service_failure,
 )
 from jiuwensymbiosis.rails.recovery import read_holding_payload, recover_session
+from jiuwensymbiosis.tools.bindings import ActionBinding, select_bindings
 from jiuwensymbiosis.tools.robot_control_tool import _build_action_index, record_action
 
 logger = logging.getLogger(__name__)
@@ -772,6 +776,58 @@ class _RunContext:
     out: list[dict]
     state: dict
     recovery_enabled: bool = True
+    bindings: Mapping[str, ActionBinding] | None = None
+    request_key_prefix: str = ""
+    principal: str = "local"
+
+
+def _run_bound_action(step: ActionStep, ctx: _RunContext, binding: ActionBinding) -> bool:
+    """Execute a non-robot action; completion and policy belong to its Session.
+
+    The call returns only at its declared completion scope. In particular, a
+    remote task acknowledgement must not be projected as physical completion.
+    The shared loop owns only ordering, result references and failure truncation.
+    """
+    i = ctx.state["i"]
+    token = getattr(ctx.session, "cancel_token", None)
+    try:
+        if token is not None:
+            token.raise_if_set()
+        params = resolve_params(step.params, ctx.env)
+        request_key = step.request_key or (f"{ctx.request_key_prefix}:{i}" if ctx.request_key_prefix else None)
+        result = binding.invoke(params, request_key=request_key, principal=ctx.principal)
+        if inspect.isawaitable(result):
+            import asyncio
+
+            result = asyncio.run(result)
+        # No object/attribute capabilities reach later references: all domain
+        # results must be finite JSON, preserved without detection normalization.
+        result = json.loads(json.dumps(result, allow_nan=False))
+        schema = binding.contract.output_schema
+        if schema:
+            from jsonschema import Draft202012Validator
+
+            Draft202012Validator(schema).validate(result)
+        if step.bind:
+            ctx.env[step.bind] = result
+        ctx.out.append({"i": i, "op": step.op, "device_id": binding.device_id, "ok": True, "result": result})
+        return True
+    except RunCancelled:
+        raise
+    except Exception as exc:
+        ctx.out.append(
+            {
+                "i": i,
+                "op": step.op,
+                "device_id": binding.device_id,
+                "ok": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "error_code": error_code(exc),
+            }
+        )
+        return False
+    finally:
+        ctx.state["i"] = i + 1
 
 
 def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
@@ -784,6 +840,9 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     ``tracked_grasp`` / ``i`` through the shared ``state`` dict. ``_resolve_dict_bindings``
     upgrades whole-binding params (``box`` / ``surface``) before dispatch.
     """
+    binding = ctx.bindings.get(step.op) if ctx.bindings is not None else None
+    if binding is not None and binding.domain != "robot":
+        return _run_bound_action(step, ctx, binding)
     env, run_op, session, cfg, cache, out, state = (
         ctx.env,
         ctx.run_op,
@@ -990,7 +1049,9 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
     return True
 
 
-def _op_contracts(session: Any, action_index: Mapping[str, Callable[..., Any]] | None) -> dict[str, ToolMeta]:
+def _op_contracts(
+    session: Any, action_index: Mapping[str, Callable[..., Any] | ActionBinding] | None
+) -> dict[str, ToolMeta]:
     """``{op: ToolMeta}`` for this body's actions — the contracts the drift check reads."""
     try:
         index = action_index or _build_action_index(session.api, env=getattr(session, "env", None))
@@ -999,7 +1060,9 @@ def _op_contracts(session: Any, action_index: Mapping[str, Callable[..., Any]] |
         return {}
     metas = {}
     for name, fn in index.items():
-        meta = getattr(fn, "__tool_meta__", None)
+        meta = (
+            getattr(fn.contract, "meta", None) if isinstance(fn, ActionBinding) else getattr(fn, "__tool_meta__", None)
+        )
         if isinstance(meta, ToolMeta):
             metas[name] = meta
     return metas
@@ -1099,6 +1162,9 @@ def run_sequence(
     replan: Replanner | None = None,
     max_replans: int = 2,
     recovery_enabled: bool = True,
+    bindings: Mapping[str, ActionBinding] | None = None,
+    request_key_prefix: str = "",
+    principal: str = "local",
 ) -> dict:
     """Execute an action sequence in order, with no per-step LLM.
 
@@ -1138,7 +1204,9 @@ def run_sequence(
     env: dict[str, Any] = {}
 
     # Eye-in-hand pre-scan before any motion (task-agnostic).
-    cache = _prescan(session, steps)
+    robot_session = session
+    has_robot = bindings is None or any(item.domain == "robot" for item in bindings.values())
+    cache = _prescan(robot_session, steps) if has_robot else {}
 
     out: list[dict] = []
     state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
@@ -1151,18 +1219,22 @@ def run_sequence(
         out=out,
         state=state,
         recovery_enabled=recovery_enabled,
+        bindings=bindings,
+        request_key_prefix=request_key_prefix,
+        principal=principal,
     )
-    # Empty without a replanner, which makes _drift a dict lookup that always misses.
-    metas = _op_contracts(session, action_index) if replan is not None else {}
+    # Robot bindings retain state checks for explicitly submitted sequences.
+    # Instrument views carry no robot metadata.
+    metas = _op_contracts(robot_session, bindings or action_index) if replan is not None or bindings is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)
     replans = 0
     ok_all = True
     while pending:
         step = pending[0]
-        why = _drift(step, metas, session, env) if isinstance(step, ActionStep) else None
-        if why is not None and replans < max_replans:
+        why = _drift(step, metas, robot_session, env) if isinstance(step, ActionStep) else None
+        if why is not None and replan is not None and replans < max_replans:
             # replan is set whenever metas is
-            fresh = _request_replan(replan, session, why, out, state)  # type: ignore[arg-type]
+            fresh = _request_replan(replan, robot_session, why, out, state)
             if fresh is not None:
                 replans += 1
                 pending = list(fresh)
@@ -1170,7 +1242,9 @@ def run_sequence(
                 # binding it reads; dropping the old ones keeps stale coordinates out.
                 env.clear()
                 continue
-        elif why is not None:
+        if why is not None and bindings is not None:
+            raise SequenceError(f"robot state changed before dispatch: {why}")
+        elif why is not None and replans >= max_replans:
             logger.warning("[runner] %s; re-plan budget (%d) spent — dispatching anyway", why, max_replans)
         pending.pop(0)
         if isinstance(step, LoopStep):
@@ -1181,6 +1255,72 @@ def run_sequence(
             break
 
     return {"ok": ok_all, "steps_done": len(out), "steps": out, "env_keys": sorted(env)}
+
+
+def run_bound_sequence(
+    session: Any,
+    raw_steps: list[dict[str, Any]],
+    *,
+    request_key_prefix: str = "",
+    principal: str = "local",
+    executor: Executor | None = None,
+    config: TrackingConfig | None = None,
+    recovery_enabled: bool = True,
+    replan: Replanner | None = None,
+    max_replans: int = 2,
+) -> dict[str, Any]:
+    """Use the established fast sequence engine with an admitted domain catalog."""
+    if callable(getattr(session, "action_bindings", None)):
+        bindings = session.action_bindings()
+        capabilities = session.capabilities
+    else:
+        from jiuwensymbiosis.tools.builder import _effective_capabilities, robot_action_bindings
+
+        resources = tuple(getattr(session, "resource_keys", ()))
+        bindings = robot_action_bindings(
+            session.api,
+            env=session.env,
+            device_id=resources[0] if resources else session.name,
+            resource_keys=resources,
+        )
+        capabilities = _effective_capabilities(session.api, session.env)
+    catalog = select_bindings(bindings, capabilities, principal=principal, planner_only=True)
+    robot = session if any(binding.domain == "robot" for binding in catalog.values()) else None
+    initial_state = (current_tokens(robot) or None) if robot is not None else None
+    steps = parse_sequence(raw_steps, allowed_ops=catalog, initial_state=initial_state)
+
+    def call_robot(op: str, params: dict[str, Any]) -> dict[str, Any]:
+        binding = catalog[op]
+        try:
+            # Robot bindings keep the synchronous safety policy at the
+            # real dispatch boundary; instrument actions never enter this path.
+            robot = session
+            from jiuwensymbiosis.rails.safety import SafetyRail
+
+            SafetyRail(robot).validate_motion(op, params)
+            result = binding.invoke(params, principal=principal)
+            if inspect.isawaitable(result):
+                import asyncio
+
+                result = asyncio.run(result)
+            return {"ok": result.get("ok", True) if isinstance(result, dict) else True, "result": result}
+        except RunCancelled:
+            raise
+        except Exception as exc:
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
+
+    return run_sequence(
+        session,
+        steps,
+        executor=executor or call_robot,
+        config=config,
+        bindings=catalog,
+        request_key_prefix=request_key_prefix,
+        principal=principal,
+        recovery_enabled=recovery_enabled,
+        replan=replan,
+        max_replans=max_replans,
+    )
 
 
 def _safe_retreat(session: Any) -> None:

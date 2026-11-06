@@ -21,6 +21,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+instruments = [
+    # Protocol execution, Skill export and offline document onboarding.
+    "jsonschema>=4.23,<5",
+    "pyserial>=3.5,<4",
+    "pydantic>=2.10,<3",
+    # Raw tool definitions/results and stdio/Streamable HTTP; validated on 1.30.
+    "mcp>=1.30,<2",
+]
 remote = [
     # Agent-side HTTP inference clients and image codecs; no model runtime.
     "httpx>=0.28",
@@ -65,6 +73,7 @@ chattts-server = [
     "torchaudio==2.8.0",
 ]
 dev = [
+    "pip>=23",  # uv-created environments need pip for the offline wheel installation tests
     "setuptools>=68",  # offline wheel smoke test uses the declared build backend
     "wheel",
     "pytest>=8",
@@ -72,6 +81,11 @@ dev = [
     "pytest-mock>=3.14",
     "pytest-timeout>=2.3",
     "respx>=0.22",
+    # The default core suite includes the optional instrument modules.
+    "jsonschema>=4.23,<5",
+    "pyserial>=3.5,<4",
+    "pydantic>=2.10,<3",
+    "mcp>=1.30,<2",
     # HTTP server contract tests use model stubs; no GUI or model runtime needed.
     "fastapi>=0.136",
     "uvicorn>=0.46",
@@ -218,6 +232,10 @@ filterwarnings = [
     "ignore::DeprecationWarning:openjiuwen",
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
+
+[tool.coverage.run]
+# CI creates outputs/ for writable reports; do not reuse a stale root database.
+data_file = "outputs/.coverage"
 
 [tool.ruff]
 line-length = 120

@@ -128,11 +128,20 @@ class TaskEventRail(AgentRail):
         content = getattr(response, "content", None)
         self._turn_text = content.strip() if isinstance(content, str) else ""
 
+    def _stop_if_requested(self, ctx: Any) -> bool:
+        if self.should_stop is not None and self.should_stop():
+            ctx.request_force_finish({"output": "stopped", "result_type": "stopped"})
+            return True
+        return False
+
+    async def before_model_call(self, ctx: Any) -> None:
+        """An unresolved device call stops the task before another model turn."""
+        self._stop_if_requested(ctx)
+
     async def before_tool_call(self, ctx: Any) -> None:
         """Emit a step-start fact, or request the agent to stop before a step."""
         begin_action_observation(ctx)
-        if self.should_stop is not None and self.should_stop():
-            ctx.request_force_finish({"output": "stopped", "result_type": "stopped"})
+        if self._stop_if_requested(ctx):
             return
         name, params = _extract(ctx)
         self._counter += 1
@@ -172,6 +181,7 @@ class TaskEventRail(AgentRail):
             self._emit_frame(ctx)
         elif event_class == "detection":
             self._emit_detection_overlay(index)
+        self._stop_if_requested(ctx)
 
     async def on_tool_exception(self, ctx: Any) -> None:
         """Emit a failed step and a separate fact for SafetyRail rejections."""
@@ -205,6 +215,7 @@ class TaskEventRail(AgentRail):
         )
         if "SafetyRail" in error:
             self.emitter.safety_event({"rail": "SafetyRail", "kind": "reject", "detail": error})
+        self._stop_if_requested(ctx)
 
     def _close(self, ctx: Any) -> tuple[int, float]:
         """Return the current step index and elapsed time, then close it."""

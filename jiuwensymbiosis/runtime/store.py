@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -78,6 +79,22 @@ class JobStore:
                 fingerprint TEXT NOT NULL,
                 snapshot_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS invocations (
+                invocation_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL REFERENCES jobs(job_id),
+                resource_key TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                UNIQUE(resource_key, request_key)
+            );
+            CREATE INDEX IF NOT EXISTS invocations_job ON invocations(job_id);
+            CREATE TABLE IF NOT EXISTS job_invocations (
+                job_id TEXT NOT NULL REFERENCES jobs(job_id),
+                invocation_id TEXT NOT NULL REFERENCES invocations(invocation_id),
+                PRIMARY KEY (job_id, invocation_id)
+            );
+            INSERT OR IGNORE INTO job_invocations SELECT job_id, invocation_id FROM invocations;
             CREATE TABLE IF NOT EXISTS events (
                 job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
                 seq INTEGER NOT NULL,
@@ -265,6 +282,189 @@ class JobStore:
             rows = self._connection.execute("SELECT snapshot_json FROM jobs ORDER BY rowid").fetchall()
             snapshots = [_decode_object(row["snapshot_json"], label="snapshot") for row in rows]
             return [snapshot for snapshot in snapshots if snapshot.get("phase") not in _TERMINAL_PHASES]
+
+    def begin_invocation(
+        self,
+        job_id: str,
+        resource_key: str,
+        request_key: str,
+        fingerprint: str,
+        initial: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Commit a device dispatch intent and event before the first hardware write.
+
+        The stable request key is scoped to the physical resource, not the job,
+        transport connection, action name or RPC ID. A retry can only read the
+        original record; it never authorizes another dispatch.
+        """
+        for label, value in (
+            ("resource_key", resource_key),
+            ("request_key", request_key),
+            ("fingerprint", fingerprint),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} must be a non-empty string")
+        payload = _decode_object(_encode_object(initial, label="invocation"), label="invocation")
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT fingerprint, snapshot_json FROM invocations WHERE resource_key = ? AND request_key = ?",
+                (resource_key, request_key),
+            ).fetchone()
+            if existing is not None:
+                if existing["fingerprint"] != fingerprint:
+                    raise RequestConflictError(
+                        "device request key was reused with different action parameters or binding"
+                    )
+                snapshot = _decode_object(existing["snapshot_json"], label="invocation")
+                self._link_invocation_locked(connection, job_id, snapshot)
+                return snapshot, False
+            if connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone() is None:
+                raise KeyError(job_id)
+            payload.update(
+                invocation_id=uuid.uuid4().hex,
+                job_id=job_id,
+                resource_key=resource_key,
+                request_key=request_key,
+                fingerprint=fingerprint,
+                status="intent",
+                dispatch_intent_at=_timestamp(),
+            )
+            connection.execute(
+                "INSERT INTO invocations VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    payload["invocation_id"],
+                    job_id,
+                    resource_key,
+                    request_key,
+                    fingerprint,
+                    _encode_object(payload, label="invocation"),
+                ),
+            )
+            connection.execute("INSERT INTO job_invocations VALUES (?, ?)", (job_id, payload["invocation_id"]))
+            self._append_event_locked(connection, job_id, "invocation_intent", payload)
+            return payload, True
+
+    def find_invocation(self, resource_key: str, request_key: str, fingerprint: str) -> dict[str, Any] | None:
+        """Look up an action retry without creating another dispatch intent."""
+        with self._lock:
+            self._ensure_open()
+            row = self._connection.execute(
+                "SELECT fingerprint, snapshot_json FROM invocations WHERE resource_key = ? AND request_key = ?",
+                (resource_key, request_key),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["fingerprint"] != fingerprint:
+                raise RequestConflictError("device request key has a different fingerprint")
+            return _decode_object(row["snapshot_json"], label="invocation")
+
+    def link_invocation(self, job_id: str, invocation_id: str) -> None:
+        """Associate a retrying job with the original authoritative action record."""
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT snapshot_json FROM invocations WHERE invocation_id = ?", (invocation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(invocation_id)
+            self._link_invocation_locked(connection, job_id, _decode_object(row["snapshot_json"], label="invocation"))
+
+    def _link_invocation_locked(self, connection: sqlite3.Connection, job_id: str, record: dict[str, Any]) -> None:
+        linked = connection.execute(
+            "INSERT OR IGNORE INTO job_invocations VALUES (?, ?)", (job_id, record["invocation_id"])
+        )
+        if linked.rowcount:
+            self._append_event_locked(connection, job_id, "invocation_reused", record)
+
+    def get_invocation(self, invocation_id: str) -> dict[str, Any]:
+        """Return a detached durable action record, including completion evidence."""
+        with self._lock:
+            self._ensure_open()
+            row = self._connection.execute(
+                "SELECT snapshot_json FROM invocations WHERE invocation_id = ?", (invocation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(invocation_id)
+            return _decode_object(row["snapshot_json"], label="invocation")
+
+    def list_invocations(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        """Read action records in acceptance order without resuming hardware."""
+        with self._lock:
+            self._ensure_open()
+            if job_id is None:
+                rows = self._connection.execute("SELECT snapshot_json FROM invocations ORDER BY rowid").fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT i.snapshot_json FROM invocations AS i JOIN job_invocations AS j "
+                    "ON i.invocation_id = j.invocation_id WHERE j.job_id = ? ORDER BY i.rowid",
+                    (job_id,),
+                ).fetchall()
+            return [_decode_object(row["snapshot_json"], label="invocation") for row in rows]
+
+    def unresolved_invocations(self, resource_key: str) -> list[dict[str, Any]]:
+        """Find physical uncertainty even after a lease was externally reconciled."""
+        with self._lock:
+            self._ensure_open()
+            rows = self._connection.execute(
+                "SELECT snapshot_json FROM invocations WHERE resource_key = ? ORDER BY rowid", (resource_key,)
+            ).fetchall()
+            records = [_decode_object(row["snapshot_json"], label="invocation") for row in rows]
+            return [record for record in records if record["status"] not in {"succeeded", "failed"}]
+
+    def update_invocation(
+        self, invocation_id: str, changes: dict[str, Any], *, reconciled: bool = False
+    ) -> dict[str, Any]:
+        """Commit execution facts and their event in the same SQLite transaction.
+
+        Only trusted reconciliation may turn an unknown result into a terminal
+        fact. Runtime retries cannot change an uncertain record into a new intent.
+        """
+        immutable = {
+            "invocation_id",
+            "job_id",
+            "resource_key",
+            "request_key",
+            "fingerprint",
+            "binding_id",
+            "contract_version",
+            "action_name",
+            "parameters_fingerprint",
+            "owner_pid",
+            "device_binding",
+            "lease_operation_id",
+            "principal",
+            "dispatch_intent_at",
+        }
+        if immutable.intersection(changes):
+            raise ValueError("invocation identity is immutable")
+        _encode_object(changes, label="invocation changes")
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT snapshot_json FROM invocations WHERE invocation_id = ?", (invocation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(invocation_id)
+            payload = _decode_object(row["snapshot_json"], label="invocation")
+            status = changes.get("status", payload["status"])
+            if status not in {"intent", "pending", "succeeded", "failed", "unknown"}:
+                raise ValueError("invalid invocation status")
+            if status == "intent" and payload["status"] != "intent":
+                raise ValueError("an invocation cannot be dispatched again")
+            if payload["status"] in {"succeeded", "failed"}:
+                raise ValueError("terminal invocation records are immutable")
+            if payload["status"] == "unknown" and status != "unknown" and not reconciled:
+                raise ValueError("unknown invocation requires trusted reconciliation")
+            if reconciled and (status not in {"succeeded", "failed"} or not changes.get("completion_evidence")):
+                raise ValueError("reconciliation requires terminal status and completion evidence")
+            payload.update(changes)
+            payload["updated_at"] = _timestamp()
+            connection.execute(
+                "UPDATE invocations SET snapshot_json = ? WHERE invocation_id = ?",
+                (_encode_object(payload, label="invocation"), invocation_id),
+            )
+            self._append_event_locked(
+                connection, payload["job_id"], "invocation_reconciled" if reconciled else "invocation_updated", payload
+            )
+            return payload
 
     def close(self) -> None:
         """Close the connection; repeated calls are harmless."""
