@@ -40,6 +40,13 @@ class CpuPreview:
         self.state = "stopped"
         return self.status()
 
+    def close(self):
+        self.detached = True
+
+    def reset_scene(self):
+        self.resets = getattr(self, "resets", 0) + 1
+        return {"state": "ready", "reset_result": {"complete": True}}
+
     def set_streaming(self, enabled):
         if enabled:
             self.encoder = None
@@ -356,3 +363,24 @@ def test_named_camera_capture_returns_pixels_and_calibration_without_video(clien
     assert json.loads(response.headers["X-Genesis-Camera"])["step"] == 42
     assert response.headers["Cache-Control"] == "no-store"
     assert http.post("/genesis/capture", headers=headers("capture"), json={"camera_name": "../bad"}).status_code == 422
+
+
+def test_reset_endpoint_requires_local_action_header(client):
+    http, preview, _ = client
+    assert http.post("/genesis/backend/reset").status_code == 403
+    response = http.post("/genesis/backend/reset", headers=headers("reset"))
+    assert response.status_code == 200 and response.json()["reset_result"]["complete"]
+    assert preview.resets == 1
+
+
+@pytest.mark.parametrize("action", ["start", "configure", "stop"])
+def test_backend_timeout_returns_recoverable_error(client, monkeypatch, action):
+    http, backend, _ = client
+
+    def timeout(**kwargs):
+        raise TimeoutError("backend unavailable")
+
+    monkeypatch.setattr(backend, action, timeout)
+    response = http.post(f"/genesis/backend/{action}", headers=headers(action), json={})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "backend unavailable"

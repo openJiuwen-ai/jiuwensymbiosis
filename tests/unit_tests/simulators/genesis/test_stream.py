@@ -1,6 +1,7 @@
 """Media lifecycle and real CPU H264 transport; no GUI, Genesis or GPU imports."""
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -21,6 +22,7 @@ class CpuPreview:
         self.starts = self.stops = 0
         self.encoder = None
         self.keyframe_requests = 0
+        self.keyframe_event = threading.Event()
         self.last_frame = 0
         self.configuration = {}
 
@@ -41,6 +43,9 @@ class CpuPreview:
         self.state = "stopped"
         return self.status()
 
+    def close(self):
+        self.detached = True
+
     def set_streaming(self, enabled):
         if enabled:
             self.encoder = None
@@ -55,6 +60,7 @@ class CpuPreview:
 
     def request_keyframe(self):
         self.keyframe_requests += 1
+        self.keyframe_event.set()
 
     def latest_frame(self):
         from fractions import Fraction
@@ -82,7 +88,8 @@ class CpuPreview:
         }
 
 
-async def test_selection_requires_live_session_and_dispatches_off_event_loop():
+@pytest.mark.parametrize("operation", ["select", "camera", "base_command"])
+async def test_selection_requires_live_session_and_dispatches_off_event_loop(operation):
     import threading
     from types import SimpleNamespace
 
@@ -90,16 +97,17 @@ async def test_selection_requires_live_session_and_dispatches_off_event_loop():
     service = PreviewStream(backend)
     main_thread = threading.get_ident()
 
-    def pick(**values):
+    def pick(*args, **values):
         assert threading.get_ident() != main_thread
         return {"selection": {"name": "cube"}, **values}
 
-    backend.select = pick
+    setattr(backend, "camera_command" if operation == "camera" else operation, pick)
+    call = getattr(service, operation)
     with pytest.raises(StreamError, match="会话已结束"):
-        await service.select("a" * 32, action="pick")
+        await call("a" * 32, action="pick")
     service._session = "a" * 32
     service._peer = SimpleNamespace(connectionState="connected")
-    result = await service.select("a" * 32, action="pick", u=0.2, v=0.3)
+    result = await call("a" * 32, action="pick", u=0.2, v=0.3)
     assert result["selection"]["name"] == "cube"
     assert result["u"] == 0.2
 
@@ -142,7 +150,9 @@ async def test_real_cpu_webrtc_decodes_frames_and_reconnect_keeps_scene():
 
         sender = service._peer.getSenders()[0]
         before = backend.keyframe_requests
+        backend.keyframe_event.clear()
         await sender._handle_rtcp_packet(RtcpPsfbPacket(fmt=RTCP_PSFB_PLI, ssrc=1, media_ssrc=sender._ssrc))
+        assert await asyncio.to_thread(backend.keyframe_event.wait, 1)
         assert backend.keyframe_requests == before + 1
         with pytest.raises(StreamError, match="已有视频"):
             await service.offer(sdp)
@@ -235,7 +245,10 @@ async def test_watchdog_allows_frame_gap_only_during_bounded_switch(monkeypatch,
 
 
 async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
+    import threading
     from collections import deque
+
+    main_thread = threading.get_ident()
 
     from jiuwensymbiosis.simulators.genesis.stream import make_video_track
 
@@ -261,6 +274,7 @@ async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
             self.acked.append(sequence)
 
         def request_keyframe(self):
+            assert threading.get_ident() != main_thread
             self.requests += 1
 
     preview = StalledPreview()
@@ -319,3 +333,57 @@ async def test_disconnected_backend_does_not_skip_local_media_cleanup():
     assert watcher.cancelled()
     track.stop.assert_called_once()
     peer.close.assert_awaited_once()
+
+
+async def test_shutdown_detaches_without_stopping_resident_backend():
+    preview = CpuPreview()
+    service = PreviewStream(preview)
+    await service.start()
+    await service.close()
+    assert preview.detached and preview.stops == 0
+
+
+async def test_reset_between_frame_and_status_discards_old_world_packet():
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.simulators.genesis.stream import make_video_track
+
+    preview = CpuPreview()
+    now = time.monotonic()
+    samples = iter(
+        [
+            {
+                "sequence": 1,
+                "h264": b"old-world",
+                "scene_instance_id": "before",
+                "config_revision": 0,
+                "stream_epoch": 0,
+                "keyframe": True,
+                "captured_at": now,
+            },
+            {
+                "sequence": 2,
+                "h264": b"new-world",
+                "scene_instance_id": "after",
+                "config_revision": 0,
+                "stream_epoch": 1,
+                "keyframe": True,
+                "captured_at": now,
+            },
+        ]
+    )
+    preview.latest_frame = lambda: next(samples)
+    preview.status = lambda: {
+        "state": "ready",
+        "scene": {"instance_id": "after"},
+        "config_revision": 0,
+        "stream_epoch": 1,
+    }
+    preview.acknowledge_frame = Mock()
+    track = make_video_track(preview)
+    try:
+        assert bytes(await track.recv()) == b"new-world"
+        assert preview.keyframe_requests == 1
+        assert preview.acknowledge_frame.call_count == 2
+    finally:
+        track.stop()
