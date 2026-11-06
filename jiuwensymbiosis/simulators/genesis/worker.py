@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import os
 import sys
@@ -12,6 +13,7 @@ from collections import deque
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from base_motion import measure
@@ -35,6 +37,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     initialized = sdk_initialized = False
     encoder = runtime = None
     capture_path: Path | None = None
+    depth_path: Path | None = None
+    query_path: Path | None = None
     revision = mailbox.read_control().get("config_revision", 0)
     error = None
     switch_ms = 0.0
@@ -43,13 +47,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     startup = StartupDiagnostics(
         logger=logger,
         publish=lambda data: mailbox.write_status(
-            {
-                "state": "starting",
-                "message": "正在初始化 Genesis / Nyx…",
-                "startup": data,
-            }
+            {"state": "starting", "message": "正在初始化 Genesis / Nyx…", "startup": data, "loading": data}
         ),
     )
+    loading = startup
     try:
         with startup.phase("imports"):
             import genesis as gs
@@ -78,14 +79,25 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
         pick_result: dict = {}
         capture_result: dict = {}
         base_result: dict = {}
+        query_result: dict = {}
+        reset_result: dict = {}
         physics_clock = PhysicsClock(settings.dt)
         next_frame = next_status = time.monotonic()
         while not mailbox.stopping():
             command = mailbox.read_control()
+            if query_path is not None and (command.get("scene_query") or {}).get("id") != query_result.get("id"):
+                query_path.unlink(missing_ok=True)
+                query_path = None
             # The requester may cancel before a slow render finishes writing.
-            if capture_path is not None and (command.get("capture") or {}).get("id") != capture_result.get("id"):
-                capture_path.unlink(missing_ok=True)
-                capture_path = None
+            if (capture_path is not None or depth_path is not None) and (command.get("capture") or {}).get(
+                "id"
+            ) != capture_result.get("id"):
+                if capture_path is not None:
+                    capture_path.unlink(missing_ok=True)
+                    capture_path = None
+                if depth_path is not None:
+                    depth_path.unlink(missing_ok=True)
+                    depth_path = None
             requested_revision = command.get("config_revision", 0)
             if requested_revision != revision:
                 base_result = {}
@@ -94,13 +106,19 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     runtime.robot.stop()
                 started = time.monotonic()
                 requested = PreviewSettings(**command["settings"])
-                mailbox.write_status(
-                    {
-                        "state": "reconfiguring",
-                        "message": "正在切换场景或画质…",
-                        "config_revision": revision,
-                        "settings": asdict(settings),
-                    }
+                loading = StartupDiagnostics(
+                    logger=logger,
+                    operation="configure",
+                    publish=lambda data, revision=revision, settings=settings: mailbox.write_status(
+                        {
+                            "state": "reconfiguring",
+                            "message": "正在切换场景或画质…",
+                            "config_revision": revision,
+                            "settings": asdict(settings),
+                            "startup": startup.snapshot(),
+                            "loading": data,
+                        }
+                    ),
                 )
                 candidate = new_encoder = None
                 renderer_changed = False
@@ -127,7 +145,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
-                        candidate = RuntimeScene(requested, directory, runtime.pose["revision"] + 1)
+                        candidate = RuntimeScene(requested, directory, runtime.pose["revision"] + 1, startup=loading)
                     elif (requested.width, requested.height, requested.spp, requested.render_mode) != (
                         settings.width,
                         settings.height,
@@ -136,13 +154,15 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
-                        runtime.build_renderer(requested)
+                        with loading.phase("nyx_renderer"):
+                            runtime.build_renderer(requested)
                     # Open NVENC only after Nyx finishes replacing CUDA resources:
                     # opening it before teardown fails on repeated 720p/1080p
                     # switches in the real GPU regression test.
-                    new_encoder = NvEncoder(
-                        requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
-                    )
+                    with loading.phase("nvenc"):
+                        new_encoder = NvEncoder(
+                            requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
+                        )
                     if candidate is not None:
                         runtime.close()
                         runtime = candidate
@@ -152,6 +172,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     settings = requested
                     runtime.settings = requested
                 except Exception as exc:
+                    loading.finish(error=True)
                     logger.exception("Genesis reconfiguration failed; restoring previous scene")
                     error = f"切换失败，保留原场景和配置：{str(exc)[:1000]}"
                     if candidate is not None:
@@ -175,6 +196,47 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 # frame stalls by resetting the physics deadline every loop.
                 physics_clock = PhysicsClock(settings.dt)
                 next_frame = next_status = time.monotonic()
+            reset = command.get("reset")
+            if reset and reset["id"] != reset_result.get("id"):
+                reset_result = {"id": reset["id"], "complete": False}
+
+                def publish_reset(data, revision, settings, runtime, reset_result):
+                    mailbox.write_status(
+                        {
+                            "state": "resetting",
+                            "message": "正在复位当前世界…",
+                            "config_revision": revision,
+                            "settings": asdict(settings),
+                            "scene": runtime.info,
+                            "loading": data,
+                            "startup": startup.snapshot(),
+                            "reset_result": reset_result,
+                        }
+                    )
+
+                loading = StartupDiagnostics(
+                    logger=logger,
+                    operation="reset",
+                    publish=partial(
+                        publish_reset, revision=revision, settings=settings, runtime=runtime, reset_result=reset_result
+                    ),
+                )
+                try:
+                    if (
+                        reset["scene_instance_id"] != runtime.info["instance_id"]
+                        or reset["config_revision"] != revision
+                    ):
+                        raise ValueError("复位请求所属世界已经变化。")
+                    reset_result.update(runtime.reset(phase=loading.phase, stopping=mailbox.stopping))
+                    pick_result = capture_result = base_result = query_result = {}
+                    published = 0
+                    camera_dirty = True
+                    physics_clock = PhysicsClock(settings.dt)
+                    next_frame = next_status = time.monotonic()
+                except Exception as exc:
+                    loading.finish(error=True)
+                    reset_result.update(error=str(exc)[:1000], complete=True)
+                    next_status = 0
             if command["stream_epoch"] != stream_epoch:
                 if stream_epoch >= 0:
                     encoder.close()
@@ -231,6 +293,28 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             if mailbox.stopping():
                 break
             now = time.monotonic()
+            query = command.get("scene_query")
+            if query and query["id"] != query_result.get("id"):
+                query_result = {"id": query["id"]}
+                try:
+                    if (
+                        query["config_revision"] != revision
+                        or query["scene_instance_id"] != runtime.info["instance_id"]
+                        or now > query["expires_at"]
+                    ):
+                        raise ValueError("scene_query_expired_or_scene_changed")
+                    result = runtime.query_truth(query["operation"], query["params"])
+                    if time.monotonic() > query["expires_at"]:
+                        raise ValueError("scene_query_expired")
+                    query_path = directory / f"query-{query['id']}.json"
+                    query_path.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False))
+                except Exception as exc:
+                    if isinstance(exc, ValueError):
+                        query_result["error"] = str(exc)[:300]
+                    else:
+                        logger.exception("Genesis scene query failed")
+                        query_result["error"] = "scene_query_failed"
+                next_status = 0
             capture = command.get("capture")
             capture_pending = capture and capture["id"] != capture_result.get("id")
             capture_invalid = capture_pending and (
@@ -253,7 +337,42 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     captured_utc = datetime.now(UTC).isoformat(timespec="milliseconds")
                     try:
                         name = capture.get("camera_name", "observer")
-                        pixels = runtime.renderer.read_rgb(name).cpu().numpy()
+                        if capture.get("include_depth", False):
+                            from rgbd import base_body_bounds, base_from_camera
+
+                            if runtime.motion is None or runtime.motion.active:
+                                raise ValueError("RGB-D requires a stationary supported mobile robot")
+                            deadline = min(capture["expires_at"], captured_at + 2.0)
+
+                            def check_capture(deadline=deadline, capture=capture, revision=revision):
+                                current = mailbox.read_control()
+                                expired = mailbox.stopping() or time.monotonic() > deadline
+                                if (
+                                    expired
+                                    or (current.get("capture") or {}).get("id") != capture["id"]
+                                    or current.get("config_revision", 0) != revision
+                                ):
+                                    raise ValueError("RGB-D capture cancelled or expired")
+
+                            pixels, depth = runtime.renderer.read_rgbd(
+                                name,
+                                stride=capture.get("depth_stride", 8),
+                                check=check_capture,
+                            )
+                            base_sample = measure(runtime.robot)
+                            runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
+                                np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
+                            ).tolist()
+                            capture_result.update(
+                                base_sample=base_sample,
+                                body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
+                                motion_id=runtime.motion.result.get("id"),
+                            )
+                            depth_path = directory / f"capture-{capture['id']}.npz"
+                            np.savez(depth_path, rgb=pixels, depth_m=depth)
+                            check_capture()
+                        else:
+                            pixels = runtime.renderer.read_rgb(name).cpu().numpy()
                     finally:
                         physics_clock.mark_render()
                     if time.monotonic() > capture["expires_at"]:
@@ -273,6 +392,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         step=runtime.steps,
                         width=width,
                         height=height,
+                        capture_duration_ms=(time.monotonic() - captured_at) * 1000,
                     )
                 except Exception as exc:
                     logger.warning("Genesis image capture failed (%s)", type(exc).__name__)
@@ -289,11 +409,14 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             frame_due = render_requested and available and now >= next_frame
             if frame_due and physics_clock.render_ready():
                 started = time.monotonic()
-                with startup.phase("initial_render") if not startup.finished else nullcontext():
+                with loading.phase("initial_render") if not loading.finished else nullcontext():
                     rgb = runtime.renderer.read_rgb(settings.camera_name)
                     torch.cuda.current_stream().synchronize()
                 startup.mark_first_frame()
-                startup.finish()
+                loading.mark_first_frame()
+                loading.finish()
+                if reset_result and not reset_result.get("error"):
+                    reset_result["complete"] = True
                 physics_clock.mark_render()
                 timings["render"].append((time.monotonic() - started) * 1000)
                 sequence += 1
@@ -310,6 +433,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             "camera_name": settings.camera_name,
                             "stream_epoch": stream_epoch,
                             "config_revision": revision,
+                            "scene_instance_id": runtime.info["instance_id"],
                         },
                         force_keyframe=request != keyframe_request,
                     )[0]
@@ -347,13 +471,20 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 next_status = 0
             now = time.monotonic()
             if now >= next_status:
+                startup_data = startup.snapshot()
                 mailbox.write_status(
                     {
-                        "state": "ready" if startup.finished else "starting",
-                        "startup": startup.snapshot(),
+                        "state": "ready"
+                        if loading.finished
+                        else {"startup": "starting", "configure": "reconfiguring", "reset": "resetting"}[
+                            loading.operation
+                        ],
+                        "startup": startup_data,
+                        "loading": loading.snapshot(),
+                        "reset_result": reset_result,
                         "message": f"Genesis / Nyx / NVENC 已就绪 · {settings.scene_id}"
                         + (
-                            "（静态背景，无碰撞）"
+                            "（静态场景，碰撞已加载）"
                             if runtime.info["mode"] == "static_background"
                             else "（固定姿态检视，无碰撞）"
                             if runtime.info["mode"] == "robot_preview"
@@ -361,8 +492,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             if runtime.info["mode"] == "robot_mobile"
                             else ""
                         )
-                        if startup.finished
-                        else "正在等待首帧…",
+                        if loading.finished
+                        else "正在等待当前世界的首帧…",
                         "config_revision": revision,
                         "settings": asdict(settings),
                         "reconfigure_error": error,
@@ -395,6 +526,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "selection": runtime.selection_snapshot(),
                         "pick_result": pick_result,
                         "capture_result": capture_result,
+                        "scene_query_result": query_result,
                         "base_command_result": base_result,
                         "base_motion": runtime.motion.result if runtime.motion is not None else {},
                         "base_observation": (measure(runtime.robot) if runtime.motion is not None else None),
@@ -402,7 +534,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "object_positions": [body.get_pos()[0].cpu().tolist() for body in runtime.bodies],
                         "robot": runtime.robot.snapshot() if runtime.robot is not None else None,
                         "scene_contacts": runtime.indoor.contacts(runtime.robot)
-                        if runtime.indoor is not None
+                        if runtime.indoor is not None and runtime.robot is not None
                         else None,
                     }
                 )
@@ -416,6 +548,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 "state": "failed",
                 "message": f"Genesis / Nyx 启动或运行失败：{str(exc)[:3000]}",
                 "startup": startup.finish(error=True),
+                "loading": loading.finish(error=True),
             }
         )
     finally:
@@ -433,6 +566,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             nps.shutdown()
         if capture_path is not None:
             capture_path.unlink(missing_ok=True)
+        if depth_path is not None:
+            depth_path.unlink(missing_ok=True)
+        if query_path is not None:
+            query_path.unlink(missing_ok=True)
 
 
 def main() -> None:

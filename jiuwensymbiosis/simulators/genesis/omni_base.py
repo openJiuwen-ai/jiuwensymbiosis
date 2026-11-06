@@ -1,8 +1,8 @@
-"""MOZ1 wheel-driven base experiment, with a passive upper-body posture.
+"""MOZ1 wheel-driven base with an articulated upper-body position hold.
 
-Only wheel motors receive commands. Root pose is never integrated or teleported
-by the controller. The URDF's diagonal omni-wheel layout is deliberately read
-from its axes, rather than assuming the usual parallel-axis mecanum matrix.
+Wheel velocity and upper-body PD targets address disjoint motors. Root pose is
+never integrated or teleported by the controller. The URDF's diagonal omni-wheel
+layout is read from its axes instead of assuming parallel-axis mecanum geometry.
 """
 
 from __future__ import annotations
@@ -115,11 +115,11 @@ def validate_twist(vx: float, vy: float, wz: float) -> None:
         raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
 
 
-def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> None:
-    """Freeze non-wheel joints at the inspection posture in a disposable copy.
+def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> dict[str, float]:
+    """Keep articulated joints and mimic constraints; return the upper-body home.
 
-    Exported upper-body effort limits are zero. Locking those joints makes this
-    explicitly a base experiment without inventing arm/waist motor limits.
+    Only mesh paths change in this disposable copy. Zero exported motor limits
+    are overridden explicitly by the simulation-only posture controller.
     """
     tree = ET.parse(source)
     root = tree.getroot()
@@ -141,22 +141,6 @@ def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> 
                 )
             )
             positions[joint.attrib["name"]] = value
-            if joint.attrib["name"] not in active and joint.get("type") != "fixed":
-                origin = joint.find("origin")
-                if origin is None:
-                    origin = ET.SubElement(joint, "origin")
-                rotation = Rotation.from_euler("xyz", _vector(origin, "rpy", "0 0 0"))
-                axis = _vector(joint.find("axis"), "xyz", "1 0 0")
-                if joint.get("type") == "prismatic":
-                    xyz = _vector(origin, "xyz", "0 0 0") + rotation.apply(axis * value)
-                    origin.set("xyz", " ".join(map(str, xyz)))
-                else:
-                    rpy = (rotation * Rotation.from_rotvec(axis * value)).as_euler("xyz")
-                    origin.set("rpy", " ".join(map(str, rpy)))
-                joint.set("type", "fixed")
-                for child in list(joint):
-                    if child.tag in {"axis", "limit", "dynamics", "mimic"}:
-                        joint.remove(child)
             pending.remove(joint)
             progressed = True
         if not progressed:
@@ -165,6 +149,90 @@ def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> 
         mesh.set("filename", str((source.parent / mesh.attrib["filename"]).resolve()))
     ET.indent(tree, space="  ")
     tree.write(target, encoding="utf-8", xml_declaration=True)
+    return {
+        j.attrib["name"]: positions[j.attrib["name"]]
+        for j in root.findall("joint")
+        if j.get("type") != "fixed" and j.attrib["name"] not in active
+    }
+
+
+class UpperBodyHold:
+    """Finite-force simulation PD hold, with passive URDF mimic followers.
+
+    Gains and force caps are simulation tuning, not MOZ1 hardware specifications.
+    The target is fixed at construction, never recaptured from a sagging posture.
+    Genesis retains these motor commands while the wheel controller runs.
+    """
+
+    def __init__(self, entity: Any, urdf: Path, targets: dict[str, float]) -> None:
+        self.entity = entity
+        self.names = list(targets)
+        self.target = np.asarray(list(targets.values()))
+        self.dofs: list[int] = []
+        self.motor_dofs: list[int] = []
+        joints = {j.attrib["name"]: j for j in ET.parse(urdf).findall("joint")}
+        self.driven = [i for i, name in enumerate(self.names) if joints[name].find("mimic") is None]
+        self.kp, self.kv, self.effort = [], [], []
+        for i in self.driven:
+            name = self.names[i]
+            if name.startswith("tn__LegWaist"):
+                gains = (30000.0, 1500.0, 500.0)
+            elif name.startswith(("tn__LeftArm", "tn__RightArm")):
+                gains = (8000.0, 200.0, 120.0)
+            elif name in {"left_hand_narrow1_joint", "right_hand_narrow1_joint"}:
+                gains = (120.0, 5.0, 16.5)
+            else:
+                raise ValueError(f"No MOZ1 simulation posture gains for {name}")
+            if joints[name].get("type") != "revolute":
+                raise ValueError(f"Expected revolute MOZ1 posture joint: {name}")
+            self.kp.append(gains[0])
+            self.kv.append(gains[1])
+            self.effort.append(gains[2])
+        for name, value in targets.items():
+            limit = joints[name].find("limit")
+            if not math.isfinite(value) or (
+                limit is not None and not float(limit.get("lower", "-inf")) <= value <= float(limit.get("upper", "inf"))
+            ):
+                raise ValueError(f"MOZ1 initial posture outside joint limits: {name}")
+
+    def build(self) -> None:
+        self.dofs = [self.entity.get_joint(name).dofs_idx_local[0] for name in self.names]
+        self.motor_dofs = [self.dofs[i] for i in self.driven]
+        # Initialization only, before the first physical step. No pose writes in
+        # motion/stop/reset: subsequent holding is entirely through motor forces.
+        self.entity.set_dofs_position(self.target, self.dofs)
+        self.entity.set_dofs_kp(np.zeros(len(self.dofs)), self.dofs)
+        self.entity.set_dofs_kv(np.zeros(len(self.dofs)), self.dofs)
+        self.entity.set_dofs_force_range(np.zeros(len(self.dofs)), np.zeros(len(self.dofs)), self.dofs)
+        self.entity.set_dofs_kp(self.kp, self.motor_dofs)
+        self.entity.set_dofs_kv(self.kv, self.motor_dofs)
+        self.entity.set_dofs_force_range(-np.asarray(self.effort), self.effort, self.motor_dofs)
+        self.hold()
+
+    def hold(self) -> None:
+        """Restore the original motor target after a physical checkpoint reset."""
+        self.entity.control_dofs_position(self.target[self.driven], self.motor_dofs)
+
+    def snapshot(self) -> dict:
+        position = self.entity.get_dofs_position(self.dofs)[0].cpu().numpy()
+        velocity = self.entity.get_dofs_velocity(self.dofs)[0].cpu().numpy()
+        error = position - self.target
+        return {
+            "mode": "position_hold",
+            "parameter_source": "simulation_tuning_not_hardware_limits",
+            "joint_names": self.names,
+            "target_rad": self.target.tolist(),
+            "position_rad": position.tolist(),
+            "error_rad": error.tolist(),
+            "velocity_rad_s": velocity.tolist(),
+            "max_abs_error_rad": float(np.max(np.abs(error))),
+            "max_abs_velocity_rad_s": float(np.max(np.abs(velocity))),
+            "motor_joint_names": [self.names[i] for i in self.driven],
+            "kp_nm_rad": self.kp,
+            "kv_nm_s_rad": self.kv,
+            "force_limit_nm": self.effort,
+            "mimic_followers": len(self.names) - len(self.driven),
+        }
 
 
 class Moz1Base:
@@ -184,7 +252,7 @@ class Moz1Base:
 
         self.layout = OmniWheelLayout.from_urdf(source)
         self.path = directory / "moz1-mobile.urdf"
-        prepare_mobile_urdf(source, self.path, self.layout)
+        targets = prepare_mobile_urdf(source, self.path, self.layout)
         self.source, self.name, self.render_urdf = source, name, render_urdf
         self.entity = scene.add_entity(
             morph=gs.morphs.URDF(
@@ -203,6 +271,7 @@ class Moz1Base:
         self.wheels: list[int] | range = []
         self._wheel_hold: Any = None
         self._velocity_target: tuple[float, float, float] | None = None
+        self.upper_body = UpperBodyHold(self.entity, self.path, targets)
 
     def build(self) -> None:
         self.wheels = [self.entity.get_joint(name).dofs_idx_local[0] for name in WHEEL_NAMES]
@@ -214,6 +283,7 @@ class Moz1Base:
         self.entity.set_dofs_kp([2000.0] * 4, self.wheels)
         self.entity.set_dofs_kv([50.0] * 4, self.wheels)
         self.entity.set_dofs_force_range([-80.0] * 4, [80.0] * 4, self.wheels)
+        self.upper_body.build()
         self.stop()
 
     @property
@@ -261,16 +331,39 @@ class Moz1Base:
                 self._velocity_target = self.twist
             self.remaining_s = max(0.0, self.remaining_s - dt)
 
+    def reset_controller(self) -> None:
+        """Restore wheel parking and upper-body targets after a checkpoint."""
+        self._wheel_hold = self._velocity_target = None
+        self.stop()
+        self.upper_body.hold()
+
+    def collision_settings(self) -> dict[str, bool]:
+        """Read actual solver flags, including Genesis' default pair exclusions."""
+        solver = self.entity.solver
+        # Pinned Genesis 1.4.4 exposes no public accessor for these solver flags.
+        # Read the live flags, not a copy of the requested scene options.
+        # pylint: disable=protected-access
+        return {
+            "enabled": bool(solver._enable_collision),  # noqa: SLF001 -- pinned SDK readback
+            "self_collision": bool(solver._enable_self_collision),  # noqa: SLF001 -- pinned SDK readback
+            "adjacent_collision": bool(solver._enable_adjacent_collision),  # noqa: SLF001 -- pinned SDK readback
+            "neutral_collision": bool(solver._enable_neutral_collision),  # noqa: SLF001 -- pinned SDK readback
+        }
+        # pylint: enable=protected-access
+
     def snapshot(self) -> dict:
+        collisions = self.collision_settings()
         return {
             "name": self.name,
             "source_format": "URDF",
             "urdf": str(self.source),
             "fixed_base": False,
             "control_mode": "wheel_velocity_physics",
-            "collision": True,
-            "self_collision": False,
-            "upper_body": "locked_inspection_posture",
+            "collision": collisions["enabled"],
+            "self_collision": collisions["self_collision"],
+            "collision_settings": collisions,
+            "upper_body": "position_hold",
+            "upper_body_state": self.upper_body.snapshot(),
             "planning_connected": False,
             "wheel_radius_m": self.layout.radius_m,
             "base_position_m": self.entity.get_pos()[0].cpu().tolist(),

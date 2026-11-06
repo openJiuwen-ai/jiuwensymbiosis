@@ -1,8 +1,9 @@
-"""GUI-owned standalone process; the rendering interpreter never imports the agent."""
+"""Owned GPU process; the rendering interpreter never imports the agent."""
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -41,6 +42,7 @@ _WORKER_ENV_KEYS = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
+        "JIUWENSYMBIOSIS_GENESIS_SCENE_CACHE",
         "LD_LIBRARY_PATH",
         "CUDA_HOME",
         "CUDA_PATH",
@@ -91,7 +93,7 @@ def _worker_environment() -> dict[str, str]:
 
 
 class GenesisPreview:
-    """One preview scene per GUI process, surviving video reconnects until stopped."""
+    """One physical world owned by a host (normally the per-user resident service)."""
 
     def __init__(self, *, state_dir: Path | None = None, settings: PreviewSettings | None = None) -> None:
         self.settings = settings or PreviewSettings()
@@ -113,6 +115,8 @@ class GenesisPreview:
         self._pick_request: dict[str, Any] | None = None
         self._base_request: dict[str, Any] | None = None
         self._capture_request: dict[str, Any] | None = None
+        self._scene_query: dict[str, Any] | None = None
+        self._reset_request: dict[str, Any] | None = None
         self._motion_owner: str | None = None
         self._motion_cancelled = False
         self._motion_request: dict[str, Any] | None = None
@@ -153,12 +157,33 @@ class GenesisPreview:
                 "settings": asdict(self.settings),
                 "requested_settings": asdict(self._requested_settings),
                 "requested_config_revision": self._config_revision,
+                "stream_epoch": self._stream_epoch,
                 "log_path": str(self.state_dir / "worker.log"),
                 "pid": self._process.pid if self._process is not None else None,
                 "requested_camera": self._camera.snapshot(),
             }
             if self._frame is not None:
                 result["frame_age_ms"] = round((time.monotonic() - self._frame["captured_at"]) * 1000, 1)
+            loading = result.get("loading")
+            if loading and loading["state"] == "running":
+                result["loading"] = {
+                    **loading,
+                    "total_ms": (time.monotonic() - loading["started_at"]) * 1000,
+                    "phase_elapsed_ms": (time.monotonic() - (loading["phase_started_at"] or loading["started_at"]))
+                    * 1000,
+                }
+            if self._reset_request:
+                reset_result = result.get("reset_result") or {}
+                completed = reset_result.get("id") == self._reset_request["id"] and reset_result.get("complete")
+                if completed:
+                    # Keep the result for the waiting caller, but release the
+                    # request even when the worker rejected this reset.
+                    self._reset_request = None
+                    self._send_control()
+                elif result.get("state") != "failed":
+                    # A host timeout does not cancel or confirm the worker's
+                    # reset. Keep new work isolated until its terminal reply.
+                    result.update(state="resetting", message="正在复位当前世界…")
             if (
                 self._switch_started
                 and self._observed_revision != self._config_revision
@@ -223,6 +248,8 @@ class GenesisPreview:
 
     def latest_frame(self) -> dict[str, Any] | None:
         with self._lock:
+            if self._reset_request and self.status()["state"] != "ready":
+                return None
             if self._mailbox is not None:
                 sample = self._mailbox.read_frame(self._frame["sequence"] if self._frame else -1)
                 if (
@@ -239,7 +266,12 @@ class GenesisPreview:
                 self._mailbox.acknowledge(sequence)
 
     def capture_image(
-        self, camera_name: str = "observer", *, cancelled: threading.Event | None = None
+        self,
+        camera_name: str = "observer",
+        *,
+        cancelled: threading.Event | None = None,
+        include_depth: bool = False,
+        depth_stride: int = 8,
     ) -> dict[str, Any]:
         """Capture a named camera JPEG and calibration, independently of video.
 
@@ -248,6 +280,11 @@ class GenesisPreview:
         """
         request_id = uuid.uuid4().hex
         path = self.state_dir / f"capture-{request_id}.jpg"
+        depth_path = self.state_dir / f"capture-{request_id}.npz"
+        if include_depth and camera_name == "observer":
+            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
+        if include_depth and (type(depth_stride) is not int or not 4 <= depth_stride <= 32):
+            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
         with self._lock:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("相机采样已取消。")
@@ -270,6 +307,8 @@ class GenesisPreview:
             request = {
                 "id": request_id,
                 **binding,
+                "include_depth": include_depth,
+                "depth_stride": depth_stride,
                 "expires_at": time.monotonic() + 12,
             }
             self._capture_request = request
@@ -296,7 +335,21 @@ class GenesisPreview:
                             or time.monotonic() - result.get("captured_at", 0) > 2
                         ):
                             raise RuntimeError("相机采样已过期，请重新识别。")
-                        return {**result, "jpeg": path.read_bytes()}
+                        observation = {**result, "jpeg": path.read_bytes()}
+                        if include_depth:
+                            import numpy as np
+
+                            if depth_path.stat().st_size > 32 * 1024 * 1024:
+                                raise ValueError("RGB-D payload exceeds the capture budget")
+                            with np.load(depth_path, allow_pickle=False) as arrays:
+                                rgb, depth = arrays["rgb"], arrays["depth_m"]
+                            shape = (result["height"], result["width"])
+                            shape_invalid = rgb.shape != (*shape, 3) or depth.shape != shape
+                            dtype_invalid = rgb.dtype != np.uint8 or depth.dtype != np.float32
+                            if shape_invalid or dtype_invalid:
+                                raise ValueError("RGB-D payload shape or dtype mismatch")
+                            observation.update(rgb=rgb, depth_m=depth)
+                        return observation
                 time.sleep(0.02)
             raise RuntimeError("相机采样超时，请检查 Genesis 后台。")
         finally:
@@ -305,11 +358,73 @@ class GenesisPreview:
                     self._capture_request = None
                     self._send_control()
             path.unlink(missing_ok=True)
+            depth_path.unlink(missing_ok=True)
 
     def request_keyframe(self) -> None:
         with self._lock:
             self._keyframe_request += 1
             self._send_control()
+
+    def query_scene(
+        self, operation: str, params: dict | None = None, *, cancelled: threading.Event | None = None
+    ) -> dict:
+        """Read a worker-step snapshot without acquiring or changing motion ownership."""
+        if len(json.dumps(params or {}, allow_nan=False).encode()) > 2048:
+            raise ValueError("Scene query parameters exceed the bounded request budget")
+        request_id = uuid.uuid4().hex
+        path = self.state_dir / f"query-{request_id}.json"
+        with self._lock:
+            state = self.status()
+            if state["state"] != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
+                raise RuntimeError("Genesis scene is unavailable or stale")
+            if self._scene_query is not None:
+                raise RuntimeError("A scene query is already running")
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("任务已取消。")
+            request = {
+                "id": request_id,
+                "operation": operation,
+                "params": params or {},
+                "scene_instance_id": state["scene"]["instance_id"],
+                "config_revision": self._config_revision,
+                "expires_at": time.monotonic() + 60,
+            }
+            self._scene_query = request
+            try:
+                self._send_control()
+            except Exception:
+                self._scene_query = None
+                raise
+        try:
+            while time.monotonic() < request["expires_at"]:
+                with self._lock:
+                    state = self.status()
+                    if cancelled is not None and cancelled.is_set():
+                        raise RuntimeError("任务已取消。")
+                    if (
+                        state["state"] != "ready"
+                        or self._config_revision != request["config_revision"]
+                        or state.get("scene", {}).get("instance_id") != request["scene_instance_id"]
+                    ):
+                        raise RuntimeError("Scene changed during query")
+                    result = state.get("scene_query_result", {})
+                    if result.get("id") == request_id:
+                        if result.get("error"):
+                            raise ValueError(result["error"])
+                        data = json.loads(path.read_text())
+                        if not isinstance(data, dict):
+                            raise RuntimeError("Invalid scene query response")
+                        if data["scene_instance_id"] != request["scene_instance_id"]:
+                            raise RuntimeError("Scene query binding mismatch")
+                        return data
+                time.sleep(0.02)
+            raise TimeoutError("Scene query timed out")
+        finally:
+            with self._lock:
+                if self._scene_query is request:
+                    self._scene_query = None
+                    self._send_control()
+            path.unlink(missing_ok=True)
 
     def configure(
         self,
@@ -325,7 +440,7 @@ class GenesisPreview:
     ) -> dict:
         with self._lock:
             state = self.status()["state"]
-            if state in {"starting", "reconfiguring"}:
+            if state in {"starting", "reconfiguring", "resetting"}:
                 raise RuntimeError("后台正在启动或切换，请稍后再试。")
             if scene_id != "demo":
                 scene_path(scene_id)
@@ -355,6 +470,8 @@ class GenesisPreview:
             )
             if settings == self.settings:
                 return self.status()
+            if self._motion_owner is not None:
+                raise RuntimeError("运动任务持有控制权，请先结束任务再切换配置。")
             self._base_request = None
             if self._process is not None and self._process.poll() is None:
                 if state != "ready":
@@ -367,6 +484,37 @@ class GenesisPreview:
             else:
                 self.settings = self._requested_settings = settings
             return self.status()
+
+    def reset_scene(self) -> dict:
+        """Reset only an idle world; success requires a fresh frame from the restored state."""
+        with self._lock:
+            state = self.status()
+            if state["state"] != "ready":
+                raise RuntimeError("当前世界尚未就绪。")
+            if self._motion_owner or self._capture_request or self._scene_query:
+                raise RuntimeError("当前有任务或感知请求，请结束后再复位。")
+            request_id = uuid.uuid4().hex
+            self._reset_request = {
+                "id": request_id,
+                "scene_instance_id": state["scene"]["instance_id"],
+                "config_revision": self._config_revision,
+            }
+            self._frame = self._base_request = self._pick_request = None
+            self._stream_epoch += 1
+            self._keyframe_request += 1
+            self._send_control()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            state = self.status()
+            result = state.get("reset_result") or {}
+            if result.get("id") == request_id and result.get("complete"):
+                if result.get("error"):
+                    raise RuntimeError(result["error"])
+                return state
+            if state["state"] in {"failed", "stopped"}:
+                raise RuntimeError(state["message"])
+            time.sleep(0.02)
+        raise TimeoutError("世界复位未确认完成，请检查后台状态；不会自动重试。")
 
     def set_streaming(self, enabled: bool) -> None:
         with self._lock:
@@ -626,6 +774,8 @@ class GenesisPreview:
                     "base_command": self._base_request,
                     "base_motion": self._motion_request,
                     "capture": self._capture_request,
+                    "scene_query": self._scene_query,
+                    "reset": self._reset_request,
                 }
             )
 
@@ -652,7 +802,12 @@ class GenesisPreview:
             self._state = {"state": "stopped", "message": "Genesis 后台未运行"}
             self._motion_owner = self._motion_request = self._motion_binding = None
             self._motion_cancelled = False
+            self._reset_request = None
             return self.status()
+
+    def close(self) -> dict:
+        """A direct host owns its process; ResidentPreview.close only detaches a GUI."""
+        return self.stop()
 
     def _release_mailbox(self) -> None:
         if self._mailbox is not None:

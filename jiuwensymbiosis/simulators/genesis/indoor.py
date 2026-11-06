@@ -6,6 +6,7 @@ units and up-axis before convex decomposition, so rooms are never one hull.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -158,9 +159,12 @@ def supported_spawn(meshes: list[RoomMesh], *, radius: float = 0.42, height: flo
 class IndoorCollision:
     """Own fixed collision-only entities plus source-prim contact attribution."""
 
-    def __init__(self, scene, meshes: list[RoomMesh], directory: Path):
+    def __init__(
+        self, scene, meshes: list[RoomMesh], directory: Path, *, progress: Callable[[int, int], None] | None = None
+    ):
         import genesis as gs
 
+        self.meshes = meshes
         self.entities = []
         self.paths = {}
         floor_limit = min(item.mesh.bounds[0, 2] for item in meshes) + 0.5
@@ -188,6 +192,19 @@ class IndoorCollision:
             )
             self.entities.append(entity)
             self.paths[entity] = item.path
+            if progress is not None:
+                progress(index + 1, len(meshes))
+
+    @classmethod
+    def from_prepared(cls, scene, meshes: list[RoomMesh]) -> IndoorCollision:
+        """Bind a room-only, unbuilt .gscene to the cached source meshes."""
+        if scene.is_built or not meshes or len(scene.entities) != len(meshes):
+            raise ValueError("Prepared room must contain exactly its unbuilt collision entities")
+        room = cls.__new__(cls)
+        room.meshes = meshes
+        room.entities = list(scene.entities)
+        room.paths = {entity: mesh.path for entity, mesh in zip(room.entities, meshes, strict=True)}
+        return room
 
     def contacts(self, robot) -> dict:
         contacts = robot.entity.get_contacts(exclude_self_contact=True)

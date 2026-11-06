@@ -47,6 +47,8 @@ class SceneRenderer:
         self.cameras = cameras or {}
         self._links = {name: robot.get_link(camera.link_name) for name, camera in self.cameras.items()}
         self._grids = {}
+        self._rectified_grids = {}
+        self._projection = {}
         self._camera_indices = {"observer": 0}
         self.last_camera: dict = {}
         self.render_counts = dict.fromkeys(("observer", *self.cameras), 0)
@@ -71,9 +73,25 @@ class SceneRenderer:
         }
         camera_defs = [camera]
         for name, sensor in self.cameras.items():
+            from importlib.metadata import version
+
             import torch
+            from rgbd import effective_focal, rectified_grid
 
             size, sensor_fov, grid = sensor.render_map()
+            nyx_version, plugin_version = version("gs-nyx"), version("gs-nyx-plugin")
+            actual_focal = effective_focal(size, sensor_fov, nyx_version, plugin_version)
+            nominal_focal = size[1] / (2 * math.tan(math.radians(sensor_fov) / 2))
+            grid = grid * (actual_focal / nominal_focal)
+            self._rectified_grids[name] = torch.as_tensor(
+                rectified_grid(sensor, size, actual_focal), device="cuda"
+            ).unsqueeze(0)
+            self._projection[name] = {
+                "nyx_version": nyx_version,
+                "plugin_version": plugin_version,
+                "native_focal_px": actual_focal,
+                "projection_correction": "validated_fov_radians_float16",
+            }
             sensor_pose = sensor.pose(self._links[name])
             profile.set_fov_y(math.radians(sensor_fov))
             sensor_profile = str(directory / f"camera-{len(camera_defs)}.json")
@@ -196,7 +214,7 @@ class SceneRenderer:
         self._renderer.update_camera_tensor(self._camera_indices[name], pose["pos"], pose["lookat"], pose["up"])
         self.last_camera = {**sensor.metadata(), **pose}
 
-    def read_rgb(self, camera_name: str = "observer"):
+    def read_rgb(self, camera_name: str = "observer", *, rectified: bool = False):
         if camera_name not in self._camera_indices:
             raise ValueError(f"当前场景没有相机：{camera_name}")
         if camera_name != "observer":
@@ -218,11 +236,39 @@ class SceneRenderer:
         from torch.nn.functional import grid_sample
 
         image = rgb.permute(2, 0, 1).unsqueeze(0).float()
-        warped = grid_sample(image, self._grids[camera_name], align_corners=False)
+        grid = self._rectified_grids[camera_name] if rectified else self._grids[camera_name]
+        warped = grid_sample(image, grid, align_corners=False)
+        self.last_camera.update(self._projection[camera_name])
+        if rectified:
+            self.last_camera.update(D=[0.0] * 5, distortion_model="rectified_pinhole")
         return warped[0].permute(1, 2, 0).round().clamp_(0, 255).to(rgb.dtype).contiguous()
+
+    def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None):
+        """One state, one calibrated rectified RGB image and optical-Z depth map."""
+        import numpy as np
+        from rgbd import sample_depth
+
+        if camera_name not in self.cameras:
+            raise ValueError("RGB-D requires a calibrated robot camera")
+        check()
+        rgb = self.read_rgb(camera_name, rectified=True).cpu().numpy().copy()
+        # gs-nyx-plugin 0.1.9 has no public accessor for the native depth ray API.
+        # Keep this bridge explicit; an incompatible SDK must fail, not invent depth.
+        # pylint: disable=protected-access
+        depth = sample_depth(
+            self._renderer._renderer,  # noqa: SLF001 -- pinned native bridge
+            self.cameras[camera_name],
+            np.asarray(self.last_camera["T_world_camera"]),
+            stride=stride,
+            check=check,
+        )
+        # pylint: enable=protected-access
+        self.last_camera.update(depth_type="optical_z", depth_unit="m", depth_sampling_stride=stride)
+        return rgb, depth
 
     def close(self):
         if self._renderer is not None:
             self._renderer.destroy()
             self._renderer = None
         self._grids.clear()
+        self._rectified_grids.clear()

@@ -47,6 +47,8 @@ def test_completion_requires_physical_stop_not_zero_command(controller):
     for i in range(13):
         motion.tick(0.05, 20 + i)
     assert motion.result["ok"] and motion.result["settled"]
+    assert motion.result["stop_confirmation"] == "measured"
+    assert motion.result["stable_duration_s"] >= 0.6
     assert motion.result["after"]["position_m"][1] == 0.3
     assert motion.result["end_step"] > motion.result["start_step"]
 
