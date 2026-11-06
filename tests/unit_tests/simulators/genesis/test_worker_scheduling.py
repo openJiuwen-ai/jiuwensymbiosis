@@ -12,6 +12,7 @@ import pytest
 
 from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
 from jiuwensymbiosis.simulators.genesis.scheduling import PhysicsClock
+from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
 
 
 @pytest.fixture
@@ -112,13 +113,12 @@ def worker_loop(monkeypatch, tmp_path):
     module("ipc", Mailbox=object)
     module("scene_catalog", resolve_scene=lambda _: None, validate_material_bundle=lambda _: None)
     module("scene_runtime", RuntimeScene=lambda *a, **kw: runtime)
-    from jiuwensymbiosis.simulators.genesis import startup_diagnostics
-
-    monkeypatch.setitem(sys.modules, "startup_diagnostics", startup_diagnostics)
     module("quadrants")
     module("scheduling", PhysicsClock=lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
+    module("startup_diagnostics", StartupDiagnostics=lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
     module("usd_scene", prepare_static_stage=lambda *a: None)
     module("genesis", cuda=object(), init=lambda **kw: None, destroy=lambda: None)
+    module("quadrants")  # Optional cfg diagnostics report unavailable; never load the real SDK.
     sdk = module("gs_nyx.nyx_py_sdk", startup=lambda: None, shutdown=lambda: None)
     module("gs_nyx", nyx_py_sdk=sdk)
     module("torch", cuda=SimpleNamespace(current_stream=lambda: SimpleNamespace(synchronize=lambda: None)))
@@ -144,6 +144,10 @@ def test_invalid_capture_is_rejected_while_physics_blocks_render(worker_loop):
     state.run()
 
     assert state.renders == 0
+    waiting = [status for status in state.statuses if status.get("rendered_frames") == 0]
+    assert waiting and all(status["state"] == "starting" for status in waiting)
+    assert all(status["loading"]["state"] == "running" for status in waiting)
+    assert all("已就绪" not in status["message"] for status in waiting)
     assert state.statuses[-1]["capture_result"] == {"id": "test", "error": "capture_failed"}
 
 
