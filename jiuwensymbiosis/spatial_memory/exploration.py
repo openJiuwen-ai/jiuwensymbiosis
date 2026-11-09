@@ -34,6 +34,7 @@ class OnlineMap:
         self.observed_views: set[tuple[int, ...]] = set()
         self.version = 0
         self.last_new = 0
+        self.ground_level: float | None = None
 
     def integrate(self, rgb: np.ndarray, depth: np.ndarray, k: np.ndarray, pose: np.ndarray) -> None:
         v, u = np.mgrid[0 : depth.shape[0] : 4, 0 : depth.shape[1] : 4]
@@ -42,6 +43,13 @@ class OnlineMap:
         u, v, z = u[ok], v[ok], z[ok]
         camera = np.column_stack([(u - k[0, 2]) * z / k[0, 0], (v - k[1, 2]) * z / k[1, 1], z])
         world = camera @ pose[:3, :3].T + pose[:3, 3]
+        # A low, broad horizontal return is a projection reference, not proof
+        # of traversable support. The execution port still checks the whole body.
+        if self.ground_level is None and len(world) >= 50:
+            level = float(np.quantile(world[:, 2], 0.05))
+            plane = world[np.abs(world[:, 2] - level) < 0.03]
+            if len(plane) >= 50 and np.all(np.ptp(plane[:, :2], axis=0) > 0.5) and level < pose[2, 3] - 0.7:
+                self.ground_level = float(np.median(plane[:, 2]))
         colors = rgb[v, u]
         origin = pose[:3, 3]
         hit = np.floor(world / RES).astype(np.int32)
@@ -81,13 +89,26 @@ class OnlineMap:
             (round(float(pose[0, 3]) / 0.3), round(float(pose[1, 3]) / 0.3), round(yaw / math.radians(30)))
         )
 
-    def navigation(self, pose: np.ndarray) -> tuple:
+    def navigation(self, pose: np.ndarray, *, observed_projection: bool = True) -> tuple:
         center = tuple(np.floor(pose[:2, 3] / RES).astype(int))
         height = int(math.floor(pose[2, 3] / RES))
         levels = (height - 1, height, height + 1)
         layers = [{(x, y) for x, y, z in self.free if z == level} for level in levels]
         free = set.intersection(*layers)
         occupied = {(x, y) for x, y, z in self.occupied if z in levels}
+        if observed_projection and self.ground_level is not None:
+            # Downward-looking cameras see the floor ahead, not a horizontal
+            # corridor at eye height. Project observed ray columns for candidate
+            # generation only; unknown support/overhangs require independent admission.
+            low = self.ground_level + 0.08
+            high = pose[2, 3] + 0.2
+            free = {(x, y) for x, y, z in self.free if low < (z + 0.5) * RES < high}
+            occupied = {(x, y) for x, y, z in self.occupied if low < (z + 0.5) * RES < high}
+            # Current physical camera/base proxy, including self returns below
+            # the camera. This is not a clearance envelope for the full robot.
+            current = {(center[0] + x, center[1] + y) for x in range(-2, 3) for y in range(-2, 3) if x * x + y * y <= 4}
+            free.update(current)
+            occupied -= current
         free -= occupied
         # Nine-cell square conservatively covers the horizontal camera envelope.
         # conservatism. All required cells must have observed free evidence.
@@ -209,7 +230,7 @@ class OnlineMap:
                 index = farthest
             route_xy = smooth
             heading = math.atan2(unknown[1] - route[-1][1], unknown[0] - route[-1][0])
-            add("advance", target, heading, route_xy, "approach online frontier through observed free camera volume")
+            add("advance", target, heading, route_xy, "approach an observed-ray frontier; full-body admission required")
             full_target = (np.array(goal) + 0.5) * RES
             downstream = self.expected_gain(full_target, heading, free, occupied)
             choices[-1].update(
@@ -301,6 +322,8 @@ class OnlineMap:
             "surface_voxels": len(self.surface),
             "new_surface_voxels": self.last_new,
             "map_version": self.version,
+            "candidate_geometry": "observed_ray_projection" if self.ground_level is not None else "camera_height_slice",
+            "projection_reference_z_m": self.ground_level,
         }
 
     def record_choice(self, choice: dict) -> None:

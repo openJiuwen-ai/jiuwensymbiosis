@@ -92,7 +92,8 @@ def run_scan(port: ScanPort, detector: Detector, output: Path, *, budget: ScanBu
                 )
                 gains.append(online.last_new)
                 choices, stats = online.candidates(observation.map_from_camera, memory.get_view_tasks())
-                center, _, free, occupied = online.navigation(observation.map_from_camera)
+                # Candidate projection cannot certify complete geometric coverage.
+                center, _, free, occupied = online.navigation(observation.map_from_camera, observed_projection=False)
                 scope = observed_scope(center, free, occupied)
                 if (
                     len(names) >= budget.max_frames
@@ -107,7 +108,9 @@ def run_scan(port: ScanPort, detector: Detector, output: Path, *, budget: ScanBu
                     reason = "no_candidates"
                     break
                 # A rejection is evidence about executability, not about coverage.
-                for choice in sorted(choices, key=lambda c: -c["utility"]):
+                # Known, localizable memory gaps must not starve behind frontier
+                # gain. A refused revisit still falls through to other choices.
+                for choice in sorted(choices, key=lambda c: (c["kind"] != "reobserve", -c["utility"])):
                     if time.monotonic() - started >= budget.max_seconds:
                         budget_ended = True
                         break

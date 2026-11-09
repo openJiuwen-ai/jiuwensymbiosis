@@ -112,3 +112,25 @@ def test_new_evidence_invalidates_prior_scan_assessment(tmp_path):
 def test_invalid_frame_budget(value):
     with pytest.raises(ValueError):
         ScanBudget(max_frames=value)
+
+
+@pytest.mark.parametrize("refuse_revisit", [False, True])
+def test_available_revisit_is_attempted_before_more_frontier_gain(tmp_path, monkeypatch, refuse_revisit):
+    from jiuwensymbiosis.spatial_memory.exploration import OnlineMap
+
+    choices = [
+        {"kind": "advance", "utility": 10.0, "signature": [0, 0, 0]},
+        {"kind": "reobserve", "utility": 0.1, "signature": [0, 1, 0], "memory_task_id": "observed-gap"},
+    ]
+    monkeypatch.setattr(OnlineMap, "candidates", lambda *_: (choices, {"frontier_cells": 5}))
+    attempted = []
+
+    class RecordingPort(Port):
+        def execute(self, choice, observation):
+            attempted.append(choice["kind"])
+            executed = not (refuse_revisit and choice["kind"] == "reobserve")
+            return {"ok": executed, "motion_executed": executed, "stopped": True}
+
+    result = run_scan(RecordingPort(), Detector(), tmp_path / "scan", budget=ScanBudget(max_frames=2))
+    assert attempted == (["reobserve", "advance"] if refuse_revisit else ["reobserve"])
+    assert result["executed_actions"] == 1

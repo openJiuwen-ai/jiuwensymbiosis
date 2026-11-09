@@ -287,29 +287,25 @@ class EntityRegistry:
 
     def _plan(self, snapshot, params):
         if __package__:
-            from .navigation import NavigationMap
+            from .navigation import NavigationMap, whole_body_envelope
         else:
-            from navigation import NavigationMap
+            from navigation import NavigationMap, whole_body_envelope
         robot, runtime = snapshot["robot"], self.runtime
         if robot is None:
             raise ValueError("mobile_robot_state_unavailable")
         if self.navigation_map is None:
-            # Enclose the current locked upper body through every heading.
-            low, high = np.asarray(runtime.robot.bounds)
-            pos = np.asarray(robot["position_m"])
-            radius = (
-                max(0.42, max(math.hypot(x - pos[0], y - pos[1]) for x in (low[0], high[0]) for y in (low[1], high[1])))
-                + 0.05
-            )
+            self.navigation_map = getattr(runtime, "navigation_map", None)
+        if self.navigation_map is None:
+            floor_z = runtime.info.get("spawn_ground_m", [0, 0, 0])[2]
+            envelope = whole_body_envelope(runtime.robot.bounds, robot["position_m"], floor_z)
             if runtime.indoor is not None:
                 self.navigation_map = NavigationMap.from_meshes(
                     runtime.indoor.meshes,
-                    floor_z=runtime.info["spawn_ground_m"][2],
-                    radius=radius,
-                    height=float(high[2] - runtime.info["spawn_ground_m"][2]) + 0.05,
+                    floor_z=floor_z,
+                    **envelope,
                 )
             else:
-                self.navigation_map = NavigationMap.plane(robot["position_m"][:2], radius=radius)
+                self.navigation_map = NavigationMap.plane(robot["position_m"][:2], radius=envelope["radius"])
         entity_id = params.get("entity_id")
         if entity_id:
             entity = snapshot["entities"].get(entity_id)

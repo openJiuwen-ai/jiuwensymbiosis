@@ -79,6 +79,38 @@ def _paint_obstacles(mask, origin, resolution, triangles):
         _paint(mask, origin, resolution, triangle, padding)
 
 
+def whole_body_envelope(bounds: ArrayLike, position: ArrayLike, floor_z: float) -> dict[str, float]:
+    """One conservative rotating-body envelope for spawn and motion admission."""
+    box, pos = np.asarray(bounds, dtype=float), np.asarray(position, dtype=float)
+    if box.shape != (2, 3) or pos.shape != (3,) or not np.isfinite(box).all() or not np.isfinite(pos).all():
+        raise ValueError("invalid_navigation_body_bounds")
+    if not math.isfinite(floor_z) or np.any(box[1] < box[0]) or box[1, 2] <= floor_z:
+        raise ValueError("invalid_navigation_body_bounds")
+    radius = max(0.42, max(math.hypot(x - pos[0], y - pos[1]) for x in box[:, 0] for y in box[:, 1])) + 0.05
+    return {"radius": radius, "height": float(box[1, 2] - floor_z) + 0.05}
+
+
+def admit_spawn(meshes: Sequence[Any], bounds: ArrayLike, position: ArrayLike, floor_z: float) -> tuple:
+    """Admit a provisional placement after the actual locked posture is built.
+
+    Relocation is exclusively a pre-publication initialization operation, never
+    a navigation action. Return the same map that subsequent execution consumes.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    envelope = whole_body_envelope(bounds, position, floor_z)
+    grid = NavigationMap.from_meshes(meshes, floor_z=floor_z, **envelope)
+    xy = np.asarray(position, dtype=float)[:2]
+    if not grid.clear(xy):
+        if not grid.free.any():
+            raise ValueError("no_supported_mobile_spawn")
+        clearance = distance_transform_edt(grid.free)
+        cells = np.argwhere(clearance == clearance.max())
+        points = grid.origin + (cells[:, ::-1] + 0.5) * grid.resolution
+        xy = points[np.argmin(np.linalg.norm(points - xy, axis=1))]
+    return (float(xy[0]), float(xy[1]), float(floor_z)), grid, envelope
+
+
 @dataclass
 class NavigationMap:
     origin: np.ndarray
