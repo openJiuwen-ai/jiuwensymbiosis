@@ -62,6 +62,13 @@ Api binds the actions the body supports from the shared vocabulary with `@implem
 
 ```python
 class MyApi(BaseRobotApi):
+    # Mandatory when the end effector has no measured channel: under fastagent a
+    # successful command does not establish payload.held and unknown evidence fails
+    # closed (see the grasp-evidence section of the adapter reference). A body with
+    # a feedback channel implements is_grasp_confirmed or returns
+    # grasp_confirmed/contact fields instead.
+    trust_command_grasp = True
+
     @implements(GOTO_XYZR)
     def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
                   *, orientation_policy: str = "top_down") -> None:

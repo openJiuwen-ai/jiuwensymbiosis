@@ -11,11 +11,16 @@ base-frame coordinates taken from a standpoint the body has left — and drives 
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from jiuwensymbiosis.agent.fast.runner import direct_executor
 from jiuwensymbiosis.api.actions import APPROACH_FOR_GRASP, LOCATE_FOR_GRASP, NAVIGATE_RELATIVE, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.tools.robot_control_tool import record_action
+from jiuwensymbiosis.tools.builder import build_robot_tools
+from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, begin_action, record_action
 
 
 class CacheApi(BaseRobotApi):
@@ -29,6 +34,8 @@ class CacheApi(BaseRobotApi):
 
     @implements(NAVIGATE_RELATIVE)
     def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
+        if self.move_error:
+            raise RuntimeError("timeout after moving")
         return {"ok": self.move_ok}
 
     @implements(APPROACH_FOR_GRASP)
@@ -40,6 +47,7 @@ class CacheApi(BaseRobotApi):
         return fresh
 
     move_ok = True
+    move_error = False
 
 
 def _sensed_api() -> CacheApi:
@@ -61,12 +69,12 @@ class TestBaseMotionStalesBothStores:
         assert api.last_detection is None, "stale base-frame geometry survived a base move"
         assert api.last_surface is None
 
-    def test_a_failed_move_stales_nothing(self):
+    def test_a_failed_move_invalidates_both_stores(self):
         api = _sensed_api()
         api.move_ok = False
         record_action(api, api.navigate_relative, {"dx_m": 1.0}, api.navigate_relative(1.0))
-        assert api.memory.get("box") is not None
-        assert api.last_detection is not None
+        assert api.memory.get("box") is None
+        assert api.last_detection is None
 
 
 class TestProducingActionsKeepWhatTheyMeasured:
@@ -76,6 +84,42 @@ class TestProducingActionsKeepWhatTheyMeasured:
         assert api.last_detection is not None, "the reading the action just took was thrown away"
         assert api.last_detection["position"] == [200.0, 0.0, 50.0]
         assert api.memory.get("box") is not None
+
+    def test_begin_action_preserves_the_input_cache_for_producing_actions(self):
+        # Approach consumes the cached detection as its input (the real loops skip a
+        # full search when one is fresh); clearing it pre-dispatch would force a
+        # re-search on every approach. Failure clearing stays post-hoc.
+        api = _sensed_api()
+        begin_action(api, api.approach_for_grasp)
+        assert api.last_detection is not None, "approach lost the detection it consumes as input"
+
+    def test_begin_action_clears_the_cache_for_pure_motions(self):
+        api = _sensed_api()
+        begin_action(api, api.navigate_relative)
+        assert api.last_detection is None
+
+    async def test_approach_consumes_the_detection_locate_just_produced(self):
+        seen = {}
+
+        class ApproachingApi(CacheApi):
+            @implements(APPROACH_FOR_GRASP)
+            def approach_for_grasp(self, object_name="box", reference=None, relation="on"):
+                seen["input"] = self.last_detection
+                return {"ok": True}
+
+        api = ApproachingApi(MockArmEnv())
+        api.last_detection = {"ok": True, "position": [100.0, 0.0, 50.0]}
+        await RobotControlTool(api).invoke({"action": "approach_for_grasp", "params": {}})
+        assert seen["input"] is not None, "dispatch cleared the cache the approach consumes"
+
+
+def test_home_stales_sensed_positions_like_any_motion():
+    # Homing may move the body (a mobile base drives home), so positions sensed from a
+    # departed standpoint do not survive it — same rule as any other motion.
+    api = _sensed_api()
+    record_action(api, api.home, {}, None)
+    assert api.last_detection is None
+    assert api.memory.get("box") is None
 
 
 class TestEveryDispatchPathAgrees:
@@ -91,3 +135,44 @@ class TestEveryDispatchPathAgrees:
         run = direct_executor(api)
         run("locate_for_grasp", {"object_name": "box"})
         assert api.memory.get("box") is not None
+
+
+@pytest.mark.parametrize("strategy", ["direct", "dispatcher", "separate"])
+@pytest.mark.parametrize("raises", [False, True])
+async def test_failed_motion_invalidates_through_every_tool_strategy(strategy, raises):
+    api = _sensed_api()
+    api.move_ok = False
+    api.move_error = raises
+    if strategy == "direct":
+        direct_executor(api)("navigate_relative", {"dx_m": 0.4})
+    elif strategy == "dispatcher":
+        await RobotControlTool(api).invoke({"action": "navigate_relative", "params": {"dx_m": 0.4}})
+    else:
+        tool = next(t for t in build_robot_tools(api) if t.card.name == "navigate_relative")
+        try:
+            await tool.invoke({"dx_m": 0.4})
+        except RuntimeError:
+            pass
+    assert api.memory.latest() is None
+    assert api.last_detection is None
+
+
+async def test_cancelling_async_motion_drops_even_an_intermediate_reading():
+    started = asyncio.Event()
+
+    class AsyncApi(CacheApi):
+        @implements(APPROACH_FOR_GRASP)
+        async def approach_for_grasp(self, object_name="box", reference=None, relation="on"):
+            self.last_detection = {"ok": True, "position": [200, 0, 50]}
+            started.set()
+            await asyncio.Event().wait()
+
+    api = AsyncApi(MockArmEnv())
+    tool = RobotControlTool(api)
+    task = asyncio.create_task(tool.invoke({"action": "approach_for_grasp", "params": {}}))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert api.last_detection is None
+    assert api.memory.latest() is None

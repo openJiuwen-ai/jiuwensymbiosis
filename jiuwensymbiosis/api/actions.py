@@ -55,6 +55,7 @@ from jiuwensymbiosis.contracts import (
     ApproachFailure,
     ApproachResult,
     BasePoint,
+    CloseEffectorResult,
     GraspFailure,
     GraspResult,
     NavigationResult,
@@ -210,6 +211,9 @@ HOME = ActionSpec(
     capability=None,
     params=(),
     provides=("body.home",),
+    # Homing may move the body (a mobile base drives home), so positions sensed from a
+    # departed standpoint do not survive it — same rule as any other motion.
+    invalidates_locations=True,
     tags=("motion",),
 )
 # There is deliberately no second "home_safely" action. Safe homing is ONE thing a body
@@ -283,9 +287,13 @@ OPEN_GRIPPER = ActionSpec(
 CLOSE_GRIPPER = ActionSpec(
     name="close_gripper",
     description="Close the parallel gripper onto the target. Call it only once the tip is at the grasp "
-    "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
+    "pose. A successful close command alone does not establish payload.held: measured grasp confirmation "
+    "(grasp_confirmed / contact in the result, or the body's is_grasp_confirmed hook) is required — a body "
+    "with no measured channel must declare trust_command_grasp. force_n is a HINT: a gripper with no force "
+    "control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("force_n",),
+    result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
     tags=("grasp",),
@@ -293,9 +301,11 @@ CLOSE_GRIPPER = ActionSpec(
 
 ACTIVATE_SUCTION = ActionSpec(
     name="activate_suction",
-    description="Turn suction ON. Call it only once the tip is on/near the target.",
+    description="Turn suction ON. Call it only once the tip is on/near the target. A successful command "
+    "alone does not establish payload.held — the same measured-evidence rule as close_gripper applies.",
     capability="grasp.suction",
     params=(),
+    result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
     tags=("grasp",),

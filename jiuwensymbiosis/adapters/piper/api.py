@@ -87,6 +87,12 @@ class PiperApi(BaseRobotApi):
     or Piper vision (wrist eye-in-hand calibration).
     """
 
+    # The v1 gripper exposes no feedback channel, so there is nothing to measure a close
+    # against: command success is the best available evidence, declared here instead of
+    # failing closed. Remove this when the driver exposes jaw/contact feedback (see the
+    # grasp-evidence section of docs/zh/reference/adapter-reference.md).
+    trust_command_grasp = True
+
     # Marker capabilities: real things this body can do that no ACTION advertises, so the
     # class attr is the only way to declare them (see BaseRobotApi.capabilities). Leaving one
     # out is not cosmetic — the agent gates on ``api.capabilities & env.capabilities``, so an

@@ -57,7 +57,12 @@ from jiuwensymbiosis.errors import (
     is_inference_service_failure,
 )
 from jiuwensymbiosis.rails.recovery import read_holding_payload, recover_session
-from jiuwensymbiosis.tools.robot_control_tool import _build_action_index, record_action
+from jiuwensymbiosis.tools.robot_control_tool import (
+    _build_action_index,
+    action_scope,
+    read_grasp_confirmation,
+    record_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +224,10 @@ def _prescan(session: Any, steps: list[ActionStep | LoopStep]) -> dict[str, dict
     if not names:
         return cache
     try:
-        api.home()
+        # Through action_scope like any dispatch: a home that fails mid-motion may
+        # already have moved the body, so the failure must invalidate too.
+        with action_scope(api, api.home, {}):
+            api.home()
         record_action(api, api.home, {}, None)
     except Exception as exc:  # noqa: BLE001 - pre-scan home() is best-effort
         logger.warning("[runner] pre-scan: home() failed: %s", exc)
@@ -632,13 +640,14 @@ def direct_executor(api_or_index: Any) -> Executor:
         fn = idx.get(op)
         if fn is None:
             return {"ok": False, "reason": f"op {op!r} not available on this robot"}
+        api = getattr(fn, "__self__", None)
         try:
-            result = fn(**params)
+            with action_scope(api, fn, params):
+                result = fn(**params)
         except RunCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 - convert op failure to structured result
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
-        api = getattr(fn, "__self__", None)
         if api is not None:
             record_action(api, fn, params, result)
         ok = result.get("ok", True) if isinstance(result, dict) else True
@@ -659,12 +668,9 @@ class _TrackedGraspContext:
 
 def _grasp_confirmation(api: Any, result: Any) -> bool | None:
     """Return adapter-specific grasp confirmation, or ``None`` if unsupported."""
-    confirm = getattr(api, "is_grasp_confirmed", None)
-    if not callable(confirm):
-        return None
     try:
-        return bool(confirm(result))
-    except Exception as exc:  # noqa: BLE001 - an unsafe/unknown grasp must fail closed
+        return read_grasp_confirmation(api, result)
+    except Exception as exc:
         raise RuntimeError(f"grasp confirmation failed: {type(exc).__name__}: {exc}") from exc
 
 
@@ -708,7 +714,7 @@ def _retry_unconfirmed_grasp(
         close_result = close_res.get("result")
         sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
         confirmed = _grasp_confirmation(session.api, close_result)
-        if confirmed is not False:
+        if confirmed is True:
             logger.info("[runner] grasp retry %d/%d confirmed", attempt, cfg.max_grasp_retries)
             return detection, close_result, attempt
 
@@ -848,6 +854,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
             if step.op in _GRIP_CLOSE_OPS:
                 sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
                 confirmed = _grasp_confirmation(session.api, result)
+                if confirmed is None:
+                    raise GraspNotConfirmedError("grasp_confirmation_unknown: no measured payload evidence")
                 # An empty close is a failure however the approach was planned.
                 # Only the RETRY needs a track_grasp context (it re-runs that op);
                 # without one the step still has to fail closed rather than let
@@ -869,7 +877,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                         confirmed = _grasp_confirmation(session.api, result)
                     else:
                         raise GraspNotConfirmedError("grasp_not_confirmed: gripper closed without object contact")
-                holding = confirmed is not False
+                holding = confirmed is True
                 tracked_grasp = None
             elif step.op in _GRIP_OPEN_OPS:
                 holding = False
