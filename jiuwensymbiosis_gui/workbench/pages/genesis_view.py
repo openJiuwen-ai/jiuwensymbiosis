@@ -12,7 +12,9 @@ import markdown2
 from nicegui import ui
 
 from jiuwensymbiosis.agent.config import ModelSpec
+from jiuwensymbiosis.perception.config import DetectorConfig, LocalDetectorConfig
 from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat, state_snapshot
+from jiuwensymbiosis.utils.service_http import HttpEndpointConfig
 
 __all__ = ["GenesisView"]
 
@@ -116,7 +118,60 @@ class GenesisView:
                     ui.button(icon="tune", on_click=open_models).props(
                         "flat round dense size=sm aria-label=模型设置"
                     ).tooltip("模型设置")
-                ui.label("纯视觉 · 仅头部相机 + 动作反馈").classes("genesis-muted")
+                self._observation_select = (
+                    ui.select(
+                        {
+                            "perception": "感知 · RGB-D 目标定位与接近",
+                            "ground_truth": "仿真真值 · 场景查询",
+                            "visual": "相机观察 · RGB-only（兼容）",
+                        },
+                        value=self._chat.observation_mode,
+                        label="观测模式",
+                        on_change=self._change_observation,
+                    )
+                    .props("dense outlined")
+                    .classes("w-full")
+                )
+                with (
+                    ui.expansion("GroundingDINO + SAM2 配置", icon="visibility")
+                    .classes("w-full")
+                    .style("max-height: 300px; overflow-y: auto; flex-shrink: 0") as self._detector_panel
+                ):
+                    ui.label("仅感知模式使用；应用后开始新对话。首次任务检查服务，两套模型均须就绪。").classes(
+                        "genesis-muted"
+                    )
+                    self._detector_mode = (
+                        ui.select(
+                            {"disabled": "关闭检测，仅看图", "remote": "连接已有服务", "local": "本地启动模型"},
+                            value="disabled",
+                            label="检测服务",
+                            on_change=lambda _: self._refresh_detector_fields(),
+                        )
+                        .props("dense outlined")
+                        .classes("w-full")
+                    )
+                    self._detector_url = (
+                        ui.input("服务地址", value="http://127.0.0.1:8114").props("dense outlined").classes("w-full")
+                    )
+                    with ui.column().classes("w-full") as self._detector_local:
+                        self._detector_port = ui.number("本地端口", value=8114, min=1, max=65535, step=1).props(
+                            "dense outlined"
+                        )
+                        self._detector_device = ui.input("推理设备", value="cuda").props("dense outlined")
+                        self._gdino_model = (
+                            ui.input("GroundingDINO 模型或本地路径", value="IDEA-Research/grounding-dino-base")
+                            .props("dense outlined")
+                            .classes("w-full")
+                        )
+                        self._sam2_model = (
+                            ui.input("SAM2 模型或本地路径", value="facebook/sam2.1-hiera-large")
+                            .props("dense outlined")
+                            .classes("w-full")
+                        )
+                    self._detector_apply = ui.button("应用感知配置", on_click=self._apply_detector).props(
+                        "outline dense"
+                    )
+                self._refresh_detector_fields()
                 self._action_switch = ui.switch("允许 Agent 控制仿真", on_change=self._change_mode).props("dense")
                 self._action_switch.set_enabled(self._chat.preview is not None)
                 self._mode_help = ui.label("已关闭：仅用头部相机看图，不执行运动。").classes("genesis-muted")
@@ -146,12 +201,97 @@ class GenesisView:
         with self._messages:
             with ui.column().classes("genesis-welcome"):
                 ui.icon("chat_bubble_outline", size="24px").classes("genesis-welcome-icon")
-                ui.label("从头部相机开始").classes("font-medium")
-                ui.label("让 Agent 用头部相机观察；开启控制后可发送导航目标。").classes("genesis-muted")
-                for query in ("用头部相机看看前方有什么？", "头部画面中哪里可以通行？", "用头部相机找一找门或沙发。"):
+                truth = self._chat.observation_mode == "ground_truth"
+                perception = self._chat.observation_mode == "perception"
+                ui.label("查询场景并选择目标" if truth else "从头部相机开始").classes("font-medium")
+                ui.label(
+                    "可查询视野外的仿真状态；开启控制后可导航到物体旁并面向它。"
+                    if truth
+                    else "配置检测服务后可用 RGB-D 定位目标；开启控制后可小步接近。"
+                    if perception
+                    else "让 Agent 用头部相机观察；开启控制后可发送导航目标。"
+                ).classes("genesis-muted")
+                suggestions = (
+                    ("列出场景中的物体。", "查询机器人当前位置和朝向。", "查找沙发，导航到它旁边并面向它。")
+                    if truth
+                    else (
+                        "定位头部画面中的 chair，报告距离和方位。",
+                        "定位 table，说明深度是否足够。",
+                        "用 RGB-D 靠近 chair，停在距离定位点 1.5 米处。",
+                    )
+                    if perception
+                    else ("用头部相机看看前方有什么？", "头部画面中哪里可以通行？", "用头部相机找一找门或沙发。")
+                )
+                for query in suggestions:
                     ui.button(query, on_click=lambda query=query: self._input.set_value(query)).props(
                         "flat no-caps dense"
                     ).classes("genesis-suggestion")
+
+    def _refresh_detector_fields(self) -> None:
+        self._detector_url.set_visibility(self._detector_mode.value == "remote")
+        self._detector_local.set_visibility(self._detector_mode.value == "local")
+
+    def _apply_detector(self) -> None:
+        try:
+            mode = self._detector_mode.value
+            port = self._detector_port.value
+            if isinstance(port, float) and port.is_integer():
+                port = int(port)
+            config = DetectorConfig(
+                mode=mode,
+                endpoint=HttpEndpointConfig(url=self._detector_url.value.strip(), request_timeout_s=5)
+                if mode == "remote"
+                else None,
+                local=LocalDetectorConfig(
+                    port=port,
+                    device=self._detector_device.value.strip(),
+                    gdino_model_id=self._gdino_model.value.strip(),
+                    sam2_model_id=self._sam2_model.value.strip(),
+                )
+                if mode == "local"
+                else None,
+                max_frame_age_s=5,
+            )
+            changed = self._chat.configure_detector(config)
+        except (ChatError, ValueError, TypeError) as exc:
+            self._chat_status.set_text(f"感知配置未应用：{exc}")
+            return
+        if changed:
+            self._messages.clear()
+            self._image_cards.clear()
+            self._image_full.set_source("")
+            self._welcome()
+        self._chat_status.set_text(
+            "感知配置已应用；首次任务检查服务。" if mode != "disabled" else "检测已关闭；仅可看图，不能定位或自动接近。"
+        )
+        self._refresh_badge()
+
+    def _change_observation(self, event) -> None:
+        if event.value == self._chat.observation_mode:
+            return
+        try:
+            self._chat.observation_mode = event.value
+        except (ChatError, ValueError) as exc:
+            self._observation_select.set_value(self._chat.observation_mode)
+            self._chat_status.set_text(str(exc))
+            return
+        self._messages.clear()
+        self._image_cards.clear()
+        self._image_full.set_source("")
+        self._welcome()
+        self._input.props(
+            'placeholder="查询场景、机器人状态，或输入物体导航目标…"'
+            if event.value == "ground_truth"
+            else 'placeholder="用头部相机观察前方…"'
+        )
+        self._chat_status.set_text(
+            "仿真真值 · 可查询场景状态；已开始新对话"
+            if event.value == "ground_truth"
+            else "RGB-D 感知 · 已开始新对话，请检查检测服务配置"
+            if event.value == "perception"
+            else "视觉 · 仅头部相机图像和动作反馈；已开始新对话"
+        )
+        self._refresh_badge()
 
     def _change_mode(self, event) -> None:
         try:
@@ -196,7 +336,13 @@ class GenesisView:
         status = self._read_status()
         snapshot = state_snapshot(status, actions_enabled=self._chat.actions_enabled)
         if not self._chat.actions_enabled:
-            help_text = "已关闭：仅用头部相机看图，不执行运动。"
+            help_text = (
+                "已关闭：可查询仿真真值和看图，不执行运动。"
+                if self._chat.observation_mode == "ground_truth"
+                else "已关闭控制：可用 RGB-D 定位，不执行运动。"
+                if self._chat.observation_mode == "perception" and self._chat.detector_config.mode != "disabled"
+                else "已关闭：仅用头部相机看图，不执行运动。"
+            )
             if self._chat.action_running:
                 help_text += "当前任务尚未退出。"
         elif not snapshot["fresh"]:
@@ -205,6 +351,8 @@ class GenesisView:
             help_text = "已开启：请选择 MOZ1，并切换为“MOZ1 底盘物理”模式。"
         else:
             help_text = "已开启：可控制前后、左右横移和旋转；关闭将取消当前任务。"
+        if self._chat.observation_mode == "perception" and self._chat.detector_config.mode == "disabled":
+            help_text += "检测未启用：目标定位与接近不可用。"
         self._mode_help.set_text(help_text)
         self._robot_stop.set_visibility(
             (status.get("robot") or {}).get("control_mode") == "wheel_velocity_physics" or self._chat.motion_running
@@ -319,6 +467,17 @@ class GenesisView:
         self._scroll.scroll_to(percent=1)
 
     def _set_pending(self, pending: bool) -> None:
+        for control in (
+            self._detector_mode,
+            self._detector_url,
+            self._detector_port,
+            self._detector_device,
+            self._gdino_model,
+            self._sam2_model,
+            self._detector_apply,
+        ):
+            control.set_enabled(not pending)
+        self._observation_select.set_enabled(self._chat.preview is not None and not pending)
         pending = pending or self._chat.busy
         for control in (self._input, self._send_button, self._clear_button):
             control.set_enabled(not pending)
@@ -342,6 +501,9 @@ class GenesisView:
                     "w-full cursor-zoom-in"
                 ).on("click", expand)
                 ui.label("已加入本轮模型输入 · 点击放大").classes("genesis-muted")
+                if frame.get("detection_image_url"):
+                    ui.label(f"目标分割：{frame.get('detection_prompt', '')}").classes("genesis-muted")
+                    ui.image(frame["detection_image_url"]).props('alt="同帧目标分割覆盖图"').classes("w-full")
         self._image_cards.append(card)
         if len(self._image_cards) > 12:
             self._image_cards.pop(0).delete()

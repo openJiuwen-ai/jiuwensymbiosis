@@ -95,15 +95,32 @@ def test_cancel_lease_and_scene_replacement(tmp_path):
             future = pool.submit(session.api.navigate_relative, 0, 0.8)
             wait_for(lambda: preview.status().get("base_motion", {}).get("status") == "running")
             old_scene = preview.status()["scene"]["instance_id"]
-            preview.configure(width=1280, height=720, fps=60, scene_id="demo")
-            with pytest.raises(RuntimeError):
-                future.result(timeout=10)
-            wait_for(lambda: preview.status()["state"] == "ready", 90)
-            assert preview.status()["scene"]["instance_id"] != old_scene
-            with pytest.raises(RuntimeError, match="切换"):
-                session.env.get_observation()
+            with pytest.raises(RuntimeError, match="持有控制权"):
+                preview.configure(width=1280, height=720, fps=60, scene_id="demo")
+            assert preview.status()["scene"]["instance_id"] == old_scene
+            evidence["switch_rejected_while_owned"] = True
+            session.env.driver.cancelled.set()
+            stopped = future.result(timeout=15)
+            assert not stopped["ok"] and stopped["settled"]
         session.disconnect()
         assert session.cleanup_report().released
+
+        # Reset must restore the physical checkpoint and motor targets, and
+        # publish a new-world frame before declaring completion.
+        before_reset = preview.status()
+        reset = preview.reset_scene()
+        assert reset["reset_result"]["complete"]
+        assert reset["reset_result"]["stop_confirmation"] == "measured"
+        assert reset["scene"]["instance_id"] != before_reset["scene"]["instance_id"]
+        assert reset["pid"] == before_reset["pid"]
+        assert reset["robot"]["upper_body_state"]["max_abs_error_rad"] < 0.0174533
+        evidence["reset"] = reset["reset_result"]
+        evidence["upper_body_after_reset"] = reset["robot"]["upper_body_state"]
+        preview.configure(width=1280, height=720, fps=60, scene_id="demo", robot_mode="inspection")
+        wait_for(lambda: preview.status()["state"] == "ready", 90)
+        assert preview.status()["scene"]["instance_id"] != reset["scene"]["instance_id"]
+        with pytest.raises(RuntimeError):
+            session.env.get_observation()
         evidence["scene_replaced"] = True
         evidence["passed"] = True
     finally:

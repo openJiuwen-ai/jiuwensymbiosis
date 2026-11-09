@@ -50,6 +50,9 @@ body[data-connected="true"] .connection-badge { color: #c1efe0; }
 #help { font-size: 12px; border: 1px solid #34414e; border-radius: 50%; min-height: 23px; width: 23px; min-width: 23px; margin-right: 6px; }
 .session-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #17212c; border-top: 1px solid #26323e; }
 .session-bar button { font-size: 12px; }
+#loading { flex: 1; min-width: 180px; max-width: 420px; color: #b5cadc; font-size: 12px; }
+#loading-progress { display: block; width: 100%; height: 8px; margin-top: 4px; accent-color: #36b6a6; }
+#loading-elapsed { color: #8fa1b4; margin-left: 8px; }
 .primary { background: #148879; border-color: #249e8e; color: #fff; }
 .primary:hover:enabled { background: #1b9d8b; border-color: #5cc3b3; }
 .danger { color: #acb9c7; background: transparent; border-color: transparent; }

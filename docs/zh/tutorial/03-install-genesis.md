@@ -51,3 +51,30 @@ wheel 安装默认在 `~/.jiuwensymbiosis/simulators/` 下采用相同相对布�
 `python -m jiuwensymbiosis.simulators.assets init-config` 生成示例，再编辑资产路径并 build；
 已有配置不会被覆盖。内置材质、灯光 YAML 随 wheel 分发，结果写入数据根下 `outputs/`。
 页面操作见 [GUI 仿真器使用指南](../how-to/gui-simulator.md)。
+
+## 接入 RGB-D 检测服务
+
+RGB-D 感知需要 GroundingDINO 和 SAM2 同时可用。推荐把 HTTP 推理服务安装在独立环境中，
+仿真环境继续使用 `.[gui,genesis]`，避免混合 Pillow 版本约束。以下命令在仓库根目录的另一终端执行：
+
+```bash
+conda create -n symbiosis_vision python=3.12 pip
+conda activate symbiosis_vision
+python -m pip install -e '.[vision-server]'
+python -m pip check
+python -m jiuwensymbiosis.serving.grounding_dino_sam2_server \
+  --host 127.0.0.1 --port 8114 --device cuda \
+  --gdino-model-id IDEA-Research/grounding-dino-base \
+  --sam2-model-id facebook/sam2.1-hiera-large
+```
+
+按推理设备选择兼容的 PyTorch/CUDA 安装；服务与仿真共用 GPU 时要预留两者的显存。
+首次启动会下载模型，也可把两个模型参数改为已下载的本地目录。
+在仿真页选择「感知 · RGB-D 目标定位与接近」，检测服务选择「连接已有服务」，
+地址填 `http://127.0.0.1:8114`，再点击「应用感知配置」。服务端必须启用 SAM2，不能使用 `--no-sam2`。
+服务器由这个终端管理；关闭 Agent 会话不会关闭它。
+
+「本地启动模型」使用工作台当前 Python 环境启动子进程，仅适用于已单独验证推理依赖兼容的环境。
+它会检查端口占用，并在结束会话时关闭自己启动的进程；不接管已有服务。
+Nyx 投影修正仅覆盖当前已验证版本 `gs-nyx 0.1.7` / `gs-nyx-plugin 0.1.9`，升级后需要重新验证配准。
+检测失败、深度缺失或转向空间不可见时，RGB-D 接近会拒绝动作，具体语义见使用指南。
