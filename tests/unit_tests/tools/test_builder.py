@@ -11,6 +11,28 @@ from jiuwensymbiosis.tools.builder import build_robot_tools, list_tool_meta
 from tests.mocks.mock_api import MockApi
 
 
+async def test_single_robot_async_action_is_awaited_by_both_tool_views():
+    from jiuwensymbiosis.api.actions import HOME, implements
+    from jiuwensymbiosis.tools.bindings import build_action_tools
+    from jiuwensymbiosis.tools.builder import robot_action_bindings
+
+    calls = []
+
+    class AsyncApi:
+        capabilities = frozenset({"motion.cartesian"})
+
+        @implements(HOME)
+        async def home(self):
+            calls.append("home")
+            return {"ok": True}
+
+    api = AsyncApi()
+    plain = build_robot_tools(api)[0]
+    binding_tools = build_action_tools(robot_action_bindings(api), api.capabilities)
+    assert await plain.invoke({}) == await binding_tools[0].invoke({}) == {"ok": True}
+    assert calls == ["home", "home"]
+
+
 class TestListToolMeta:
     def test_returns_all_tools(self, mock_api):
         metas = list_tool_meta(mock_api)

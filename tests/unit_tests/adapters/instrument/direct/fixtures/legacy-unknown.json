@@ -1,0 +1,118 @@
+{
+  "generated_by": "f0bf5a0f0124f469c825d73435af84a8cdb84c08",
+  "mode": "unknown",
+  "old_config": {
+    "adapter": "instrument",
+    "instruments": {
+      "config_version": "1",
+      "devices": [
+        {
+          "device_id": "controller",
+          "adapter": "mapped_protocol",
+          "operation_id": "controller_set",
+          "operation_ids": [
+            "controller_set",
+            "controller_read"
+          ],
+          "model": "GenericController",
+          "connection": {
+            "base_url": "http://127.0.0.1:1",
+            "timeout_s": 1.0
+          },
+          "configured": true,
+          "configuration_evidence": "Local test fixture only; no field hardware validation.",
+          "physical_device_id": "legacy-controller-serial-001"
+        }
+      ],
+      "extensions": [
+        {
+          "extension_id": "generic_controller",
+          "version": "1",
+          "actions": [
+            {
+              "name": "controller_set",
+              "description": "Read or configure a generic controller; a receipt does not prove a physical outcome.",
+              "parameters_schema": {
+                "type": "object",
+                "properties": {
+                  "level": {
+                    "type": "integer",
+                    "minimum": -10,
+                    "maximum": 20
+                  }
+                },
+                "required": [
+                  "level"
+                ],
+                "additionalProperties": false
+              },
+              "read_only": false,
+              "completion_rule": "protocol_response_verified",
+              "source": {
+                "document": "generic.md",
+                "section": "Generic controller",
+                "sha256": "c9fdb61ed5f58e687cfafc994f404ceb3e3774d5bec766e2fabee5ce798a123b",
+                "excerpt": "READ returns a JSON receipt."
+              },
+              "mapping": {
+                "transport": "http_json",
+                "method": "POST",
+                "path": "/set",
+                "response": {
+                  "field": "ok",
+                  "equals": true
+                },
+                "body": {
+                  "level": {
+                    "$parameter": "level"
+                  }
+                }
+              }
+            },
+            {
+              "name": "controller_read",
+              "description": "Read or configure a generic controller; a receipt does not prove a physical outcome.",
+              "parameters_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              },
+              "read_only": true,
+              "completion_rule": "protocol_response_verified",
+              "source": {
+                "document": "generic.md",
+                "section": "Generic controller",
+                "sha256": "c9fdb61ed5f58e687cfafc994f404ceb3e3774d5bec766e2fabee5ce798a123b",
+                "excerpt": "READ returns a JSON receipt."
+              },
+              "mapping": {
+                "transport": "http_json",
+                "method": "GET",
+                "path": "/read",
+                "response": {
+                  "field": "ok",
+                  "equals": true
+                }
+              }
+            }
+          ],
+          "source_text": "# Generic controller\nREAD returns a JSON receipt. SET accepts an integer level.\n"
+        }
+      ]
+    },
+    "instrument_permissions": {
+      "local": [
+        "controller_c1472135__controller_set",
+        "controller_c1472135__controller_read"
+      ]
+    }
+  },
+  "job_id": "246431bf69034564adb9e7fc58bfcfa6",
+  "invocation_id": "35753374ee634446862e62837b3cd54a",
+  "sql": "BEGIN TRANSACTION;\nCREATE TABLE events (\n                job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,\n                seq INTEGER NOT NULL,\n                timestamp TEXT NOT NULL,\n                kind TEXT NOT NULL,\n                data_json TEXT NOT NULL,\n                PRIMARY KEY (job_id, seq)\n            );\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',1,'2026-11-04T06:57:38.995Z','accepted','{\"phase\":\"reserved\"}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',2,'2026-11-04T06:57:38.997Z','connecting','{}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',3,'2026-11-04T06:57:38.997Z','run_started','{\"query\":\"execute admitted actions\",\"adapter\":\"instrument\"}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',4,'2026-11-04T06:57:38.998Z','invocation_intent','{\"binding_id\":\"019c5dba74e94eb17b364b39b5cc584b89c0e81d1c6b6d875e1b120017e1afbe\",\"device_binding\":{\"physical_device_id\":\"legacy-controller-serial-001\",\"declaration_digest\":\"9c2d9e70ede8580f8ed0d56313606c4c7eee316137c09d5fe9dc02dbd1557d45\",\"profile_digest\":\"76d573b6e0f5b1cd1ac676436a349df77a33105c5ad60703e6831418ed3d83a9\"},\"action_name\":\"controller_set\",\"contract_version\":\"1\",\"parameters_fingerprint\":\"7f10c6cbcbae34725d694cc63ec98c0c2524fd755d5d1aa730d7291e58115510\",\"owner_pid\":66938,\"principal\":\"local\",\"lease_operation_id\":\"4a7624bed81840c0911a237d1e17a314\",\"scope\":null,\"result\":null,\"remote_handle\":null,\"completion_evidence\":{},\"invocation_id\":\"35753374ee634446862e62837b3cd54a\",\"job_id\":\"246431bf69034564adb9e7fc58bfcfa6\",\"resource_key\":\"physical:legacy-controller-serial-001\",\"request_key\":\"legacy-action-key\",\"fingerprint\":\"ef42939a54f807d608773fa46c9098a5dc5910773fb93cf242e4d619250e6c8b\",\"status\":\"intent\",\"dispatch_intent_at\":\"2026-11-04T06:57:38.998Z\"}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',5,'2026-11-04T06:57:38.998Z','invocation_updated','{\"binding_id\":\"019c5dba74e94eb17b364b39b5cc584b89c0e81d1c6b6d875e1b120017e1afbe\",\"device_binding\":{\"physical_device_id\":\"legacy-controller-serial-001\",\"declaration_digest\":\"9c2d9e70ede8580f8ed0d56313606c4c7eee316137c09d5fe9dc02dbd1557d45\",\"profile_digest\":\"76d573b6e0f5b1cd1ac676436a349df77a33105c5ad60703e6831418ed3d83a9\"},\"action_name\":\"controller_set\",\"contract_version\":\"1\",\"parameters_fingerprint\":\"7f10c6cbcbae34725d694cc63ec98c0c2524fd755d5d1aa730d7291e58115510\",\"owner_pid\":66938,\"principal\":\"local\",\"lease_operation_id\":\"4a7624bed81840c0911a237d1e17a314\",\"scope\":null,\"result\":null,\"remote_handle\":null,\"completion_evidence\":{},\"invocation_id\":\"35753374ee634446862e62837b3cd54a\",\"job_id\":\"246431bf69034564adb9e7fc58bfcfa6\",\"resource_key\":\"physical:legacy-controller-serial-001\",\"request_key\":\"legacy-action-key\",\"fingerprint\":\"ef42939a54f807d608773fa46c9098a5dc5910773fb93cf242e4d619250e6c8b\",\"status\":\"unknown\",\"dispatch_intent_at\":\"2026-11-04T06:57:38.998Z\",\"uncertainty\":\"dispatch failed: TimeoutError\",\"updated_at\":\"2026-11-04T06:57:38.998Z\"}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',6,'2026-11-04T06:57:38.998Z','blocked','{\"cleanup\":{\"pending_work\":[\"legacy-action-key\",\"35753374ee634446862e62837b3cd54a\"],\"errors\":[],\"connected\":false,\"released\":false}}');\nINSERT INTO \"events\" VALUES('246431bf69034564adb9e7fc58bfcfa6',7,'2026-11-04T06:57:38.998Z','cleanup','{\"pending_work\":[\"legacy-action-key\",\"35753374ee634446862e62837b3cd54a\"],\"errors\":[],\"connected\":false,\"released\":false,\"release_ready\":false}');\nCREATE TABLE invocations (\n                invocation_id TEXT PRIMARY KEY,\n                job_id TEXT NOT NULL REFERENCES jobs(job_id),\n                resource_key TEXT NOT NULL,\n                request_key TEXT NOT NULL,\n                fingerprint TEXT NOT NULL,\n                snapshot_json TEXT NOT NULL,\n                UNIQUE(resource_key, request_key)\n            );\nINSERT INTO \"invocations\" VALUES('35753374ee634446862e62837b3cd54a','246431bf69034564adb9e7fc58bfcfa6','physical:legacy-controller-serial-001','legacy-action-key','ef42939a54f807d608773fa46c9098a5dc5910773fb93cf242e4d619250e6c8b','{\"binding_id\":\"019c5dba74e94eb17b364b39b5cc584b89c0e81d1c6b6d875e1b120017e1afbe\",\"device_binding\":{\"physical_device_id\":\"legacy-controller-serial-001\",\"declaration_digest\":\"9c2d9e70ede8580f8ed0d56313606c4c7eee316137c09d5fe9dc02dbd1557d45\",\"profile_digest\":\"76d573b6e0f5b1cd1ac676436a349df77a33105c5ad60703e6831418ed3d83a9\"},\"action_name\":\"controller_set\",\"contract_version\":\"1\",\"parameters_fingerprint\":\"7f10c6cbcbae34725d694cc63ec98c0c2524fd755d5d1aa730d7291e58115510\",\"owner_pid\":66938,\"principal\":\"local\",\"lease_operation_id\":\"4a7624bed81840c0911a237d1e17a314\",\"scope\":null,\"result\":null,\"remote_handle\":null,\"completion_evidence\":{},\"invocation_id\":\"35753374ee634446862e62837b3cd54a\",\"job_id\":\"246431bf69034564adb9e7fc58bfcfa6\",\"resource_key\":\"physical:legacy-controller-serial-001\",\"request_key\":\"legacy-action-key\",\"fingerprint\":\"ef42939a54f807d608773fa46c9098a5dc5910773fb93cf242e4d619250e6c8b\",\"status\":\"unknown\",\"dispatch_intent_at\":\"2026-11-04T06:57:38.998Z\",\"uncertainty\":\"dispatch failed: TimeoutError\",\"updated_at\":\"2026-11-04T06:57:38.998Z\"}');\nCREATE TABLE job_invocations (\n                job_id TEXT NOT NULL REFERENCES jobs(job_id),\n                invocation_id TEXT NOT NULL REFERENCES invocations(invocation_id),\n                PRIMARY KEY (job_id, invocation_id)\n            );\nINSERT INTO \"job_invocations\" VALUES('246431bf69034564adb9e7fc58bfcfa6','35753374ee634446862e62837b3cd54a');\nCREATE TABLE jobs (\n                job_id TEXT PRIMARY KEY,\n                request_id TEXT NOT NULL UNIQUE,\n                fingerprint TEXT NOT NULL,\n                snapshot_json TEXT NOT NULL\n            );\nINSERT INTO \"jobs\" VALUES('246431bf69034564adb9e7fc58bfcfa6','legacy-job','c7b45d8f74b5f7663e4bc5aafa127a406b618293a3adeebc7031e67be9cdc616','{\"job_id\":\"246431bf69034564adb9e7fc58bfcfa6\",\"binding_id\":\"019c5dba74e94eb17b364b39b5cc584b89c0e81d1c6b6d875e1b120017e1afbe\",\"principal\":\"local\",\"phase\":\"blocked\",\"result\":{\"ok\":true,\"result\":{\"ok\":false,\"steps_done\":1,\"steps\":[{\"i\":0,\"op\":\"controller_c1472135__controller_set\",\"device_id\":\"legacy-controller-serial-001\",\"ok\":false,\"reason\":\"InvocationUnknown: dispatch outcome unknown: 35753374ee634446862e62837b3cd54a\",\"error_code\":\"\"}],\"env_keys\":[]},\"conversation_id\":\"gui-246431bf69034564adb9e7fc58bfcfa6\",\"workspace\":\"__LEGACY_ROOT__/work\",\"log_tail\":\"\"},\"cancel_requested\":false,\"owner_pid\":66938,\"operation_id\":\"4a7624bed81840c0911a237d1e17a314\",\"cleanup\":{\"pending_work\":[\"legacy-action-key\",\"35753374ee634446862e62837b3cd54a\"],\"errors\":[],\"connected\":false,\"released\":false,\"release_ready\":false},\"workspace\":\"__LEGACY_ROOT__/work\"}');\nCREATE INDEX invocations_job ON invocations(job_id);\nCOMMIT;",
+  "locks": {
+    "a747396a31fcb11e5ec29f2a5f958e78fb16b0884dfa0d6a4d8e7d02c65c085a.json": "{\"resource\": \"physical:legacy-controller-serial-001\", \"operation_id\": \"4a7624bed81840c0911a237d1e17a314\", \"generation\": \"b377feb749d347ad84617276cb8d1438\", \"pid\": 66938, \"operation\": \"task\", \"state\": \"blocked\", \"cleanup\": {\"pending_work\": [\"legacy-action-key\", \"35753374ee634446862e62837b3cd54a\"], \"errors\": [], \"connected\": false}}",
+    "a747396a31fcb11e5ec29f2a5f958e78fb16b0884dfa0d6a4d8e7d02c65c085a.authority": "{\"resource\": \"physical:legacy-controller-serial-001\", \"job_store\": \"__LEGACY_ROOT__/work/runtime/jobs.sqlite3\"}"
+  }
+}

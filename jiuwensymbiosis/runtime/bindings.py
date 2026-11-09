@@ -1,4 +1,4 @@
-"""Immutable, source-aware bindings between config and robot sessions.
+"""Immutable, source-aware bindings between config and device sessions.
 
 Preparing a binding validates one adapter config, resolves source-relative paths,
 captures environment-derived defaults, and derives its admission resources. It
@@ -25,7 +25,7 @@ import yaml
 
 from jiuwensymbiosis.adapters._common.config import parse_config
 from jiuwensymbiosis.adapters._common.resources import complete_resource_keys
-from jiuwensymbiosis.agent.session import RobotSession
+from jiuwensymbiosis.runtime.session import ManagedSession
 
 __all__ = ["BindingSnapshot", "prepare_binding"]
 
@@ -34,7 +34,7 @@ _ADAPTER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 @dataclass(frozen=True, slots=True)
 class BindingSnapshot:
-    """A validated, immutable reference to the effective robot configuration.
+    """A validated, immutable reference to the effective adapter configuration.
 
     ``config_data()`` returns a deep copy of the complete, normalized source
     mapping (including non-adapter fields such as agent settings). Session
@@ -50,7 +50,7 @@ class BindingSnapshot:
     resources: tuple[str, ...]
     _config_data: dict[str, Any] = field(repr=False, compare=False)
     _effective_config: Any = field(repr=False, compare=False)
-    _session_builder: Callable[..., RobotSession] = field(repr=False, compare=False)
+    _session_builder: Callable[..., ManagedSession] = field(repr=False, compare=False)
     _device_resource_keys: tuple[str, ...] = field(repr=False, compare=False)
     _physical_device_id: str | None = field(repr=False, compare=False)
     _include_sidecars: bool = field(repr=False, compare=False)
@@ -63,8 +63,8 @@ class BindingSnapshot:
         """Return an isolated copy of the normalized source mapping."""
         return copy.deepcopy(self._config_data)
 
-    def build_session(self) -> RobotSession:
-        """Build a new, disconnected RobotSession from the frozen effective config."""
+    def build_session(self) -> ManagedSession:
+        """Build a new, disconnected session from the frozen effective config."""
         cfg = copy.deepcopy(self._effective_config)
         return self._session_builder(cfg, include_sidecars=self._include_sidecars)
 
@@ -141,13 +141,18 @@ def _snapshot_data(config_snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _adapter_from_data(data: Mapping[str, Any]) -> str:
+    if "adapters" in data:
+        raise ValueError("multiple adapters are not supported in this PR")
     value = data.get("adapter")
     if not isinstance(value, str) or not _ADAPTER_NAME.fullmatch(value.strip()):
         raise ValueError("configuration must declare a valid top-level adapter name")
-    return value.strip()
+    adapter = value.strip()
+    if adapter in {"mixed", "instrument_mcp"}:
+        raise ValueError("removed adapter selector; use instrument with explicit access")
+    return adapter
 
 
-def _discover_adapter(adapter: str) -> tuple[Any, Callable[..., RobotSession], Callable[[Any], Any]]:
+def _discover_adapter(adapter: str) -> tuple[Any, Callable[..., ManagedSession], Callable[[Any], Any]]:
     """Resolve an adapter by the existing package/session naming convention."""
     module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
     builder = getattr(module, f"build_{adapter}_session", None)

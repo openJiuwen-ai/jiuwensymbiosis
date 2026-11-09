@@ -219,6 +219,29 @@ async def test_stop_forces_machine_stopped_result_without_step_event():
     assert ctx.forced == {"output": "stopped", "result_type": "stopped"}
 
 
+async def test_stopped_task_does_not_start_another_model_turn():
+    emitter = _Emitter()
+    rail = TaskEventRail(emitter, _Session(), should_stop=lambda: True)
+    ctx = _Ctx(_Inputs("", {}))
+    await rail.before_model_call(ctx)
+    assert ctx.forced == {"output": "stopped", "result_type": "stopped"}
+    assert emitter.events == []
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_stop_during_tool_records_outcome_then_finishes_task(failed):
+    stopped = False
+    emitter = _Emitter()
+    rail = TaskEventRail(emitter, _Session(), should_stop=lambda: stopped)
+    ctx = _Ctx(_Inputs("instrument_read", {}, {"value": 1}), exception=RuntimeError("unknown") if failed else None)
+    await rail.before_tool_call(ctx)
+    stopped = True
+    await (rail.on_tool_exception(ctx) if failed else rail.after_tool_call(ctx))
+    assert [kind for kind, _ in emitter.events] == ["step_started", "step_finished"]
+    assert emitter.events[-1][1]["ok"] is not failed
+    assert ctx.forced == {"output": "stopped", "result_type": "stopped"}
+
+
 async def test_frame_acquisition_failure_is_best_effort():
     emitter = _Emitter()
     rail = TaskEventRail(emitter, _Session(env_error=RuntimeError("camera offline")))

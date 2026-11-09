@@ -26,6 +26,7 @@ from jiuwensymbiosis.agent.abstractions import (
 from jiuwensymbiosis.agent.builder import (
     build_robot_agent,
     build_robot_agent_config,
+    build_session_agent,
 )
 from jiuwensymbiosis.agent.config import (
     ROBOT_PROMPT_TEMPLATE,
@@ -42,7 +43,7 @@ from jiuwensymbiosis.agent.config import (
     TrackingConfig,
     build_model,
 )
-from jiuwensymbiosis.agent.run import run_fast_task, run_robot_task
+from jiuwensymbiosis.agent.run import run_fast_task, run_robot_task, run_session_task
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.agent.trace import (
     ExecutionTrace,
@@ -71,6 +72,8 @@ __all__ = [
     "build_robot_agent",
     "build_robot_agent_config",
     "run_robot_task",
+    "run_session_task",
+    "build_session_agent",
     "run_fast_task",
     "RobotAgentConfig",
     "ExecutionConfig",

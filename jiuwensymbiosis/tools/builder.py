@@ -13,12 +13,15 @@ when ``env`` is given, else ``api.capabilities``.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
+from jiuwensymbiosis.api.decorators import ToolMeta
+from jiuwensymbiosis.tools.bindings import ActionBinding, build_action_tools
 from jiuwensymbiosis.tools.robot_control_tool import record_action
 
 
@@ -62,6 +65,83 @@ def _effective_capabilities(api: Any, env: Any) -> frozenset[str]:
     return frozenset(api_caps) & frozenset(env_caps)
 
 
+@dataclass(frozen=True)
+class RobotContractView:
+    """Projection of the existing ActionSpec/ToolMeta; no copied action truth."""
+
+    meta: ToolMeta
+
+    @property
+    def name(self) -> str:
+        return self.meta.name
+
+    @property
+    def description(self) -> str:
+        return self.meta.full_description()
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return copy.deepcopy(self.meta.input_params)
+
+    @property
+    def output_schema(self) -> dict[str, Any]:
+        return copy.deepcopy(self.meta.returns)
+
+    @property
+    def required_capabilities(self) -> frozenset[str]:
+        return frozenset({self.meta.capability}) if self.meta.capability else frozenset()
+
+    @property
+    def planner_visible(self) -> bool:
+        return self.meta.planner_visible
+
+
+def robot_action_bindings(
+    api: Any,
+    *,
+    env: Any = None,
+    device_id: str = "robot",
+    resource_keys: tuple[str, ...] = (),
+) -> list[ActionBinding]:
+    """Adapt existing decorated methods to the common tool-consumption interface.
+
+    Legacy standalone builders have no Runtime resource identity; an admitted
+    Runtime session supplies its frozen physical identity and resource keys.
+    """
+    bindings: list[ActionBinding] = []
+    seen: set[str] = set()
+    for cls in type(api).__mro__:
+        for attr_name, attr_value in cls.__dict__.items():
+            if attr_name in seen or not callable(attr_value):
+                continue
+            meta = getattr(attr_value, "__tool_meta__", None)
+            if not isinstance(meta, ToolMeta):
+                continue
+            seen.add(attr_name)
+            recorded = _recording(api, getattr(api, attr_name))
+
+            def bind_call(fn: Callable[..., Any]) -> Callable[..., Any]:
+                if inspect.iscoroutinefunction(fn):
+
+                    async def call_async(params: dict, _key: str | None, _principal: str) -> Any:
+                        return await fn(**params)
+
+                    return call_async
+
+                def call(params: dict, _key: str | None, _principal: str) -> Any:
+                    return fn(**params)
+
+                return call
+
+            def authorized(_principal: str, *, required: str | None = meta.capability) -> bool:
+                return not required or required in _effective_capabilities(api, env)
+
+            bindings.append(
+                ActionBinding(
+                    RobotContractView(meta), device_id, resource_keys, "robot", bind_call(recorded), authorized
+                )
+            )
+    return bindings
 
 
 def build_robot_tools(
@@ -92,41 +172,13 @@ def build_robot_tools(
     Raises:
         ImportError: if openjiuwen is not installed.
     """
-    effective_caps = _effective_capabilities(api, env)
-    api_type = type(api)
-
-    tools: list[Any] = []
-    seen: set[str] = set()
-    # Walk MRO so subclass overrides are preferred but base-class decorators are still picked up.
-    for cls in api_type.__mro__:
-        for attr_name, attr_value in cls.__dict__.items():
-            if attr_name in seen:
-                continue
-            if not callable(attr_value):
-                continue
-            meta = getattr(attr_value, "__tool_meta__", None)
-            if meta is None:
-                continue
-            seen.add(attr_name)
-
-            if allow is not None and meta.name not in allow:
-                continue
-            if deny is not None and meta.name in deny:
-                continue
-            if planner_only and not meta.planner_visible:
-                continue
-            if meta.capability and meta.capability not in effective_caps:
-                continue
-
-            bound = getattr(api, attr_name)  # bound method on the api instance
-            card = ToolCard(
-                name=meta.name,
-                description=meta.full_description(),
-                input_params=meta.input_params,
-            )
-            tools.append(LocalFunction(card=card, func=_recording(api, bound)))
-
-    return tools
+    return build_action_tools(
+        robot_action_bindings(api, env=env),
+        _effective_capabilities(api, env),
+        allow=allow,
+        deny=deny,
+        planner_only=planner_only,
+    )
 
 
 def list_tool_meta(api: Any, *, env: Any = None) -> list[dict]:

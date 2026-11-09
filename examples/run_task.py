@@ -25,11 +25,13 @@ For a dry run without hardware or a real LLM (piper only), pass ``--mock``.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import yaml
@@ -66,6 +68,12 @@ def _robot_session_builders() -> dict[str, Any]:
 
 def _resolve_robot(args: argparse.Namespace, raw: dict[str, Any]) -> str:
     """机器人身份：``--robot`` > config 顶层 ``adapter:`` > piper（向后兼容）。"""
+    if (
+        "adapters" in raw
+        or raw.get("adapter") in {"mixed", "instrument_mcp"}
+        or args.robot in {"mixed", "instrument_mcp"}
+    ):
+        raise ValueError("removed or multiple adapter selection; use one adapter with explicit access")
     return args.robot or raw.get("adapter") or "piper"
 
 
@@ -444,6 +452,42 @@ def main(argv: list[str] | None = None, *, resource_manager=None) -> int:
 
     agent_cfg.logging.configure()
     robot = _resolve_robot(args, raw)
+    if robot == "instrument":
+        # Domain sessions run inside Runtime so CLI cannot bypass durable
+        # invocation intent, admission or shutdown handling. A foreground CLI
+        # remains the execution host until its job has really terminated.
+        from jiuwensymbiosis.agent.builder import _resolve_workspace
+        from jiuwensymbiosis.runtime.jobs import Runtime
+
+        if _voice_enabled(args) or args.mock:
+            raise ValueError("instrument tasks use the managed query path; mock/voice require a configured host")
+        effective = {**raw, "adapter": robot}
+        effective["model"] = vars(_build_model_spec(raw, args))
+        effective["agent"] = dict(raw.get("agent") or {})
+        # The CLI resolves deployment workspace once; runtime task options cannot
+        # redirect an accepted host into another workspace.
+        effective["agent"].pop("workspace", None)
+        # Preserve the old MCP selector's default workspace when migrating its
+        # envelope; changing a selector must not silently select a fresh store.
+        default_name = "instrument_mcp" if raw.get("instrument", {}).get("access") == "mcp" else robot
+        runtime = Runtime(
+            workspace=_resolve_workspace(SimpleNamespace(name=raw.get("name", default_name)), agent_cfg.workspace),
+            resource_directory=resource_manager.directory if resource_manager else None,
+        )
+        job = None
+        try:
+            binding = runtime.prepare_binding(cfg_path, config_snapshot=effective)
+            options = {key: value for key, value in overrides.items() if value and key != "workspace"}
+            job = runtime.submit_task(binding.binding_id, uuid.uuid4().hex, query, agent_options=options)
+            job = runtime.wait_for_job(job["job_id"])
+            print(json.dumps(job, ensure_ascii=False))
+            return 0 if job["phase"] == "succeeded" else 1
+        except KeyboardInterrupt:
+            if job is not None:
+                runtime.cancel(job["job_id"])
+            raise
+        finally:
+            runtime.close()
     binding = None
     try:
         if args.mock and robot == "piper":

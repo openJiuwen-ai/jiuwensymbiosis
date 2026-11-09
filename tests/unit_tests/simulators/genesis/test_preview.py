@@ -7,6 +7,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,8 @@ def wait_for(predicate, seconds=10):
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
+    # This fixture launches a portable CPU worker, not the Linux/GPU renderer.
+    monkeypatch.setattr(preview, "sys", SimpleNamespace(platform="linux", executable=sys.executable))
     worker = tmp_path / "cpu_worker.py"
     worker.write_text(
         "import sys, time\nfrom pathlib import Path\n"
@@ -51,6 +54,15 @@ def manager(tmp_path, monkeypatch):
     instance = preview.GenesisPreview(state_dir=tmp_path / "state")
     yield instance
     instance.stop()
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_unsupported_renderer_platform_never_spawns(manager, monkeypatch, platform):
+    monkeypatch.setattr(preview, "sys", SimpleNamespace(platform=platform, executable=sys.executable))
+    result = manager.start()
+    assert result["state"] == "failed" and result["pid"] is None
+    assert "Linux + NVIDIA GPU" in result["message"]
+    assert not manager.state_dir.exists()
 
 
 def test_import_and_status_do_not_load_optional_sdks(tmp_path):

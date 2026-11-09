@@ -119,6 +119,34 @@ class ConfigFactory(Protocol):
         pass
 
 
+def make_session_builder(
+    factory: Callable[..., Any],
+    config_factory: ConfigFactory,
+    *,
+    resource_keys: ResourceKeys,
+) -> Callable[..., Any]:
+    """Attach source-aware loaders and admission metadata to a session factory.
+
+    This part of assembly has no robot API/Env assumptions. The factory owns
+    the domain lifecycle; Runtime owns resource acquisition.
+    """
+
+    def build(cfg: Any, *, include_sidecars: bool = True) -> Any:
+        return factory(cfg, include_sidecars=include_sidecars)
+
+    def from_yaml(path: str | Path, *, include_sidecars: bool = True) -> Any:
+        return factory(config_factory.from_yaml(path), include_sidecars=include_sidecars)
+
+    def from_dict(data: dict[str, Any], *, include_sidecars: bool = True) -> Any:
+        return factory(config_factory.from_dict(data), include_sidecars=include_sidecars)
+
+    build.from_yaml = from_yaml  # type: ignore[attr-defined]  # function loader metadata
+    build.from_dict = from_dict  # type: ignore[attr-defined]  # function loader metadata
+    build.config_factory = config_factory  # type: ignore[attr-defined]  # admission metadata
+    build.resource_keys = resource_keys  # type: ignore[attr-defined]  # admission metadata
+    return build
+
+
 def make_builder(
     cfg_cls: ConfigFactory,
     env_cls: type,
@@ -222,25 +250,8 @@ def make_builder(
             decorate(session, cfg)
         return session
 
-    def build(cfg: Any, *, include_sidecars: bool = True) -> RobotSession:
-        """Build a session directly from an in-memory config object."""
-        return _session_from_cfg(cfg, include_sidecars=include_sidecars)
-
-    effective_config_factory = config_factory or cfg_cls
-
-    def from_yaml(path: str | Path, *, include_sidecars: bool = True) -> RobotSession:
-        """Build a session from a YAML config file at ``path``."""
-        return _session_from_cfg(effective_config_factory.from_yaml(path), include_sidecars=include_sidecars)
-
-    def from_dict(data: dict[str, Any], *, include_sidecars: bool = True) -> RobotSession:
-        """Build a session from an in-memory config ``dict``."""
-        return _session_from_cfg(effective_config_factory.from_dict(data), include_sidecars=include_sidecars)
-
-    # A function carrying its loaders, deliberately not a class — see
-    # tests/unit_tests/adapters/common/test_builder.py:TestBuilderSignature.
-    # mypy cannot model fn.__dict__, so the two attachments stay silenced.
-    build.from_yaml = from_yaml  # type: ignore[attr-defined]
-    build.from_dict = from_dict  # type: ignore[attr-defined]
-    build.config_factory = effective_config_factory  # type: ignore[attr-defined]
-    build.resource_keys = resource_keys or (lambda cfg: ())  # type: ignore[attr-defined]
-    return build
+    return make_session_builder(
+        _session_from_cfg,
+        config_factory or cfg_cls,
+        resource_keys=resource_keys or (lambda cfg: ()),
+    )

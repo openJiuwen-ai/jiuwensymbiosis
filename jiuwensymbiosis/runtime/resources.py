@@ -153,6 +153,40 @@ class ResourceManager:
             self._leases[lease.operation_id] = lease
             return lease
 
+    def bind_authority(self, lease: ResourceLease, resource: str, store_path: Path) -> None:
+        """Pin a physical execution owner to its existing JobStore.
+
+        Locks alone cannot preserve action dedupe across two unrelated workspace
+        databases. This routing record survives lease release, so another host
+        workspace must use the same authority rather than silently start a fresh
+        execution history. It stores no action state and owns no second database.
+        Delegated MCP caller resources are not physical execution authorities.
+        """
+        if not resource.startswith("physical:"):
+            return
+        with _PROCESS_LOCK:
+            if lease.released or self._leases.get(lease.operation_id) is not lease or resource not in lease.resources:
+                raise ResourceBlockedError("authority registration requires its active resource lease")
+            path = self._path(resource, ".authority")
+            authority = {"resource": resource, "job_store": str(store_path.resolve())}
+            if path.exists():
+                try:
+                    previous = json.loads(path.read_text())
+                except (OSError, ValueError) as exc:
+                    raise ResourceBlockedError("device authority record cannot be verified") from exc
+                if previous != authority:
+                    raise ResourceBlockedError("physical device belongs to another Runtime JobStore authority")
+                return
+            temp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                with temp.open("x", encoding="utf-8") as handle:
+                    json.dump(authority, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temp.replace(path)
+            finally:
+                temp.unlink(missing_ok=True)
+
     def finish(self, lease: ResourceLease, report: CleanupReport) -> bool:
         """Release confirmed resources; retry unfinished cleanup without touching new owners."""
         global _PROCESS_OWNER, _PROCESS_BLOCKED
