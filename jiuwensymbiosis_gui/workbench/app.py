@@ -233,7 +233,15 @@ def run(
 
     application = AppHost()
     genesis_stream = install_genesis_routes(_ng_app)
-    _ng_app.on_shutdown(genesis_stream.stop)
+
+    async def connect_genesis():
+        try:
+            await genesis_stream.start()
+        except (RuntimeError, ValueError, TimeoutError):
+            logger.exception("Genesis background startup failed; the workbench remains available")
+
+    _ng_app.on_startup(connect_genesis)
+    _ng_app.on_shutdown(genesis_stream.close)
 
     def close_application():
         report = application.close()

@@ -69,6 +69,73 @@ async def test_action_switch_uses_selected_model_and_shared_execution(monkeypatc
     assert view._action_switch.enabled
 
 
+async def test_observation_mode_is_independent_and_resets_model_context(monkeypatch, page_slot):
+    runner = Mock(return_value={"reply": "已查询场景", "actions": []})
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    preview = Mock()
+    with page_slot:
+        view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=preview)
+    view._observation_select.set_value("ground_truth")
+    assert not view._chat.actions_enabled
+    assert "真值" in view._mode_help.text
+    view._input.set_value("列出物体")
+    await view._send()
+    assert runner.call_args.kwargs["observation_mode"] == "ground_truth"
+    assert runner.call_args.kwargs["actions_enabled"] is False
+    assert view._chat._history
+    view._observation_select.set_value("visual")
+    assert not view._chat._history
+    assert "已开始新对话" in view._chat_status.text
+    preview.configure.assert_not_called()
+    view._set_pending(True)
+    assert not view._observation_select.enabled
+
+
+async def test_perception_configuration_is_explicit_session_scoped_and_forwarded(monkeypatch, page_slot):
+    runner = Mock(return_value={"reply": "目标位于前方", "actions": []})
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    preview = Mock()
+    with page_slot:
+        view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=preview)
+    view._observation_select.set_value("perception")
+    assert "检测未启用" in view._mode_help.text
+    view._detector_mode.set_value("remote")
+    view._detector_url.set_value("http://vision.test:8114")
+    view._apply_detector()
+    assert "已应用" in view._chat_status.text
+    view._input.set_value("定位 chair")
+    await view._send()
+    options = runner.call_args.kwargs
+    assert options["observation_mode"] == "perception" and options["actions_enabled"] is False
+    assert options["detector_config"].url == "http://vision.test:8114"
+    assert options["detector_config"].max_frame_age_s == 5
+    copied = view._chat.detector_config
+    copied.mode = "disabled"
+    assert view._chat.detector_config.mode == "remote"
+    assert view._chat._history
+    view._detector_mode.set_value("disabled")
+    view._apply_detector()
+    assert not view._chat._history
+    assert view._chat.last_execution is None
+    view._set_pending(True)
+    assert not view._detector_apply.enabled
+    preview.configure.assert_not_called()
+
+
+def test_invalid_detector_settings_preserve_previous_configuration(panel):
+    view, _ = panel
+    view._detector_mode.set_value("local")
+    view._detector_port.set_value(8114.5)
+    view._apply_detector()
+    assert "未应用" in view._chat_status.text
+    assert view._chat.detector_config.mode == "disabled"
+    view._detector_port.set_value(8115.0)
+    view._sam2_model.set_value("/models/sam2")
+    view._apply_detector()
+    assert view._chat.detector_config.local.port == 8115
+    assert view._chat.detector_config.local.sam2_model_id == "/models/sam2"
+
+
 async def test_switch_off_revokes_running_agent_and_returns_to_read_only(monkeypatch, page_slot):
     entered, release = threading.Event(), threading.Event()
     captured = {}

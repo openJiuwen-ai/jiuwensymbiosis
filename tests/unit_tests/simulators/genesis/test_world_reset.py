@@ -153,6 +153,7 @@ def test_physics_preserves_existing_robot_self_collision_policy(world, monkeypat
     runtime, _ = world
     options = SimpleNamespace(SimOptions=lambda **kw: kw, RigidOptions=lambda **kw: kw)
     scene = Mock(side_effect=RuntimeError("options captured"))
+    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "genesis", SimpleNamespace(options=options, Scene=scene))
     monkeypatch.setitem(sys.modules, "gs_nyx", SimpleNamespace(nyx_py_sdk=SimpleNamespace()))
     monkeypatch.setitem(sys.modules, "gs_nyx.nyx_py_sdk", SimpleNamespace())

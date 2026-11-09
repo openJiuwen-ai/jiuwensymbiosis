@@ -59,6 +59,31 @@ def test_readonly_session_has_no_base_capability_or_motion_lease(preview):
     preview.release_motion.assert_not_called()
 
 
+@pytest.mark.parametrize("backend", ["gdino", "gdino_sam2"])
+def test_perception_session_checks_actual_backend_and_closes_client(preview, monkeypatch, backend):
+    from jiuwensymbiosis.errors import InferenceServiceError
+    from jiuwensymbiosis.perception.config import DetectorConfig
+    from jiuwensymbiosis.perception.detector_client import create_detector_client
+    from jiuwensymbiosis.utils.service_http import HttpEndpointConfig
+
+    cfg = DetectorConfig(mode="remote", endpoint=HttpEndpointConfig(url="http://vision.test"))
+    client = create_detector_client(cfg, required_backend="gdino_sam2")
+    monkeypatch.setattr(client, "readiness", lambda: {"backend": backend})
+    monkeypatch.setattr("jiuwensymbiosis.perception.detector_client.create_detector_client", lambda _, **kwargs: client)
+    session = make_session(preview, actions_enabled=False, observation_mode="perception", detector_config=cfg)
+    if backend == "gdino":
+        with pytest.raises(InferenceServiceError, match="gdino_sam2"):
+            session.connect()
+    else:
+        with session:
+            names = {m["name"] for m in list_tool_meta(session.api, env=session.env)}
+            assert "locate_target" in names and "approach_target" not in names
+            assert not any(name.startswith("sim_") for name in names)
+    assert client._http.closed
+    assert session.cleanup_report().released
+    preview.acquire_motion.assert_not_called()
+
+
 @pytest.mark.parametrize("changed", [{"camera_name": "observer"}, {"captured_at": 0}])
 async def test_mismatched_or_stale_frame_is_not_saved(preview, tmp_path, changed):
     original = preview.capture_image.side_effect
@@ -84,8 +109,10 @@ async def test_exact_pixels_staged_until_tool_reply_and_bounded(preview, tmp_pat
     assert shown.call_args.args[0]["image_url"] == url
     assert camera.frames[0]["injected"]
     assert (tmp_path / "run-1.jpg").read_bytes() == b"exact-camera-jpeg"
+    for _ in range(6):
+        camera.record_capture(preview.capture_image.side_effect("head_cam"), replace_pending=True)
     for _ in range(3):
-        await camera.capture("head_cam")
+        assert "error" not in await camera.capture("head_cam")
     assert "error" in await camera.capture("head_cam")
     assert preview.capture_image.call_count == 4
 
@@ -125,6 +152,45 @@ async def test_failed_delivery_stops_instead_of_claiming_vision(preview, tmp_pat
     assert camera.error and not camera.frames[0]["injected"]
     shown.assert_not_called()
     ctx.request_force_finish.assert_called_once()
+
+
+async def test_internal_rgbd_frames_retain_evidence_and_deliver_only_latest_exact_rgb(preview, tmp_path):
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    shown = Mock()
+    camera = CameraObservation(preview, threading.Event(), tmp_path, "run", shown)
+    for index in range(2):
+        raw = preview.capture_image("head_cam")
+        rgb = np.full((8, 10, 3), 80 + 20 * index, dtype=np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(rgb).save(buf, format="JPEG", quality=95)
+        raw.update(id=f"sensor-{index}", rgb=rgb, depth_m=np.ones((8, 10), np.float32), jpeg=buf.getvalue())
+        raw["camera"]["T_base_camera_mm"] = np.eye(4).tolist()
+        camera.record_capture(raw, replace_pending=True)
+    mask = np.zeros((8, 10), bool)
+    mask[2:6, 3:8] = True
+    camera.record_detection("sensor-1", "chair", rgb, {"mask": mask, "box": [3, 2, 8, 6], "score": 0.9, "label": "bed"})
+    assert len(camera.frames) == 2 and len(camera.pending) == 1
+    assert (tmp_path / "run-1-rgbd.npz").exists() and (tmp_path / "run-2-mask.png").exists()
+    with np.load(tmp_path / "run-2-rgbd.npz") as saved:
+        np.testing.assert_array_equal(saved["rgb"], rgb)
+    ctx = SimpleNamespace(context=SimpleNamespace(add_messages=AsyncMock()), request_force_finish=Mock())
+    await camera.before_model_call(ctx)
+    message = ctx.context.add_messages.call_args.args[0]
+    url = message.content[1]["image_url"]["url"]
+    assert base64.b64decode(url.split(",", 1)[1]) == raw["jpeg"]
+    delivered = shown.call_args.args[0]
+    assert delivered["image_url"] == url
+    assert delivered["detection_image_url"] != url and delivered["sensor_frame_id"] == "sensor-1"
+    assert message.content[3]["image_url"]["url"] == delivered["detection_image_url"]
+    assert "高亮区域" in message.content[2]["text"]
+    assert '"bed"' in message.content[2]["text"]
+    assert camera.frames[1]["detection"]["label"] == "bed"
+    assert not camera.frames[0]["injected"] and camera.frames[1]["injected"]
+    assert "PRIVATE_EXTRINSICS" not in str(message)
 
 
 async def test_readonly_chat_reuses_agent_and_discards_late_ui_callback(monkeypatch, preview):
@@ -306,3 +372,10 @@ async def test_vendor_exception_class_name_cannot_leak_credentials(preview, tmp_
         await camera.capture("head_cam")
     assert "genesis.camera.capture_failed (Exception)" in caplog.text
     assert "PRIVATE" not in caplog.text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_perception_requires_detector_before_connect(preview, enabled):
+    with pytest.raises(ValueError, match="detector"):
+        make_session(preview, actions_enabled=enabled, observation_mode="perception")
+    preview.acquire_motion.assert_not_called()
