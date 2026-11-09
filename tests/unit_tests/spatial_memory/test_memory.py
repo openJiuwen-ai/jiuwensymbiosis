@@ -147,7 +147,7 @@ def test_latest_gaps_do_not_relabel_historical_gaps_as_open_tasks(tmp_path):
 
 
 def test_duplicate_masks_and_merged_instances_are_not_forcibly_assigned(tmp_path):
-    obs, batch = sample(boxes=((15, 35), (15, 35)))
+    obs, batch = sample(boxes=((15, 35), (18, 38)))
     with SpatialMemory(tmp_path / "duplicate.db") as memory:
         receipt = memory.ingest(obs, batch)
         assert all(a["reason"] == "overlapping_masks" for a in receipt["assignments"])

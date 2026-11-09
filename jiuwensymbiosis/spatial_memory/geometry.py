@@ -83,11 +83,14 @@ def project(
     return points, histogram, quality
 
 
-def surface_in_view(points: np.ndarray, observation: Observation) -> np.ndarray:
+def surface_in_view(
+    points: np.ndarray, observation: Observation, *, occlusion_margin_m: float | None = None
+) -> np.ndarray:
     """Exclude remembered points outside the current camera, never outside a mask.
 
     Cropping to a detection mask would confuse small contained objects with their
-    parent. This geometric frustum crop does not infer occlusion or hidden faces.
+    parent. Optional depth testing removes only independently measured foreground occlusion.
+    Missing depth remains unknown; this never reconstructs hidden faces.
     """
     transform, k = observation.map_from_camera, observation.intrinsics
     camera = (points - transform[:3, 3]) @ transform[:3, :3]
@@ -97,7 +100,15 @@ def surface_in_view(points: np.ndarray, observation: Observation) -> np.ndarray:
     pixels = camera[:, :2] / camera[:, 2, None] * [k[0, 0], k[1, 1]] + [k[0, 2], k[1, 2]]
     height, width = observation.depth_m.shape
     inside = (pixels[:, 0] >= 0) & (pixels[:, 0] < width) & (pixels[:, 1] >= 0) & (pixels[:, 1] < height)
-    return np.asarray(selected[inside])
+    selected = selected[inside]
+    if occlusion_margin_m is not None:
+        # Only independent scene depth can establish occlusion. Cropping to a
+        # detection mask instead would falsely merge a small object with its parent.
+        uv = np.floor(pixels[inside]).astype(int)
+        measured = observation.depth_m[uv[:, 1], uv[:, 0]]
+        occluded = np.isfinite(measured) & (measured > 0) & (camera[inside, 2] > measured + occlusion_margin_m)
+        selected = selected[~occluded]
+    return np.asarray(selected)
 
 
 def compare_surfaces(

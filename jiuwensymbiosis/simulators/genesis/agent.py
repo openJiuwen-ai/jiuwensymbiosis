@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from jiuwensymbiosis.agent.config import ModelSpec, RobotAgentConfig, build_model
 from jiuwensymbiosis.agent.run import run_robot_task
@@ -63,11 +63,14 @@ from jiuwensymbiosis.simulators.genesis.observation_policy import (
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 from jiuwensymbiosis.simulators.genesis.visual_policy import motion_feedback
 
+if TYPE_CHECKING:
+    from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
+
 
 class GenesisDriver:
     def __init__(
         self,
-        preview: GenesisPreview,
+        preview: GenesisPreview | ResidentPreview,
         cancelled: threading.Event | None = None,
         *,
         actions_enabled: bool = True,
@@ -557,7 +560,7 @@ class GenesisTruthPickApi(GenesisManipulationApi):
 
 
 def make_session(
-    preview: GenesisPreview,
+    preview: GenesisPreview | ResidentPreview,
     *,
     cancelled: threading.Event | None = None,
     actions_enabled: bool = True,
@@ -622,7 +625,7 @@ def make_session(
 
 
 def run_agent_query(
-    preview: GenesisPreview,
+    preview: GenesisPreview | ResidentPreview,
     spec: ModelSpec,
     query: str,
     *,
