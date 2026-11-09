@@ -58,6 +58,11 @@ Api 用 `@implements(SPEC)` 绑定共享词表里本体支持的动作，公开�
 
 ```python
 class MyApi(BaseRobotApi):
+    # 末端没有实测通道时必须声明：fastagent 下「指令成功」不建立 payload.held，
+    # 证据未知即失败（见适配器参考的「抓取证据」小节）。有反馈通道的本体请改为
+    # 实现 is_grasp_confirmed 或返回 grasp_confirmed/contact 字段。
+    trust_command_grasp = True
+
     @implements(GOTO_XYZR)
     def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
                   *, orientation_policy: str = "top_down") -> None:
