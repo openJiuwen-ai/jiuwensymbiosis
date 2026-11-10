@@ -14,7 +14,7 @@ import numpy as np
 
 def effective_focal(size: tuple[int, int], fov_degrees: float, nyx_version: str, plugin_version: str) -> float:
     """Pinned projection behavior established by independent native-ray/RGB probes."""
-    if (nyx_version, plugin_version) != ("0.1.7", "0.1.9"):
+    if (nyx_version, plugin_version) not in {("0.1.7", "0.1.9"), ("0.1.9", "0.1.10")}:
         raise ValueError("Nyx camera projection requires validation for this SDK/plugin version")
     radians = float(np.float16(math.radians(fov_degrees)))
     return size[1] / (2 * math.tan(radians / 2))

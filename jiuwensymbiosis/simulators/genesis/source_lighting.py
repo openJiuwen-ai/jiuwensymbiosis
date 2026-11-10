@@ -162,7 +162,7 @@ def make_environment(rig: SourceLighting):
     env = nps.EnvironmentMapAsset()
     env.texture = rig.hdr
     env.layout = nps.EEnvMapLayout.LongLat
-    env.rotation = rig.rotation_rad
+    env.rotation = math.degrees(rig.rotation_rad)
     env.multiplier = rig.multiplier
     env.tint = nps.float3(*rig.tint)
     return env

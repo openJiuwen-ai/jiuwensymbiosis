@@ -130,7 +130,7 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --outp
 ```
 
 渲染需要受支持的 NVIDIA GPU/驱动；安装完成不等于 GPU 验收通过。
-`genesis` 固定 Torch 2.11.0+cu130、Genesis 1.4.4、Nyx plugin 0.1.9/Nyx 0.1.7、Pillow 11.3.0。
+`genesis` 固定 Torch 2.11.0+cu130、Genesis 1.4.6、Nyx plugin 0.1.10/Nyx 0.1.9、Pillow 11.3.0。
 不要与固定其他 Torch 版本的 `full`、`vision-server`、`voice-local` 合装，
 也不要与要求 Pillow>=12 的 `dev`、`remote` 合装；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
 本批尚不提供 WebRTC 或工作台仿真界面。

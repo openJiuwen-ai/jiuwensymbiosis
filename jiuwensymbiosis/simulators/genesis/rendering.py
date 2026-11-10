@@ -149,10 +149,10 @@ class SceneRenderer:
                         instance.subscene_uri = str(replacement)
                         asset.set_instance(index, instance)
             nps.export_scene_file(path, asset)
-        # Nyx 0.1.9 exposes this bridge only as an internal attribute.
+        # The plugin exposes entity/UUID correspondence only as an internal attribute.
         entity_pairs = getattr(exporter, "_entity_uuid_pairs", None)
         if entity_pairs is None:
-            raise RuntimeError("Nyx exporter bridge unavailable; requires gs-nyx-plugin 0.1.9")
+            raise RuntimeError("Nyx exporter bridge unavailable; requires gs-nyx-plugin 0.1.10")
         self.entity_pairs = entity_pairs
         self.appearance = {"color_management": color_management}
         if source is not None:
@@ -244,12 +244,8 @@ class SceneRenderer:
         self._scene.visualizer.update_visual_states()
         self._renderer.update_scene()
         self._renderer.update()
-        # The plugin's render() batches every camera. The pinned native bridge
-        # applies the same uploaded poses but renders only this one camera.
-        native = getattr(self._renderer, "_renderer", None)
-        if native is None:
-            raise RuntimeError("Nyx native renderer unavailable; requires a built gs-nyx-plugin 0.1.9 renderer")
-        rgb = native.render_frame(self._camera_indices[camera_name])
+        # The public plugin API owns batched rendering and external GPU buffers.
+        rgb = self._renderer.render(self._camera_indices[camera_name], 0)
         self.render_counts[camera_name] += 1
         if camera_name == "observer":
             return rgb

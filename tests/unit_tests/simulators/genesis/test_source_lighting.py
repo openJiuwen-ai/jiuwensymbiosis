@@ -137,3 +137,23 @@ def test_normalization_uses_world_area_only_when_enabled(rig_source, normalize, 
     assert rectangle.radiance == pytest.approx(expected)
     assert np.array(rectangle.radiance) * area == pytest.approx(base if normalize else base * area)
     assert rig_source.read_bytes() == original
+
+
+def test_environment_rotation_uses_sdk_degrees(monkeypatch):
+    """Keep USD's internal radians while honoring Nyx 0.1.9's degree boundary."""
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    package = ModuleType("gs_nyx")
+    sdk = ModuleType("gs_nyx.nyx_py_sdk")
+    sdk.EnvironmentMapAsset = SimpleNamespace
+    sdk.EEnvMapLayout = SimpleNamespace(LongLat="longlat")
+    sdk.float3 = lambda *values: values
+    package.nyx_py_sdk = sdk
+    monkeypatch.setitem(sys.modules, "gs_nyx", package)
+    monkeypatch.setitem(sys.modules, "gs_nyx.nyx_py_sdk", sdk)
+    rig = source_lighting.SourceLighting("sky.hdr", math.pi / 2, 2, (1, 1, 1), (), 0)
+    env = source_lighting.make_environment(rig)
+    assert env.rotation == pytest.approx(90)
+    assert env.texture == "sky.hdr"
+    assert env.multiplier == 2

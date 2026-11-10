@@ -88,6 +88,7 @@ def test_sample_depth_cancellation_remains_bounded_between_ray_blocks(ray_sdk):
 def test_validated_fov_correction_and_unknown_versions_fail_closed():
     focal = effective_focal((684, 524), math.degrees(1.1832457862453918), "0.1.7", "0.1.9")
     assert focal == pytest.approx(389.7874463923982)
+    assert effective_focal((684, 524), math.degrees(1.1832457862453918), "0.1.9", "0.1.10") == pytest.approx(focal)
     with pytest.raises(ValueError, match="validation"):
         effective_focal((684, 524), 60, "0.2.0", "0.1.9")
 
