@@ -30,6 +30,10 @@ from usd_scene import prepare_static_stage
 
 logger = logging.getLogger("jiuwensymbiosis.simulators.genesis.worker")
 
+# OpenCV reads this at its first import, which happens inside this process when
+# the renderer bakes EXR material textures; setting it later has no effect.
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+
 
 def run_preview(mailbox: Mailbox, directory: Path) -> None:
     """Keep Genesis initialized while replacing only the resources that changed."""

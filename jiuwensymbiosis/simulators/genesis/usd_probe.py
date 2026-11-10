@@ -17,16 +17,20 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING or __package__:
     from .camera import OrbitCamera, PreviewSettings
     from .rendering import SceneRenderer
-    from .scene_catalog import resolve_scene, scene_catalog
+    from .scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
     from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
 else:
     from camera import OrbitCamera, PreviewSettings
     from rendering import SceneRenderer
-    from scene_catalog import resolve_scene, scene_catalog
+    from scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
     from usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
 def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
+    import os
+
+    # OpenCV reads this at FIRST import; EXR material textures need it before that.
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
     import genesis as gs
     import gs_nyx.nyx_py_sdk as nps
@@ -62,7 +66,14 @@ def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
         env.texture = str(hdr)
         env.layout = nps.EEnvMapLayout.LongLat
         background = SceneRenderer(
-            scene, output / "static.usda", output, settings, pose, env, exposure=report["preview_exposure_ev"]
+            scene,
+            output / "static.usda",
+            output,
+            settings,
+            pose,
+            env,
+            exposure=report["preview_exposure_ev"],
+            material_rules=material_rules_for_asset(asset),
         )
         report["startup_s"] = round(time.monotonic() - started, 3)
         render_ms = []

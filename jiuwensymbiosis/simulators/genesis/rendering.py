@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .material_repair import MaterialRules
 
 
 class SceneRenderer:
@@ -27,6 +31,8 @@ class SceneRenderer:
         robot=None,
         cameras=None,
         startup=None,
+        material_rules: MaterialRules | None = None,
+        material_directory: Path | None = None,
     ):
         import gs_nyx.nyx_py_renderer as npr
         import gs_nyx.nyx_py_sdk as nps
@@ -151,7 +157,11 @@ class SceneRenderer:
         self.entity_pairs = entity_pairs
         self.appearance = {"color_management": color_management}
         if source is not None:
-            # Keep authored materials and texture references for the renderer to interpret.
+            # Without rules prepare_materials converts nothing and returns the
+            # source unchanged, so skip it: the default preview path must not
+            # require pxr just to report what it would leave untouched.
+            if material_rules:
+                source = self._repair_materials(source, directory, material_rules, material_directory)
             asset = nps.SceneAsset()
             if not nps.import_scene_file(path, asset):
                 raise RuntimeError("无法创建 Nyx 背景场景。")
@@ -195,6 +205,32 @@ class SceneRenderer:
         except BaseException:
             self.close()
             raise
+
+    def _repair_materials(
+        self, source: Path, directory: Path, rules: MaterialRules, material_directory: Path | None
+    ) -> Path:
+        """Return the material-repaired source layer and record a compact summary."""
+        if TYPE_CHECKING or __package__:
+            from .material_repair import prepare_materials
+        else:
+            from material_repair import prepare_materials
+
+        # Baked textures are content-addressed (source digest + parameters):
+        # a persistent material_directory lets renderer rebuilds reuse them
+        # instead of re-baking a full texture session on every resolution change.
+        materials_dir = Path(material_directory) if material_directory is not None else directory / "materials"
+        repaired, repair = prepare_materials(source, materials_dir, rules=rules)
+        # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
+        # paths and bake manifests on disk instead of sending megabytes.
+        self.appearance["material_repair"] = {
+            "converted": repair["converted"],
+            "textures": repair["textures"],
+            "remaining": len(repair["remaining"]),
+            "issues": dict(Counter(item["kind"] for item in repair["issues"])),
+            "baked_textures": len(repair["baked_textures"]),
+            "report_path": str(materials_dir / "material-repair.json") if repair["converted"] else None,
+        }
+        return repaired
 
     def update_camera_pose(self, *, pos, lookat, up):
         self._renderer.update_camera_tensor(0, pos, lookat, up)
