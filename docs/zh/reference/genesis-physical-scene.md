@@ -59,3 +59,17 @@ Nyx 投影仅接受代码已验证的 SDK 0.1.7 / plugin 0.1.9 组合；其他�
 导航图将支撑面与障碍分开，按本体范围和网格余量收缩可用空间；无支撑、障碍、地图过大或动态
 目标会拒绝相应规划。得到路径不等于机器人已执行、停稳或到达。MOZ1 上身通过物理控制保持初始
 关节姿态，实际负载、接触和运行效果仍需单独物理验收。
+
+## 材质转换与占据图导出
+
+`RuntimeScene.info["appearance"]["material_repair"]` 是跨 IPC 的摘要：
+`converted` / `textures` / `remaining`（计数）/ `issues`（按种类计数）/
+`baked_textures`（计数）/ `report_path`（指向输出目录的 `material-repair.json`，
+含逐材质明细）。声明了 `material_rules` 的资产根在渲染前做非破坏转换——源 USD
+不改写，烘焙产物内容寻址缓存并随场景缓存持久化（分辨率重建渲染器时复用）；
+单个材质失败只记入 `issues`，不中断整场。
+
+`occupancy.build_occupancy` 从同一批房间网格导出离线占据图（png/pgm/npz/yaml
++ 依赖哈希报告）。它是评估导出：`sensor_derived=False`、无足迹膨胀、不证明与
+物理碰撞等价；运行时规划以 `navigation.NavigationMap` 为准（两者使用相同的
+高度带边界，占据图的地面层按面积投票独立推导）。

@@ -1,4 +1,4 @@
-"""Camera display settings; source materials are passed to the renderer unchanged."""
+"""Camera display settings; material conversion is decided by the root's declared rules."""
 
 from __future__ import annotations
 

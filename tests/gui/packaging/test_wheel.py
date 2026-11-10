@@ -155,9 +155,10 @@ assert "genesis" not in sys.modules
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from jiuwensymbiosis.simulators.genesis import appearance, source_lighting, usd_probe
+from jiuwensymbiosis.simulators.genesis import appearance, material_baking, material_repair, material_surface, source_lighting, usd_probe
+from jiuwensymbiosis.simulators.genesis.material_rules import interioragent
 root = Path(sys.argv[1])
-for module in (appearance, source_lighting, usd_probe):
+for module in (appearance, material_baking, material_repair, material_surface, interioragent, source_lighting, usd_probe):
     assert Path(module.__file__).is_relative_to(root)
 for path in (appearance.PROFILE_PATH, source_lighting.PROFILE_PATH):
     assert path.is_relative_to(root) and path.is_file()
@@ -171,6 +172,10 @@ assert "genesis" not in sys.modules
 import sys
 sys.path.insert(0, sys.argv[1])
 import usd_probe
+from scene_catalog import material_rules_for_asset
+from types import SimpleNamespace
+assert material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(material_rules="interioragent")))
+assert not material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(root_id="interioragent")))
 assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
 sys.argv = ["usd_probe", "--help"]
 usd_probe.main()

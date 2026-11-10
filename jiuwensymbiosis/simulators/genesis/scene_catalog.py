@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 # worker.py 作为独立文件运行，不能触发核心包/openjiuwen 的全局导入钩子。
 # 同一资产实现也可从 simulators 目录作为轻量包导入，不复制解析逻辑。
 if TYPE_CHECKING or __package__:
-    from jiuwensymbiosis.simulators.assets import AssetError, AssetLibrary, ResolvedAsset, validate_material_bundle
+    from ..assets import AssetError, AssetLibrary, ResolvedAsset, validate_material_bundle
 else:
     # Load this sibling package explicitly; never shadow an installed assets or
     # genesis package, or execute the core package's global import hooks.
@@ -35,8 +35,18 @@ else:
     ResolvedAsset = assets.ResolvedAsset
     validate_material_bundle = assets.validate_material_bundle
 
+if TYPE_CHECKING:
+    from .material_repair import MaterialRules
+
 DEMO = "demo"
-__all__ = ["DEMO", "resolve_scene", "scene_catalog", "scene_path", "validate_material_bundle"]
+__all__ = [
+    "DEMO",
+    "material_rules_for_asset",
+    "resolve_scene",
+    "scene_catalog",
+    "scene_path",
+    "validate_material_bundle",
+]
 
 
 def scene_catalog() -> list[dict[str, str]]:
@@ -71,3 +81,17 @@ def resolve_scene(scene_id: str) -> ResolvedAsset:
 
 def scene_path(scene_id: str) -> Path:
     return resolve_scene(scene_id).preview_path
+
+
+def material_rules_for_asset(asset: ResolvedAsset | None) -> MaterialRules | None:
+    """Select recipes from the root's declared ``material_rules`` key, never paths or shader names."""
+    if asset is None:
+        return None
+    key = getattr(asset.asset, "material_rules", None)
+    if not key:
+        return None
+    if TYPE_CHECKING or __package__:
+        from .material_rules import rules_for
+    else:
+        from material_rules import rules_for
+    return rules_for(key)

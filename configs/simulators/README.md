@@ -40,6 +40,8 @@ python jiuwensymbiosis/simulators/assets probe library://geniesim/background/kit
 
 - `root.path`、`index` 支持绝对路径、相对于 YAML 的路径和 `~`，不展开环境变量。
 - `content_path` 相对于资产根目录，文件关联必须留在根目录内；不支持 URL 或自动下载。
+- 根可用 `material_rules` 声明该来源使用哪套材质转换规则（如
+  `material_rules: interioragent`）；行为由这个声明决定，不由根 ID 命名决定。
 - 更改资产位置、内容或扫描规则后重新 `build`。扫描或写库失败会保留旧索引。
 - SQLite 保存路径、加载选项与材质摘要，不包含 USD、URDF、网格或贴图内容；加载仍需源文件。
 
@@ -135,9 +137,23 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --outp
 也不要与要求 Pillow>=12 的 `dev`、`remote` 合装；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
 本批尚不提供 WebRTC 或工作台仿真界面。
 
-源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
-曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
-灯光转换和拾取测试验证 USD 数值/几何，不代表画质、接触物理或机器人任务验收。
+源 USD 与贴图文件保持不变；对声明了 `material_rules` 的资产根，渲染前做非破坏的
+材质转换与贴图烘焙（见下文「源材质渲染」），逐材质明细写入输出目录的
+`material-repair.json`。
+曝光和色彩映射只作用于相机显示；灯光转换和拾取测试验证 USD 数值/几何，
+不代表画质、接触物理或机器人任务验收。
+
+配套批处理与导出工具（`.[genesis]` 环境，输出目录按资产 ID 建档）：
+
+```bash
+python scripts/simulator/genesis/genesis_interioragent_batch.py --output outputs/interioragent-batch
+python scripts/simulator/genesis/genesis_material_acceptance.py --output outputs/material-acceptance
+python scripts/simulator/genesis/genesis_scene_occupancy.py --scene <资产ID> --output outputs/scene-map
+```
+
+批处理逐场景独立进程渲染并构建离线地图；验收脚本汇总转换/剩余/烘焙计数，
+任一场景渲染失败以非零退出；占据图脚本导出 png/pgm/npz/yaml 与依赖哈希报告
+（也可在 `.[simulator-scenes]` CPU 环境运行）。
 
 
 ## 独立运行与媒体后端
@@ -173,5 +189,17 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 ## 源材质渲染
 
-源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
-曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
+对在 `assets.yaml` 中声明了 `material_rules` 的资产根（如 InteriorAgent 根声明
+`material_rules: interioragent`），渲染前会把已知不支持的 MDL 模板族转换为
+`UsdPreviewSurface`：非破坏地在独立覆盖层写入新材质，源 USD 与贴图文件不改写。
+转换计数、烘焙明细、剩余未支持项与近似标注（如菲涅尔双瓣取正向分支）逐材质
+记录在输出目录的 `material-repair.json`；未声明规则的根或不在规则内的模板族
+保持渲染器默认行为并在报告中列为 `remaining`。
+
+贴图按 UV 仿射变换重采样烘焙，输出内容寻址缓存（分辨率/画质重建渲染器时复用，
+不重复烘焙）；EXR/HDR 线性源按线性处理，不做二次伽马。单个材质转换失败只影响
+该材质（记入 `issues`，保留常量回退），不会导致整场打不开。
+
+材质等价性未经物理验收：转换是显式近似，报告中的 `issues` 逐条标注偏离；
+占据图等评估产物不证明与物理碰撞等价，也不直接授权执行导航（运行时规划以
+`navigation.NavigationMap` 为准）。
