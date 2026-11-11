@@ -346,7 +346,7 @@ with session:
 ## 6. Configure software and hardware safety boundaries
 
 SafetyRail checks Cartesian Z, XY workspace, and joint soft limits before dispatch and transparently unwraps
-`RobotControlTool` actions. A rejected call raises a corrective `ValueError` and must not reach hardware.
+`RobotControlTool` actions. A rejected call aborts with `AbortError` (cause `SafetyViolationError`, still a `ValueError` subclass carrying the corrective message) and must not reach hardware.
 
 ### Boundary configuration and ownership
 

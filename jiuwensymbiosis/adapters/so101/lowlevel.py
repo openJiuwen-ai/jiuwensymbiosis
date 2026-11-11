@@ -58,6 +58,7 @@ __all__ = [
     "So101Driver",
     "So101PreDispatchError",
     "So101PoseConvergenceError",
+    "So101TrackingViolation",
 ]
 
 _logger = get_logger(__name__)
@@ -123,6 +124,19 @@ class So101PoseConvergenceError(RuntimeError):
             f"SO-101 Cartesian target not reached: {self.reason}; "
             f"residual={self.residual_mm:.3f} mm > tolerance={self.tolerance_mm:.3f} mm."
         )
+
+
+class So101TrackingViolation(SafetyViolationError):
+    """The observed pose left the envelope *after* commands were sent.
+
+    A plain ``SafetyViolationError`` declares ``skip_recovery`` because most of
+    its raise sites are pre-dispatch envelope checks. Tracking checks run after
+    ``_send_action``, where the arm has moved and may now be outside the
+    workspace/floor: RecoveryRail must still release/home, so this subclass
+    clears the marker.
+    """
+
+    skip_recovery = False
 
 
 class So101CartesianServoError(ValueError):
@@ -1389,7 +1403,7 @@ class So101Driver:
             if period > 0:
                 self._sleep(period)
             observed = np.asarray(self.get_angles(), dtype=float)
-            self._validate_joint_waypoint(
+            self._validate_tracking_waypoint(
                 observed,
                 label="waypoint tracking",
                 z_floor_override=z_floor_override,
@@ -1444,7 +1458,7 @@ class So101Driver:
                 raise TimeoutError(f"SO-101 final target did not settle within the move timeout ({settle_timeout_s}s).")
             actual = np.asarray(self.get_angles(), dtype=float)
             last_actual = actual
-            self._validate_joint_waypoint(
+            self._validate_tracking_waypoint(
                 actual,
                 label="settle tracking",
                 z_floor_override=z_floor_override,
@@ -2489,6 +2503,25 @@ class So101Driver:
         fk_matrix = np.asarray(self._kin.forward_kinematics(q_arr), dtype=float)
         fk_pose = matrix_m_to_pose_mm_deg(fk_matrix)
         self._check_cartesian_bounds(fk_pose, label=f"{label} FK", z_floor_override=z_floor_override)
+
+    def _validate_tracking_waypoint(
+        self,
+        q: np.ndarray,
+        *,
+        label: str,
+        z_floor_override: float | None = None,
+    ) -> None:
+        """Validate an *observed* pose after dispatch and keep recovery enabled.
+
+        ``_validate_joint_waypoint`` is shared with pre-dispatch planning, whose
+        ``SafetyViolationError`` opts out of recovery. A tracking violation is
+        different: commands were already sent, so raise the marked-for-recovery
+        subclass (``from None`` keeps the marked cause out of the chain).
+        """
+        try:
+            self._validate_joint_waypoint(q, label=label, z_floor_override=z_floor_override)
+        except SafetyViolationError as exc:
+            raise So101TrackingViolation(str(exc)) from None
 
     def _check_cartesian_bounds(
         self,

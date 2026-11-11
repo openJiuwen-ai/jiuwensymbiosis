@@ -32,9 +32,10 @@ from jiuwensymbiosis.agent.fast.ability_exec import build_ability_executor
 class _FakeAbilityManager:
     """Returns one scripted ToolOutput/exception and records the dispatched action/params."""
 
-    def __init__(self, output, *, recovered=False):
+    def __init__(self, output, *, recovered=False, extra_code=None):
         self._output = output
         self._recovered = recovered
+        self._extra_code = extra_code
         self.dispatched: list[dict] = []
 
     async def execute(self, ctx, tool_calls, session):
@@ -42,14 +43,17 @@ class _FakeAbilityManager:
         if self._recovered:
             # What RecoveryRail.after_tool_call leaves behind after release/home.
             ctx.extra["jiuwensymbiosis.recovery_performed"] = True
+        if self._extra_code:
+            # What SafetyRail.before_tool_call parks before aborting the call.
+            ctx.extra["jiuwensymbiosis.safety_error_code"] = self._extra_code
         if isinstance(self._output, Exception):
             raise self._output
         return [[self._output]]
 
 
-def _run_for(output, *, recovered=False):
+def _run_for(output, *, recovered=False, extra_code=None):
     agent = SimpleNamespace(
-        ability_manager=_FakeAbilityManager(output, recovered=recovered),
+        ability_manager=_FakeAbilityManager(output, recovered=recovered, extra_code=extra_code),
         react_agent=SimpleNamespace(),
         loop_session=SimpleNamespace(),
     )
@@ -135,6 +139,14 @@ class TestAbilityExecutorSurfacesBusinessOk:
         assert res["ok"] is False
         assert res["recovery_managed"] is True
         assert res["error_code"] == ""  # same key as every other failure branch
+
+    def test_aborted_safety_call_reports_the_code_from_the_context(self):
+        # SafetyRail aborts before a ToolOutput exists; it parks the code in
+        # ctx.extra so the fast path still reports ``safety_rejected``.
+        res = _run_for(None, extra_code="safety_rejected")("goto_xyzr", {"x": 0, "y": 0, "z": -1})
+        assert res["ok"] is False
+        assert res["error_code"] == "safety_rejected"
+        assert res["recovery_managed"] is True
 
     def test_wrapped_safety_rejection_needs_no_retreat(self):
         """The framework wraps failures; the skip marker lives on the cause."""

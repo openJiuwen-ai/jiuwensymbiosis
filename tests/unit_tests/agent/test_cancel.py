@@ -17,11 +17,6 @@ def _trip_after(token: CancelToken, delay: float) -> None:
     threading.Thread(target=lambda: (time.sleep(delay), token.set()), daemon=True).start()
 
 
-def test_run_cancelled_opts_out_of_recovery():
-    """RecoveryRail must not release/home after a user stop (architecture docs)."""
-    assert RunCancelled.skip_recovery is True
-
-
 def test_raise_if_set_and_is_set():
     token = CancelToken()
     assert not token.is_set()

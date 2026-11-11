@@ -12,7 +12,7 @@ import pytest
 from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwensymbiosis.env.mock import MockArmEnv
-from jiuwensymbiosis.errors import SafetyViolationError
+from jiuwensymbiosis.errors import SAFETY_ERROR_CODE_KEY, SafetyViolationError
 from jiuwensymbiosis.rails.safety import SafetyRail
 from tests.helpers import FakeCtx, RecordingRailSink, make_mock_session
 from tests.mocks.mock_api import MockApi
@@ -747,6 +747,9 @@ class TestSafetyAbortContract:
         assert cause.code == "safety_rejected"
         assert cause.skip_recovery is True
         assert "below z_floor" in str(cause)
+        # No ToolOutput exists for an aborted call; the fast executor reads the
+        # code off the shared context instead.
+        assert ctx.extra[SAFETY_ERROR_CODE_KEY] == "safety_rejected"
 
     @pytest.mark.asyncio
     async def test_real_callback_chain_skips_rejected_tool_body(self, mock_session):

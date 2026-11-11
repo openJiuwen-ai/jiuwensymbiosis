@@ -281,6 +281,55 @@ class TestRecoveryRailTraceSink:
         assert sink.events[0][3] is True  # mock home succeeds
 
 
+class TestCancelledRunSkipsRecovery:
+    """The abandoned helper thread must not move the robot after a user stop."""
+
+    @pytest.mark.asyncio
+    async def test_after_tool_call_does_not_move_when_cancelled(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = CancelToken()
+        token.set()
+        mock_session.cancel_token = token
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {}}',
+            tool_result=SimpleNamespace(success=False, data={"action": "goto_xyzr", "dispatched": True}),
+        )
+
+        await rail.after_tool_call(ctx)
+
+        assert mock_session.api._call_log == []
+        assert RECOVERY_PERFORMED_KEY not in ctx.extra
+
+    @pytest.mark.asyncio
+    async def test_on_tool_exception_does_not_move_when_cancelled(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = CancelToken()
+        token.set()
+        mock_session.cancel_token = token
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await rail.on_tool_exception(ctx)
+
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
+    async def test_uncancelled_run_still_recovers(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        mock_session.cancel_token = CancelToken()
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await rail.on_tool_exception(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+
+
 class TestAfterToolCallRecovery:
     """RobotControlTool reports adapter failures as ``ToolOutput(success=False)``.
 
@@ -374,11 +423,13 @@ class TestAfterToolCallRecovery:
 
 
 class TestAfterToolCallChainContract:
-    """The hook must fire through openjiuwen's real callback chain (review on !100).
+    """The hook must fire through openjiuwen's real callback manager.
 
     Unit tests above feed ``FakeCtx``/``SimpleNamespace``; this one registers the
-    rail on a real ``AgentCallbackManager`` and uses a real ``RobotControlTool``
-    output, proving the wiring a skills-mode failure depends on.
+    rail on a real ``AgentCallbackManager``, drives the real ``AFTER_TOOL_CALL``
+    event with a real ``RobotControlTool`` output, and asserts the full recovery
+    (release + home). It proves registration/dispatch/input shape, not that the
+    whole agent loop emits the event — the framework owns that.
     """
 
     @pytest.mark.asyncio
@@ -428,4 +479,5 @@ class TestAfterToolCallChainContract:
             await manager.clear()
 
         assert any(call == "home" for call in mock_session.api._call_log)
+        assert any("deactivate_suction" in call for call in mock_session.api._call_log)
         assert ctx.extra[RECOVERY_PERFORMED_KEY] is True

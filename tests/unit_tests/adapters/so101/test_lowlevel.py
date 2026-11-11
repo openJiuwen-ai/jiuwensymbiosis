@@ -36,10 +36,11 @@ from jiuwensymbiosis.adapters.so101.lowlevel import (
     So101Driver,
     So101PoseConvergenceError,
     So101PreDispatchError,
+    So101TrackingViolation,
 )
 from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.protocol import HandGuidingDriver, HandGuidingRecoveryError
-from jiuwensymbiosis.errors import SAFETY_REJECTED, error_code
+from jiuwensymbiosis.errors import SAFETY_REJECTED, SafetyViolationError, error_code, find_skip_recovery_exception
 
 from .lowlevel_helpers import FakeFollower, FakeKinematics, fake_lerobot_import, make_calib_file
 
@@ -2266,6 +2267,30 @@ class TestHome:
         with pytest.raises(ValueError, match="below driver z_min_safe"):
             driver.home()
         assert follower.sent_actions == []
+
+    def test_tracking_violation_keeps_recovery_enabled(self, tmp_path):
+        """A pose observed *after* dispatch must still trigger release/home."""
+
+        class DippingKinematics:
+            def forward_kinematics(self, q):
+                z = (float(np.asarray(q, dtype=float)[0]) - 5.0) ** 2
+                return pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, z, 0.0, 0.0, 0.0))
+
+        driver, _, _ = _make_driver(_make_cfg(z_min_safe_mm=10.0), tmp_path)
+        driver.connect()
+        driver._kin = DippingKinematics()
+
+        with pytest.raises(So101TrackingViolation, match="below driver z_min_safe") as info:
+            driver._validate_tracking_waypoint(
+                np.array([5.0, 0.0, 0.0, 0.0, 0.0]),
+                label="waypoint tracking",
+            )
+
+        assert isinstance(info.value, SafetyViolationError)
+        assert info.value.skip_recovery is False
+        # The marked pre-dispatch cause must not leak into the chain, otherwise
+        # RobotControlTool would report dispatched=False and skip recovery.
+        assert find_skip_recovery_exception(info.value) is None
 
     def test_payload_lowest_point_is_checked_against_table(self, tmp_path):
         cfg = _make_cfg(

@@ -24,8 +24,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from jiuwensymbiosis.errors import SAFETY_REJECTED, error_code
-from jiuwensymbiosis.rails.recovery import RECOVERY_PERFORMED_KEY, find_skip_recovery_exception
+from jiuwensymbiosis.errors import SAFETY_ERROR_CODE_KEY, SAFETY_REJECTED, error_code, find_skip_recovery_exception
+from jiuwensymbiosis.rails.recovery import RECOVERY_PERFORMED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,16 @@ def _failure_reason(output: Any, result_pair: Any) -> str:
     return str(content) or "tool failed"
 
 
-def _failure_code(output: Any) -> str:
-    """The failure's machine code, parked in ``ToolOutput.data`` by RobotControlTool."""
+def _failure_code(output: Any, extra: Any = None) -> str:
+    """The failure's machine code from the ToolOutput, else from the rail context.
+
+    An aborted call has no ToolOutput; SafetyRail parks its code in the shared
+    ``ctx.extra`` exactly so this branch can still report ``safety_rejected``.
+    """
     data = getattr(output, "data", None)
     code = data.get("error_code") if isinstance(data, dict) else None
+    if not code and isinstance(extra, dict):
+        code = extra.get(SAFETY_ERROR_CODE_KEY)
     return str(code) if code else ""
 
 
@@ -88,7 +94,7 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             return {
                 "ok": False,
                 "reason": _failure_reason(output, results[0]),
-                "error_code": _failure_code(output),
+                "error_code": _failure_code(output, getattr(ctx, "extra", None)),
                 "recovery_managed": True,
             }
         if not getattr(output, "success", False):

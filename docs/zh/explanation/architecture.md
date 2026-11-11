@@ -278,7 +278,7 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 
 检查范围还取决于动作名和参数格式。例如 SO-101 的 `goto_pose` 将 `x` / `y` / `z` 放在嵌套的 `pose` 对象中，SafetyRail 提取这些字段后执行 Z/XY 检查。Piper 当前通过 `goto_xyzr` 接受工具尖端 XYZ/R 目标并使用标定倾角，尚未实现 `goto_pose`。
 
-`RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位（fast 执行器通过 `ctx.extra` 的 `jiuwensymbiosis.recovery_performed` 标记判断 rail 是否已经恢复）。`RobotControlTool` 会把适配器异常转成 `ToolOutput(success=False)`，这类失败由 `after_tool_call` 处理；只有真正下发到适配器的失败（`data["dispatched"]`）才恢复，预检拒绝与用户取消（带 `skip_recovery` 标记）不会触发归位。恢复属于尽力执行，不能保证设备最终处于安全状态。
+`RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位（这是 rail 的 `skip_home` 规则）。`RobotControlTool` 会把适配器异常转成 `ToolOutput(success=False)`，这类失败由 `after_tool_call` 处理；进入动作体且异常链上没有 `skip_recovery` 标记的失败（`data["dispatched"]`）才恢复，预检拒绝、声明无需恢复的动作、以及用户取消（取消令牌已置位）不会触发归位。fast 执行器通过 `ctx.extra` 的 `jiuwensymbiosis.recovery_performed` 标记判断 rail 是否已处理该失败；恢复是否成功要看 trace 中的 `home_ok`/`released_ok`。恢复属于尽力执行，不能保证设备最终处于安全状态。
 
 `VisualFeedbackRail` 需要相机能力，图像在下一次模型调用前注入；没有逐步模型调用的 `fastagent` 不会因此自动获得逐步 VLM 核验。`DiagnosisRail` 依赖启用 Trace，详见 [Trace Feedback Loop](../how-to/use-trace-feedback.md)。
 
