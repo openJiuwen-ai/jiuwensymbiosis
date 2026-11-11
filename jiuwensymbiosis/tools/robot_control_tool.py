@@ -36,6 +36,7 @@ from jiuwensymbiosis.agent.abstractions import Tool, ToolCard, ToolOutput
 from jiuwensymbiosis.api.decorators import ToolMeta
 from jiuwensymbiosis.api.memory import ExecutionMemory, action_succeeded, payload_confirmation
 from jiuwensymbiosis.errors import error_code
+from jiuwensymbiosis.rails.recovery import find_skip_recovery_exception
 
 logger = logging.getLogger(__name__)
 
@@ -321,8 +322,10 @@ class RobotControlTool(Tool):
             # A pre-dispatch refusal raised *inside* the action (SO-101's
             # So101PreDispatchError, driver-side envelope checks) opted out via
             # ``skip_recovery``: the arm never moved, so RecoveryRail must not
-            # release/home it after this failure.
-            dispatched = started and not bool(getattr(exc, "skip_recovery", False))
+            # release/home it after this failure. Framework/adapter wrappers
+            # may carry the marker on their cause, so search the chain — the
+            # same helper the fast executor uses.
+            dispatched = started and find_skip_recovery_exception(exc) is None
             failure_data: dict[str, Any] = {"action": action, "dispatched": dispatched}
             if code:
                 failure_data["error_code"] = code

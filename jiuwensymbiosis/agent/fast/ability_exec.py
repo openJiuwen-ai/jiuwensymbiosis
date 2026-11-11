@@ -88,6 +88,7 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             return {
                 "ok": False,
                 "reason": _failure_reason(output, results[0]),
+                "error_code": _failure_code(output),
                 "recovery_managed": True,
             }
         if not getattr(output, "success", False):

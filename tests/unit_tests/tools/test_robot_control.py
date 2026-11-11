@@ -146,3 +146,30 @@ class TestRobotControlTool:
 
         assert result.success is True
         assert api.called is True
+
+    @pytest.mark.asyncio
+    async def test_predispatch_marker_on_cause_is_honoured(self):
+        """A wrapper without its own marker still reports ``dispatched=False``."""
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _PreDispatchRefusal(ValueError):
+            skip_recovery = True
+
+        class _WrappedFailure(RuntimeError):
+            def __init__(self, cause):
+                super().__init__("driver wrapper")
+                self.cause = cause
+
+        class _WrappingApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                raise _WrappedFailure(_PreDispatchRefusal("outside the envelope"))
+
+        result = await RobotControlTool(_WrappingApi()).invoke(
+            {"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}}
+        )
+
+        assert result.success is False
+        assert result.data["dispatched"] is False

@@ -134,6 +134,7 @@ class TestAbilityExecutorSurfacesBusinessOk:
         res = run("goto_xyzr", {"x": 0, "y": 0, "z": 30})
         assert res["ok"] is False
         assert res["recovery_managed"] is True
+        assert res["error_code"] == ""  # same key as every other failure branch
 
     def test_wrapped_safety_rejection_needs_no_retreat(self):
         """The framework wraps failures; the skip marker lives on the cause."""

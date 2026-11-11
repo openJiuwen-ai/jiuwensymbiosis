@@ -72,7 +72,7 @@ config = RobotAgentConfig(
 | Type | Trigger | Typical scenario | Diagnosis source |
 |------|------|----------|----------|
 | **Type A (catch-path)** | The tool turns the exception into `ToolOutput(success=False, error=...)` | SKILL mode, `RobotControlTool` dispatch | `tool_result.error` + the current entry |
-| **Type B (propagated)** | The exception escapes the tool / a before-hook | Non-SKILL, `@implements` exposed directly; `SafetyRail` raises `ValueError` | `ctx.exception` |
+| **Type B (propagated)** | The exception escapes the tool / a before-hook | Non-SKILL, `@implements` exposed directly; `SafetyRail` aborts `before_tool_call` with `AbortError`, and the escaped exception is its cause `SafetyViolationError` (still a `ValueError` subclass) | `ctx.exception` |
 
 The same step is never injected twice (a per-step idempotency marker).
 

@@ -116,7 +116,7 @@ The framework has 7 layers, with data flowing top-down for commands and bottom-u
 
 ```
 Agent Layer       RobotSession + build_robot_agent() + RobotAgentConfig
-Safety Rails      SafetyRail / RecoveryRail / VisualFeedbackRail / SkillUseRail (before_tool_call hooks); TraceRail (parallel, optional)
+Safety Rails      SafetyRail / RecoveryRail / VisualFeedbackRail / SkillUseRail (tool-call / model-call hooks); TraceRail (parallel, optional)
 Tool Layer        build_robot_tools(api) | RobotControlTool(api) | InProcessCodeTool
 Skill Layer       SKILL.md docs (visual_pick, visual_place, transport) — SkillUseRail (tool path) / plan_task (fast path)
 API Layer         ActionSpec vocabulary (api/actions.py) + mixins implementing it (@implements)

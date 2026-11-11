@@ -70,7 +70,7 @@ config = RobotAgentConfig(
 | 类型 | 触发 | 典型场景 | 诊断来源 |
 |------|------|----------|----------|
 | **Type A（catch-path）** | 工具把异常转成 `ToolOutput(success=False, error=...)` | SKILL 模式 `RobotControlTool` 派发 | `tool_result.error` + 当前 entry |
-| **Type B（传播）** | 异常逃逸出工具 / before-hook | 非 SKILL 直接暴露 `@implements`；`SafetyRail` 抛 `ValueError` | `ctx.exception` |
+| **Type B（传播）** | 异常逃逸出工具 / before-hook | 非 SKILL 直接暴露 `@implements`；`SafetyRail` 的 `before_tool_call` 以 `AbortError` 中止，逃逸到调用方的是 cause `SafetyViolationError`（仍是 `ValueError` 子类） | `ctx.exception` |
 
 同一 step 不会重复注入（per-step 幂等标记）。
 
