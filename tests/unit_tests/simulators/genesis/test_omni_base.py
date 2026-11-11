@@ -12,7 +12,7 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
     Moz1Base,
     OmniWheelLayout,
     UpperBodyHold,
-    prepare_mobile_urdf,
+    mobile_home_targets,
 )
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
@@ -69,11 +69,11 @@ def test_wheel_directions_follow_actual_diagonal_omni_axes(urdf):
     assert OmniWheelLayout.from_urdf(urdf).wheel_rates(0.1, 0, 0)[0] > 0
 
 
-def test_disposable_copy_retains_rollers_mass_and_mimic_posture(urdf, tmp_path):
+def test_home_targets_preserve_rollers_mass_and_mimic_posture(urdf, tmp_path):
     before = urdf.read_bytes()
     layout = OmniWheelLayout.from_urdf(urdf)
-    target = tmp_path / "mobile.urdf"
-    targets = prepare_mobile_urdf(urdf, target, layout)
+    target = urdf
+    targets = mobile_home_targets(urdf, layout)
     assert urdf.read_bytes() == before
     root = ET.parse(target)
     moving = [j.get("name") for j in root.findall("joint") if j.get("type") != "fixed"]
@@ -93,7 +93,7 @@ def test_unsupported_asset_fails_before_simulation(urdf):
 
 
 @pytest.mark.parametrize("indices", [[6, 17, 28, 39], [6, 17, 29, 40]])
-def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
+def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices, tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     entity = Mock()
@@ -102,6 +102,8 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
     robot.entity = entity
     robot.upper_body = Mock()
     robot.stop = Mock()
+    robot.model_manifest, robot.path = {}, tmp_path / "robot.urdf"
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.collision_audit.audit_loaded_model", Mock())
     robot.build()
     assert list(robot.wheels) == indices
     for call in (entity.set_dofs_kp.call_args, entity.set_dofs_kv.call_args):
@@ -110,7 +112,7 @@ def test_motor_index_optimization_preserves_discovered_wheel_dofs(indices):
         assert isinstance(robot.wheels, range)  # No per-step CUDA index allocation.
 
 
-def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_path):
+def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     tree = ET.parse(urdf)
@@ -122,9 +124,9 @@ def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_pa
     finger.set("type", "revolute")
     finger.find("mimic").set("joint", "tn__RightArm0_tD")
     tree.write(urdf)
-    target = tmp_path / "mobile.urdf"
+    target = urdf
     layout = OmniWheelLayout.from_urdf(urdf)
-    targets = prepare_mobile_urdf(urdf, target, layout)
+    targets = mobile_home_targets(urdf, layout)
     entity = Mock()
     indices = dict(zip(WHEEL_NAMES, (6, 17, 28, 39), strict=True)) | {"tn__RightArm0_tD": 50, "finger": 51}
     entity.get_joint.side_effect = lambda name: SimpleNamespace(dofs_idx_local=[indices[name]])
@@ -139,6 +141,8 @@ def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_pa
     robot = Moz1Base.__new__(Moz1Base)
     robot.entity, robot.layout, robot.upper_body = entity, layout, hold
     robot._wheel_hold = None
+    robot.model_manifest, robot.path = {}, tmp_path / "robot.urdf"
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.collision_audit.audit_loaded_model", Mock())
     robot.build()
     assert hold.dofs == [50, 51] and hold.motor_dofs == [50]
     assert ET.parse(target).find("joint[@name='tn__RightArm0_tD']/limit").get("effort") == "0"

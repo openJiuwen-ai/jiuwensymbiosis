@@ -67,3 +67,13 @@ Navigation separates support from obstacles and erodes free space by the body en
 grid margin. Unsupported/blocked positions, oversized maps and dynamic targets are rejected.
 A path does not prove execution, stopping or arrival. MOZ1 holds initial upper-body joints
 through physics control; payload/contact behavior still requires separate physical acceptance.
+
+## Robot model admission and materials
+
+Mobile mode prepares and audits collision geometry before initializing motors; failure prevents motion.
+No MOZ1 example policy is loaded by default. `info.model_admission` exposes the report path;
+`robot_model_instance_id` survives reset. Evidence persists under the state directory’s `robot-models/`,
+with a `closed` marker after shutdown for operator-managed archival. See the
+[model admission guide](../how-to/audit-robot-models.md) for import settings and retention requirements.
+Source asset manifests pair physical and visual URDFs; derived model manifests identify loaded collisions.
+Visual materials are handled separately by `material_surface.py`; visual appearance is not collision evidence.

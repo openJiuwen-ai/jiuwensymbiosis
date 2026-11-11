@@ -41,6 +41,7 @@ pages follow the same paths and user tasks.
 - [Complete Agent Configuration Reference](reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](reference/robot-api.md)
 - [Execution Tracing Reference](reference/tracing.md)
+- [Audit Robot Collision Models](how-to/audit-robot-models.md)
 - [Genesis Physical Scene Backend](reference/genesis-physical-scene.md)
 
 ## Explanation

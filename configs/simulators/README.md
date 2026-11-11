@@ -203,3 +203,13 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 材质等价性未经物理验收：转换是显式近似，报告中的 `issues` 逐条标注偏离；
 占据图等评估产物不证明与物理碰撞等价，也不直接授权执行导航（运行时规划以
 `navigation.NavigationMap` 为准）。
+
+## 机器人模型准备与准入
+
+CPU 几何准备使用 `.[simulator-collision]`（POSIX 锁，Linux x86_64）；加载审计另需 Genesis 1.4.4。
+入口为 `python jiuwensymbiosis/simulators/genesis/robot_model.py <source.urdf> --output outputs/robot-audit/example`，
+加 `--load-audit` 只 build/读回，不推进物理。资产需单根树、无环 mimic、fixed/revolute/continuous/prismatic 关节，
+碰撞几何限 box/sphere/cylinder 和 OBJ/STL/PLY，正 scale。运行时不提供 package URI 映射；应先解析为文件路径。
+不支持的资产会启动失败，报告位于状态目录 `robot-models/<robot_model_instance_id>/loaded-model.json`。
+MOZ1 示例策略在 [collision/](collision/README.md)，GUI 不自动加载。
+参数、生命周期和物理验收边界见[指南](../../docs/zh/how-to/audit-robot-models.md)。
