@@ -1,12 +1,19 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""RecoveryRail — payload-aware auto-home/release on tool exceptions.
+"""RecoveryRail — payload-aware auto-home/release on tool failures.
 
 If a motion tool raises (e.g. driver lost connection, IK failed), leaving
 the arm mid-motion at an unknown pose is unsafe for the next call. The
 rail attempts a `home()` and `deactivate_suction()` (best-effort, both
 optional) to bring the robot to a known state before the LLM retries.
+
+``RobotControlTool`` converts adapter exceptions into
+``ToolOutput(success=False)`` instead of raising, so the rail also listens on
+``after_tool_call``: a failure whose ``data["dispatched"]`` says the adapter
+really ran gets the same recovery in skills mode and in the fast path. Loading
+the tool's arguments/result through ``dict``, attribute and string shapes keeps
+this working for loops that deliver plain dicts.
 
 Notes:
 - Only triggers for tools whose tags include "motion" or "grasp", to avoid
@@ -39,8 +46,29 @@ from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
+from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
+
+# Set on the callback context once this rail has released/homed the robot, so a
+# caller with its own fallback retreat (the fast runner) can tell the difference
+# between "rail recovered" and "rail declined".
+RECOVERY_PERFORMED_KEY = "jiuwensymbiosis.recovery_performed"
+
+
+def _read_tool_result(result: Any) -> tuple[bool, Any]:
+    """Read ``(success, data)`` from a tool result of any shape the loop delivers.
+
+    ``AbilityManager`` hands ``after_tool_call`` a ``ToolOutput``, but other
+    callers and tests also use plain dicts (``{"ok": False, ...}``) or strings.
+    An unrecognised shape counts as success: recovery must fire only on a
+    failure we can positively attribute, never on a guess.
+    """
+    if isinstance(result, (str, bytes)):
+        return True, None
+    if isinstance(result, dict):
+        return bool(result.get("success", result.get("ok", True))), result.get("data")
+    return bool(getattr(result, "success", getattr(result, "ok", True))), getattr(result, "data", None)
 
 
 def read_holding_payload(session: Any) -> bool | None:
@@ -124,6 +152,43 @@ def recover_session(
     return released_ok, home_ok
 
 
+def find_skip_recovery_exception(exception: Any) -> BaseException | None:
+    """Find an adapter opt-out marker through framework exception wrappers.
+
+    OpenJiuwen wraps tool failures in ``AbilityExecutionError``. Its
+    ``cause``/``__cause__`` retains the original adapter exception, so only
+    checking the outer object loses ``skip_recovery`` and triggers an
+    unnecessary release/home after a pre-dispatch rejection.
+    """
+    if not isinstance(exception, BaseException):
+        return None
+    pending: list[BaseException] = [exception]
+    visited: set[int] = set()
+    wrapper_attrs = (
+        "__cause__",
+        "cause",
+        "exception",
+        "original_exception",
+        "original_error",
+    )
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        if bool(getattr(current, "skip_recovery", False)):
+            return current
+        for attr in wrapper_attrs:
+            try:
+                nested = getattr(current, attr, None)
+            except Exception:  # noqa: BLE001 - wrapper inspection must be fail-safe
+                continue
+            if isinstance(nested, BaseException) and id(nested) not in visited:
+                pending.append(nested)
+    return None
+
+
 class RecoveryRail(AgentRail):
     """Attempt to return the robot to a safe state when a motion/grasp tool errors."""
 
@@ -149,7 +214,7 @@ class RecoveryRail(AgentRail):
         # pose; blindly homing can be less safe (and destroys the useful current
         # pose).  Adapters opt out without making this generic rail import them.
         exception = getattr(ctx, "exception", None)
-        skip_exception = self._find_skip_recovery_exception(exception)
+        skip_exception = find_skip_recovery_exception(exception)
         if skip_exception is not None:
             logger.warning(
                 "RecoveryRail: skipping recovery for wrapped %s: %s",
@@ -157,6 +222,32 @@ class RecoveryRail(AgentRail):
                 skip_exception,
             )
             return
+        await self._recover_after_failure(ctx)
+
+    async def after_tool_call(self, ctx: Any) -> None:
+        """Recover when the tool itself reports a failed dispatch.
+
+        ``RobotControlTool`` converts adapter exceptions into
+        ``ToolOutput(success=False)`` instead of raising, so no
+        ``on_tool_exception`` event fires for a driver failure mid-move. Both the
+        agent loop (skills mode) and the fast path's ability executor need this
+        path or the arm is left at the failed pose.
+
+        Gated on ``data["dispatched"]``: a call rejected before the adapter ran
+        (unknown action / bad params) never moved anything and must not trigger
+        a home/release.
+        """
+        inputs = getattr(ctx, "inputs", None)
+        result = getattr(inputs, "tool_result", None)
+        success, data = _read_tool_result(result)
+        if success:
+            return
+        if not (isinstance(data, dict) and data.get("dispatched")):
+            return
+        await self._recover_after_failure(ctx)
+
+    async def _recover_after_failure(self, ctx: Any) -> None:
+        """Release/home for the watched action a failure was attached to."""
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
         tool_args = getattr(inputs, "tool_args", None)
@@ -190,6 +281,12 @@ class RecoveryRail(AgentRail):
             holding_payload=holding_payload,
             payload_preserved=preserve_payload,
         )
+        # Callers that also run their own retreat (the fast runner) read this to
+        # see that recovery already happened, instead of repeating it.
+        try:
+            ctx.extra[RECOVERY_PERFORMED_KEY] = True
+        except (AttributeError, TypeError):
+            pass
 
     def _notify_recover(
         self,
@@ -246,47 +343,16 @@ class RecoveryRail(AgentRail):
         return set(getattr(meta, "tags", ()))
 
     @staticmethod
-    def _find_skip_recovery_exception(exception: Any) -> BaseException | None:
-        """Find an adapter opt-out marker through framework exception wrappers.
-
-        OpenJiuwen wraps tool failures in ``AbilityExecutionError``. Its
-        ``cause``/``__cause__`` retains the original adapter exception, so only
-        checking the outer object loses ``skip_recovery`` and triggers an
-        unnecessary release/home after a pre-dispatch rejection.
-        """
-        if not isinstance(exception, BaseException):
-            return None
-        pending: list[BaseException] = [exception]
-        visited: set[int] = set()
-        wrapper_attrs = (
-            "__cause__",
-            "cause",
-            "exception",
-            "original_exception",
-            "original_error",
-        )
-        while pending:
-            current = pending.pop()
-            current_id = id(current)
-            if current_id in visited:
-                continue
-            visited.add(current_id)
-            if bool(getattr(current, "skip_recovery", False)):
-                return current
-            for attr in wrapper_attrs:
-                try:
-                    nested = getattr(current, attr, None)
-                except Exception:  # noqa: BLE001 - wrapper inspection must be fail-safe
-                    continue
-                if isinstance(nested, BaseException) and id(nested) not in visited:
-                    pending.append(nested)
-        return None
-
-    @staticmethod
     def _effective_tool_name(tool_name: str, *, tool_args: Any = None) -> str:
-        """Return the adapter action name, unwrapping ``robot_control``."""
+        """Return the adapter action name, unwrapping ``robot_control``.
+
+        ``tool_args`` arrives as a JSON string at ``on_tool_exception`` time (the
+        dict only exists inside the tool's ``invoke``), so it is coerced through
+        the shared rail helper first — otherwise every ``robot_control`` failure
+        looks unrouted and recovery never matches the real action.
+        """
         if tool_name != "robot_control":
             return tool_name
-        args = tool_args if isinstance(tool_args, dict) else {}
+        args = coerce_tool_args(tool_args)
         action = args.get("action", "")
         return str(action) if action else tool_name

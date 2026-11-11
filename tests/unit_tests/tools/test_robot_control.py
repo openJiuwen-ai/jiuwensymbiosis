@@ -74,3 +74,75 @@ class TestRobotControlTool:
         tool = RobotControlTool(mock_api)
         result = await tool.invoke({"action": "goto_xyzr", "params": "not_a_dict"})
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_missing_required_param_is_rejected_before_dispatch(self, mock_api):
+        tool = RobotControlTool(mock_api)
+        result = await tool.invoke({"action": "goto_xyzr", "params": {"x": 1}})
+        assert result.success is False
+        assert "bad params" in result.error
+        # Nothing reached the adapter, so the fast runner owes no retreat.
+        assert not (result.data or {}).get("dispatched")
+
+    @pytest.mark.asyncio
+    async def test_adapter_failure_is_marked_dispatched(self):
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _BrokenApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x: float, y: float, z: float, r: float = 0.0, orientation_policy=None) -> dict:
+                raise RuntimeError("driver lost connection mid-move")
+
+        tool = RobotControlTool(_BrokenApi())
+        result = await tool.invoke({"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}})
+
+        assert result.success is False
+        assert result.data["dispatched"] is True
+        assert "driver lost connection" in result.error
+
+    @pytest.mark.asyncio
+    async def test_predispatch_adapter_rejection_is_not_marked_dispatched(self):
+        """A refusal marked ``skip_recovery`` never requested motion (review: dispatched=True)."""
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _PreDispatchRefusal(ValueError):
+            skip_recovery = True
+
+        class _RejectingApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                raise _PreDispatchRefusal("target outside the calibrated envelope")
+
+        tool = RobotControlTool(_RejectingApi())
+        result = await tool.invoke({"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}})
+
+        assert result.success is False
+        # RecoveryRail must not release/home an arm that never moved.
+        assert result.data["dispatched"] is False
+
+    @pytest.mark.asyncio
+    async def test_unintrospectable_action_still_dispatches(self):
+        """``inspect.signature`` failing on the callable is not "bad params"."""
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _OpaqueApi:
+            capabilities = frozenset({"motion.cartesian"})
+            called = False
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                self.called = True
+                return {"ok": True}
+
+        # inspect.signature() raises TypeError for an invalid __signature__ value.
+        _OpaqueApi.goto_xyzr.__signature__ = object()
+
+        api = _OpaqueApi()
+        result = await RobotControlTool(api).invoke({"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}})
+
+        assert result.success is True
+        assert api.called is True

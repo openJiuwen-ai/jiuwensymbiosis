@@ -14,6 +14,7 @@ watched for soft-limit pre-checks.
 from __future__ import annotations
 
 import pytest
+from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwensymbiosis.adapters.so101.api import So101Api
 from jiuwensymbiosis.adapters.so101.config import So101Config
@@ -68,7 +69,7 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_pose",
             tool_args={"pose": {"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0}},
         )
-        with pytest.raises(ValueError, match="below z_floor"):
+        with pytest.raises(AbortError, match="below z_floor"):
             await rail.before_tool_call(ctx)
 
     @pytest.mark.asyncio
@@ -82,7 +83,7 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_pose",
             tool_args={"pose": {"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}},
         )
-        with pytest.raises(ValueError, match="out of bounds"):
+        with pytest.raises(AbortError, match="out of bounds"):
             await rail.before_tool_call(ctx)
 
     @pytest.mark.asyncio
@@ -96,7 +97,7 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_xyzr",
             tool_args={"x": 100, "y": 0, "z": 30, "r": 0},
         )
-        with pytest.raises(ValueError, match="below z_floor"):
+        with pytest.raises(AbortError, match="below z_floor"):
             await rail.before_tool_call(ctx)
 
     @pytest.mark.asyncio
@@ -129,7 +130,7 @@ class TestSafetyRailMoveJointSoftLimits:
             tool_name="move_joint",
             tool_args={"q": [95.0, 0.0, 0.0, 0.0, 0.0]},
         )
-        with pytest.raises(ValueError, match="soft limit|out of range|joint"):
+        with pytest.raises(AbortError, match="soft limit|out of range|joint"):
             await rail.before_tool_call(ctx)
 
     @pytest.mark.asyncio
@@ -141,7 +142,7 @@ class TestSafetyRailMoveJointSoftLimits:
             tool_name="move_joint",
             tool_args={"q": [0.0, 0.0, 0.0]},  # only 3
         )
-        with pytest.raises((ValueError, TypeError)):
+        with pytest.raises(AbortError):
             await rail.before_tool_call(ctx)
 
 

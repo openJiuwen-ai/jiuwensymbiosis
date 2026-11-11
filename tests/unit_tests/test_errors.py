@@ -52,3 +52,8 @@ def test_safety_violation_stays_a_value_error():
     # LLM 自纠契约 + 运动代码里的 except ValueError 都依赖这个类型
     assert issubclass(SafetyViolationError, ValueError)
     assert issubclass(SafetyViolationError, JiuwenSymbiosisError)
+
+
+def test_safety_violation_declines_recovery():
+    # 预检拒绝发生在下发前,RecoveryRail 不应为它 home/release
+    assert SafetyViolationError("refused").skip_recovery is True

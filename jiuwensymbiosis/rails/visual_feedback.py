@@ -34,6 +34,7 @@ from typing import Any
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.observation import action_observation, begin_action_observation
 from jiuwensymbiosis.agent.trace import _TRACE_RAIL_KEY, TraceEventSink
+from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -203,11 +204,12 @@ class VisualFeedbackRail(AgentRail):
         When ``RobotControlTool`` is used, the tool name is ``"robot_control"``
         and the actual action lives in ``tool_args["action"]``.  We unwrap this
         so that motion / grasp actions dispatched through the single entry point
-        still trigger visual feedback.
+        still trigger visual feedback. ``tool_args`` arrives as a JSON string at
+        callback time, so it goes through the shared coercion first.
         """
         effective_name = tool_name
         if tool_name == "robot_control":
-            args = tool_args if isinstance(tool_args, dict) else {}
+            args = coerce_tool_args(tool_args)
             action = args.get("action", "")
             if action:
                 effective_name = str(action)
