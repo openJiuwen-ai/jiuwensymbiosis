@@ -28,8 +28,29 @@ class TestShouldTrigger:
             ("get_pose", {}, None, False),
             ("custom_tool", None, {"custom_tool"}, True),
             ("robot_control", {"action": "goto_xyzr", "params": {}}, None, True),
+            # openjiuwen delivers ToolCall.arguments as a JSON string, not a dict;
+            # the action must still unwrap or robot_control never grabs a frame.
+            (
+                "robot_control",
+                '{"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 200}}',
+                None,
+                True,
+            ),
+            ("robot_control", '{"action": "get_pose", "params": {}}', None, False),
+            ("robot_control", "not-json{", None, False),
+            ("robot_control", None, None, False),
         ],
-        ids=["motion", "grasp", "other", "watch-tool", "robot-control"],
+        ids=[
+            "motion",
+            "grasp",
+            "other",
+            "watch-tool",
+            "robot-control",
+            "robot-control-json-string",
+            "robot-control-json-string-other-action",
+            "robot-control-malformed-json",
+            "robot-control-no-args",
+        ],
     )
     def test_should_trigger_policy(self, mock_session, tool_name, tool_args, watch_tools, expected):
         rail = VisualFeedbackRail(mock_session, watch_tools=watch_tools)

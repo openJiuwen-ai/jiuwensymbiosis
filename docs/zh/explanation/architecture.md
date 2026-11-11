@@ -268,17 +268,17 @@ Rails 由配置和适用能力决定是否启用，各自在不同事件上工�
 | Rail | 主要触发点 | 作用 |
 |---|---|---|
 | `SafetyRail` | `before_tool_call` | 检查受监控动作的参数及已声明安全边界 |
-| `RecoveryRail` | `on_tool_exception` | 对受监控的运动或抓取异常尝试恢复 |
+| `RecoveryRail` | `on_tool_exception`、`after_tool_call` | 对受监控的运动或抓取异常/失败尝试恢复 |
 | `VisualFeedbackRail` | `after_tool_call`、`before_model_call` | 暂存动作后图像，在后续模型调用前注入 |
 | `DiagnosisRail` | 异常或工具结果事件、`before_model_call` | 收集失败证据，在后续模型调用前注入诊断 |
 | `TraceRail` | 调用与任务生命周期事件 | 记录轨迹、日志和可选图像 |
 | `SkillUseRail` | 技能上下文加载 | 提供技能说明；不属于运动安全检查 |
 
-`SafetyRail` 根据运动能力检查 Z 下限、XY 工作区、关节软限位、底盘单步位移/转角、升降范围和腰部转角。超限时抛出 `ValueError`。`stepagent` 可将工具异常反馈给模型；`fastagent` 按执行器的失败策略处理，不保证发生逐步模型纠错。
+`SafetyRail` 根据运动能力检查 Z 下限、XY 工作区、关节软限位、底盘单步位移/转角、升降范围和腰部转角。超限时 `before_tool_call` 以 openjiuwen 的 `AbortError` 中止该次调用（`cause` 为 `SafetyViolationError`，仍是 `ValueError` 子类），工具体不会执行。`stepagent` 可将工具异常反馈给模型；`fastagent` 按执行器的失败策略处理，不保证发生逐步模型纠错。
 
 检查范围还取决于动作名和参数格式。例如 SO-101 的 `goto_pose` 将 `x` / `y` / `z` 放在嵌套的 `pose` 对象中，SafetyRail 提取这些字段后执行 Z/XY 检查。Piper 当前通过 `goto_xyzr` 接受工具尖端 XYZ/R 目标并使用标定倾角，尚未实现 `goto_pose`。
 
-`RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位。恢复属于尽力执行，不能保证设备最终处于安全状态。
+`RecoveryRail` 根据动作标签和持物状态决定是否释放末端并尝试归位。确认持物的运动失败会保留夹持；恢复优先调用 `recovery_home()`，没有时退回 `home()`。归位本身失败时不会再次重试归位。`RobotControlTool` 会把适配器异常转成 `ToolOutput(success=False)`，这类失败由 `after_tool_call` 处理；只有真正下发到适配器的失败（`data["dispatched"]`）才恢复，预检拒绝与用户取消（带 `skip_recovery` 标记）不会触发归位。恢复属于尽力执行，不能保证设备最终处于安全状态。
 
 `VisualFeedbackRail` 需要相机能力，图像在下一次模型调用前注入；没有逐步模型调用的 `fastagent` 不会因此自动获得逐步 VLM 核验。`DiagnosisRail` 依赖启用 Trace，详见 [Trace Feedback Loop](../how-to/use-trace-feedback.md)。
 

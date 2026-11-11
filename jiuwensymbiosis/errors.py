@@ -75,9 +75,15 @@ class SafetyViolationError(JiuwenSymbiosisError, ValueError):
 
     Stays a ``ValueError``: the LLM self-correction contract and every existing
     ``except ValueError`` call site in motion code depend on that type.
+
+    ``skip_recovery`` is the same opt-out marker adapter errors use: a violation
+    is detected before dispatch, so nothing moved and homing/releasing over it
+    would be an unnecessary motion. ``RecoveryRail`` honours it through the
+    ``AbortError(cause=...)`` wrapper the callback framework re-raises.
     """
 
     code = SAFETY_REJECTED
+    skip_recovery = True
 
 
 class DetectionError(JiuwenSymbiosisError, RuntimeError):
