@@ -903,7 +903,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         logger.warning("[runner] step %d failed: %s: %s", i, step.op, exc)
         logger.debug("[runner] step %d params: %s", i, step.params)
         if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
-            logger.info("[runner] recovery already handled by the ability rail stack")
+            logger.info("[runner] recovery handled by the ability rail stack or unnecessary (nothing dispatched)")
         elif ctx.recovery_enabled:
             _safe_retreat(session)
         # ``reason`` is the human/LLM-facing text; ``error_code`` is the machine

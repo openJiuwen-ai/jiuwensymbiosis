@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwensymbiosis.rails.recovery import RecoveryRail, recover_session
+from jiuwensymbiosis.rails.recovery import RECOVERY_PERFORMED_KEY, RecoveryRail, recover_session
 from tests.helpers import FakeCtx, RecordingRailSink, make_mock_session
 
 
@@ -28,6 +28,22 @@ class TestIsWatched:
         rail = RecoveryRail(mock_session)
         assert rail._is_watched("get_pose", tool_args=None) is False
 
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            ({"action": "goto_xyzr", "params": {}}, True),
+            ('{"action": "goto_xyzr", "params": {"x": 1}}', True),
+            ('{"action": "get_pose", "params": {}}', False),
+            ("not-json{", False),
+            (None, False),
+        ],
+        ids=["dict", "json-string", "json-string-other-action", "malformed-json", "none"],
+    )
+    def test_robot_control_json_string_args(self, mock_session, tool_args, expected):
+        """openjiuwen passes ToolCall.arguments as a JSON string (issue #17)."""
+        rail = RecoveryRail(mock_session)
+        assert rail._is_watched("robot_control", tool_args=tool_args) is expected
+
 
 class TestRecoveryRail:
     @pytest.mark.asyncio
@@ -44,6 +60,32 @@ class TestRecoveryRail:
         ctx = FakeCtx(tool_name=tool_name, tool_args=tool_args)
         await rail.on_tool_exception(ctx)
         assert any(expected_call in c for c in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
+    async def test_json_string_args_recover_the_dispatched_action(self, mock_session):
+        """A robot_control failure arrives with a JSON-string tool_args (issue #17)."""
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}',
+            exception=RuntimeError("driver lost connection mid-move"),
+        )
+        await rail.on_tool_exception(ctx)
+        assert any(call == "home" for call in mock_session.api._call_log)
+
+    @pytest.mark.asyncio
+    async def test_safety_violation_skips_recovery(self, mock_session):
+        """A pre-dispatch refusal must not home/release the arm (issue #15)."""
+        from jiuwensymbiosis.errors import SafetyViolationError
+
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": -10}}',
+            exception=SafetyViolationError("SafetyRail: refusing goto_xyzr: z=-10 below z_floor=0"),
+        )
+        await rail.on_tool_exception(ctx)
+        assert mock_session.api._call_log == []
 
     @pytest.mark.asyncio
     async def test_typed_safe_failure_skips_recovery(self, mock_session):
@@ -208,3 +250,67 @@ class TestRecoveryRailTraceSink:
         assert detail["holding_payload"] is None
         assert detail["payload_preserved"] is False
         assert sink.events[0][3] is True  # mock home succeeds
+
+
+class TestAfterToolCallRecovery:
+    """RobotControlTool reports adapter failures as ``ToolOutput(success=False)``.
+
+    No exception fires for those, so recovery has to happen at ``after_tool_call``
+    (issue #16). The ``dispatched`` marker distinguishes a real mid-motion failure
+    from a call rejected before the adapter ran.
+    """
+
+    @staticmethod
+    def _output(*, success: bool, dispatched: bool | None = None):
+        data = None if dispatched is None else {"action": "goto_xyzr", "dispatched": dispatched}
+        return SimpleNamespace(success=success, data=data)
+
+    @pytest.mark.asyncio
+    async def test_dispatched_failure_recovers_and_marks_context(self, mock_session):
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}',
+            tool_result=self._output(success=False, dispatched=True),
+        )
+        await rail.after_tool_call(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+        assert ctx.extra[RECOVERY_PERFORMED_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_rejected_before_dispatch_does_not_move(self, mock_session):
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 100}}',
+            tool_result=self._output(success=False, dispatched=False),
+        )
+        await rail.after_tool_call(ctx)
+
+        assert mock_session.api._call_log == []
+        assert RECOVERY_PERFORMED_KEY not in ctx.extra
+
+    @pytest.mark.asyncio
+    async def test_successful_call_does_not_move(self, mock_session):
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}',
+            tool_result=self._output(success=True),
+        )
+        await rail.after_tool_call(ctx)
+
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
+    async def test_unwatched_action_does_not_move(self, mock_session):
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "get_pose", "params": {}}',
+            tool_result=self._output(success=False, dispatched=True),
+        )
+        await rail.after_tool_call(ctx)
+
+        assert mock_session.api._call_log == []

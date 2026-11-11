@@ -250,7 +250,15 @@ class RobotControlTool(Tool):
         return sorted(self._action_index.keys())
 
     async def invoke(self, inputs: dict[str, Any], **kwargs: Any) -> ToolOutput:
-        """Dispatch an action to the corresponding api method."""
+        """Dispatch an action to the corresponding api method.
+
+        Failures are returned as ``ToolOutput(success=False)`` rather than raised,
+        so the caller (the agent loop) always gets a tool message. ``data`` says
+        whether the adapter action actually ran (``"dispatched": True``): a
+        rejection that never reached the driver cannot have left the robot
+        mid-motion, and the fast runner uses that flag to decide whether a safe
+        retreat is owed.
+        """
         payload = inputs or {}
         action = payload.get("action")
         params = payload.get("params") or {}
@@ -270,6 +278,18 @@ class RobotControlTool(Tool):
                 success=False,
                 error=(f"unknown action '{action}'; available={self.available_actions}"),
             )
+        # Validate the call shape BEFORE dispatch so a TypeError can only mean
+        # "bad params" (nothing ran) and is not confused with a TypeError raised
+        # by the adapter body after the motion started.
+        try:
+            inspect.signature(method).bind(**params)
+        except TypeError as exc:
+            return ToolOutput(
+                success=False,
+                error=f"bad params for '{action}': {exc}",
+            )
+        except ValueError:  # pragma: no cover - un-introspectable callable
+            pass
         try:
             with action_scope(self._api, method, params):
                 result = method(**params)
@@ -280,20 +300,18 @@ class RobotControlTool(Tool):
                 success=True,
                 data={"action": action, "result": result},
             )
-        except TypeError as exc:
-            return ToolOutput(
-                success=False,
-                error=f"bad params for '{action}': {exc}",
-            )
         except Exception as exc:  # noqa: BLE001 - convert to ToolOutput
             # ``ToolOutput.error`` is a plain string, so a coded failure would lose its
             # code here; park it in ``data`` (kept on failures too) for callers that
             # dispatch this tool directly, e.g. the fast path's ability executor.
             code = error_code(exc)
+            failure_data: dict[str, Any] = {"action": action, "dispatched": True}
+            if code:
+                failure_data["error_code"] = code
             return ToolOutput(
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",
-                data={"action": action, "error_code": code} if code else None,
+                data=failure_data,
             )
 
     async def stream(self, inputs: dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:

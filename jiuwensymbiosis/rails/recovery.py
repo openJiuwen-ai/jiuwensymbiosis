@@ -39,8 +39,14 @@ from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
+from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
+
+# Set on the callback context once this rail has released/homed the robot, so a
+# caller with its own fallback retreat (the fast runner) can tell the difference
+# between "rail recovered" and "rail declined".
+RECOVERY_PERFORMED_KEY = "jiuwensymbiosis.recovery_performed"
 
 
 def read_holding_payload(session: Any) -> bool | None:
@@ -157,6 +163,32 @@ class RecoveryRail(AgentRail):
                 skip_exception,
             )
             return
+        await self._recover_after_failure(ctx)
+
+    async def after_tool_call(self, ctx: Any) -> None:
+        """Recover when the tool itself reports a failed dispatch.
+
+        ``RobotControlTool`` converts adapter exceptions into
+        ``ToolOutput(success=False)`` instead of raising, so no
+        ``on_tool_exception`` event fires for a driver failure mid-move. Both the
+        agent loop (skills mode) and the fast path's ability executor need this
+        path or the arm is left at the failed pose.
+
+        Gated on ``data["dispatched"]``: a call rejected before the adapter ran
+        (unknown action / bad params) never moved anything and must not trigger
+        a home/release.
+        """
+        inputs = getattr(ctx, "inputs", None)
+        result = getattr(inputs, "tool_result", None)
+        if result is None or getattr(result, "success", True):
+            return
+        data = getattr(result, "data", None)
+        if not (isinstance(data, dict) and data.get("dispatched")):
+            return
+        await self._recover_after_failure(ctx)
+
+    async def _recover_after_failure(self, ctx: Any) -> None:
+        """Release/home for the watched action a failure was attached to."""
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
         tool_args = getattr(inputs, "tool_args", None)
@@ -190,6 +222,12 @@ class RecoveryRail(AgentRail):
             holding_payload=holding_payload,
             payload_preserved=preserve_payload,
         )
+        # Callers that also run their own retreat (the fast runner) read this to
+        # see that recovery already happened, instead of repeating it.
+        try:
+            ctx.extra[RECOVERY_PERFORMED_KEY] = True
+        except (AttributeError, TypeError):
+            pass
 
     def _notify_recover(
         self,
@@ -284,9 +322,15 @@ class RecoveryRail(AgentRail):
 
     @staticmethod
     def _effective_tool_name(tool_name: str, *, tool_args: Any = None) -> str:
-        """Return the adapter action name, unwrapping ``robot_control``."""
+        """Return the adapter action name, unwrapping ``robot_control``.
+
+        ``tool_args`` arrives as a JSON string at ``on_tool_exception`` time (the
+        dict only exists inside the tool's ``invoke``), so it is coerced through
+        the shared rail helper first — otherwise every ``robot_control`` failure
+        looks unrouted and recovery never matches the real action.
+        """
         if tool_name != "robot_control":
             return tool_name
-        args = tool_args if isinstance(tool_args, dict) else {}
+        args = coerce_tool_args(tool_args)
         action = args.get("action", "")
         return str(action) if action else tool_name

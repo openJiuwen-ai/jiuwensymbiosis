@@ -74,3 +74,32 @@ class TestRobotControlTool:
         tool = RobotControlTool(mock_api)
         result = await tool.invoke({"action": "goto_xyzr", "params": "not_a_dict"})
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_missing_required_param_is_rejected_before_dispatch(self, mock_api):
+        tool = RobotControlTool(mock_api)
+        result = await tool.invoke({"action": "goto_xyzr", "params": {"x": 1}})
+        assert result.success is False
+        assert "bad params" in result.error
+        # Nothing reached the adapter, so the fast runner owes no retreat.
+        assert not (result.data or {}).get("dispatched")
+
+    @pytest.mark.asyncio
+    async def test_adapter_failure_is_marked_dispatched(self):
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _BrokenApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(
+                self, x: float, y: float, z: float, r: float = 0.0, orientation_policy=None
+            ) -> dict:
+                raise RuntimeError("driver lost connection mid-move")
+
+        tool = RobotControlTool(_BrokenApi())
+        result = await tool.invoke({"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}})
+
+        assert result.success is False
+        assert result.data["dispatched"] is True
+        assert "driver lost connection" in result.error
