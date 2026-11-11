@@ -134,3 +134,14 @@ cache configuration.
 GPU acceptance is opt-in through `JIUWEN_GENESIS_INTEGRATION=1`; set
 `JIUWEN_GENESIS_EVIDENCE` to an `outputs/` directory to retain images and measurements.
 CPU transport, GPU rendering, physical-task success and browser QA are separate checks.
+
+## Robot model preparation and admission
+
+Use `.[simulator-collision]` for CPU preparation (POSIX locking, Linux x86_64); load auditing also needs Genesis 1.4.4.
+Run `python jiuwensymbiosis/simulators/genesis/robot_model.py <source.urdf> --output outputs/robot-audit/example`;
+`--load-audit` builds and reads back without stepping. Assets require single-root URDF trees, acyclic mimic,
+fixed/revolute/continuous/prismatic joints, positive scales and box/sphere/cylinder or OBJ/STL/PLY collisions.
+The runtime supplies no package URI mapping: resolve resource paths before admission. Unsupported assets fail startup;
+reports are in the state directory’s `robot-models/<robot_model_instance_id>/loaded-model.json`.
+[MOZ1 policies](collision/README.md) are examples, not GUI defaults. See the
+[admission guide](../../docs/en/how-to/audit-robot-models.md) for lifecycle and acceptance limits.

@@ -146,37 +146,12 @@ def finish_export(path: Path, metadata: dict) -> dict:
 def validate_urdf(path: Path) -> dict:
     """Reject ambiguous names, cycles, missing meshes and dangling mimic references."""
     robot = ET.parse(path).getroot()
-    link_names = [entry.attrib["name"] for entry in robot.findall("link")]
-    joint_names = [entry.attrib["name"] for entry in robot.findall("joint")]
-    for kind, names in (("link", link_names), ("joint", joint_names)):
-        if len(set(names)) != len(names):
-            raise ValueError(f"Duplicate {kind} names")
-    parents = {}
-    for joint in robot.findall("joint"):
-        child_element, parent_element = joint.find("child"), joint.find("parent")
-        if child_element is None or parent_element is None:
-            raise ValueError(f"Invalid parent/child for {joint.get('name')}")
-        child, parent = child_element.get("link"), parent_element.get("link")
-        if child not in link_names or parent not in link_names or child in parents:
-            raise ValueError(f"Invalid parent/child for {joint.get('name')}")
-        parents[child] = parent
-        mimic = joint.find("mimic")
-        if mimic is not None and mimic.get("joint") not in joint_names:
-            raise ValueError("Unknown mimic joint")
-    roots = set(link_names) - parents.keys()
-    if len(roots) != 1 or len(link_names) != len(joint_names) + 1:
-        raise ValueError("Robot must have one root and a tree structure")
-    for name in link_names:
-        seen = set()
-        while True:
-            parent = parents.get(name)
-            if parent is None:
-                break
-            if name in seen:
-                raise ValueError("Cycle in URDF tree")
-            seen.add(name)
-            name = parent
+    from importlib import import_module
+
+    module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
+    links, joints = module.inspect_structure(robot)
+    roots = {link["name"] for link in links} - {joint["child"] for joint in joints}
     for mesh in robot.findall(".//mesh"):
         if not (path.parent / mesh.attrib["filename"]).is_file():
             raise ValueError(f"Missing mesh: {mesh.attrib['filename']}")
-    return {"root": next(iter(roots)), "links": len(link_names), "joints": len(joint_names)}
+    return {"root": next(iter(roots)), "links": len(links), "joints": len(joints)}

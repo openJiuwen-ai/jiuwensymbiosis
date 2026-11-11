@@ -82,7 +82,7 @@ def test_mimic_conversion_and_tree_validation(tmp_path):
     assert root.find(".//limit").get("effort") == "16.5"
     ET.SubElement(root, "link", name="base")
     ET.ElementTree(root).write(path)
-    with pytest.raises(ValueError, match="Duplicate link"):
+    with pytest.raises(ValueError, match="duplicate URDF links"):
         validate_urdf(path)
 
 
@@ -142,5 +142,5 @@ def test_physx_mimic_sign_units_and_source_integrity():
 def test_missing_joint_endpoint_is_rejected_before_loading(tmp_path, edge):
     path = tmp_path / "broken.urdf"
     path.write_text(f'<robot><link name="base"/><link name="tip"/><joint name="j" type="fixed">{edge}</joint></robot>')
-    with pytest.raises(ValueError, match="Invalid parent/child"):
+    with pytest.raises(ValueError, match="unresolved URDF joint link"):
         validate_urdf(path)

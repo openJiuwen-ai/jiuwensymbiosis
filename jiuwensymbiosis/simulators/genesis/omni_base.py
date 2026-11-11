@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -115,10 +116,10 @@ def validate_twist(vx: float, vy: float, wz: float) -> None:
         raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
 
 
-def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> dict[str, float]:
+def mobile_home_targets(source: Path, layout: OmniWheelLayout) -> dict[str, float]:
     """Keep articulated joints and mimic constraints; return the upper-body home.
 
-    Only mesh paths change in this disposable copy. Zero exported motor limits
+    The source is only read. Zero exported motor limits
     are overridden explicitly by the simulation-only posture controller.
     """
     tree = ET.parse(source)
@@ -145,10 +146,6 @@ def prepare_mobile_urdf(source: Path, target: Path, layout: OmniWheelLayout) -> 
             progressed = True
         if not progressed:
             raise ValueError("Unresolved mimic references")
-    for mesh in root.findall(".//mesh"):
-        mesh.set("filename", str((source.parent / mesh.attrib["filename"]).resolve()))
-    ET.indent(tree, space="  ")
-    tree.write(target, encoding="utf-8", xml_declaration=True)
     return {
         j.attrib["name"]: positions[j.attrib["name"]]
         for j in root.findall("joint")
@@ -247,21 +244,21 @@ class Moz1Base:
         name: str = "MOZ1",
         render_urdf: Path | None = None,
         spawn: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        collision_policy: dict | None = None,
+        model_directory: Path,
     ) -> None:
         import genesis as gs
 
         self.layout = OmniWheelLayout.from_urdf(source)
-        self.path = directory / "moz1-mobile.urdf"
-        targets = prepare_mobile_urdf(source, self.path, self.layout)
+        targets = mobile_home_targets(source, self.layout)
+        model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
+        self.model_manifest = model_module.prepare_robot_model(source, model_directory, policy=collision_policy)
+        self.path = Path(self.model_manifest["urdf"])
         self.source, self.name, self.render_urdf = source, name, render_urdf
         self.entity = scene.add_entity(
             morph=gs.morphs.URDF(
                 file=str(self.path),
-                fixed=False,
-                merge_fixed_links=False,
-                collision=True,
-                convexify=True,
-                decimate=True,
+                **model_module.admission_morph_options(fixed=False, decimate=True),
                 file_meshes_are_zup=True,
                 pos=(spawn[0], spawn[1], spawn[2] + self.layout.radius_m + 0.005),
             )
@@ -270,10 +267,15 @@ class Moz1Base:
         self.remaining_s = 0.0
         self.wheels: list[int] | range = []
         self._wheel_hold: Any = None
+        self.model_audit = None
         self._velocity_target: tuple[float, float, float] | None = None
         self.upper_body = UpperBodyHold(self.entity, self.path, targets)
 
     def build(self) -> None:
+        audit_module = import_module(f"{__package__}.collision_audit" if __package__ else "collision_audit")
+        self.model_audit = audit_module.audit_loaded_model(
+            self.entity, self.model_manifest, self.path.parent / "loaded-model.json"
+        )
         self.wheels = [self.entity.get_joint(name).dofs_idx_local[0] for name in WHEEL_NAMES]
         stride = self.wheels[1] - self.wheels[0]
         if stride > 0 and all(b - a == stride for a, b in zip(self.wheels, self.wheels[1:], strict=False)):
