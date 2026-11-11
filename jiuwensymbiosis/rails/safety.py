@@ -28,24 +28,31 @@ Currently checks:
 Absent limits mean "no range check" (the type / finite checks still run) —
 same contract as ``joint_limits``, so a body opts in by declaring an envelope.
 
-Reject mechanism: forces a tool error result instead of executing the tool,
-by raising via ``ctx.request_force_finish`` is not appropriate here (we
-only want to skip the one tool, not the whole loop). Instead we raise a
-``ValueError`` from ``before_tool_call``; openjiuwen turns this into a
-tool-exception event the LLM sees and reasons about.
+Reject mechanism: ``ctx.request_force_finish`` is not appropriate here (we
+only want to skip the one tool, not the whole loop). Instead
+``before_tool_call`` raises a ``SafetyViolationError`` wrapped in openjiuwen's
+``AbortError``. That wrapper is load-bearing: the callback framework swallows
+every other exception a before-hook raises (logs it, then runs the tool body
+anyway), so a plain ``ValueError`` let rejected commands reach the hardware.
+``AbortError`` aborts the chain and re-raises its ``cause``, so callers still
+see the typed ``SafetyViolationError`` (and its ``skip_recovery`` marker).
+Synchronous callers that bypass the callback framework — ``validate_motion`` /
+``validate_pose`` — keep raising ``SafetyViolationError`` directly.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 from collections.abc import Mapping
 from typing import Any, cast
 
+from openjiuwen.core.runner.callback.errors import AbortError
+
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
 from jiuwensymbiosis.errors import SafetyViolationError
+from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -67,28 +74,6 @@ _CAPABILITY_WATCH_TOOLS: dict[str, frozenset[str]] = {
 _ALWAYS_WATCHED: frozenset[str] = frozenset({"goto_xyzr", "goto_pose", "move_joint"})
 
 _BASE_TOOLS: frozenset[str] = _CAPABILITY_WATCH_TOOLS["motion.base"]
-
-
-def _coerce_tool_args(value: Any) -> dict[str, Any]:
-    """Normalise ``tool_args`` to a dict, parsing a JSON string if needed.
-
-    openjiuwen's ``ToolCall.arguments`` (and thus ``ctx.inputs.tool_args`` at
-    ``before_tool_call`` time) is a **JSON string**, not a dict — the dict only
-    appears inside the tool's ``invoke`` *after* rails run. Without this parse,
-    a string ``tool_args`` would be dropped to ``{}`` and every motion-param
-    check (z floor, XY bounds) would silently no-op. Returns ``{}`` for ``None``,
-    non-dict, or unparseable input — never raises, so safety enforcement degrades
-    to "no params → no rejection" (the prior behaviour) rather than crashing.
-    """
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 class SafetyRail(AgentRail):
@@ -174,7 +159,7 @@ class SafetyRail(AgentRail):
         """
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
-        args = _coerce_tool_args(getattr(inputs, "tool_args", None))
+        args = coerce_tool_args(getattr(inputs, "tool_args", None))
 
         # Unwrap robot_control dispatch: tool_name="robot_control", action inside args
         if tool_name == "robot_control":
@@ -184,7 +169,15 @@ class SafetyRail(AgentRail):
                 tool_name = str(action)
                 args = params
 
-        self.validate_motion(tool_name, args)
+        try:
+            self.validate_motion(tool_name, args)
+        except SafetyViolationError as exc:
+            # The callback framework only propagates AbortError out of a
+            # before-hook; anything else is logged and the wrapped tool runs
+            # anyway. Wrap the typed violation as the abort cause so the tool
+            # body is skipped and the caller/RecoveryRail still receives the
+            # original SafetyViolationError.
+            raise AbortError(str(exc), cause=exc) from exc
 
     def validate_motion(self, tool_name: str, args: dict[str, Any]) -> None:
         """Synchronously apply the rail's motion policy without callback overhead.
@@ -295,10 +288,10 @@ class SafetyRail(AgentRail):
             raise SafetyViolationError(f"SafetyRail: refusing {tool_name}: {reason}.")
         return value
 
-    def _reject(self, tool_name: str, reason: str) -> ValueError:
+    def _reject(self, tool_name: str, reason: str) -> SafetyViolationError:
         """Notify the trace sink and build the rejection to raise."""
         self._notify_reject(tool_name, reason)
-        return ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+        return SafetyViolationError(f"SafetyRail: refusing {tool_name}: {reason}.")
 
     def _check_base_step(self, tool_name: str, args: dict[str, Any]) -> None:
         """Cap one mobile-base command's translation and turn.

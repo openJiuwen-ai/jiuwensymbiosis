@@ -269,17 +269,17 @@ Configuration and applicable capabilities determine which Rails are enabled. Eac
 | Rail | Main trigger | Role |
 |---|---|---|
 | `SafetyRail` | `before_tool_call` | Check parameters and declared safety limits for watched actions |
-| `RecoveryRail` | `on_tool_exception` | Attempt recovery for watched motion or grasp exceptions |
+| `RecoveryRail` | `on_tool_exception`, `after_tool_call` | Attempt recovery for watched motion or grasp exceptions/failures |
 | `VisualFeedbackRail` | `after_tool_call`, `before_model_call` | Stage post-action images and inject them before a later model call |
 | `DiagnosisRail` | Exception or tool-result events, `before_model_call` | Collect failure evidence and inject a diagnosis before a later model call |
 | `TraceRail` | Tool-call and task lifecycle events | Record traces, logs, and optional images |
 | `SkillUseRail` | Skill-context loading | Provide skill descriptions; not a motion safety check |
 
-`SafetyRail` checks the Z floor, XY workspace, joint soft limits, per-command base translation/rotation limits, lift range, and waist rotation according to motion capabilities. Exceeding a limit raises `ValueError`. `stepagent` can feed tool exceptions back to the model; `fastagent` follows the executor's failure policy and does not guarantee model correction at each step.
+`SafetyRail` checks the Z floor, XY workspace, joint soft limits, per-command base translation/rotation limits, lift range, and waist rotation according to motion capabilities. Exceeding a limit aborts that tool call from `before_tool_call` with openjiuwen's `AbortError` (whose `cause` is the `SafetyViolationError`, still a `ValueError` subclass), so the tool body does not run. `stepagent` can feed tool exceptions back to the model; `fastagent` follows the executor's failure policy and does not guarantee model correction at each step.
 
 Coverage also depends on the action name and parameter format. For example, SO-101's `goto_pose` places `x` / `y` / `z` inside a nested `pose` object; SafetyRail extracts these fields for Z/XY checks. Piper currently accepts tool-tip XYZ/R targets through `goto_xyzr` with a calibrated tilt and does not implement `goto_pose`.
 
-`RecoveryRail` uses action tags and payload state to decide whether to release the end-effector and attempt homing. A motion failure with a confirmed payload preserves the grasp. Recovery prefers `recovery_home()`, falling back to `home()` when unavailable. A homing failure does not trigger another homing attempt. Recovery is best effort and cannot guarantee that the device ends in a safe state.
+`RecoveryRail` uses action tags and payload state to decide whether to release the end-effector and attempt homing. A motion failure with a confirmed payload preserves the grasp. Recovery prefers `recovery_home()`, falling back to `home()` when unavailable. A homing failure does not trigger another homing attempt. `RobotControlTool` converts adapter exceptions into `ToolOutput(success=False)`; `after_tool_call` handles those, recovering only when the failure actually reached the adapter (`data["dispatched"]`). Pre-dispatch rejections and user cancellation (marked `skip_recovery`) do not trigger homing. Recovery is best effort and cannot guarantee that the device ends in a safe state.
 
 `VisualFeedbackRail` requires camera capability and injects images before the next model call. `fastagent` rejects this module because it has no per-step model call. `DiagnosisRail` requires Trace to be enabled; see [Trace Feedback Loop](../how-to/use-trace-feedback.md).
 
