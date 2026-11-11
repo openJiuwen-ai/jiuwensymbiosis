@@ -185,6 +185,19 @@ class EntityRegistry:
 
                 robot = worker_measure(runtime.robot)
             robot["position_reference"] = "authored_root_body_heading"
+            arm = getattr(runtime, "arm_motion", None)
+            if arm is not None:
+                positions, velocities = arm.read()
+                robot.update(
+                    joint_positions=positions,
+                    joint_velocities=velocities,
+                    joint_units="rad",
+                    planning_groups=arm.profile["groups"],
+                    planning_base_link=arm.profile["base_link"],
+                    tool_poses_base_m_wxyz=arm.tool_poses(),
+                    effectors=arm.effectors.report(),
+                )
+
         result = {
             "source": "simulation_ground_truth",
             "scene_instance_id": runtime.info["instance_id"],

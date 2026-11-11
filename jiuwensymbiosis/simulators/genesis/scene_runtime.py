@@ -38,6 +38,11 @@ class RuntimeScene:
     ) -> None:
         self.settings = settings
         self._model_directory: Path | None = None
+        self._planning_profile = {}
+        if settings.planning_profile:
+            from planning_profile import load_profile
+
+            self._planning_profile = load_profile(Path(settings.planning_profile))
         self._evidence_directory = Path(directory)
         self._startup = startup
         self.scene: Any = None
@@ -48,6 +53,7 @@ class RuntimeScene:
         self.cameras: dict[str, RobotCamera] = {}
         self.indoor: Any = None
         self.motion: Any = None
+        self.arm_motion: Any = None
         self.asset: Any = None
         self.steps = self.cycle = 0
         self._directory = tempfile.TemporaryDirectory(prefix="scene-", dir=directory)
@@ -120,6 +126,8 @@ class RuntimeScene:
                 from base_motion import RelativeMotion
 
                 self.motion = RelativeMotion(self.robot)
+                if settings.planning_profile:
+                    self._install_arm(self._new_arm(self.info["instance_id"]))
             if self.robot is not None:
                 self.info["robot_bounds_m"] = self.robot.bounds
                 if self.source is None:
@@ -135,6 +143,15 @@ class RuntimeScene:
         except BaseException:
             self.close()
             raise
+
+    def _new_arm(self, instance_id):
+        from arm_motion import ArmMotion
+
+        return ArmMotion(self, self._planning_profile, self._evidence_directory / "arm-plans" / instance_id)
+
+    def _install_arm(self, arm):
+        self.arm_motion = arm
+        self.info.update(arm_planning_ready=arm is not None, effectors_ready=bool(arm and arm.effectors.evidence))
 
     def _phase(self, name: str) -> AbstractContextManager[None]:
         return self._startup.phase(name) if self._startup is not None and not self._startup.finished else nullcontext()
@@ -156,6 +173,11 @@ class RuntimeScene:
             # contacts are between separate entities and remain enabled.
             "rigid": {"enable_self_collision": self.info["mode"] != "robot_mobile"},
         }
+        if self.settings.planning_profile:
+            contact_solver = self._planning_profile.get("contact_solver", {})
+            if set(contact_solver) - {"noslip_iterations"}:
+                raise ValueError("unsupported manipulation contact solver setting")
+            options["rigid"].update(contact_solver)
         if self.source is not None:
             from scene_cache import RoomSceneCache
 
@@ -388,6 +410,14 @@ class RuntimeScene:
             for i, body in enumerate(self.bodies):
                 body.set_pos((-0.34 + i * 0.34, 0.04 * (i % 2), 1.1 + i * 0.35), zero_velocity=True)
         if self.info["mode"] == "robot_mobile":
+            if getattr(self, "arm_motion", None) is not None:
+                self.arm_motion.tick(self.settings.dt)
+                if self.arm_motion.active and self.motion.active:
+                    self.motion.cancel("arm_motion_exclusive")
+                if any(e.holding is not False for e in self.arm_motion.effectors.evidence.values()):
+                    # Base carrying requires its own swept payload envelope.
+                    self.motion.cancel("base_payload_envelope_unavailable")
+                    self.robot.stop()
             self.motion.tick(self.settings.dt, self.steps)
             self.robot.before_step(self.settings.dt)
         self.scene.step()
@@ -411,6 +441,11 @@ class RuntimeScene:
         before = self.info["instance_id"]
         if self.motion is not None and self.motion.active:
             raise RuntimeError("运动任务仍在执行，不能复位。")
+        arm = getattr(self, "arm_motion", None)
+        unsafe_arm = arm is not None and (arm.active or arm.follower.terminal)
+        carrying = arm is not None and any(e.holding is not False for e in arm.effectors.evidence.values())
+        if unsafe_arm or carrying:
+            raise RuntimeError("Arm motion active or stopping unconfirmed; cannot reset")
         with phase("reset_stop"):
             if self.motion is not None:
                 self.robot.stop()
@@ -431,6 +466,8 @@ class RuntimeScene:
                         break
                 else:
                     raise RuntimeError("复位前未确认停车，保留当前世界。")
+        instance_id = uuid.uuid4().hex
+        replacement = self._new_arm(instance_id) if arm is not None else None
         with phase("reset_restore"):
             self.scene.reset(self._initial_state)
             if self.motion is not None:
@@ -441,8 +478,11 @@ class RuntimeScene:
             self.steps = self._initial_steps
             self.cycle += 1
             self.selection = self.selected_entity = self.truth = None
-            self.info["instance_id"] = uuid.uuid4().hex
+            self.info["instance_id"] = instance_id
             self.info["reset_generation"] = self.cycle
+            if arm is not None:
+                self._install_arm(replacement)
+                arm.close()
         return {
             "previous_instance_id": before,
             "scene_instance_id": self.info["instance_id"],
@@ -452,6 +492,9 @@ class RuntimeScene:
 
     def close(self) -> None:
         try:
+            if getattr(self, "arm_motion", None) is not None:
+                self.arm_motion.close()
+                self.arm_motion = None
             self.close_renderer()
         finally:
             if self.scene is not None:

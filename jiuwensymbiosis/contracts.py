@@ -164,7 +164,7 @@ class GraspResult(TypedDict, total=False):
 
 
 class CloseEffectorResult(TypedDict, total=False):
-    """Result shape of ``close_gripper`` / ``activate_suction``.
+    """Gripper open/close and suction result; evidence is optional and may be unknown.
 
     ``ok`` / ``state`` are the command-level shape every body returns. The
     evidence fields are what a body with a measured channel adds — they assert
@@ -174,11 +174,18 @@ class CloseEffectorResult(TypedDict, total=False):
     ``trust_command_grasp`` instead (adapter reference, grasp evidence).
     """
 
-    ok: Literal[True]
+    ok: bool
     state: str
     grasp_confirmed: bool
     contact: bool
-    holding_payload: bool
+    holding_payload: bool | None
+    plan_success: bool
+    goal_reached: bool
+    settled: bool
+    stop_confirmation: Literal["measured", "unknown"]
+    reason: str | None
+    contact_confirmed: bool
+    placement_confirmed: bool
 
 
 # =============================================================================
@@ -370,3 +377,6 @@ class BasePoint(TypedDict):
     x: float
     y: float
     z: float
+
+
+PlannedMotionResult = CloseEffectorResult  # Shared optional motion and payload evidence fields.

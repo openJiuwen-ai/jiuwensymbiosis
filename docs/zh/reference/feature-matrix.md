@@ -67,6 +67,7 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 |---|---|---|---|---|---|---|
 | `motion.cartesian` | `CartesianDriver` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` | ✅ | ✅ | ✅ | — |
 | `motion.joint` | `JointDriver`/`NamedJointDriver` | `move_joint`、`move_named_joint`、`get_joint_positions` | — | ✅ | ✅ | ✅ |
+| `motion.tool_pose` | Genesis planner | `move_tool_poses` | — | — | — | — |
 | `motion.servo` | `ServoDriver` + fast controller hook | —（无独立公共动作，由 fast path 实时伺服 op 驱动） | ✅ | ✅ | ✅ | — |
 | `motion.base` | Env 动词 `navigate_relative`/`navigate_arc` | `navigate_relative`、`rotate_base`、`drive_arc` | — | — | — | ✅ |
 | `motion.base_servo` | Env 动词 `start_base_drive` 等 | —（连续底盘驱动原语） | — | — | — | ✅ |
