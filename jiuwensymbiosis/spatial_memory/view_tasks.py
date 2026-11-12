@@ -35,7 +35,7 @@ def update_tasks(
         if task["state"] != "open":
             continue
         points = np.asarray(task["surface_m"])
-        visible = surface_in_view(points, observation)
+        visible = surface_in_view(points, observation, occlusion_margin_m=policy.surface_distance_m)
         if len(visible) < policy.min_points or not different_view(
             task["last_attempt_pose"], observation.map_from_camera, policy
         ):

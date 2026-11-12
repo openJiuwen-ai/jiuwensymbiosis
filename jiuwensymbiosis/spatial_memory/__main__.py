@@ -20,6 +20,17 @@ def main() -> None:
     capture.add_argument("--depth-stride", type=int, default=4)
     capture.add_argument("--allow-motion", action="store_true")
     capture.add_argument("--state-dir", type=Path)
+    scan = commands.add_parser("scan", help="Bounded Rule-only scan using a resident Genesis RobotSession")
+    scan.add_argument("output", type=Path)
+    scan.add_argument("--map-frame", required=True)
+    scan.add_argument("--weights", type=Path, required=True)
+    scan.add_argument("--sha256", required=True)
+    scan.add_argument("--device", default="0")
+    scan.add_argument("--state-dir", type=Path)
+    scan.add_argument("--max-frames", type=int, default=16)
+    scan.add_argument("--max-seconds", type=float, default=600)
+    scan.add_argument("--max-distance", type=float, default=2)
+    scan.add_argument("--depth-stride", type=int, default=4)
     build = commands.add_parser("replay")
     build.add_argument("sequence", type=Path)
     build.add_argument("output", type=Path)
@@ -54,6 +65,16 @@ def main() -> None:
             command.add_argument("entity_id")
     args = parser.parse_args()
     result: object
+    if args.command == "scan":
+        from jiuwensymbiosis.simulators.genesis.memory_scan_cli import scan_resident
+
+        result = scan_resident(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        if result["stop_reason"] in {"failed", "stop_unconfirmed"}:
+            raise SystemExit(1)
+        if result["stop_reason"] in {"blocked", "cancelled"}:
+            raise SystemExit(2)
+        return
     if args.command == "capture":
         from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
         from jiuwensymbiosis.simulators.genesis.spatial_capture import capture_sequence

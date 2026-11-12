@@ -33,7 +33,7 @@ from jiuwensymbiosis.spatial_memory.models import (
 from jiuwensymbiosis.spatial_memory.view_tasks import update_tasks
 
 SCHEMA_VERSION = 1
-ASSOCIATION_VERSION = "frustum-symmetric-surface-optional-appearance-v5"
+ASSOCIATION_VERSION = "depth-visible-redundant-mask-symmetric-surface-v7"
 
 
 class SpatialMemory:
@@ -86,6 +86,7 @@ class SpatialMemory:
                     "symmetric-surface-rgb-histogram-v2",
                     "frustum-symmetric-surface-rgb-histogram-v3",
                     "frustum-symmetric-surface-optional-appearance-v4",
+                    "frustum-symmetric-surface-optional-appearance-v5",
                 }
             )
             if self._meta("schema") != str(SCHEMA_VERSION) or not compatible:
@@ -160,6 +161,7 @@ class SpatialMemory:
             previous = self._meta("timestamp")
             if previous is not None and observation.timestamp_s < float(previous):
                 raise ValueError("Out-of-order capture; replay observations in capture order")
+            self.connection.execute("DELETE FROM metadata WHERE key='scan_report'")
             receipt = self._associate(observation, detections)
             receipt["evidence_fingerprint"] = fingerprint
             arrays = observation.arrays()
@@ -214,7 +216,10 @@ class SpatialMemory:
             for detection, (points, histogram, quality) in zip(detections.instances, projected, strict=True)
         ]
         scores = np.zeros((len(projected), len(entities)))
-        visible = [surface_in_view(entity["points"], observation) for entity in entities]
+        visible = [
+            surface_in_view(entity["points"], observation, occlusion_margin_m=self.policy.surface_distance_m)
+            for entity in entities
+        ]
         comparisons: list[dict[int, dict]] = [{} for _ in projected]
         reasons: dict[int, str] = {}
         for i, (points, histogram, quality) in enumerate(projected):
@@ -238,13 +243,34 @@ class SpatialMemory:
                     )
                     scores[i, j] = comparison["score"]
                     comparisons[i][j] = comparison
+        # Near-identical masks share one association attempt, never two votes.
+        # Use a direct representative comparison (not transitive union-find), so
+        # a chain of overlaps cannot merge distinct endpoints. Labels are evidence,
+        # not identity; raw detections remain intact in the immutable observation.
+        aliases: dict[int, int] = {}
+        representatives: list[int] = []
+        for i in sorted(
+            range(len(projected)), key=lambda i: (-detections.instances[i].score, detections.instances[i].local_id)
+        ):
+            item = detections.instances[i]
+            if item.kind != "object" or i in reasons:
+                continue
+            for j in representatives:
+                prior = detections.instances[j]
+                union = np.count_nonzero(item.mask | prior.mask)
+                if union and np.count_nonzero(item.mask & prior.mask) / union >= 0.90:
+                    aliases[i] = j
+                    reasons[i] = "redundant_mask"
+                    break
+            else:
+                representatives.append(i)
         # Near-duplicate masks are not independent object evidence. Keep both raw outputs.
         for i, first in enumerate(detections.instances):
-            if first.kind != "object":
+            if first.kind != "object" or i in aliases:
                 continue
             for j in range(i):
                 second = detections.instances[j]
-                if second.kind == "object":
+                if second.kind == "object" and j not in aliases:
                     intersection = np.count_nonzero(first.mask & second.mask)
                     union = np.count_nonzero(first.mask | second.mask)
                     if intersection / union > 0.65:
@@ -346,6 +372,16 @@ class SpatialMemory:
                     (record["entity_id"], canonical(record), pack(points=merged)),
                 )
             assignments.append(item)
+        by_id = {item["local_id"]: item for item in assignments}
+        for i, j in aliases.items():
+            item = by_id[detections.instances[i].local_id]
+            representative = by_id[detections.instances[j].local_id]
+            item.update(
+                status="duplicate_detection",
+                reason="redundant_mask",
+                duplicate_of=representative["local_id"],
+                entity_id=representative["entity_id"],
+            )
         tasks = update_tasks(
             self.get_view_tasks(include_surfaces=True), observation, assignments, projected, self.policy
         )
@@ -442,6 +478,14 @@ class SpatialMemory:
             ),
         )
 
+    def record_scan_report(self, report: dict) -> None:
+        """Store the scan assessment separately from immutable observation evidence."""
+        if self.readonly:
+            raise ValueError("Cannot record a scan in read-only memory")
+        retained = {k: v for k, v in report.items() if k != "memory_status"}
+        with self.connection:
+            self.connection.execute("INSERT OR REPLACE INTO metadata VALUES ('scan_report', ?)", (canonical(retained),))
+
     def get_status(self) -> dict:
         appearance = json.loads(self._meta("model") or "{}").get("appearance") or {}
         needs = [
@@ -472,6 +516,7 @@ class SpatialMemory:
             "latest_observation_needs_view": latest_needs,
             "latest_observation_needs_view_count": len(latest_needs),
             "confirmed_semantics": "multi_view_identity_support_not_semantic_accuracy_or_complete_geometry",
+            "scan_assessment": json.loads(self._meta("scan_report") or "null"),
             "scan_complete": None,
             "scan_completion_reason": "stage1_does_not_evaluate_room_coverage",
         }

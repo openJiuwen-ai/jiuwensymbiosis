@@ -53,6 +53,7 @@ class RuntimeScene:
         self.robot_asset: Any = None
         self.cameras: dict[str, RobotCamera] = {}
         self.indoor: Any = None
+        self.navigation_map: Any = None
         self.motion: Any = None
         self.arm_motion: Any = None
         self.asset: Any = None
@@ -71,7 +72,12 @@ class RuntimeScene:
         self.selected_entity = None
         self.pick_index: Any = None
         self.truth: EntityRegistry | None = None
-        self.info = {"id": "demo", "mode": "dynamic_demo", "collision": True, "reset_interval_steps": 480}
+        self.info: dict[str, Any] = {
+            "id": "demo",
+            "mode": "dynamic_demo",
+            "collision": True,
+            "reset_interval_steps": 480,
+        }
         try:
             with self._phase("asset_resolve"):
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
@@ -182,6 +188,26 @@ class RuntimeScene:
 
     def _phase(self, name: str) -> AbstractContextManager[None]:
         return self._startup.phase(name) if self._startup is not None and not self._startup.finished else nullcontext()
+
+    def _admit_mobile_spawn(self) -> None:
+        """Finalize placement before stepping/publishing the world, using motion's map."""
+        from base_motion import measure
+        from navigation import admit_spawn
+
+        position = measure(self.robot)["position_m"]
+        provisional = self.info["spawn_ground_m"]
+        spawn, grid, envelope = admit_spawn(self.indoor.meshes, self.robot.bounds, position, provisional[2])
+        if spawn != tuple(provisional):
+            self.robot.entity.set_pos((spawn[0], spawn[1], position[2] + spawn[2] - provisional[2]), zero_velocity=True)
+        self.navigation_map = grid
+        self.info["spawn_ground_m"] = spawn
+        self.info["spawn_admission"] = {
+            "provisional_ground_m": provisional,
+            "admitted_ground_m": spawn,
+            "envelope": envelope,
+            "map_fingerprint": grid.fingerprint,
+            "settled_start_verified": False,
+        }
 
     def _build_physics(self) -> None:
         import cv2
@@ -337,6 +363,9 @@ class RuntimeScene:
                     "status": self.robot.model_audit["status"],
                     "report": str(self.robot.path.parent / "loaded-model.json"),
                 }
+                if self.indoor is not None:
+                    with self._phase("spawn_admission"):
+                        self._admit_mobile_spawn()
                 with self._phase("settle"):
                     for _ in range(round(2 / self.settings.dt)):
                         self.robot.before_step(self.settings.dt)
@@ -355,6 +384,9 @@ class RuntimeScene:
                     ):
                         raise ValueError("室内机器人出生后未能确认稳定地面支撑，请检查场景碰撞网格。")
                     self.info["spawn_support_verified"] = True
+                    if not self.navigation_map.clear(observed["position_m"]):
+                        raise ValueError("settled_spawn_not_admitted_by_navigation")
+                    self.info["spawn_admission"]["settled_start_verified"] = True
         self._initial_state = self.scene.get_state()
         self._initial_steps = self.steps
         if self.lighting is not None:
