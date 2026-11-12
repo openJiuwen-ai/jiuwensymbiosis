@@ -5,6 +5,14 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, replace
 
+if __package__:
+    from .preview_backends import MODES
+else:
+    from preview_backends import MODES
+
+
+PREVIEW_RESOLUTIONS = ((960, 540), (1280, 720), (1920, 1080))
+
 
 @dataclass(frozen=True)
 class PreviewSettings:
@@ -22,7 +30,7 @@ class PreviewSettings:
     camera_name: str = "observer"
 
     def __post_init__(self) -> None:
-        if (self.width, self.height) not in {(960, 540), (1280, 720), (1920, 1080)}:
+        if (self.width, self.height) not in PREVIEW_RESOLUTIONS:
             raise ValueError("预览支持 540p、720p、1080p。")
         if type(self.fps) is not int or not 1 <= self.fps <= 120:
             raise ValueError("帧率必须在 1–120 之间。")
@@ -40,7 +48,7 @@ class PreviewSettings:
             raise ValueError("机器人资产 ID 无效。")
         if self.robot_id and (self.scene_id == "demo" or self.robot_mode != "moz1_wheels"):
             raise ValueError("室内机器人需要 USD 场景和 MOZ1 底盘物理模式。")
-        if self.robot_mode not in {"inspection", "moz1_wheels", "jumper", "microduck"}:
+        if self.robot_mode not in MODES:
             raise ValueError("机器人模式无效。")
 
 

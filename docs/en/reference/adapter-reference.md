@@ -40,6 +40,7 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 | Capability | Actions (`ActionSpec`) |
 |---|---|
 | `motion.cartesian` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` |
+| `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`, `move_named_joint`, `get_joint_positions` |
 | `motion.servo` | (no standalone public action; fast-path `track_detect`/`track_grasp` ops drive `api.servo_to_tip`/`env.servo_to_flange`) |
 | `motion.base` | `navigate_relative`, `rotate_base`, `drive_arc` |
@@ -375,3 +376,13 @@ Common validation outcomes (the validator prints numbered Chinese messages; thes
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
 Piper's 30° tilted tool, historical nested YAML, and temporary Z correction are body-specific; a new adapter should reuse them only when the hardware genuinely has the same constraint. See [Piper Coordinates and Migration](piper-coordinates.md) for the tool-offset fix's coordinate contract, bounds, and upgrade impact. Cruzr's dual-arm + lift reachability (`Reachability` override), head/waist dual cameras, and ROS 2 driver are also body-specific — the generic mechanisms (`scene3d`/`approach`/`dual_arm` shared implementations) must not be copied elsewhere.
+
+
+### Multi-gripper release and recovery
+
+`side` selects an actuator; the shared `payload.*` state remains body-wide. An adapter must not
+report `open_gripper` success while another gripper may still hold the body's payload.
+Jumper supports one active claw at a time and rejects switching sides until that claw is explicitly opened.
+It reports `holding_payload=None` for closed/unknown claws and `False` for a known open claw;
+closure never establishes `payload.held`. It sets `allow_automatic_effector_release=False` to prevent automatic release.
+Other adapters retain the default automatic-release behavior. `home()` must refuse an unverified carried object.

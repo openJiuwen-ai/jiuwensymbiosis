@@ -65,11 +65,12 @@ found no target.
 
 ## 3. Framework Capability matrix
 
-Capability axes are **orthogonal and freely combinable**: motion (cartesian/joint/servo/base/base_servo/lift/waist/goal/dual_arm), sensing (camera/depth/detection/search/eye_to_hand), end effector (parallel/suction/paddle), and planning (reachability) each stand alone.
+Capability axes are **orthogonal and freely combinable**: motion (cartesian/joint/servo/base/base_servo/lift/waist/goal/dual_arm/jump), sensing (camera/depth/detection/search/eye_to_hand), end effector (parallel/suction/paddle), and planning (reachability) each stand alone.
 
 | Capability | Framework interface | Actions (`ActionSpec`) | MockArm | Piper | SO-101 | Cruzr |
 |---|---|---|---|---|---|---|
 | `motion.cartesian` | `CartesianDriver` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` | ✅ | ✅ | ✅ | — |
+| `motion.jump` | body-defined jump | `jump` | — | — | — | — |
 | `motion.joint` | `JointDriver`/`NamedJointDriver` | `move_joint`, `move_named_joint`, `get_joint_positions` | — | ✅ | ✅ | ✅ |
 | `motion.servo` | `ServoDriver` + fast-controller hook | — (no standalone public action; driven by fast-path real-time servo ops) | ✅ | ✅ | ✅ | — |
 | `motion.base` | Env verbs `navigate_relative`/`navigate_arc` | `navigate_relative`, `rotate_base`, `drive_arc` | — | — | — | ✅ |
@@ -182,3 +183,15 @@ When maintaining this matrix, check these sources of truth together:
 - [Piper Env](../../../jiuwensymbiosis/adapters/piper/env.py), [SO-101 Env](../../../jiuwensymbiosis/adapters/so101/env.py), [Cruzr Env](../../../jiuwensymbiosis/adapters/cruzr/env.py): adapter declarations;
 - [`agent/config.py`](../../../jiuwensymbiosis/agent/config.py) and [`agent/builder.py`](../../../jiuwensymbiosis/agent/builder.py): execution and Rail switches;
 - [`pyproject.toml`](../../../pyproject.toml): Python requirements, optional dependencies, and CLI entry points.
+
+
+### Native policy simulation bodies
+
+| Capability | Jumper | Microduck |
+|---|---|---|
+| `motion.base` | Yes | Yes |
+| `motion.jump` | Yes | — |
+| `grasp.parallel` | One active left/right claw | — |
+
+Both expose the host's RGB head-camera tool. RGB-D perception and truth navigation are not supported.
+These entries describe simulation, not physical-device adapters.

@@ -246,10 +246,11 @@ byId('start').onclick = () => backendAction('start');
 for (const id of ['scene', 'resolution', 'fps', 'robot-mode', 'robot', 'render-quality', 'camera-source']) byId(id).onchange = () => {
   if (['scene', 'robot', 'robot-mode'].includes(id)) byId('camera-source').value = 'observer';
   navigation.stop();
-  const mode = sceneCatalog.find(asset => asset.id === byId('scene').value)?.preview_mode;
+  const asset = sceneCatalog.find(item => item.id === byId('scene').value);
+  const mode = asset?.preview_mode;
   if (id === 'scene' && mode !== 'static_usd') {
     byId('robot').value = '';
-    if (mode !== 'urdf') byId('robot-mode').value = ['jumper', 'microduck'].includes(mode) ? mode : 'inspection';
+    if (mode !== 'urdf') byId('robot-mode').value = asset?.robot_mode || 'inspection';
   }
   if (id === 'scene' && mode === 'static_usd' && !byId('robot').value) byId('robot-mode').value = 'inspection';
   if (id === 'robot') byId('robot-mode').value = byId('robot').value ? 'moz1_wheels' : 'inspection';
@@ -341,7 +342,7 @@ async function poll() {
       byId('notice').textContent = state.reconfigure_error || '';
     }
     if (state.settings && (['ready', 'starting', 'reconfiguring'].includes(backendState)
-      || (backendState === 'stopped' && state.renderer === 'Genesis Rasterizer'))) {
+      || (backendState === 'stopped' && state.runtime_backend === 'genesis_raster'))) {
       const selected = backendState === 'reconfiguring' ? state.requested_settings : state.settings;
       const cameraSelect = byId('camera-source');
       if (state.cameras) {
@@ -356,8 +357,8 @@ async function poll() {
       byId('resolution').value = `${selected.width}x${selected.height}`;
       byId('fps').value = String(selected.fps);
       byId('render-quality').value = 'reference';
-      rasterRendering = ['Genesis Rasterizer', 'MuJoCo OpenGL'].includes(state.renderer);
-      byId('render-quality').options[0].textContent = state.renderer === 'MuJoCo OpenGL' ? 'MuJoCo · OpenGL' : rasterRendering ? 'Rasterizer · macOS' : 'Reference · 64 采样';
+      rasterRendering = ['genesis_raster', 'mujoco'].includes(state.runtime_backend);
+      byId('render-quality').options[0].textContent = state.runtime_backend === 'mujoco' ? 'MuJoCo · OpenGL' : rasterRendering ? 'Rasterizer · macOS' : 'Reference · 64 采样';
       byId('robot-mode').value = selected.robot_mode || 'inspection';
       byId('robot').value = selected.robot_id || '';
       if ([...byId('scene').options].some(option => option.value === (selected.scene_id || 'demo'))) byId('scene').value = selected.scene_id || 'demo';

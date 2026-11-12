@@ -47,7 +47,7 @@ function viewer() {
 for (const mode of ['jumper', 'microduck']) {
   test(`selecting ${mode} chooses its physics mode and clears an attached robot`, () => {
     const ui = viewer();
-    ui.sceneCatalog = [{id: 'room', preview_mode: mode}];
+    ui.sceneCatalog = [{id: 'room', preview_mode: mode, robot_mode: mode}];
     ui.navigation = {stop() {}};
     ui.backendState = 'stopped';
     ui.byId('robot').value = 'old-robot';

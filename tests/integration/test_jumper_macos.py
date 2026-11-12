@@ -209,10 +209,10 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         report["agent"] = result
 
         # Receive the robot camera through the same H264/WebRTC endpoint as the UI.
-        preview.configure(
+        configured = preview.configure(
             width=960, height=540, fps=30, scene_id=entry["scene_id"], robot_mode=body, camera_name="head_cam"
         )
-        await wait(lambda: preview.status().get("config_revision") == 1)
+        await wait(lambda: preview.status().get("config_revision") == configured["requested_config_revision"])
         incoming = asyncio.Queue()
         peer.on("track", incoming.put_nowait)
         peer.addTransceiver("video", direction="recvonly")
@@ -248,8 +248,8 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         # Resizing does not replace the world or teleport the robot.
         before = preview.status()["base_observation"]["position_m"]
         instance = preview.status()["scene"]["instance_id"]
-        preview.configure(width=1280, height=720, fps=30, scene_id=entry["scene_id"], robot_mode=body)
-        await wait(lambda: preview.status().get("config_revision") == 2)
+        configured = preview.configure(width=1280, height=720, fps=30, scene_id=entry["scene_id"], robot_mode=body)
+        await wait(lambda: preview.status().get("config_revision") == configured["requested_config_revision"])
         assert preview.status()["scene"]["instance_id"] == instance
         after = preview.status()["base_observation"]["position_m"]
         assert math.dist(before, after) < 0.02

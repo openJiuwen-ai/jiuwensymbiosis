@@ -12,28 +12,25 @@ from base_motion import MotionTuning, RelativeMotion
 from camera import OrbitCamera
 from jumper_motion import JumperMotion
 from jumper_policy import JumperPolicy
-from mujoco_rendering import MujocoRenderer
+from mujoco_runtime import MujocoCamera, MujocoPolicyRuntime
 from scene_catalog import resolve_scene
 
 
-class JumperRuntime:
+class JumperRuntime(MujocoPolicyRuntime):
+    base_body = "base_link"
     hidden_geom_groups = (1,)
 
     def __init__(self, settings, directory, revision=0, *, startup=None):
         import mujoco as mj
         import yaml
 
-        self.settings = settings
-        self.renderer = None
-        self.indoor = None
-        self.bodies = []
-        self.steps = self.cycle = 0
-        self.selection = None
+        super().__init__(settings, directory)
         self.asset = resolve_scene(settings.scene_id)
         if self.asset.asset.preview_mode != "jumper" or settings.robot_id:
             raise ValueError("Jumper 模式需要索引中的官方 Jumper 模型和策略包。")
         try:
             self.policy = JumperPolicy(self.asset.paths["policy_bundle"])
+            self.physics_dt = self.policy.dt
             root = ET.parse(self.asset.paths["source"]).getroot()
             root.find("compiler").set("meshdir", str(self.asset.paths["source"].parent))
             root.find("option").set("timestep", str(self.policy.dt))
@@ -113,10 +110,6 @@ class JumperRuntime:
             self.heat = np.zeros(len(self.policy.wire))
             self.targets = self.data.qpos[self.qids].copy()
             self.kp = self.kd = np.zeros(len(self.policy.wire))
-            self.physics_steps = 0
-            self._accumulator = 0.0
-            self._command = (0.0, 0.0, 0.0)
-            self._command_until = 0.0
             self.robot = self  # Same scene-owned robot interface as the Genesis runtime.
             self.bounds = [[-0.35, -0.35, 0], [0.35, 0.35, 0.22]]
             base_motion = RelativeMotion(
@@ -163,25 +156,6 @@ class JumperRuntime:
             self.close()
             raise
 
-    def observe_base(self):
-        import mujoco as mj
-
-        vel = np.zeros(6)
-        mj.mj_objectVelocity(self.model, self.data, mj.mjtObj.mjOBJ_BODY, self.model.body("base_link").id, vel, 0)
-        p = self.data.body("base_link")
-        values = np.concatenate((p.xpos, p.xquat, vel))
-        if not np.isfinite(values).all():
-            raise RuntimeError("Non-finite Jumper base observation")
-        return {
-            "position_m": p.xpos.tolist(),
-            "quaternion_wxyz": p.xquat.tolist(),
-            "body_yaw_rad": math.atan2(p.xmat.reshape(3, 3)[1, 0], p.xmat[0]),
-            "linear_velocity_m_s": vel[3:].tolist(),
-            "angular_velocity_rad_s": vel[:3].tolist(),
-            "frame": "world",
-            "command_frame": "body_forward_left_up",
-        }
-
     def command(self, vx, vy, wz, duration):
         from omni_base import validate_twist
 
@@ -192,10 +166,6 @@ class JumperRuntime:
             raise ValueError("Invalid Jumper command duration")
         self._command = (vx, vy, wz)
         self._command_until = self.data.time + duration
-
-    def stop(self):
-        self._command = (0.0, 0.0, 0.0)
-        self._command_until = 0.0
 
     def _physics_step(self):
         import mujoco as mj
@@ -225,14 +195,6 @@ class JumperRuntime:
         self.physics_steps += 1
         self.motion.sample_physics()
 
-    def step(self):
-        self.motion.tick(self.settings.dt, self.steps)
-        self._accumulator += self.settings.dt
-        while self._accumulator >= self.policy.dt - 1e-10:
-            self._physics_step()
-            self._accumulator -= self.policy.dt
-        self.steps += 1
-
     def snapshot(self):
         return {
             "name": "Jumper",
@@ -258,55 +220,7 @@ class JumperRuntime:
             },
         }
 
-    def frame_size(self, name):
-        if name == "observer":
-            return self.settings.width, self.settings.height
-        if name not in self.cameras:
-            raise ValueError(f"Jumper has no camera: {name}")
-        return self.cameras[name].resolution
 
-    def build_renderer(self, settings):
-        self.renderer = MujocoRenderer(self)
-        self.settings = settings
-
-    def close_renderer(self):
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
-
-    def update_camera(self, pose):
-        self.pose = pose
-
-    def selection_snapshot(self):
-        return None
-
-    def pick(self, u, v):
-        raise ValueError("Jumper 使用 MuJoCo 渲染，暂不支持物体点选。")
-
-    def close(self):
-        self.close_renderer()
-
-
-class JumperCamera:
+class JumperCamera(MujocoCamera):
     mjcf_name = "onboard"
-    name = "head_cam"
-    resolution = (640, 480)
-
-    def __init__(self, runtime):
-        self.runtime = runtime
-
-    def metadata(self):
-        fovy = self.runtime.model.camera("onboard").fovy[0]
-        focal = self.resolution[1] / (2 * math.tan(math.radians(fovy) / 2))
-        return {
-            "name": self.name,
-            "link": "camera_link",
-            "width": 640,
-            "height": 480,
-            "K": [[focal, 0, 320], [0, focal, 240], [0, 0, 1]],
-            "D": [0] * 5,
-            "distortion_model": "pinhole",
-            "optical_frame": "x_right_y_down_z_forward",
-            "fov_y_deg": fovy,
-            "source": "official MJCF onboard camera; downsampled",
-        }
+    link_name = "camera_link"

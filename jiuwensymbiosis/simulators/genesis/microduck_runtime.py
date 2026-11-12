@@ -14,8 +14,24 @@ from dataclasses import replace
 import numpy as np
 from base_motion import MotionTuning, RelativeMotion
 from camera import OrbitCamera
-from mujoco_rendering import MujocoRenderer
+from mujoco_runtime import MujocoCamera, MujocoPolicyRuntime
 from scene_catalog import resolve_scene
+
+REFERENCE_SHA256 = "03bfd0642a880cd379e057536ee819bd1377d4af7b5206a57907d10afd1d4270"
+WALKING_SHA256 = "ce894d30b3343036d499bfac1102bdaa58d59a21c1b58401ecb70fb6a2f63e0a"
+
+
+def load_reference(path, policy):
+    """Execute only the pinned upstream reference, after verifying both inputs."""
+    for source, expected in ((path, REFERENCE_SHA256), (policy, WALKING_SHA256)):
+        if hashlib.sha256(source.read_bytes()).hexdigest() != expected:
+            raise ValueError(f"Microduck reference/policy digest mismatch: {source.name}")
+    spec = importlib.util.spec_from_file_location("_microduck_reference", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Cannot load official Microduck CPU reference")
+    reference = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reference)
+    return reference
 
 
 def load_model(reference, scene):
@@ -54,22 +70,19 @@ def load_model(reference, scene):
     return model, data, actuators
 
 
-class MicroduckRuntime:
+class MicroduckRuntime(MujocoPolicyRuntime):
+    base_body = "trunk_base"
     hidden_geom_groups = (3,)
+    physics_dt = 0.005
+    # Explicit native-policy envelope; the generic/manual path retains its 0.6 rad/s cap.
+    max_linear_rate = 0.4
+    max_yaw_rate = 1.5
 
     def __init__(self, settings, directory, revision=0, *, startup=None):
         import mujoco as mj
 
-        self.settings = settings
-        self.renderer = None
-        self.indoor = None
-        self.bodies = []
-        self.selection = None
-        self.steps = self.cycle = self.physics_steps = 0
-        self._accumulator = 0.0
-        self._command = (0.0, 0.0, 0.0)
+        super().__init__(settings, directory)
         self._policy_command = (0.0, 0.0, 0.0)
-        self._command_until = 0.0
         self.asset = resolve_scene(settings.scene_id)
         if self.asset.asset.preview_mode != "microduck" or settings.robot_id:
             raise ValueError("Microduck 模式需要索引中的官方模型和行走策略。")
@@ -78,11 +91,7 @@ class MicroduckRuntime:
             manifest = json.loads(paths["policy_manifest"].read_text())
             if (manifest.get("obs_len"), manifest.get("action_len"), manifest["robot"]["control_hz"]) != (61, 14, 50):
                 raise ValueError("Unsupported Microduck policy contract")
-            spec = importlib.util.spec_from_file_location("_microduck_reference", paths["policy_reference"])
-            if spec is None or spec.loader is None:
-                raise ImportError("Cannot load official Microduck CPU reference")
-            reference = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(reference)
+            reference = load_reference(paths["policy_reference"], paths["walking_policy"])
             self.model, self.data, self.actuators = load_model(reference, paths["runtime_scene"])
             self.policy = reference.PolicyInference(
                 self.model,
@@ -95,14 +104,15 @@ class MicroduckRuntime:
             self.wire = [self.model.joint(self.model.actuator_trnid[i, 0]).name for i in range(self.model.nu)]
             session = self.policy.walking_session
             metadata = session.get_modelmeta().custom_metadata_map
-            if (
-                session.get_inputs()[0].shape != [1, 61]
-                or session.get_outputs()[0].shape != [1, 14]
-                or metadata.get("joint_names", "").split(",") != self.wire
-                or float(metadata.get("action_scale", "nan")) != 1.0
-                or metadata.get("observation_names")
-                != "base_ang_vel,projected_gravity,joint_pos,joint_vel,actions,command,head_command,body_command"
-            ):
+            contract_matches = (
+                session.get_inputs()[0].shape == [1, 61],
+                session.get_outputs()[0].shape == [1, 14],
+                metadata.get("joint_names", "").split(",") == self.wire,
+                float(metadata.get("action_scale", "nan")) == 1.0,
+                metadata.get("observation_names")
+                == "base_ang_vel,projected_gravity,joint_pos,joint_vel,actions,command,head_command,body_command",
+            )
+            if not all(contract_matches):
                 raise ValueError("Microduck ONNX dimensions/joint order/action scale mismatch")
             self.qids = np.asarray(self.policy.joint_qpos_indices)
             self.data.qpos[:7] = (0, 0, 0.125, 1, 0, 0, 0)
@@ -131,9 +141,10 @@ class MicroduckRuntime:
                     linear_still=0.025,
                     angular_still=0.25,
                     settle_s=1.0,
-                    min_linear=0.15,
-                    min_angular=0.6,
-                    max_angular=0.6,
+                    min_linear=self.max_linear_rate,
+                    max_linear=self.max_linear_rate,
+                    min_angular=self.max_yaw_rate,
+                    max_angular=self.max_yaw_rate,
                 ),
             )
             self.info = {
@@ -168,52 +179,22 @@ class MicroduckRuntime:
             self.close()
             raise
 
-    def observe_base(self):
-        import mujoco as mj
-
-        body = self.data.body("trunk_base")
-        vel = np.zeros(6)
-        mj.mj_objectVelocity(self.model, self.data, mj.mjtObj.mjOBJ_BODY, body.id, vel, 0)
-        if not np.isfinite(np.concatenate((body.xpos, body.xquat, vel))).all():
-            raise RuntimeError("Non-finite Microduck observation")
-        return {
-            "position_m": body.xpos.tolist(),
-            "quaternion_wxyz": body.xquat.tolist(),
-            "body_yaw_rad": math.atan2(body.xmat[3], body.xmat[0]),
-            "linear_velocity_m_s": vel[3:].tolist(),
-            "angular_velocity_rad_s": vel[:3].tolist(),
-            "frame": "world",
-            "command_frame": "body_forward_left_up",
-        }
-
     def command(self, vx, vy, wz, duration):
         from omni_base import validate_twist
 
-        validate_twist(vx, vy, wz)
+        validate_twist(vx, vy, wz, max_linear=self.max_linear_rate, max_angular=self.max_yaw_rate)
         if not math.isfinite(duration) or not 0 < duration <= 1:
             raise ValueError("Invalid Microduck command duration")
         self._command = (vx, vy, wz)
         self._command_until = self.data.time + duration
-
-    def stop(self):
-        self._command = (0.0, 0.0, 0.0)
-        self._command_until = 0.0
 
     def _physics_step(self):
         import mujoco as mj
 
         if self.physics_steps % 4 == 0:
             command = self._command if self.data.time < self._command_until else (0.0, 0.0, 0.0)
-            # The released gait has a substantial start deadband in CPU MuJoCo.
-            # Use a bounded gait command; RelativeMotion still closes the loop on
-            # measured distance/yaw, never on an assumed commanded velocity.
-            vx, vy, wz = command
-            norm = math.hypot(vx, vy)
-            self._policy_command = (
-                0.4 * vx / norm if norm else 0.0,
-                0.4 * vy / norm if norm else 0.0,
-                math.copysign(1.5, wz) if wz else 0.0,
-            )
+            # Commands keep their validated SI magnitude; never boost small requests.
+            self._policy_command = command
             if not np.allclose(self.policy.vel_cmd, self._policy_command, atol=1e-6):
                 # Avoid the reference CLI's 50-Hz terminal prints in worker.log.
                 with redirect_stdout(io.StringIO()):
@@ -228,14 +209,6 @@ class MicroduckRuntime:
         if not np.isfinite(self.data.qpos).all() or self.data.body("trunk_base").xmat[8] < 0.7:
             self.stop()
             raise RuntimeError("Microduck lost balance; restart the scene")
-
-    def step(self):
-        self.motion.tick(self.settings.dt, self.steps)
-        self._accumulator += self.settings.dt
-        while self._accumulator >= 0.005 - 1e-10:
-            self._physics_step()
-            self._accumulator -= 0.005
-        self.steps += 1
 
     def snapshot(self):
         return {
@@ -252,57 +225,10 @@ class MicroduckRuntime:
             "collision": True,
             "command": list(self._command),
             "policy_command": list(self._policy_command),
+            "command_limits": {"linear_m_s": self.max_linear_rate, "angular_rad_s": self.max_yaw_rate},
         }
 
-    def frame_size(self, name):
-        if name == "observer":
-            return self.settings.width, self.settings.height
-        if name not in self.cameras:
-            raise ValueError(f"Microduck has no camera: {name}")
-        return self.cameras[name].resolution
 
-    def build_renderer(self, settings):
-        self.renderer = MujocoRenderer(self)
-        self.settings = settings
-
-    def close_renderer(self):
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
-
-    def update_camera(self, pose):
-        self.pose = pose
-
-    def selection_snapshot(self):
-        return None
-
-    def pick(self, u, v):
-        raise ValueError("MuJoCo 场景暂不支持物体点选。")
-
-    def close(self):
-        self.close_renderer()
-
-
-class MicroduckCamera:
-    name = "head_cam"
+class MicroduckCamera(MujocoCamera):
     mjcf_name = "head_camera"
-    resolution = (640, 480)
-
-    def __init__(self, runtime):
-        self.runtime = runtime
-
-    def metadata(self):
-        fovy = float(self.runtime.model.camera(self.mjcf_name).fovy[0])
-        focal = 480 / (2 * math.tan(math.radians(fovy) / 2))
-        return {
-            "name": self.name,
-            "link": "head_camera",
-            "width": 640,
-            "height": 480,
-            "K": [[focal, 0, 320], [0, focal, 240], [0, 0, 1]],
-            "D": [0] * 5,
-            "distortion_model": "pinhole",
-            "optical_frame": "x_right_y_down_z_forward",
-            "fov_y_deg": fovy,
-            "source": "official MJCF head_camera; model FOV, not hardware calibration",
-        }
+    link_name = "head_camera"

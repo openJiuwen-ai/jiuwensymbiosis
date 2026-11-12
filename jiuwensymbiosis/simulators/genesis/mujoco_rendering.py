@@ -20,9 +20,12 @@ class MujocoRenderer:
 
         width, height = self.runtime.frame_size(name)
         key = (width, height)
-        if key not in self.renderers:
-            self.renderers[key] = mj.Renderer(self.runtime.model, height=height, width=width)
-        renderer = self.renderers[key]
+        renderer = self.renderers.pop(key, None)
+        if renderer is None:
+            if len(self.renderers) >= 2:
+                self.renderers.pop(next(iter(self.renderers))).close()
+            renderer = mj.Renderer(self.runtime.model, height=height, width=width)
+        self.renderers[key] = renderer
         option = mj.MjvOption()
         for group in self.runtime.hidden_geom_groups:
             option.geomgroup[group] = 0  # Keep collision geometry physical but invisible.
@@ -50,6 +53,10 @@ class MujocoRenderer:
         rgb = renderer.render().copy()
         self.render_counts[name] += 1
         return torch.from_numpy(rgb)
+
+    @staticmethod
+    def read_rgbd(name="head_cam", **kwargs):
+        raise ValueError("MuJoCo 场景尚不支持 RGB-D 深度采样。")
 
     def close(self):
         for renderer in self.renderers.values():

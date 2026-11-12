@@ -48,7 +48,7 @@ python jiuwensymbiosis/simulators/assets probe library://geniesim/background/kit
 ## 扫描规则
 
 顶层仅接受 `version`、`index`、`roots`。每个根声明 `id`、`path`、`scanner`，以及可选的
-`exclude`。支持 `geniesim`、`spiritai` 和 `content_tree` 三种扫描器。
+`exclude`。支持 `geniesim`、`spiritai`、`content_tree`、`jumper` 和 `microduck` 五种扫描器。
 所有调用使用查询返回的 `library://...` ID，不转换旧短 ID。
 ID 由库 ID 和相对入口路径生成，去掉 USD 扩展名并对特殊字符作 URL 编码。
 

@@ -22,6 +22,7 @@ from jiuwensymbiosis.agent.run import run_robot_task
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
+    ACTIONS,
     APPROACH_TARGET,
     CLOSE_GRIPPER,
     JUMP,
@@ -55,7 +56,9 @@ from jiuwensymbiosis.simulators.genesis.observation_policy import (
     policy_id,
 )
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.genesis.preview_backends import POLICY_MODES
 from jiuwensymbiosis.simulators.genesis.visual_policy import motion_feedback, policy_feedback
+from jiuwensymbiosis.tools.builder import list_tool_meta
 
 
 class GenesisDriver:
@@ -224,7 +227,7 @@ class GenesisEnv(BaseRobotEnv):
         self._last_frame: CameraFrame | None = None
         self.on_rgbd_frame: Callable | None = None
         self.on_detection: Callable | None = None
-        self.capabilities = frozenset({"motion.base"}) if driver.actions_enabled else frozenset()
+        self.capabilities = type(self).capabilities if driver.actions_enabled else frozenset()
         if driver.observation_mode == "ground_truth":
             self.capabilities |= {"simulation.truth"}
             if driver.actions_enabled:
@@ -471,11 +474,23 @@ class GenesisTruthMotionApi(GenesisTruthApi):
 
 
 class JumperEnv(GenesisEnv):
+    allow_automatic_effector_release = False
     capabilities = frozenset({"motion.base", "motion.jump", "grasp.parallel"})
 
-    def __init__(self, driver):
-        super().__init__(driver)
-        self.capabilities = type(self).capabilities if driver.actions_enabled else frozenset()
+    @property
+    def holding_payload(self) -> bool | None:
+        # Closed fingers are not grasp evidence. Unknown cannot authorize home;
+        # the explicit-release policy separately prevents automatic opening.
+        state = self.driver.preview.status()
+        gripper = (state.get("robot") or {}).get("gripper") or {}
+        if state.get("state") != "ready" or "closed_command" not in gripper:
+            return None
+        return False if gripper["closed_command"] is False else None
+
+    def home(self) -> None:
+        if self.holding_payload is not False:
+            raise RuntimeError("Jumper 夹爪闭合或状态未知，禁止自动回位；请显式操作夹爪。")
+        super().home()
 
     def jump(self) -> dict:
         return self.driver.policy_action("jump")
@@ -517,11 +532,17 @@ def make_session(
     detector_config: DetectorConfig | None = None,
 ) -> RobotSession:
     driver = GenesisDriver(preview, cancelled, actions_enabled=actions_enabled, observation_mode=observation_mode)
-    state = preview.status() if hasattr(preview, "status") else {}
-    policy_actions = (state.get("robot") or {}).get("policy_actions", [])
-    if observation_mode != "visual" and state.get("scene", {}).get("engine") == "MuJoCo":
+    state = preview.status()
+    if state.get("state") != "ready":
+        raise ValueError("仿真后台未就绪，无法确认机器人能力。")
+    mode = (state.get("settings") or {}).get("robot_mode")
+    policy_actions = (state.get("robot") or {}).get("policy_actions") or []
+    if mode == "jumper" and not {"jump", "set_gripper"} <= set(policy_actions):
+        raise ValueError("Jumper 后台未报告完整策略动作，无法建立控制会话。")
+    native = mode in POLICY_MODES or state.get("runtime_backend") == "mujoco"
+    if observation_mode != "visual" and native:
         raise ValueError("Jumper/Microduck 当前支持 RGB 相机观察；RGB-D 感知和真值导航尚未接入。")
-    if observation_mode == "perception" and state.get("renderer") == "Genesis Rasterizer":
+    if observation_mode == "perception" and state.get("runtime_backend") == "genesis_raster":
         raise ValueError("Mac Genesis 仅支持动态演示，RGB-D 机器人感知尚未接入；请使用 Linux / NVIDIA。")
     env = JumperEnv(driver) if {"jump", "set_gripper"} <= set(policy_actions) else GenesisEnv(driver)
     api: BaseRobotApi
@@ -646,8 +667,12 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
         )
         | (
-            frozenset({"jump", "open_gripper", "close_gripper"})
-            if actions_enabled and isinstance(session.api, JumperApi)
+            frozenset(
+                item["name"]
+                for item in list_tool_meta(session.api, env=session.env)
+                if item["name"] != "home" and ACTIONS[item["name"]].planner_visible
+            )
+            if actions_enabled
             else frozenset()
         ),
         execution={

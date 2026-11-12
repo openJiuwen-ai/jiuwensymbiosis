@@ -45,7 +45,7 @@ changing asset paths, contents, or scan rules; failed builds retain the old inde
 
 ## Scan and reference contracts
 
-Supported scanners are `geniesim`, `spiritai`, and configurable `content_tree`.
+Supported scanners are `geniesim`, `spiritai`, configurable `content_tree`, `jumper`, and `microduck`.
 Each root declares `id`, `path`, `scanner`, and optionally `exclude`. A
 `content_tree` root also declares `families`, with `kind`, `min_depth`,
 `preview_depth`, and optional first-level `preview_depth_overrides`.

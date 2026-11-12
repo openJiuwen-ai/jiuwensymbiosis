@@ -40,6 +40,7 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | Capability | 动作（`ActionSpec`） |
 |---|---|
 | `motion.cartesian` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` |
+| `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`、`move_named_joint`、`get_joint_positions` |
 | `motion.servo` | （无独立公共动作；由 fast path 实时伺服 op `track_detect`/`track_grasp` 经 `api.servo_to_tip`/`env.servo_to_flange` 驱动） |
 | `motion.base` | `navigate_relative`、`rotate_base`、`drive_arc` |
@@ -366,3 +367,12 @@ xyz_final, description = apply_xy_correction(
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
 Piper 的 30° 倾斜工具、历史嵌套 YAML 和临时 Z 校正都属于机型特例；新适配器只在硬件确有相同约束时复用。工具偏移修复的坐标契约、边界和升级影响见 [Piper 坐标与迁移说明](piper-coordinates.md)。Cruzr 的双臂 + 升降可达性（`Reachability` 覆写）、头/腰双路相机、ROS 2 驱动也属于机型特例，通用机制（`scene3d`/`approach`/`dual_arm` 共享实现）不要复制到别处。
+
+
+### 多夹爪与恢复
+
+`side` 选择执行器，`payload.*` 仍表示整机载荷；若另一夹爪可能仍持物，适配器不得报告
+`open_gripper` 成功并建立全局空载事实。Jumper 仅支持一个活动夹爪，当前爪闭合时拒绝切换侧别。
+闭合或未知时 `holding_payload=None`，已确认张开时为 `False`，闭爪不建立 `payload.held`。
+Jumper 设置 `allow_automatic_effector_release=False` 阻止自动松爪，未知载荷时也拒绝自动回位。
+其他适配器保持默认自动释放行为。

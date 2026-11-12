@@ -22,6 +22,7 @@ from base_motion import measure
 from camera import PreviewSettings
 from encoding import NvEncoder
 from ipc import Mailbox
+from preview_backends import POLICY_MODES, preview_backend
 from scene_catalog import resolve_scene, validate_material_bundle
 from scene_runtime import create_runtime, reset_runtime
 from scheduling import PhysicsClock
@@ -36,7 +37,7 @@ os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 
 def _encoder_type(settings):
-    if sys.platform == "darwin" or settings.robot_mode in {"jumper", "microduck"}:
+    if preview_backend(settings.robot_mode).software_encoding:
         from encoding import SoftwareEncoder
 
         return SoftwareEncoder
@@ -51,8 +52,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     # overhead. CPU keeps the same solver/timestep and leaves the GPU to GL.
     physics_backend = os.environ.get("JIUWEN_GENESIS_MACOS_BACKEND", "cpu") if macos else "cuda"
     encoder_type = _encoder_type(settings)
-    renderer_name = "Genesis Rasterizer" if macos else "Nyx"
-    encoder_name = "libx264 / ultrafast / CRF 23" if macos else "NVENC H264 / pinned RGBA / QP 20 / P4"
+    profile = preview_backend(settings.robot_mode)
+    renderer_name = profile.renderer
+    encoder_name = profile.encoder_name
     initialized = sdk_initialized = False
     encoder = runtime = None
     capture_path: Path | None = None
@@ -99,7 +101,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
         with startup.phase("runtime_scene"):
             runtime = create_runtime(settings, directory, startup=startup)
         logger.info("Genesis world and %s renderer ready", renderer_name)
-        with startup.phase("encoder_init" if macos else "nvenc_init"):
+        with startup.phase("encoder_init" if profile.software_encoding else "nvenc_init"):
             encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
         logger.info("%s encoder ready", encoder_name)
         stream_epoch = -1
@@ -188,7 +190,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     # Open NVENC only after Nyx finishes replacing CUDA resources:
                     # opening it before teardown fails on repeated 720p/1080p
                     # switches in the real GPU regression test.
-                    with loading.phase("nvenc"):
+                    with loading.phase(
+                        "encoder_init" if preview_backend(requested.robot_mode).software_encoding else "nvenc"
+                    ):
                         new_encoder = _encoder_type(requested)(
                             requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
                         )
@@ -199,6 +203,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     encoder = new_encoder
                     new_encoder = None
                     settings = requested
+                    profile = preview_backend(settings.robot_mode)
+                    renderer_name, encoder_name = profile.renderer, profile.encoder_name
                     encoder_type = _encoder_type(settings)
                     runtime.settings = requested
                 except Exception as exc:
@@ -258,7 +264,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ):
                         raise ValueError("复位请求所属世界已经变化。")
                     runtime, result = reset_runtime(
-                        runtime, settings, directory, phase=loading.phase, stopping=mailbox.stopping
+                        runtime, settings, directory, phase=loading.phase, stopping=mailbox.stopping, startup=loading
                     )
                     reset_result.update(result)
                     pick_result = capture_result = base_result = query_result = {}
@@ -444,7 +450,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 started = time.monotonic()
                 with loading.phase("initial_render") if not loading.finished else nullcontext():
                     rgb = runtime.renderer.read_rgb(settings.camera_name)
-                    if not macos and runtime.info.get("engine") != "MuJoCo":
+                    if not preview_backend(settings.robot_mode).software_encoding:
                         torch.cuda.current_stream().synchronize()
                 startup.mark_first_frame()
                 loading.mark_first_frame()
@@ -516,7 +522,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "startup": startup_data,
                         "loading": loading.snapshot(),
                         "reset_result": reset_result,
-                        "message": f"{runtime.info.get('engine', 'Genesis')} / {runtime.info.get('renderer', renderer_name)} 已就绪 · {settings.scene_id}"
+                        "message": f"{runtime.info.get('engine', 'Genesis')} / "
+                        f"{runtime.info.get('renderer', renderer_name)} 已就绪 · {settings.scene_id}"
                         + (
                             "（静态场景，碰撞已加载）"
                             if runtime.info["mode"] == "static_background"
@@ -549,10 +556,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             for k, v in timings.items()
                             if v
                         },
-                        "encoder": "libx264 / ultrafast / CRF 23"
-                        if settings.robot_mode in {"jumper", "microduck"}
-                        else encoder_name,
-                        "physics_backend": "MuJoCo CPU" if runtime.info.get("engine") == "MuJoCo" else physics_backend,
+                        "encoder": encoder_name,
+                        "physics_backend": "MuJoCo CPU" if settings.robot_mode in POLICY_MODES else physics_backend,
                         "raw_cpu_readback": True,
                         "raw_ipc": False,
                         "camera": runtime.pose,

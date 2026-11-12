@@ -43,9 +43,7 @@ class TestVocabularyWellFormed:
     def test_required_params_are_declared_params(self, spec):
         assert set(spec.required_params) <= set(spec.params)
 
-    @pytest.mark.parametrize(
-        "spec", [s for s in ACTIONS.values() if s.produces_location], ids=lambda s: s.name
-    )
+    @pytest.mark.parametrize("spec", [s for s in ACTIONS.values() if s.produces_location], ids=lambda s: s.name)
     def test_location_producers_declare_a_result_shape(self, spec):
         """A step that senses something must say what fields it returns.
 
@@ -214,7 +212,7 @@ class TestPlannerVocabulary:
         from jiuwensymbiosis.api.actions import SEARCH_TARGET
 
         assert SEARCH_TARGET.produces_location is False
-        assert SEARCH_TARGET.invalidates_locations is False   # reading a frame moves nothing
+        assert SEARCH_TARGET.invalidates_locations is False  # reading a frame moves nothing
         assert "bearing_rad" in schema_from_typeddict(SEARCH_TARGET.result)["properties"]
 
 
@@ -222,7 +220,7 @@ class TestPlannerVocabulary:
 # attribute: a comprehension in a class body cannot see the class namespace.
 # Deliberately excludes motion.waist / motion.lift — they move the arms relative to the
 # base, not the base, so a base-frame coordinate survives them.
-_MOVES_THE_BASE = frozenset({"motion.base", "motion.base_servo", "motion.goal"})
+_MOVES_THE_BASE = frozenset({"motion.base", "motion.base_servo", "motion.goal", "motion.jump"})
 
 
 class TestMovingTheBaseStalesSensing:

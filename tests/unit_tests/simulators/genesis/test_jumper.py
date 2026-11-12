@@ -178,9 +178,9 @@ def test_jumper_gripper_rejects_invalid_side_before_dispatch(action, side):
 @pytest.mark.parametrize(
     ("mode", "state"),
     [
-        ("ground_truth", {"scene": {"engine": "MuJoCo"}}),
-        ("perception", {"scene": {"engine": "MuJoCo"}}),
-        ("perception", {"renderer": "Genesis Rasterizer"}),
+        ("ground_truth", {"runtime_backend": "mujoco"}),
+        ("perception", {"runtime_backend": "mujoco"}),
+        ("perception", {"runtime_backend": "genesis_raster"}),
     ],
 )
 def test_unimplemented_observation_backends_fail_before_exposing_tools(tmp_path, monkeypatch, mode, state):
@@ -188,21 +188,25 @@ def test_unimplemented_observation_backends_fail_before_exposing_tools(tmp_path,
     from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
     preview = GenesisPreview(state_dir=tmp_path)
-    monkeypatch.setattr(preview, "status", lambda: state)
+    monkeypatch.setattr(preview, "status", lambda: {"state": "ready", **state})
     with pytest.raises(ValueError, match="尚未接入"):
         make_session(preview, observation_mode=mode)
     assert preview._motion_owner is None
 
 
 @pytest.fixture
-def policy_motion():
+def policy_motion(monkeypatch):
+    import sys
     from collections import deque
     from types import SimpleNamespace as NS
     from unittest.mock import Mock
 
     import numpy as np
 
+    from jiuwensymbiosis.simulators.genesis import base_motion
     from jiuwensymbiosis.simulators.genesis.jumper_motion import JumperMotion
+
+    monkeypatch.setitem(sys.modules, "base_motion", base_motion)
 
     fsm = NS(mode="locomotion", running_policy=True)
     events = deque()
@@ -342,3 +346,154 @@ def test_policy_feedback_keeps_physical_measurements_private():
     )
     assert result["airborne"]
     assert "123.456" not in str(result) and "position_m" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"state": "stopped"},
+        {"state": "starting"},
+        {"state": "reconfiguring"},
+        {"state": "ready", "settings": {"robot_mode": "jumper"}},
+        {"state": "ready", "settings": {"robot_mode": "jumper"}, "robot": {"policy_actions": ["jump"]}},
+    ],
+)
+def test_session_never_silently_drops_unconfirmed_policy_tools(state):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.simulators.genesis.agent import make_session
+
+    preview = SimpleNamespace(status=lambda: state, acquire_motion=Mock())
+    with pytest.raises(ValueError, match="后台"):
+        make_session(preview)
+    preview.acquire_motion.assert_not_called()
+
+
+def test_missing_native_key_mapping_is_an_explicit_error():
+    from collections import deque
+
+    policy = JumperPolicy.__new__(JumperPolicy)
+    policy.mode_keys = {"jump": "key_x"}
+    policy.claw_keys = {"left": "space"}
+    policy.key_events = deque()
+    with pytest.raises(ValueError, match="mode key: claw_left"):
+        policy.tap_mode("claw_left")
+    with pytest.raises(ValueError, match="claw key: None"):
+        policy.claw(None, False)
+    assert not policy.key_events
+
+
+@pytest.mark.parametrize("mode", ["safe", "jump", "gesture_hello"])
+def test_claw_rejects_unsupported_native_start_without_handoff(policy_motion, mode):
+    from unittest.mock import Mock
+
+    motion, robot = policy_motion
+    robot.policy.fsm.mode = mode
+    robot.policy.claw = Mock()
+    accept(motion, jump_request(kind="set_gripper", side="left", closed=True))
+    for step in range(120):
+        motion.tick(0.01, step)
+    assert not motion.result["ok"]
+    assert motion.result["reason"] in {"policy_state_invalid", "policy_safe"}
+    robot.policy.use_operators.assert_not_called()
+    robot.policy.claw.assert_not_called()
+
+
+def test_unknown_claw_side_never_queues_a_release(policy_motion):
+    from unittest.mock import Mock
+
+    motion, robot = policy_motion
+    robot.policy.fsm.mode = "claw_left"
+    robot.policy.claw = Mock()
+    accept(motion, jump_request())
+    for step in range(120):
+        motion.tick(0.01, step)
+    assert motion.result["reason"] == "gripper_state_unknown"
+    assert not motion.active
+    robot.policy.claw.assert_not_called()
+    robot.policy.tap_mode.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["jump", "set_gripper", "navigate"])
+@pytest.mark.parametrize("error", [RuntimeError, KeyError])
+def test_native_handoff_error_finishes_task_without_escaping_tick(policy_motion, kind, error):
+    motion, robot = policy_motion
+    robot.policy.use_operators.side_effect = error("controller mismatch")
+    accept(motion, jump_request(kind=kind, side="left", closed=True, dx=0.1, dy=0.0, dyaw=0.0))
+    for step in range(120):
+        motion.tick(0.01, step)
+    assert not motion.active
+    assert motion.result["settled"] and not motion.result["ok"]
+    assert motion.result["reason"] == "policy_transition_failed"
+    assert not robot.policy.key_events
+
+
+@pytest.mark.parametrize("side", ["left", "right", None])
+@pytest.mark.parametrize("failure", ["close_gripper", "navigate_relative"])
+async def test_jumper_recovery_never_opens_or_homes_a_closed_or_unknown_claw(side, failure):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from jiuwensymbiosis.rails.recovery import RecoveryRail, recover_session
+    from jiuwensymbiosis.simulators.genesis.agent import JumperApi, JumperEnv
+    from tests.helpers import FakeCtx
+
+    gripper = {} if side is None else {"side": side, "closed_command": True}
+    preview = SimpleNamespace(status=lambda: {"state": "ready", "robot": {"gripper": gripper}})
+    driver = SimpleNamespace(preview=preview, observation_mode="visual", actions_enabled=True, policy_action=Mock())
+    env = JumperEnv(driver)
+    api = JumperApi(env)
+    session = SimpleNamespace(api=api, env=env)
+    assert env.holding_payload is None
+    from jiuwensymbiosis.api.world_state import current_tokens
+
+    assert "payload.held" not in current_tokens(session)
+    assert recover_session(session, release=True, home=True, log_prefix="test") == (False, False)
+    rail = RecoveryRail(session)
+    await rail.on_tool_exception(FakeCtx(tool_name=failure, tool_args={}))
+    driver.policy_action.assert_not_called()
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_claw_completion_survives_mode_exit_without_resetting_closed_fingers(policy_motion, closed):
+    from unittest.mock import Mock
+
+    motion, robot = policy_motion
+    robot.policy.claw = Mock()
+    accept(motion, jump_request(kind="set_gripper", side="left", closed=closed))
+    motion.tick(0.01, 1)
+    robot.policy.fsm.mode = "claw_left"
+    robot.targets[0] = robot.data.qpos[3] = 0.1 if closed else -0.8
+    # Observe completion in the official claw mode before the FSM hands back control.
+    motion.tick(0.01, 2)
+    robot.policy.fsm.mode = "locomotion"
+    for step in range(3, 250):
+        motion.tick(0.01, step)
+    assert not motion.active
+    assert motion.result["ok"] and motion.result["settled"]
+    assert robot.policy.operators is closed
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_other_claw_cannot_clear_global_payload_while_one_claw_is_closed(policy_motion, side):
+    motion, robot = policy_motion
+    motion.claw_side, motion.claw_closed = side, True
+    other = "right" if side == "left" else "left"
+    accept(motion, jump_request(kind="set_gripper", side=other, closed=False))
+    for step in range(120):
+        motion.tick(0.01, step)
+    assert not motion.result["ok"] and motion.result["reason"] == "gripper_requires_open"
+    assert motion.claw_closed and motion.claw_side == side
+
+
+def test_jump_plan_requires_release_and_exposes_measured_result():
+    from jiuwensymbiosis.agent.fast.sequence import SequenceError, parse_sequence
+    from jiuwensymbiosis.simulators.genesis.agent import JumperApi
+
+    actions = {name: getattr(JumperApi, name) for name in ("jump", "open_gripper", "close_gripper")}
+    with pytest.raises(SequenceError, match="payload.clear"):
+        parse_sequence([{"op": "close_gripper"}, {"op": "jump"}], allowed_ops=actions, initial_state={"payload.clear"})
+    steps = parse_sequence([{"op": "open_gripper"}, {"op": "jump"}], allowed_ops=actions, initial_state=set())
+    assert [step.op for step in steps] == ["open_gripper", "jump"]
+    assert {"ok", "settled", "airborne", "reason"} <= actions["jump"].__tool_meta__.returns["properties"].keys()

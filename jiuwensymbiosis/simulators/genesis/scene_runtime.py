@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import sys
 import tempfile
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from jiuwensymbiosis.simulators.genesis.truth import EntityRegistry
 
 from camera import OrbitCamera, PreviewSettings
+from mujoco_runtime import SimulationRuntime
+from preview_backends import MODES, POLICY_MODES
 from rendering import SceneRenderer
 from scene_catalog import material_rules_for_asset, resolve_scene, validate_material_bundle
 from selection import UsdPickIndex
@@ -26,23 +29,19 @@ from source_lighting import load_source_lighting, make_environment
 from usd_scene import initial_camera, prepare_static_stage
 
 
-def create_runtime(settings, directory, revision=0, *, startup=None):
-    if settings.robot_mode == "jumper":
-        from jumper_runtime import JumperRuntime
-
-        return JumperRuntime(settings, directory, revision, startup=startup)
-    if settings.robot_mode == "microduck":
-        from microduck_runtime import MicroduckRuntime
-
-        return MicroduckRuntime(settings, directory, revision, startup=startup)
+def create_runtime(settings, directory, revision=0, *, startup=None) -> SimulationRuntime:
+    spec = MODES[settings.robot_mode]
+    if settings.robot_mode in POLICY_MODES:
+        runtime = getattr(importlib.import_module(spec.module), spec.runtime)
+        return runtime(settings, directory, revision, startup=startup)
     if sys.platform == "darwin" and settings.scene_id != "demo":
         raise ValueError("Mac Genesis 仅支持动态演示；USD 场景和 URDF 机器人请使用 Linux / NVIDIA。")
     return RuntimeScene(settings, directory, revision, startup=startup)
 
 
-def reset_runtime(runtime, settings, directory, *, phase=nullcontext, stopping=lambda: False):
+def reset_runtime(runtime, settings, directory, *, phase=nullcontext, stopping=lambda: False, startup=None):
     """Use the scene's checkpoint, or rebuild a native policy world after measured stopping."""
-    if runtime.info.get("engine") != "MuJoCo":
+    if settings.robot_mode not in POLICY_MODES:
         return runtime, runtime.reset(phase=phase, stopping=stopping)
     if runtime.motion.active:
         raise RuntimeError("运动任务仍在执行，不能复位。")
@@ -67,7 +66,7 @@ def reset_runtime(runtime, settings, directory, *, phase=nullcontext, stopping=l
         else:
             raise RuntimeError("复位前未确认停车，保留当前世界。")
     with phase("reset_restore"):
-        replacement = create_runtime(settings, directory, runtime.pose["revision"] + 1)
+        replacement = create_runtime(settings, directory, runtime.pose["revision"] + 1, startup=startup)
         previous = runtime.info["instance_id"]
         replacement.cycle = runtime.cycle + 1
         replacement.info["reset_generation"] = replacement.cycle
@@ -128,7 +127,7 @@ class RuntimeScene:
             with self._phase("asset_resolve"):
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
                 self.robot_asset = resolve_scene(settings.robot_id) if settings.robot_id else self.asset
-            if self.asset and self.asset.asset.preview_mode in {"jumper", "microduck"}:
+            if self.asset and self.asset.asset.preview_mode in POLICY_MODES:
                 raise ValueError("策略机器人需要选择对应的步态物理模式。")
             mobile = settings.robot_mode == "moz1_wheels"
             if settings.robot_id and (self.asset is None or self.asset.asset.preview_mode != "static_usd"):

@@ -107,6 +107,7 @@ def recover_session(
     """Run the shared best-effort release/home actions."""
     api = session.api
     released_ok = False
+    release = release and getattr(getattr(session, "env", None), "allow_automatic_effector_release", True)
     if release:
         for stop_method in ("deactivate_suction", "open_gripper", "release_effector"):
             fn = getattr(api, stop_method, None)
@@ -256,7 +257,8 @@ class RecoveryRail(AgentRail):
         effective_name = self._effective_tool_name(tool_name, tool_args=tool_args)
         effective_tags = self._effective_tags(effective_name)
         holding_payload = read_holding_payload(self.session)
-        preserve_payload = holding_payload is True and "motion" in effective_tags
+        automatic_release = getattr(getattr(self.session, "env", None), "allow_automatic_effector_release", True)
+        preserve_payload = holding_payload is True and ("motion" in effective_tags or not automatic_release)
         if preserve_payload:
             logger.warning(
                 "RecoveryRail: preserving held payload after motion failure; "

@@ -54,6 +54,7 @@ The action vocabulary is in `jiuwensymbiosis/api/actions.py`. Each action declar
 - `motion.waist`
 - `motion.goal`
 - `motion.dual_arm`
+- `motion.jump`
 - `grasp.suction`
 - `grasp.parallel`
 - `grasp.paddle`
@@ -187,3 +188,10 @@ InProcessCodeTool(globals_provider)
 ```
 
 `run(code)` executes Python in process and returns a result dictionary. `as_openjiuwen_tool(**kwargs)` creates a `LocalFunction`. `globals_provider` must return a fresh globals mapping for each execution.
+
+
+## jump
+
+`jump()` uses the body's validated trajectory and returns `ok`, `settled`, `airborne`, and `reason`.
+It requires `payload.clear`, invalidates `body.home` and previously sensed locations, and confirms actual flight and a stable landing.
+A closed Jumper claw must be explicitly opened first. Cancellation waits for landing; it cannot stop flight in midair.

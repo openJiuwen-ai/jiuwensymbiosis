@@ -314,20 +314,28 @@ class RasterRenderer:
     """Observer-only OpenGL rendering for the portable Genesis demo."""
 
     def __init__(self, scene, pose: dict, *, fov_y: float = 42):
+        if TYPE_CHECKING or __package__:
+            from .camera import PREVIEW_RESOLUTIONS
+        else:
+            from camera import PREVIEW_RESOLUTIONS
+
         self.fov_y = fov_y
         self.appearance = {"renderer": "Genesis Rasterizer", "source_material_fidelity": False}
         self._observers = {
             size: scene.add_camera(
                 res=size, fov=fov_y, GUI=False, **{key: pose[key] for key in ("pos", "lookat", "up")}
             )
-            for size in ((960, 540), (1280, 720), (1920, 1080))
+            for size in PREVIEW_RESOLUTIONS
         }
         self._camera = self._observers[(960, 540)]
         self.render_counts = {"observer": 0}
         self.last_camera: dict = {}
 
     def configure(self, settings, pose: dict) -> None:
-        self._camera = self._observers[(settings.width, settings.height)]
+        camera = self._observers.get((settings.width, settings.height))
+        if camera is None:
+            raise ValueError("预览支持 540p、720p、1080p。")
+        self._camera = camera
         self.update_camera_pose(pos=pose["pos"], lookat=pose["lookat"], up=pose["up"])
 
     def update_camera_pose(self, *, pos, lookat, up):
@@ -342,7 +350,8 @@ class RasterRenderer:
         self.render_counts[camera_name] += 1
         return torch.from_numpy(rgb.copy())
 
-    def pick(self, u: float, v: float):
+    @staticmethod
+    def pick(u: float, v: float):
         raise ValueError("macOS 最小预览暂不支持表面点选；可使用相机环绕、平移和缩放。")
 
     def close(self):

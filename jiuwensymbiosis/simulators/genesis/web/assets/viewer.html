@@ -77,7 +77,7 @@
     <label><span>观察分辨率</span><select id="resolution" aria-label="分辨率"><option value="960x540">540p</option><option value="1280x720" selected>720p</option><option value="1920x1080">1080p</option></select></label>
     <label><span>渲染</span><select id="render-quality" aria-label="渲染质量"><option value="reference" selected>Reference · 64 采样</option></select></label>
     <label><span>FPS 上限</span><select id="fps" aria-label="帧率"><option value="30">30 fps</option><option value="60" selected>60 fps</option></select></label>
-    <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式"><option value="inspection">姿态检视</option><option value="moz1_wheels">MOZ1 底盘物理</option><option value="jumper">Jumper 六足步态物理</option><option value="microduck">Microduck 双足步态物理</option></select></label>
+    <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式">{{ROBOT_MODE_OPTIONS}}</select></label>
   </div>
   <p id="quality-description">Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。</p>
   <div class="settings-performance"><span>请求档位</span><strong id="requested-profile">—</strong><span>实际表现</span><strong id="actual-performance">等待有效测量</strong></div>

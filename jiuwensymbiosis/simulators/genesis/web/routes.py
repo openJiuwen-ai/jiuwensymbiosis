@@ -7,6 +7,7 @@ import json
 import sys
 from dataclasses import asdict
 from hashlib import sha256
+from html import escape
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 
 from jiuwensymbiosis.simulators.assets import AssetError, AssetLibrary
+from jiuwensymbiosis.simulators.genesis.preview_backends import MODES, POLICY_MODES, RobotMode
 from jiuwensymbiosis.simulators.genesis.scene_catalog import scene_catalog
 from jiuwensymbiosis.simulators.genesis.stream import PreviewStream, StreamError
 from jiuwensymbiosis.simulators.genesis.web.local_request import require_local_action
@@ -65,7 +67,7 @@ class StartOptions(BaseModel):
     resolution: Literal["960x540", "1280x720", "1920x1080"] = "1280x720"
     fps: Literal[30, 60] = 60
     render_quality: Literal["reference"] = "reference"
-    robot_mode: Literal["inspection", "moz1_wheels", "jumper", "microduck"] = "inspection"
+    robot_mode: RobotMode = "inspection"
     robot_id: str = Field(default="", max_length=1024, pattern=r"^(|library://[a-zA-Z0-9_-]+/[a-zA-Z0-9_./%~-]+)$")
     camera_name: str = Field(default="observer", max_length=64, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     scene_id: str = Field(
@@ -108,9 +110,7 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
             entries = scene_catalog()
             if sys.platform == "darwin":
                 entries = [
-                    entry
-                    for entry in entries
-                    if entry["id"] == "demo" or entry.get("preview_mode") in {"jumper", "microduck"}
+                    entry for entry in entries if entry["id"] == "demo" or entry.get("preview_mode") in POLICY_MODES
                 ]
             return entries
         except AssetError as exc:
@@ -214,6 +214,10 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
     @app.get("/genesis/viewer")
     def viewer():
         html = (_ASSETS / "viewer.html").read_text(encoding="utf-8")
+        options = "".join(
+            f'<option value="{escape(mode)}">{escape(spec.label)}</option>' for mode, spec in MODES.items()
+        )
+        html = html.replace("{{ROBOT_MODE_OPTIONS}}", options)
         for name in ("viewer.js", "viewer.css"):
             version = sha256((_ASSETS / name).read_bytes()).hexdigest()[:16]
             html = html.replace(f'/genesis/assets/{name}"', f'/genesis/assets/{name}?v={version}"')

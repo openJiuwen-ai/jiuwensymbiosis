@@ -163,6 +163,15 @@ class GraspResult(TypedDict, total=False):
     grasp_width_mm: float  # object extent along the gripper closing axis; top-surface grasp only
 
 
+class JumpResult(TypedDict, total=False):
+    """Measured completion of a body-defined jump; no height or pose truth."""
+
+    ok: bool
+    settled: bool
+    airborne: bool
+    reason: str
+
+
 class CloseEffectorResult(TypedDict, total=False):
     """Result shape of ``close_gripper`` / ``activate_suction``.
 

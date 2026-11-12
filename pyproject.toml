@@ -168,13 +168,13 @@ microduck = [
 ]
 genesis-macos = [
     # Apple Silicon: CPU/Metal physics + OpenGL, no CUDA/Nyx/NVENC.
-    "torch==2.11.0",
-    "numpy==2.3.5",
-    "genesis-world==1.4.4",
-    "aiortc==1.15.0",
-    "av==17.1.0",
-    "pillow==11.3.0",
-    "opencv-python>=4.8,<5",
+    "torch==2.11.0; sys_platform == 'darwin'",
+    "numpy==2.3.5; sys_platform == 'darwin'",
+    "genesis-world==1.4.4; sys_platform == 'darwin'",
+    "aiortc==1.15.0; sys_platform == 'darwin'",
+    "av==17.1.0; sys_platform == 'darwin'",
+    "pillow==11.3.0; sys_platform == 'darwin'",
+    "opencv-python>=4.8,<5; sys_platform == 'darwin'",
 ]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
@@ -199,6 +199,9 @@ jiuwensymbiosis-calibrate-eye-to-hand = "scripts.calibrate.eye_to_hand_calib:mai
 jiuwensymbiosis-actions = "jiuwensymbiosis.cli:actions_main"
 jiuwensymbiosis-skills = "jiuwensymbiosis.cli:skills_main"
 jiuwensymbiosis-state = "jiuwensymbiosis.cli:state_main"
+
+[tool.setuptools]
+license-files = ["LICENSE", "Open_Source_Software_Notice.txt"]
 
 [tool.setuptools.packages.find]
 include = [

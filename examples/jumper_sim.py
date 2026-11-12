@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 
@@ -20,7 +21,7 @@ def register(source: Path, home: Path) -> dict:
 
     source, home = source.resolve(), home.resolve()
     entry = {"id": "jumper", "path": str(source), "scanner": "jumper"}
-    scan_root(RootSpec.model_validate(entry), source)
+    asset = scan_root(RootSpec.model_validate(entry), source).assets[0]
     config = home / "configs/simulators/assets.yaml"
     if config.is_file():
         data = yaml.safe_load(config.read_text())
@@ -41,7 +42,7 @@ def register(source: Path, home: Path) -> dict:
     finally:
         candidate.unlink(missing_ok=True)
     build_index(load_config(config))
-    return {"scene_id": "library://jumper/assets/jumper/jumper", "robot_mode": "jumper", "config": str(config)}
+    return {"scene_id": asset.id, "robot_mode": "jumper", "config": str(config)}
 
 
 def main():
@@ -51,7 +52,8 @@ def main():
     parser.add_argument("--source", type=Path, default=Path("outputs/vendor/jumper"))
     parser.add_argument("--home", type=Path, default=simulator_root())
     args = parser.parse_args()
-    print(json.dumps(register(args.source, args.home), ensure_ascii=False, indent=2))
+    json.dump(register(args.source, args.home), sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
 
 
 if __name__ == "__main__":

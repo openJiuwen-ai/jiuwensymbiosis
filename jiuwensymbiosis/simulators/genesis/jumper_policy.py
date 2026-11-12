@@ -8,9 +8,9 @@ import importlib.util
 import json
 import platform
 import sys
-import tomllib
 from collections import deque
 from pathlib import Path
+from tomllib import loads
 
 import numpy as np
 
@@ -64,7 +64,7 @@ class JumperPolicy:
         self.fsm = self.new_fsm()
         self.operators = False
         self.key_events: deque[tuple[str, bool]] = deque()
-        config = tomllib.loads(self.file("controller.toml").read_text())["fsm"]
+        config = loads(self.file("controller.toml").read_text())["fsm"]
         self.mode_keys = {
             entry["name"]: entry["key"]
             for entry in config["button"]
@@ -133,12 +133,17 @@ class JumperPolicy:
             self.operators = enabled
 
     def tap_mode(self, mode: str):
-        key = self.mode_keys[mode]
+        key = self.mode_keys.get(mode)
+        if key is None:
+            raise ValueError(f"Jumper controller has no mode key: {mode}")
         # Both edges must be observed on different controller ticks.
         self.key_events.extend(((key, True), (key, False)))
 
     def claw(self, side: str, closed: bool):
-        self.key_events.append((self.claw_keys[side], closed))
+        key = self.claw_keys.get(side)
+        if key is None:
+            raise ValueError(f"Jumper controller has no claw key: {side}")
+        self.key_events.append((key, closed))
 
     def infer(self, mode: str, observation):
         path = self.file_path_for_mode(mode)
@@ -158,12 +163,8 @@ class JumperPolicy:
         for frame in json.loads(path.read_text())["frames"]:
             if "infer" in frame:
                 worst = max(worst, float(np.max(np.abs(self.infer(frame["infer"], frame["obs"]) - frame["act"]))))
-        if (
-            report.observation > 1e-6
-            or report.target > 1e-6
-            or report.divergent
-            or report.mode_mismatches
-            or worst > 1e-5
+        if any(
+            (report.observation > 1e-6, report.target > 1e-6, report.divergent, report.mode_mismatches, worst > 1e-5)
         ):
             raise ValueError("Jumper controller/ONNX reference replay failed")
         return {

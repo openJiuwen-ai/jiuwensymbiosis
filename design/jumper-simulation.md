@@ -1,6 +1,6 @@
 # Jumper 仿真接入
 
-基线：Symbiosis `53fdba7`，叠加工作区的 Mac 基础仿真适配；
+设计起点：Symbiosis `53fdba7`；Mac 基础适配与策略机器人均包含在本 PR 中；
 KingKongRobotics/jumper `198686eac0d188815d0943e9fee50de415edc80a`。
 
 用户需要在 M4 16 GB 上用现有 Symbiosis Agent 控制 Jumper。
@@ -69,3 +69,22 @@ FSM 来切换输入方式；物理 world、伺服热状态、模型权重和原�
 模型仅收到成功/停稳、是否确认腾空和夹爪命令状态，仍不接收仿真真值坐标。
 验收扩展覆盖两侧完整行程、跳跃前后继续导航、收臂交接、去重/失租/取消，
 以及真实共享 Agent 工具和机载相机循环。
+
+
+## 维护者检视后的职责收口
+
+`preview_backends.py` 唯一声明预览模式、运行时工厂、平台渲染/编码、依赖组合与深度/真值/点选支持。
+沿用 `robot_mode` 为兼容的预览模式选择字段，本体身份由索引资产提供。
+主机与页面读取稳定的 `runtime_backend`/`backend_features`，展示名称不参与能力判断。
+
+`MujocoPolicyRuntime` 拥有共用物理时钟、底盘观测、相机元数据和渲染生命周期；
+Jumper FSM/电机热限制与 Microduck BAM/ONNX 物理步保留在各本体，避免混合控制器。
+`SimulationRuntime` 声明 worker 接口；不支持的深度、真值与点选显式报错。
+复位先构建替代世界再关闭旧世界，以保证重建失败可保留原世界；短暂共存是明确的回滚代价。
+
+夹爪复用共享动作但只允许一个活动爪，不支持独立多载荷。全局 `payload.*` 不侧别化。
+Jumper 禁止自动释放；闭合或未知状态按保守 `holding_payload` 阻止掉载/盲目回位，
+闭合/未知时 `holding_payload=None`，已确认张开时为 `False`；禁止自动释放的策略单独声明，避免把闭爪写成持物证据。跳跃要求 `payload.clear` 并声明实测结果形状。
+
+Microduck 指令保留原幅值，导航显式使用已验收的仿真策略范围；通用手动限速不变。
+运行前验证脚本和 ONNX 摘要。资产和二进制不随源码发布，单独保留三方件与非商业模型许可说明。

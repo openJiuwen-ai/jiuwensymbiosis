@@ -54,6 +54,7 @@ home() -> None
 - `motion.waist`
 - `motion.goal`
 - `motion.dual_arm`
+- `motion.jump`
 - `grasp.suction`
 - `grasp.parallel`
 - `grasp.paddle`
@@ -179,3 +180,10 @@ InProcessCodeTool(globals_provider)
 ```
 
 `run(code)` 在进程内执行代码并返回结果字典；`as_openjiuwen_tool(**kwargs)` 构造对应的 `LocalFunction`。调用方必须提供每次执行时返回全局变量字典的 `globals_provider`。
+
+
+## jump
+
+`jump()` 使用本体已验证的固定轨迹，返回 `ok`、`settled`、`airborne` 和 `reason`。
+要求 `payload.clear`，使 `body.home` 和已有感知位置失效；成功必须实测腾空、落地与停稳。
+Jumper 必须先显式张开当前夹爪。取消会等待落地，不能在半空中停止。

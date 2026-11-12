@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 
@@ -48,7 +49,8 @@ def main():
     parser.add_argument("--source", type=Path, default=Path("outputs/vendor/microduck_rl"))
     parser.add_argument("--home", type=Path, default=simulator_root())
     args = parser.parse_args()
-    print(json.dumps(register(args.source, args.home), ensure_ascii=False, indent=2))
+    json.dump(register(args.source, args.home), sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
 
 
 if __name__ == "__main__":

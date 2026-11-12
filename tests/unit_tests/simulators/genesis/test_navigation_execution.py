@@ -21,7 +21,9 @@ def mobile():
         "angular_velocity_rad_s": [0, 0, 0],
     }
     calls = []
-    preview = SimpleNamespace(acquire_motion=Mock(return_value="owner"), release_motion=Mock())
+    preview = SimpleNamespace(
+        status=lambda: {"state": "ready"}, acquire_motion=Mock(return_value="owner"), release_motion=Mock()
+    )
 
     def query(operation, params, **kwargs):
         result = {

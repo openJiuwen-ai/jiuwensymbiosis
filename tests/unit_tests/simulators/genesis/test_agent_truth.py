@@ -97,6 +97,7 @@ def test_reset_expiry_and_registry_rebuild(registry, monkeypatch):
 
 def test_readonly_truth_never_acquires_motion_and_visual_cannot_query():
     preview = SimpleNamespace(
+        status=lambda: {"state": "ready"},
         acquire_motion=Mock(),
         query_scene=Mock(
             return_value={"source": "simulation_ground_truth", "scene_instance_id": "a", "reset_generation": 0}

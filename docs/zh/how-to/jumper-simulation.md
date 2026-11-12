@@ -4,10 +4,10 @@
 Jumper 后，使用官方 MJCF、原生 FSM 和 ONNX 步态策略运行 MuJoCo 接触物理。
 工作台、Agent、相对动作契约、视频和取消机制与已有仿真共用。
 
-与主仓 `53fdba7` 合并后，请选择「相机观察 · RGB-only」观测模式。
+请选择「相机观察 · RGB-only（兼容）」观测模式。
 Jumper 尚未实现新版 RGB-D 感知或真值导航；跳跃和夹爪仍按能力门控开放。
 新版工作台关闭后常驻世界可继续运行；需要完全停止时点击「释放后台资源」。
-「复位当前世界」会先确认停车，再重建官方策略世界，并使旧场景控制绑定失效。
+「复位世界」会先确认停车，再重建官方策略世界，并使旧场景控制绑定失效。
 
 ## 安装与运行
 
@@ -39,7 +39,7 @@ git clone --depth 1 https://github.com/KingKongRobotics/jumper.git outputs/vendo
 打开 `http://127.0.0.1:8771` 的仿真页：
 
 1. 场景选 `jumper · Jumper`，会自动使用「Jumper 六足步态物理」。
-2. 启动后台，等待就绪，连接视频。推荐观察视角 540p / 30 fps。
+2. 启动仿真，等待就绪，连接视频。推荐观察视角 540p / 30 fps。
 3. 相机视角可切换「观察视角」和「头部相机」。后者是 MJCF 的 `onboard`，
    输出 640×480，保留 95.7° 垂直视场及机身安装位姿。
 4. 在「模型」页设置支持图片与工具调用的模型服务，应用到工作台。
@@ -110,3 +110,9 @@ JIUWEN_JUMPER_EVIDENCE="$PWD/outputs/jumper" \
 证据位于 `outputs/jumper/acceptance.json`、相机截图和 `agent/` 的执行轨迹。
 跳跃和夹爪的证据位于 `outputs/jumper/skills/acceptance.json`，包含私有的
 实际最高机身高度、离地时间和爪关节反馈；这些真值不进入模型上下文。
+
+
+Jumper 只允许一个活动夹爪：当前爪闭合时，另一侧夹爪或移动/跳跃请求会被拒绝。
+共享 `payload.*` 是整机单载荷语义，`side` 不表示可以同时夹持两个载荷。
+恢复不会自动松爪；闭合或未知状态也会阻止自动回位。必须由用户显式操作当前侧。
+Linux 使用 `.[genesis,jumper,gui]`，仍需原 Genesis/NVIDIA 初始化；Mac 使用 `.[genesis-macos,jumper,gui]`。

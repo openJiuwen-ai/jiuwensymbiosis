@@ -355,9 +355,9 @@ class GenesisView:
                 help_text = "已开启：可移动、跳跃及开合左右夹爪。移动或跳跃前须先张开夹爪；取消跳跃会等待落地。"
         if self._chat.observation_mode == "perception" and self._chat.detector_config.mode == "disabled":
             help_text += "检测未启用：目标定位与接近不可用。"
-        if status.get("scene", {}).get("engine") == "MuJoCo":
+        if status.get("runtime_backend") == "mujoco":
             help_text += " Jumper/Microduck 请使用相机观察模式；尚无 RGB-D 和真值导航。"
-        elif status.get("renderer") == "Genesis Rasterizer" and self._chat.observation_mode == "perception":
+        elif status.get("runtime_backend") == "genesis_raster" and self._chat.observation_mode == "perception":
             help_text += " Mac Genesis 演示不提供 RGB-D 机器人感知，请使用 Linux / NVIDIA。"
         self._mode_help.set_text(help_text)
         self._robot_stop.set_visibility(

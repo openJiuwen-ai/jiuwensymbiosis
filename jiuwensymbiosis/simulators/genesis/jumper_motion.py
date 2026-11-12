@@ -10,8 +10,13 @@ import numpy as np
 def validate_policy_action(kind: str, *, side: str = "left", closed: bool = False) -> None:
     if not isinstance(kind, str) or kind not in {"jump", "set_gripper"}:
         raise ValueError("Unsupported Jumper action")
-    if not isinstance(side, str) or side not in {"left", "right"} or type(closed) is not bool:
+    if not isinstance(side, str) or side not in {"left", "right"} or not isinstance(closed, bool):
         raise ValueError("Jumper gripper requires left/right side and boolean closed")
+
+
+POLICY_TIMEOUT_S = 20
+# Allow five more seconds to finish landing/braking and measure a stable stop.
+STOP_TIMEOUT_S = 25
 
 
 class JumperMotion:
@@ -90,15 +95,30 @@ class JumperMotion:
             "flight_s": 0.0,
             "max_height_m": float(self.robot.data.qpos[2]),
         }
+        mode = self.robot.policy.fsm.mode
         different = kind != "set_gripper" or request.get("side", "left") != self.claw_side
         if different and self.claw_closed:
             self.task.update(phase="rejected", failure="gripper_requires_open")
+        elif mode not in {"locomotion", "claw_left", "claw_right"}:
+            self.task.update(phase="rejected", failure="policy_state_invalid")
+        elif mode.startswith("claw_") and self.claw_side != mode.removeprefix("claw_"):
+            self.task.update(phase="rejected", failure="gripper_state_unknown")
         elif not self._still():
             self.task.update(phase="rejected", failure="unsafe_start")
-        elif self.robot.policy.fsm.mode.startswith("claw_") and different:
-            self.robot.policy.claw(self.claw_side, False)
-            self.robot.policy.tap_mode(self.robot.policy.fsm.mode)
-            self.task["phase"] = "stow"
+        elif mode.startswith("claw_") and different:
+            try:
+                self.robot.policy.claw(self.claw_side, False)
+                self.robot.policy.tap_mode(mode)
+                self.task["phase"] = "stow"
+            except (KeyError, ValueError, RuntimeError):
+                self._reject_transition()
+        self.robot.stop()
+
+    def _reject_transition(self) -> None:
+        """Reject a controller mismatch without letting it escape the worker tick."""
+        assert self.task is not None
+        self.task.update(phase="rejected", failure="policy_transition_failed")
+        self.robot.policy.key_events.clear()
         self.robot.stop()
 
     def cancel(self, reason: str = "cancelled") -> None:
@@ -158,7 +178,7 @@ class JumperMotion:
             return
         task, r = self.task, self.robot
         task["elapsed"] += dt
-        if task["elapsed"] > 20 and task["failure"] is None:
+        if task["elapsed"] > POLICY_TIMEOUT_S and task["failure"] is None:
             task["failure"] = "policy_timeout"
         if r.policy.fsm.mode == "safe":
             task["failure"] = "policy_safe"
@@ -179,25 +199,29 @@ class JumperMotion:
         if task["phase"] == "prepare":
             if task["failure"]:
                 task["phase"] = "rejected"
-            elif task["kind"] == "navigate":
-                r.policy.use_operators(False)
-                self.base.start(task["id"], task["dx"], task["dy"], task["dyaw"], step=step)
-                self._navigation = True
-                self.task = None
-                return
-            elif task["kind"] == "jump":
-                r.policy.use_operators(False)
-                r.policy.tap_mode("jump")
-                task["phase"] = "execute"
             else:
-                side = task.get("side", "left")
-                r.policy.use_operators(True)
-                if r.policy.fsm.mode != "claw_" + side:
-                    r.policy.tap_mode("claw_" + side)
-                r.policy.claw(side, task["closed"])
-                self.claw_side, self.claw_closed = side, task["closed"]
-                task["phase"] = "execute"
-        reached = task["phase"] == "rejected"
+                try:
+                    if task["kind"] == "navigate":
+                        r.policy.use_operators(False)
+                        self.base.start(task["id"], task["dx"], task["dy"], task["dyaw"], step=step)
+                        self._navigation = True
+                        self.task = None
+                        return
+                    elif task["kind"] == "jump":
+                        r.policy.use_operators(False)
+                        r.policy.tap_mode("jump")
+                        task["phase"] = "execute"
+                    else:
+                        side = task.get("side", "left")
+                        r.policy.use_operators(True)
+                        if r.policy.fsm.mode != "claw_" + side:
+                            r.policy.tap_mode("claw_" + side)
+                        r.policy.claw(side, task["closed"])
+                        self.claw_side, self.claw_closed = side, task["closed"]
+                        task["phase"] = "execute"
+                except (KeyError, ValueError, RuntimeError):
+                    self._reject_transition()
+        reached = task["phase"] in {"rejected", "handoff"}
         if task["phase"] == "execute":
             if task["kind"] == "jump":
                 reached = task["saw_mode"] and r.policy.fsm.mode == "locomotion" and r.policy.fsm.running_policy
@@ -205,6 +229,8 @@ class JumperMotion:
                     task["failure"] = task["failure"] or "flight_unconfirmed"
             else:
                 side = task.get("side", "left")
+                if r.policy.fsm.mode == "claw_" + side:
+                    task["saw_mode"] = True
                 name = ("LF" if side == "left" else "RF") + "_J4_joint"
                 index = r.policy.wire.index(name)
                 sign = 1 if side == "left" else -1
@@ -213,7 +239,7 @@ class JumperMotion:
                 # Compare the actual finger against the official hook target;
                 # closure is actuator completion, never evidence of a payload.
                 reached = (
-                    r.policy.fsm.mode == "claw_" + side
+                    task["saw_mode"]
                     and r.policy.fsm.running_policy
                     and abs(angle - r.targets[index]) < 0.07
                     and abs(velocity) < 0.03
@@ -232,12 +258,19 @@ class JumperMotion:
             reached = True
         task["stable"] = task["stable"] + dt if reached and self._still() else 0.0
         settled = task["stable"] >= 1.0
-        if settled or task["elapsed"] >= 25:
-            if settled and r.policy.fsm.mode == "locomotion" and r.policy.operators:
-                r.policy.use_operators(False)
-                task["stable"] = 0.0
-                self._result["phase"] = "input_handoff"
-                return
+        if settled or task["elapsed"] >= STOP_TIMEOUT_S:
+            # Rebuilding the controller may change finger targets. Never do it
+            # automatically while a claw is closed, even after an FSM mode exit.
+            handoff = r.policy.fsm.mode == "locomotion" and r.policy.operators and not self.claw_closed
+            if settled and handoff:
+                try:
+                    r.policy.use_operators(False)
+                except (KeyError, ValueError, RuntimeError):
+                    self._reject_transition()
+                else:
+                    task.update(phase="handoff", stable=0.0)
+                    self._result["phase"] = "input_handoff"
+                    return
             self._result.update(
                 status="completed",
                 ok=settled and task["failure"] is None,

@@ -42,6 +42,9 @@ def policy_feedback(result: dict) -> dict:
         "unsafe_start",
         "policy_timeout",
         "policy_safe",
+        "policy_state_invalid",
+        "gripper_state_unknown",
+        "policy_transition_failed",
         "flight_unconfirmed",
     }:
         feedback["reason"] = result["reason"]

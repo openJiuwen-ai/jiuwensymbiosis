@@ -68,6 +68,9 @@ python -m pip install -e ".[full]" \
 
 See [Installation and Quick Start](docs/en/tutorial/01-quick-start.md) for combined extras and pinned runtime dependencies.
 
+Optional simulation extras: `genesis-macos` (Apple Silicon demo), `jumper` (native Jumper controller),
+`microduck` (official Microduck policy/BAM). Combine the robot extra with `gui` and the platform's Genesis extra.
+
 Genesis simulation is an optional plugin; see [Install Genesis (Chinese)](docs/zh/tutorial/03-install-genesis.md) for environment setup and startup.
 
 The unified launcher selects a GUI plugin; this repository currently ships `workbench`:

@@ -64,6 +64,7 @@ class MotionTuning:
     min_linear: float = 0.0
     min_angular: float = 0.0
     max_angular: float = 0.3
+    max_linear: float = 0.15
 
 
 class RelativeMotion:
@@ -205,8 +206,8 @@ class RelativeMotion:
             ex, ey = tx - x, ty - y
             vx, vy = 1.8 * (c * ex + s * ey), 1.8 * (-s * ex + c * ey)
             magnitude = math.hypot(vx, vy)
-            if magnitude > 0.15:
-                vx, vy = vx * 0.15 / magnitude, vy * 0.15 / magnitude
+            if magnitude > tuning.max_linear:
+                vx, vy = vx * tuning.max_linear / magnitude, vy * tuning.max_linear / magnitude
             elif 0 < magnitude < tuning.min_linear and distance > tuning.position_tolerance:
                 vx, vy = vx * tuning.min_linear / magnitude, vy * tuning.min_linear / magnitude
             wz = max(-tuning.max_angular, min(tuning.max_angular, 1.8 * yaw_error))

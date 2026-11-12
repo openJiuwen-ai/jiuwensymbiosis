@@ -61,11 +61,12 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 
 ## 3. 框架 Capability 矩阵
 
-能力轴**正交、可自由组合**：运动（cartesian/joint/servo/base/base_servo/lift/waist/goal/dual_arm）、传感（camera/depth/detection/search/eye_to_hand）、末端（parallel/suction/paddle）、规划（reachability）各是各的。
+能力轴**正交、可自由组合**：运动（cartesian/joint/servo/base/base_servo/lift/waist/goal/dual_arm/jump）、传感（camera/depth/detection/search/eye_to_hand）、末端（parallel/suction/paddle）、规划（reachability）各是各的。
 
 | Capability | 框架接口 | 动作（`ActionSpec`） | MockArm | Piper | SO-101 | Cruzr |
 |---|---|---|---|---|---|---|
 | `motion.cartesian` | `CartesianDriver` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` | ✅ | ✅ | ✅ | — |
+| `motion.jump` | body-defined jump | `jump` | — | — | — | — |
 | `motion.joint` | `JointDriver`/`NamedJointDriver` | `move_joint`、`move_named_joint`、`get_joint_positions` | — | ✅ | ✅ | ✅ |
 | `motion.servo` | `ServoDriver` + fast controller hook | —（无独立公共动作，由 fast path 实时伺服 op 驱动） | ✅ | ✅ | ✅ | — |
 | `motion.base` | Env 动词 `navigate_relative`/`navigate_arc` | `navigate_relative`、`rotate_base`、`drive_arc` | — | — | — | ✅ |
@@ -177,3 +178,14 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 - [Piper Env](../../../jiuwensymbiosis/adapters/piper/env.py)、[SO-101 Env](../../../jiuwensymbiosis/adapters/so101/env.py)、[Cruzr Env](../../../jiuwensymbiosis/adapters/cruzr/env.py)：适配器声明；
 - [`agent/config.py`](../../../jiuwensymbiosis/agent/config.py) 与 [`agent/builder.py`](../../../jiuwensymbiosis/agent/builder.py)：执行和 Rail 开关；
 - [`pyproject.toml`](../../../pyproject.toml)：Python、可选依赖和 CLI 入口。
+
+
+### 原生策略仿真本体
+
+| Capability | Jumper | Microduck |
+|---|---|---|
+| `motion.base` | ✅ | ✅ |
+| `motion.jump` | ✅ | — |
+| `grasp.parallel` | 左右侧仅一个活动爪 | — |
+
+两者通过宿主提供 RGB 头部相机工具，尚无 RGB-D 感知与真值导航。以上描述仿真能力，不表示实机适配器支持。

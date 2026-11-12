@@ -108,12 +108,13 @@ class OmniWheelLayout:
         return np.asarray(self.rows) @ (vx, vy, wz)
 
 
-def validate_twist(vx: float, vy: float, wz: float) -> None:
+def validate_twist(vx: float, vy: float, wz: float, *, max_linear: float = 0.3, max_angular: float = 0.6) -> None:
     for value in (vx, vy, wz):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError("Base velocity must contain finite numbers")
-    if math.hypot(vx, vy) > 0.3 or abs(wz) > 0.6:
-        raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
+    # Normalizing a vector at the limit can add a few floating-point ULPs.
+    if math.hypot(vx, vy) > max_linear + 1e-12 or abs(wz) > max_angular + 1e-12:
+        raise ValueError(f"Experimental base limits: translation <= {max_linear} m/s, yaw <= {max_angular} rad/s")
 
 
 def mobile_home_targets(source: Path, layout: OmniWheelLayout) -> dict[str, float]:

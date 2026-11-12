@@ -18,6 +18,7 @@ from typing import Any
 from jiuwensymbiosis.simulators._paths import simulator_root
 from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera, PreviewSettings
 from jiuwensymbiosis.simulators.genesis.ipc import Mailbox
+from jiuwensymbiosis.simulators.genesis.preview_backends import installation_extra, preview_backend, required_modules
 from jiuwensymbiosis.simulators.genesis.scene_catalog import scene_path
 
 _WORKER = Path(__file__).with_name("worker.py")
@@ -153,13 +154,14 @@ class GenesisPreview:
                     "state": "failed",
                     "message": f"Genesis 进程已退出（{self._process.returncode}），请查看日志。",
                 }
+            profile = preview_backend(self.settings.robot_mode)
             result = {
                 **self._state,
                 "backend": "genesis",
-                "renderer": "MuJoCo OpenGL"
-                if self.settings.robot_mode in {"jumper", "microduck"}
-                else "Genesis Rasterizer"
-                if sys.platform == "darwin"
+                "runtime_backend": profile.id,
+                "backend_features": profile.features,
+                "renderer": profile.renderer
+                if profile.software_encoding
                 else ("Nyx RefPathTracer" if self.settings.render_mode == "reference" else "Nyx FastPathTracer"),
                 "settings": asdict(self.settings),
                 "requested_settings": asdict(self._requested_settings),
@@ -214,18 +216,13 @@ class GenesisPreview:
             if sys.platform not in {"linux", "darwin"}:
                 self._state = {"state": "failed", "message": "Genesis 预览支持 Linux + NVIDIA 或 Apple Silicon macOS。"}
                 return self.status()
-            required: tuple[str, ...] = ("genesis", "aiortc", "av")
-            if self.settings.robot_mode in {"jumper", "microduck"}:
-                required += ("mujoco", "onnxruntime")
-            if self.settings.robot_mode == "microduck":
-                required += ("bam",)
-            if sys.platform != "darwin":
-                required += ("gs_nyx_plugin",)
+            required = required_modules(self.settings.robot_mode)
             missing = [name for name in required if importlib.util.find_spec(name) is None]
             if missing:
+                extra = installation_extra(self.settings.robot_mode)
                 self._state = {
                     "state": "failed",
-                    "message": f"缺少 {', '.join(missing)}。请在独立环境安装 .[{'genesis-macos' if sys.platform == 'darwin' else 'genesis'}]。",
+                    "message": f"缺少 {', '.join(missing)}。请在独立环境安装 .[{extra}]。",
                 }
                 return self.status()
             worker_env = _worker_environment()

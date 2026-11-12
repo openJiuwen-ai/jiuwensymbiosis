@@ -111,6 +111,8 @@ class BaseRobotEnv(ABC):
 
     capabilities: frozenset[str] = frozenset()
     name: str = "robot"
+    # Bodies carrying unverified objects may require an explicit user release.
+    allow_automatic_effector_release: bool = True
     supports_lateral: bool | None = None  # None means the body has not specified this constraint.
 
     # --- class hooks ---
