@@ -32,6 +32,14 @@ from jiuwensymbiosis.env.base import BaseRobotEnv
 class BaseRobotApi:
     """Holds a reference to the underlying env and exposes the body's actions."""
 
+    # Grasp-evidence posture, read by tools.robot_control_tool.read_grasp_confirmation.
+    # False (default): an end effector with no measured channel FAILS CLOSED under
+    # fastagent — a close whose confirmation is unknown cannot establish payload.held.
+    # True: this body explicitly accepts a successful close command as grasp evidence,
+    # because no feedback channel exists; remove the declaration when one is added.
+    # See the grasp-evidence section of docs/{zh,en}/reference/adapter-reference.md.
+    trust_command_grasp: bool = False
+
     def __init__(self, env: BaseRobotEnv) -> None:
         """Store a reference to the underlying env."""
         self.env = env

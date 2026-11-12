@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Mapping
+from functools import wraps
 from typing import Any
 
 from jiuwensymbiosis.api.decorators import (
@@ -55,9 +56,9 @@ from jiuwensymbiosis.contracts import (
     ApproachFailure,
     ApproachResult,
     BasePoint,
+    CloseEffectorResult,
     GraspFailure,
     GraspResult,
-    GripperCommandResult,
     NavigationResult,
     ObjectGeometryResult,
     PickTargetResult,
@@ -213,6 +214,9 @@ HOME = ActionSpec(
     capability=None,
     params=(),
     provides=("body.home",),
+    # Homing may move the body (a mobile base drives home), so positions sensed from a
+    # departed standpoint do not survive it — same rule as any other motion.
+    invalidates_locations=True,
     tags=("motion",),
 )
 # There is deliberately no second "home_safely" action. Safe homing is ONE thing a body
@@ -303,9 +307,13 @@ GET_JOINT_POSITIONS = ActionSpec(
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
-    "with no width control accepts it and ignores it.",
+    "with no width control accepts it and ignores it. effector selects a configured gripper; omit only "
+    "when unambiguous. Payload effects apply to that gripper. Held payloads require safe supported release.",
     capability="grasp.parallel",
-    params=("width_mm",),
+    params=("width_mm", "effector"),
+    result=CloseEffectorResult,
+    param_schema={"effector": {"type": "string", "minLength": 1}},
+    invalidates=("payload.held", "payload.clear", "payload.stowed"),
     provides=("payload.clear",),
     tags=("grasp",),
 )
@@ -313,10 +321,15 @@ OPEN_GRIPPER = ActionSpec(
 CLOSE_GRIPPER = ActionSpec(
     name="close_gripper",
     description="Close the parallel gripper onto the target. Call it only once the tip is at the grasp "
-    "pose. A successful close command alone does not establish payload.held; measured grasp confirmation "
-    "is required. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
+    "pose. A successful close command alone does not establish payload.held: measured grasp confirmation "
+    "(grasp_confirmed / contact in the result, or the body's is_grasp_confirmed hook) is required — a body "
+    "with no measured channel must declare trust_command_grasp. force_n is a HINT: a gripper with no force "
+    "control accepts it and ignores it. effector selects a configured gripper; omit only when unambiguous. "
+    "Payload preconditions and effects apply to that gripper; contact alone may remain unconfirmed.",
     capability="grasp.parallel",
-    params=("force_n",),
+    params=("force_n", "effector"),
+    param_schema={"effector": {"type": "string", "minLength": 1}},
+    result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
     tags=("grasp",),
@@ -334,22 +347,13 @@ PICK_TARGET = ActionSpec(
     tags=("motion", "grasp"),
 )
 
-SET_GRIPPER = ActionSpec(
-    name="set_gripper",
-    description="Open or close one named parallel effector. Contact alone is provisional: inspect measured "
-    "holding_payload after a trial lift. Opening a held object requires stable external support; "
-    "placement_confirmed requires stable support after release. No payload fact is inferred from this command.",
-    capability="grasp.parallel",
-    params=("effector", "opened"),
-    result=GripperCommandResult,
-    tags=("grasp",),
-)
-
 ACTIVATE_SUCTION = ActionSpec(
     name="activate_suction",
-    description="Turn suction ON. Call it only once the tip is on/near the target.",
+    description="Turn suction ON. Call it only once the tip is on/near the target. A successful command "
+    "alone does not establish payload.held — the same measured-evidence rule as close_gripper applies.",
     capability="grasp.suction",
     params=(),
+    result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
     tags=("grasp",),
@@ -506,7 +510,11 @@ ANALYZE_SCENE = ActionSpec(
 SIM_LIST_ENTITIES = ActionSpec(
     name="sim_list_entities",
     capability="simulation.truth",
-    description="List simulator logical entities (including outside the camera view). Filter by authored name query or kind; paginate using next_offset and the same snapshot_id. Categories may be unknown. This is simulation ground truth, not perception.",
+    description=(
+        "List simulator logical entities (including outside the camera view). Filter by authored name query "
+        "or kind; paginate using next_offset and the same snapshot_id. Categories may be unknown. This is "
+        "simulation ground truth, not perception."
+    ),
     params=("query", "kind", "limit", "offset", "snapshot_id"),
     result=SimulationSnapshotResult,
     tags=("simulation",),
@@ -514,7 +522,11 @@ SIM_LIST_ENTITIES = ActionSpec(
 SIM_GET_ROBOT_STATE = ActionSpec(
     name="sim_get_robot_state",
     capability="simulation.truth",
-    description="Read simulator base position (authored root, metres), body-front yaw (radians) and actual world velocities from one physical snapshot. Reuse snapshot_id to compare with an entity at the same step; omit it for a new measurement.",
+    description=(
+        "Read simulator base position (authored root, metres), body-front yaw (radians) and actual world "
+        "velocities from one physical snapshot. Reuse snapshot_id to compare with an entity at the same step; "
+        "omit it for a new measurement."
+    ),
     params=("snapshot_id",),
     result=SimulationSnapshotResult,
     tags=("simulation",),
@@ -522,7 +534,11 @@ SIM_GET_ROBOT_STATE = ActionSpec(
 SIM_GET_ENTITY_STATE = ActionSpec(
     name="sim_get_entity_state",
     capability="simulation.truth",
-    description="Read one simulator entity by stable ID. Distinguishes authored origin, geometry bounds and center. frame is world or base (+X forward, +Y left, +Z up, rooted at the robot's authored root). Coordinates are metres; reuse snapshot_id for consistent comparisons.",
+    description=(
+        "Read one simulator entity by stable ID. Distinguishes authored origin, geometry bounds and center. "
+        "frame is world or base (+X forward, +Y left, +Z up, rooted at the robot's authored root). "
+        "Coordinates are metres; reuse snapshot_id for consistent comparisons."
+    ),
     params=("entity_id", "frame", "snapshot_id"),
     required_params=("entity_id",),
     result=SimulationSnapshotResult,
@@ -534,7 +550,12 @@ SIM_GET_ENTITY_STATE = ActionSpec(
 NAVIGATE_TO_POSE = ActionSpec(
     name="navigate_to_pose",
     capability="motion.goal",
-    description="Plan and physically navigate to an exact world x_m, y_m and final body-front yaw_rad. Uses a supported-floor obstacle map and the whole robot footprint. Unreachable goals fail without moving. No hidden target substitution or retry. Completion requires goal_reached and measured settled; previous locations become stale.",
+    description=(
+        "Plan and physically navigate to an exact world x_m, y_m and final body-front yaw_rad. Uses a "
+        "supported-floor obstacle map and the whole robot footprint. Unreachable goals fail without moving. "
+        "No hidden target substitution or retry. Completion requires goal_reached and measured settled; "
+        "previous locations become stale."
+    ),
     params=("x_m", "y_m", "yaw_rad"),
     required_params=("x_m", "y_m", "yaw_rad"),
     result=NavigationResult,
@@ -544,7 +565,12 @@ NAVIGATE_TO_POSE = ActionSpec(
 NAVIGATE_TO_ENTITY = ActionSpec(
     name="navigate_to_entity",
     capability="motion.goal",
-    description="Navigate beside a registered static object and face its bounds center. entity_id comes from scene queries. stand_off_m is clearance from the object bounds to the conservative robot footprint, not to the object's origin. Selects a reachable perimeter goal, follows one collision-checked route, then measures arrival, facing and stopping. Does not grasp or retry automatically.",
+    description=(
+        "Navigate beside a registered static object and face its bounds center. entity_id comes from scene "
+        "queries. stand_off_m is clearance from the object bounds to the conservative robot footprint, not to "
+        "the object's origin. Selects a reachable perimeter goal, follows one collision-checked route, then "
+        "measures arrival, facing and stopping. Does not grasp or retry automatically."
+    ),
     params=("entity_id", "stand_off_m"),
     required_params=("entity_id",),
     result=NavigationResult,
@@ -771,7 +797,6 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     GET_JOINT_POSITIONS,
     OPEN_GRIPPER,
     CLOSE_GRIPPER,
-    SET_GRIPPER,
     PICK_TARGET,
     ACTIVATE_SUCTION,
     DEACTIVATE_SUCTION,
@@ -817,6 +842,32 @@ def _accepts(func: Callable[..., Any], params: Iterable[str]) -> list[str]:
     return [name for name in params if name not in sig.parameters]
 
 
+def _default_effector(func):
+    """Keep legacy single-gripper adapters callable; never ignore a named selector."""
+    signature = inspect.signature(func)
+    if "effector" in signature.parameters:
+        return func
+
+    @wraps(func)
+    def invoke(*args, effector=None, **kwargs):
+        if effector is not None:
+            raise ValueError("This adapter has no named effector; omit effector")
+        return func(*args, **kwargs)
+
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def adapted(*args, **kwargs):
+            return await invoke(*args, **kwargs)
+    else:
+        adapted = invoke
+    parameters = list(signature.parameters.values())
+    index = next((i for i, p in enumerate(parameters) if p.kind == p.VAR_KEYWORD), len(parameters))
+    parameters.insert(index, inspect.Parameter("effector", inspect.Parameter.KEYWORD_ONLY, default=None))
+    adapted.__signature__ = signature.replace(parameters=parameters)
+    return adapted
+
+
 def implements(spec: ActionSpec) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Bind a method as one body's implementation of ``spec``.
 
@@ -839,6 +890,8 @@ def implements(spec: ActionSpec) -> Callable[[Callable[..., Any]], Callable[...,
     """
 
     def _wrap(func: Callable[..., Any]) -> Callable[..., Any]:
+        if spec is OPEN_GRIPPER or spec is CLOSE_GRIPPER:
+            func = _default_effector(func)
         missing = _accepts(func, spec.params or ())
         if missing:
             raise ContractViolation(

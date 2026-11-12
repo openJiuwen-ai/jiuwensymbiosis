@@ -7,7 +7,9 @@ object pose or complete object geometry is needed. Evidence stays host-side.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from numbers import Real
 
 import numpy as np
 
@@ -19,17 +21,32 @@ class TargetObservation:
     query: tuple[str, str | None, str]
     frame_id: str
     captured_at: float
-    odom_frame: str
+    odom_frame: str | None
     points_m: np.ndarray
     color_histogram: np.ndarray
+    scene_instance_id: str | None = None
 
     @classmethod
     def from_frame(cls, query, frame: CameraFrame, mask) -> TargetObservation | None:
         if frame.depth_m is None or frame.intrinsics is None or frame.tf_base_cam is None:
             return None
         base = frame.metadata.get("base_sample")
-        reference = frame.metadata.get("scene_instance_id") or (base or {}).get("odom_frame")
-        if not base or not reference or not frame.frame_id or frame.captured_monotonic_s is None:
+        if not isinstance(base, Mapping):
+            return None
+        odom_frame = base.get("odom_frame")
+        scene_instance_id = frame.metadata.get("scene_instance_id")
+        if not (odom_frame or scene_instance_id):
+            return None
+        if not frame.frame_id or frame.captured_monotonic_s is None:
+            return None
+        yaw = base.get("body_yaw_rad")
+        if isinstance(yaw, bool) or not isinstance(yaw, Real) or not math.isfinite(yaw):
+            return None
+        try:
+            position = np.asarray(base.get("position_m"), dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if position.shape != (3,) or not np.isfinite(position).all():
             return None
         mask = np.asarray(mask, dtype=bool)
         valid = mask & np.isfinite(frame.depth_m) & (frame.depth_m > 0)
@@ -42,19 +59,30 @@ class TargetObservation:
         camera = np.column_stack(((x - k[0, 2]) * z / k[0, 0], (y - k[1, 2]) * z / k[1, 1], z))
         transform = frame.tf_base_cam
         points = camera @ transform[:3, :3].T + transform[:3, 3] / 1000
-        yaw = base["body_yaw_rad"]
         c, s = math.cos(yaw), math.sin(yaw)
         rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-        points = points @ rotation.T + np.asarray(base["position_m"])
+        points = points @ rotation.T + position
         if not np.all(np.isfinite(points)):
             return None
         colors = frame.rgb[mask]
         histogram = np.concatenate([np.histogram(colors[:, i], bins=8, range=(0, 256))[0] for i in range(3)])
         histogram = histogram.astype(float) / max(1, 3 * len(colors))
-        return cls(query, frame.frame_id, frame.captured_monotonic_s, str(reference), points, histogram)
+        return cls(
+            query,
+            frame.frame_id,
+            frame.captured_monotonic_s,
+            str(odom_frame) if odom_frame else None,
+            points,
+            histogram,
+            str(scene_instance_id) if scene_instance_id else None,
+        )
 
     def mismatch(self, newer: TargetObservation) -> str | None:
-        if self.query != newer.query or self.odom_frame != newer.odom_frame:
+        if (
+            self.query != newer.query
+            or self.odom_frame != newer.odom_frame
+            or self.scene_instance_id != newer.scene_instance_id
+        ):
             return "target_reference_changed"
         if self.frame_id == newer.frame_id or newer.captured_at <= self.captured_at:
             return "stale_target_observation"

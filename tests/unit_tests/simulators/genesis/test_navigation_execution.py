@@ -101,13 +101,17 @@ def test_cancel_between_waypoints_never_sends_another_command(mobile):
 
 
 @pytest.mark.parametrize("goal_x", [0, 2])
-def test_new_velocity_after_reported_stop_cannot_certify_navigation_or_release(mobile, goal_x):
+@pytest.mark.parametrize("fault", ["velocity", "unconfirmed"])
+def test_new_velocity_after_reported_stop_cannot_certify_navigation_or_release(mobile, goal_x, fault):
     session, preview, calls, state = mobile
     move = preview.navigate_relative.side_effect
 
     def drifting(*args, **kwargs):
         result = move(*args, **kwargs)
-        state["linear_velocity_m_s"] = [0.1, 0, 0]
+        if fault == "velocity":
+            state["linear_velocity_m_s"] = [0.1, 0, 0]
+        else:
+            result["settled"] = False
         return result
 
     preview.navigate_relative.side_effect = drifting

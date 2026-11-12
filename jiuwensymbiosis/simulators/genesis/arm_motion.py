@@ -33,9 +33,7 @@ class ArmMotion:
         self.process = None
         self.follower = sibling("arm_trajectory").TrajectoryFollower(self.read, self.write, self.binding)
         self.result: dict = {}
-        self.phase = "idle"
-        self.anchor = None
-        self.reason = None
+        self.phase, self.anchor, self.reason = "idle", None, None
         self.stable = self.elapsed = 0.0
         configurations = self.profile.get("effectors", {})
         motors = {n for config in configurations.values() for n in config["joints"]}
@@ -44,6 +42,9 @@ class ArmMotion:
         self.effectors = sibling("end_effectors").EndEffectors(self.entity, self.planner.root, configurations)
         self.pick_lift = None
         self.gripper_request = None
+        self.execution_path = self.plan_directory = None
+        self.goal_poses = self.captured = self.static = self.payloads = None
+        self.started = 0.0
 
     @property
     def active(self):
@@ -88,16 +89,14 @@ class ArmMotion:
 
     def base_pose(self):
         link = self.entity.get_link(self.profile["base_link"])
-        return sibling("arm_planning").transform(link.get_pos()[0].cpu().numpy(), link.get_quat()[0].cpu().numpy())
+        return sibling("arm_collision").link_pose(link)
 
     def binding(self):
         if self.anchor is None:
             return ""
         pose = self.base_pose()
-        changed = (
-            np.linalg.norm(pose[:3, 3] - self.anchor[:3, 3]) > 0.003
-            or sibling("arm_planning").Rotation.from_matrix(pose[:3, :3] @ self.anchor[:3, :3].T).magnitude() > 0.005
-        )
+        error = sibling("arm_planning").pose_error(pose, self.anchor)
+        changed = error["position_m"] > 0.003 or error["rotation_rad"] > 0.005
         q, _ = self.read()
         changed |= any(abs(q[n] - v) > 0.01 for n, v in self.static.items())
         if getattr(self, "captured", None) is not None:
@@ -113,9 +112,7 @@ class ArmMotion:
         result = {}
         for name in sorted(names):
             link = self.entity.get_link(name)
-            pose = inverse @ sibling("arm_planning").transform(
-                link.get_pos()[0].cpu().numpy(), link.get_quat()[0].cpu().numpy()
-            )
+            pose = inverse @ sibling("arm_collision").link_pose(link)
             result[name] = [
                 *pose[:3, 3].tolist(),
                 *sibling("arm_planning").Rotation.from_matrix(pose[:3, :3]).as_quat(scalar_first=True).tolist(),
@@ -128,15 +125,12 @@ class ArmMotion:
         actual = self.tool_poses()
         errors = {}
         for name, goal in self.goal_poses.items():
-            position = float(np.linalg.norm(np.array(actual[name][:3]) - goal[:3]))
-            rotation = float(
-                (
-                    sibling("arm_planning").Rotation.from_quat(actual[name][3:], scalar_first=True).inv()
-                    * sibling("arm_planning").Rotation.from_quat(goal[3:], scalar_first=True)
-                ).magnitude()
+            planning = sibling("arm_planning")
+            error = planning.pose_error(
+                planning.transform(goal[:3], goal[3:]), planning.transform(actual[name][:3], actual[name][3:])
             )
-            errors[name] = {"position_m": position, "rotation_rad": rotation}
-            if position > 0.005 or rotation > 0.05:
+            errors[name] = error
+            if error["position_m"] > 0.005 or error["rotation_rad"] > 0.05:
                 self.reason = "tool_goal_not_reached"
         self.result["tool_goal_errors"] = errors
 
@@ -240,6 +234,9 @@ class ArmMotion:
                 request = {**request, "targets": q}
             else:
                 request = {**request, "poses": self.goal_poses}
+
+        if self.goal_poses is not None and set(self.goal_poses) != set(settings["tools"]):
+            raise ValueError("all group tool poses required")
         self.anchor = self.base_pose()
         self.static = {
             n: v for n, v in state.items() if n not in settings["joints"] and n not in self.planner.uncontrolled
@@ -251,16 +248,11 @@ class ArmMotion:
         errors = {}
         for name in settings["tools"]:
             link = self.entity.get_link(name)
-            measured = np.linalg.inv(self.anchor) @ sibling("arm_planning").transform(
-                link.get_pos()[0].cpu().numpy(), link.get_quat()[0].cpu().numpy()
-            )
+            measured = np.linalg.inv(self.anchor) @ sibling("arm_collision").link_pose(link)
             expected = np.linalg.inv(fk[self.profile["base_link"]]) @ fk[name]
-            position = float(np.linalg.norm(expected[:3, 3] - measured[:3, 3]))
-            angle = float(
-                sibling("arm_planning").Rotation.from_matrix(expected[:3, :3] @ measured[:3, :3].T).magnitude()
-            )
-            errors[name] = {"position_m": position, "rotation_rad": angle}
-            if position > 0.002 or angle > 0.005:
+            error = sibling("arm_planning").pose_error(expected, measured)
+            errors[name] = error
+            if error["position_m"] > 0.002 or error["rotation_rad"] > 0.005:
                 raise ValueError("Genesis tool FK differs from planning model")
         self.payloads = self.pick_lift.payload if self.pick_lift else self.effectors.attachments()
         if self.pick_lift:
@@ -320,6 +312,22 @@ class ArmMotion:
         self.stable = self.elapsed = 0.0
 
     def tick(self, dt):
+        try:
+            self._tick(dt)
+        except Exception as exc:
+            self.follower.terminal = True
+            self.result.update(
+                status="completed",
+                ok=False,
+                goal_reached=False,
+                settled=False,
+                stop_confirmation="unknown",
+                reason=f"arm_tick_failed: {exc}",
+            )
+            self.cancel(self.result["reason"])
+            self.phase = "completed"
+
+    def _tick(self, dt):
         try:
             if (
                 self.pick_lift
@@ -429,7 +437,7 @@ class ArmMotion:
                     stop_confirmation="measured" if settled else "unknown",
                 )
                 states = list(self.effectors.evidence.values())
-                if states:
+                if states and self.gripper_request is None:
                     held = (
                         True
                         if any(e.holding is True for e in states)
@@ -439,7 +447,10 @@ class ArmMotion:
                     )
                     self.result.update(holding_payload=held, grasp_confirmed=held is True)
                 self.phase = "completed"
-                self.execution_path.write_text(json.dumps(self.result, indent=2, allow_nan=False))
+                try:
+                    self.execution_path.write_text(json.dumps(self.result, indent=2, allow_nan=False))
+                except OSError:
+                    self.result.update(ok=False, reason="evidence_unwritable")
                 if not settled:
                     self.follower.terminal = True
 

@@ -271,3 +271,17 @@ def test_rgbd_motion_mode_preserves_action_and_arm_guards(
             "depth_step": result["step"],
             "pose_step": result["step"],
         }
+
+
+def test_unconfigured_arm_request_does_not_destroy_scene(worker_loop):
+    state = worker_loop
+    state.command["base_motion"] = {"id": "arm-invalid", "kind": "arm"}
+    state.on_ready = lambda: setattr(state, "stopping", bool(state.steps and state.renders))
+    state.on_camera = lambda: state.advance(0.100)
+    state.run()
+    assert state.steps
+    ready = [s for s in state.statuses if s.get("state") == "ready"]
+    assert ready and not any(s.get("state") == "failed" for s in state.statuses)
+    result = ready[-1]["base_motion"]
+    assert result["id"] == "arm-invalid" and not result["ok"]
+    assert result["stop_confirmation"] == "unknown"

@@ -190,7 +190,7 @@ def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.nda
     scores = _to_numpy(res["scores"]).reshape(-1)
     if len(scores) != len(boxes):
         raise RuntimeError("GroundingDINO returned inconsistent box and score counts")
-    if not len(boxes):
+    if boxes.size == 0:
         # Some tokenizer versions decode an empty phrase batch as [""]. There
         # are no predictions to label; this is an ordinary empty detection.
         return boxes, scores, []

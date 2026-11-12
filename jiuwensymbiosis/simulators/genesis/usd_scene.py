@@ -1,8 +1,10 @@
 """USD inspection and a static preview layer. SDKs are loaded only by the worker.
 
-Keep the source stage and textures untouched. A small override layer disables
+Keep the source stage and texture FILES untouched. A small override layer disables
 authored rigid bodies/joints; Nyx consumes the composed stage as a static visual.
-Materials remain authored USD, without claiming equivalence to the source renderer.
+Roots that declare material_rules additionally get a non-destructive conversion of
+unsupported shader families (see material_repair.py); the authored USD itself stays
+as-is, and no conversion claims equivalence to the source renderer.
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from itertools import product
 
 import numpy as np
 
@@ -109,7 +110,7 @@ def base_body_bounds(world_bounds: np.ndarray, base_state: dict) -> np.ndarray:
     bounds = np.asarray(world_bounds, dtype=float)
     if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[1] <= bounds[0]):
         raise ValueError("Robot body bounds unavailable")
-    corners = np.array([[x, y, z] for x in bounds[:, 0] for y in bounds[:, 1] for z in bounds[:, 2]])
+    corners = np.array(list(product(*bounds.T)))
     transform = base_from_camera(np.eye(4), base_state)
     points = corners @ transform[:3, :3].T + transform[:3, 3] / 1000
     return np.stack([points.min(axis=0), points.max(axis=0)])

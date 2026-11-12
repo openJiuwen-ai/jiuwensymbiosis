@@ -151,3 +151,21 @@ def test_y_up_centimetre_camera_is_converted(source):
     assert p["pos"] == pytest.approx([0.01, -0.03, 0.02])
     assert p["up"] == pytest.approx([0, 0, 1])
     assert p["near"] == pytest.approx(0.0005)
+
+
+def test_renderer_keeps_scenegen_validation_with_persistent_material_cache(source, tmp_path):
+    from pxr import Usd, UsdShade
+
+    from jiuwensymbiosis.simulators.genesis.rendering import SceneRenderer
+
+    renderer = SceneRenderer.__new__(SceneRenderer)
+    renderer.appearance = {}
+    cache = tmp_path / "persistent-materials"
+    assert renderer._repair_materials(source, tmp_path, None, cache, validate=True) == source
+    assert renderer.appearance["material_validation"]["status"] == "passed"
+    stage = Usd.Stage.Open(str(source))
+    material = UsdShade.Material.Define(stage, "/World/Glass")
+    material.GetPrim().SetCustomDataByKey("scene_gen:optics", json.dumps({"transmission": 1}))
+    stage.GetRootLayer().Save()
+    with pytest.raises(ValueError, match="optical metadata"):
+        renderer._repair_materials(source, tmp_path, None, cache, validate=True)

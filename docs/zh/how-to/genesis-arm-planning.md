@@ -1,59 +1,36 @@
-# Genesis 通用机械臂规划
+# Genesis 机械臂规划与夹持
 
-cuRobo V2 从机器人模型、完整关节状态和静态碰撞场景生成轨迹；现有 Genesis 场景负责电机控制、物理步进、反馈和停止确认。规划进程不创建 Genesis 场景。当前移动操作采用“底盘停稳 → 重新采样 → 规划机械臂”，不提供底盘与双臂同时运动的全身规划。
+cuRobo V2 规划；现有 Genesis 场景独占电机、物理时钟和实测停止。底盘须先停稳，不支持移动全身规划。ArmMotion/EndEffectors/GraspEvidence 无机型分支（底盘轮系仍为 MOZ1 专用），MOZ1/Panda 关节、工具、增益及碰撞来源仅在 YAML 中，不可作为其他机器人或真实硬件的默认参数。
 
-## 配置与环境
+## 安装和入口
 
-在专用 Genesis 环境安装 `.[genesis,genesis-planning]`。cuRobo V2 需单独安装并固定版本；此接入实测版本为 `0.8.0.post1.dev43`，接口为 `MotionPlanner` / `MotionPlannerCfg`，不兼容旧版 `MotionGen`。不将 CUDA 规划依赖引入默认 core 环境。
-
-模板位于 `configs/simulators/planning/moz1.json` 和 `panda.json`。它们声明规划基座、任意数量的关节组及工具、显式速度/加速度/jerk/力矩限值、地面支撑链节和碰撞近似来源。限值是仿真调试参数，不是厂家硬件规格。新机器人需要匹配其 URDF 的配置，以及物理控制器提供的电机控制与读回；仅加载网格不能确定这些语义。
-
-模板引用外部碰撞球资产，不复制资产内容。先设置 `MOZ1_XRDF` 或 `CUROBO_FRANKA_CONFIG` 为本机源文件路径，在启动后台前解析成独立文件：
-
+专用环境执行 `pip install -e '.[genesis,genesis-planning]' --extra-index-url https://download.pytorch.org/whl/cu130`。另行安装 [cuRobo V2](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a)：检出该 commit，按上游 CUDA 安装说明构建（验证版本 `0.8.0.post1.dev43`）；使用 `MotionPlanner`/`MotionPlannerCfg`，不兼容旧 `MotionGen`。源码许可证为 Apache-2.0；本仓库/wheel 不分发它。core 不加载 CUDA 依赖，dev 包含 CPU python-fcl 碰撞测试。
+设置 `MOZ1_XRDF` 指向与实际 URDF 匹配的外部 XRDF；`CUROBO_FRANKA_CONFIG` 指向该 cuRobo checkout 的 Franka 配置。配置字段见[后端参考](../reference/genesis-physical-scene.md)。外部机器人资产需自行取得并验收，不随本仓库分发。加载器记录来源 SHA-256/忽略理由，支持 JSON/YAML、相对路径和环境变量。
 ```python
 import json
 from pathlib import Path
 from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
-
-out = Path("outputs/arm-planning")
-out.mkdir(parents=True, exist_ok=True)
-profile = load_profile(Path("configs/simulators/planning/moz1.json"))
-resolved = (out / "profile.json").resolve()
-resolved.write_text(json.dumps(profile, indent=2))
+out = Path("outputs/arm-planning/profile.json").resolve()
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(load_profile(Path("configs/simulators/planning/moz1.yaml")), indent=2))
 ```
+通过 Python `PreviewSettings`/`GenesisPreview.configure` 传入 `planning_profile=str(out)` 和 `robot_mode="moz1_wheels"`；后台不继承任意环境变量。GUI 尚无规划配置入口，固定臂加载模式尚未实现；`panda.yaml` 仅为模型/规划校验参考。新机器人仍需物理控制器及模型/FK/碰撞/执行验收。MOZ1 夹爪要求资产有有效限值（示例 effort=16.5、velocity≥0.6、lower≤-0.61）；旧零限值导出被拒绝，不能绕过校验。
 
-`load_profile` 支持 JSON/YAML；碰撞来源路径相对于配置文件解析，可展开环境变量。解析后的文件保留来源路径、SHA256 和忽略理由。**后台不继承任意环境变量**，所以传入解析后的文件，不依赖后台展开模板变量。
+## 动作和恢复
 
-把 `planning_profile=str(resolved)` 传入 `PreviewSettings` 或 `GenesisPreview.configure`，同时使用已有的 `robot_mode="moz1_wheels"`。空路径保持原有底盘功能。Panda 已验证同一规划器、碰撞检查器和 `ArmMotion` 执行器的复用；GUI 的机器人加载器仍只有现有 MOZ1 移动控制模式，没有新增任意机器人一键加载入口。
+仅已接纳配置的 ground-truth 会话开放 `motion.joint`/`motion.tool_pose`，有夹爪再开放 `grasp.parallel`；纯视觉/RGB-D 不开放通用关节与工具位姿动作；配置 GraspGenX 后可开放目标级 `pick_target`，见[GraspGenX 指南](genesis-graspgenx.md)。`sim_get_robot_state` 返回实测关节、工具和逐夹爪证据。`move_joint(targets)` 为命名绝对 rad/m，省略关节保持；`move_tool_poses(group, poses, speed=1)` 要求组内所有工具的 `[x,y,z,qw,qx,qy,qz]`（配置的 planning base_link、米、单位四元数）；`open_gripper(width_mm=80, *, effector=None)` / `close_gripper(force_n=None, *, effector=None)` 与真机共用动作词汇；多夹爪必须指定配置名，旧单夹爪适配器保留位置参数调用并拒绝命名选择。Genesis 忽略宽度/力提示。命名动作按 `payload.clear:<名称>` / `payload.held:<名称>` 检查与更新；整机 held 表示任一手持物，clear 必须所有手实测空手，未知仍为未知，不把闭合当成抓取成功。
+规划使用独立 CUDA 进程，取消或90秒超时终止进程并丢弃过期结果；RPC 共用排他所有权与续租。五次样条检查位置及解析导数极值，超限延长时间而不裁剪路径；电机不瞬移。执行绑定场景、模型、基座、非规划关节、负载和静止障碍物；失败制动并实测。关节容差0.01 rad/m、速度0.02 rad/s或m/s、稳定0.25 s；工具误差≤5 mm/0.05 rad。结果区分 plan_success/goal_reached/settled/stop_confirmation。
+未知停止锁住后续动作/控制权；未知持物阻止规划、底盘移动和复位。先查看状态中的 reason/逐夹爪证据并保留 状态目录（默认 `~/.jiuwensymbiosis/genesis-preview`）下的 `arm-plans/<scene_instance_id>/<plan_id>/` 及同层 `execution-<uuid>.json`（每次复位新建实例目录）。若能重新测得稳定支撑，可显式释放；若读回持续失败、物体消失或停车无法确认，操作员须停止并重启仿真后台，再重新验收世界。没有清除证据的旁路，也不能由 LLM 自动张开或退离。官方宿主禁用自动 Recovery/HOME；直接复用 Session 的宿主也须排除 home 并禁用自动恢复，自动回家尚未实现。证据不自动删除，停止后台后由操作员归档清理。
+执行器声明 tool、独立 joints、至少两组不重叠 contact_groups；电机 open/close/velocity/effort/kp/kd/tolerance 及可选 preload 必须满足模型限值，并与规划组分离。mimic follower 保持被动；可选 noslip_iterations（示例5）为实验参数。Agent/脚本决定顺序：到位→闭合→接触0.15 s→试抬升≥15 mm并保持相对位姿→机械臂带载移动→支撑释放。预紧仅施加一次；取消保持夹持。
+开放到位、无夹持接触、外部向上支撑和稳定速度持续0.25 s才确认放置；掉落撤销确认。接触丢失0.1 s、相对平移>3 mm/旋转>0.05 rad、非夹取链节接触或穿透>2 mm均拒绝成功。每夹爪仅跟踪一个刚体；共享对象双手操作、吸盘、柔性手、铰接载荷不支持。
+碰撞球只作近似和覆盖诊断；FCL检查实际加载几何及引擎允许碰撞对，外部忽略列表不能绕过。仅配置支撑链节可触地；自由支撑关节须为连续、无下游关节且原点球形碰撞的叶节点。动态障碍须静止并持续监测；负载使用实测工具相对变换/网格，规划器用保守球。已测固定支撑可从粗模型移除，FCL仍只允许负载与它近竖直法向、穿透≤1 mm且接触数未截断的接触，本体不豁免；新支撑面可能被拒绝。离散采样和SDK adjacent/neutral过滤不是连续碰撞或稳定接触证明。历史单物体实验不代表本提交、双臂独立持物、LLM自主任务或硬件验收。
 
-## 公共动作与坐标
+为持续检测滑移，逐 tick 读取夹爪接触与负载状态；大型场景开销尚未测量，当前不承诺实时性能。
 
-配置被实际场景接纳后，ground-truth Agent 才获得 `motion.joint` 和 `motion.tool_pose`。选择 GraspGenX 扩展配置后，RGB-D 感知模式另提供目标级抓取动作。见[使用 GraspGenX 抓取](genesis-graspgenx.md)。
-
-- `move_joint(targets)` 沿用共享动作，按名字指定绝对弧度值；省略的关节必须保持。规划器如果产生了省略关节的偏移，轨迹会被拒绝。
-- `move_tool_poses(group, poses, speed=1.0)` 为一个组中的所有工具联合求解。`poses` 格式为 `{tool_name: [x,y,z,qw,qx,qy,qz]}`，长度单位米、单位四元数，参考系为配置的 **URDF `base_link`**。它不是底盘导航的 forward/left 坐标，也不是旧 `goto_pose` 的 mm/deg 格式。
-- `sim_get_robot_state` 提供实际关节、组/工具名称、规划参考系和工具实测位姿。末端默认配置为真实链节；需要 TCP 时应在模型中明确添加并配置工具坐标。
-
-结果区分 `plan_success`、`goal_reached`、`settled` 和 `stop_confirmation`。完整轨迹、几何检查、速度重定时和失败阶段保存在场景证据目录 `arm-plans/<scene>/<plan>/`。主机与 resident RPC 沿用现有排他运动所有权、请求身份、场景/配置绑定和续租机制；兼容旧传输字段 `base_motion`，用 `kind="arm"` 区分请求。
-
-## 执行与失败语义
-
-规划进程采用独立 CUDA 上下文，避免 cuRobo CUDA Graph 捕获干扰 Genesis 步进。取消和 90 秒规划期限会终止该规划进程；过期结果不进入执行。物理场景持续运行，仍只有一个物理时钟。
-
-轨迹按名称映射电机，使用端点速度/加速度为零的五次样条。根据解析导数极值检查速度、加速度和 jerk，随后再次检查插值曲线的关节边界和碰撞。`speed=1.5` 是请求倍率；超出约束时延长时间，不裁剪轨迹、不保证每段都达到请求倍率。控制器仅写有限力矩的电机目标，不通过设置关节位置执行轨迹。
-
-执行前校验完整测量状态、模型和场景身份；执行中监控关节跟踪、底座漂移和非规划关节变化。失败时保持测得的关节位置并制动，持续测量后才能确认停止。关节终点容差为 0.01 rad/m，速度阈值 0.02 rad/s 或 m/s，稳定窗口 0.25 s；工具动作还要求位置误差不超过 5 mm、姿态误差不超过 0.05 rad。未知停止结果会锁住后续动作和控制权，不能当成普通规划失败继续。
+## 本地扩展的起点诊断与试抬升
 
 `start_joint_limit` 表示规划组的实测起点超出 URDF 关节边界，错误会指出关节、读数和上下限。即使只是微小越界，也不能裁剪测量值后继续规划。应在上游选解时为预抓、抓取和抬升全部预留执行余量；正式 GraspGenX 筛选对转动关节使用 0.002 rad 内缩边界。cuRobo 的 `Start or End state in collision` 日志同时可能来自关节约束不可行，不能单凭该文字认定几何碰撞。
 
 `planning_world_or_payload_changed` 表示运行中的状态绑定失效，不等于 cuRobo 求解失败。先区分底座、非规划关节、动态物体速度/位姿和持物状态。桌面接触的数值抖动也可能触发速度阈值；应核对物理步长、子步数和接触参数。主仓单机器人桌面夹具使用 8 子步，独立实验脚本须显式记录自身设置。增加物理精度后仍需复测真实接触和持物，不能用放宽速度门限代替验证。
 
-MOZ1 源模型的被动球形轮会在底盘停稳后自由旋转。`uncontrolled_support_joints` 仅允许连续旋转、无下游关节、碰撞为关节原点处球体的支撑叶节点；它们的朝向不影响支撑几何。独立检查使用包住实际网格的球体。该例外不适用于机械臂、躯干或任意未受控关节。
-
-## 碰撞证据与范围
-
-原有碰撞球不是全模型的保守包络。每次规划保留逐链节覆盖抽样报告；缺失球、未覆盖点不会被报告为安全证明。轨迹必须额外经过 FCL 对 **Genesis 实际加载的碰撞形状** 的检查，使用引擎实际碰撞配对表；外部球配置的忽略列表不能绕过该检查。允许明确列出的支撑链节接触地面，不豁免它们与其他障碍物的碰撞。
-
-世界模型接受固定障碍物和当前静止、持续监测位姿与速度的动态刚体，用包围盒提供给 cuRobo、实际形状提供给独立检查；运动中的外部障碍物拒绝。持物几何与接触例外见[夹持与放置](genesis-grasp.md)。路径检查包含插值中间点，是离散抽样检查，不是连续碰撞证明。引擎已有的 adjacent/neutral 配对过滤仍然生效，并随模型审计记录；“自碰撞开启”不表示所有链节对都参与检测。
-
-可选夹持模块提供接触、试抬升、带载检查和支撑释放；不包含动态避障、移动全身控制或硬件验证。新增机器人需重新完成模型/FK/碰撞/物理执行验收，不能凭配置文件宣称已支持真机。
+GraspGenX 的试抬升显式启用持续闭合驱动，按配置速度推进至闭合目标，在完成或取消结果跟踪后保持夹持；普通 `close_gripper` 保留接触预紧和目标锁存。两种路径都受同一模型电机限值及实测持物判定约束。

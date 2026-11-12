@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING or __package__ != "material_rules":
+if TYPE_CHECKING or (__package__ and __package__ != "material_rules"):
     from ..material_surface import constant as _constant
     from ..material_surface import texture
 else:
@@ -56,7 +56,8 @@ def _module_path(shader, report):
     parts = asset.path.replace("\\", "/").split("/")
     if "Materials" not in parts:
         return None
-    suffix = Path(*parts[parts.index("Materials") :])
+    start = parts.index("Materials")
+    suffix = Path(*parts[start:])
     for spec in shader.GetPrim().GetAttribute("info:mdl:sourceAsset").GetPropertyStack():
         if not spec.layer.realPath:
             continue
@@ -92,7 +93,8 @@ def _resolve_texture(shader, name, report):
     # exact Materials-relative suffix in this authoring asset's own ancestors.
     parts = value.path.replace("\\", "/").split("/")
     if "Materials" in parts:
-        suffix = Path(*parts[parts.index("Materials") :])
+        start = parts.index("Materials")
+        suffix = Path(*parts[start:])
         for spec in shader.GetInput(name).GetAttr().GetPropertyStack():
             if not spec.layer.realPath:
                 continue
@@ -137,6 +139,9 @@ def _legacy(stage, preview, shader, family, report):
         ("Emissive", "emissiveColor", (1, 1, 1, 1)),
     )
     for prefix, target, default in mappings:
+        # Input names verified against the shipped templates (M_BaseMaterial.mdl
+        # declares BaseColor_Color/Metallic_Color/...): an absent input is the
+        # normal default-equals case in these assets, not a naming mismatch.
         value = _value(shader, prefix + "_Color", default)
         gain = float(_value(shader, "EmissiveIntensity", 0)) if prefix == "Emissive" else 1.0
         vector = target in {"diffuseColor", "emissiveColor"}
@@ -192,6 +197,10 @@ def _modern(stage, preview, shader, family, report):
         ("Opacity", "opacity", 0.0 if "Translucent" in family else 1.0),
     ):
         vector = isinstance(default, tuple)
+        # The doubled name is real: M_BaseMaterial_v2.mdl declares ``float4
+        # ColorColor`` (v1 templates use ``X_Color`` instead), so this is a
+        # verified template name, not a typo. An absent input is the normal
+        # default-equals case in these assets, not a naming mismatch.
         value = _value(shader, prefix + ("Color" if vector else "Float"), default)
         mode = float(_value(shader, prefix + "IsTexType", 0))
         if mode >= 2:
@@ -329,7 +338,9 @@ def _other(stage, preview, shader, family, report, directory) -> bool:
             {
                 "kind": "approximation",
                 "shader": str(shader.GetPath()),
-                "detail": "OmniGlass volume absorption/transmission replaced by thin transparent PreviewSurface opacity=0.15",
+                "detail": (
+                    "OmniGlass volume absorption/transmission replaced by thin transparent PreviewSurface opacity=0.15"
+                ),
             }
         )
     elif family == "OmniSurface":

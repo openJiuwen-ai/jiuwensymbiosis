@@ -122,15 +122,14 @@ def _spatial_comparison(robot: Any, manifest: dict, processing: dict) -> list[di
         for row, col in zip(rows, cols, strict=True):
             # Primitive tessellation is approximate in Genesis. Mesh hulls must
             # preserve the declared processing pipeline's support.
-            shape = expected[row]
             tolerance = 1e-5
-            if shape["type"] in {"sphere", "cylinder"}:
-                tolerance += shape["radius"] * 0.025
+            if processed is None and expected[row]["type"] in {"sphere", "cylinder"}:
+                tolerance += expected[row]["radius"] * 0.025
             error = float(cost[row, col])
             results.append(
                 {
                     "link": link["name"],
-                    "collision_index": int(row),
+                    ("collision_index" if processed is None else "processed_index"): int(row),
                     "geom_idx": int(runtime.geoms[col].idx),
                     "support_error_m": error,
                     "tolerance_m": tolerance,
@@ -151,10 +150,15 @@ def audit_loaded_model(robot: Any, manifest: dict, destination: Path) -> dict:
 
     model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
     report: dict = {"schema_version": 1, "status": "error", "errors": [], "warnings": [], "unverifiable": []}
+    failure = None
     try:
         model_module.verify_model_files(manifest)
+        if any(getattr(link, "aligned", False) for link in robot.links):
+            raise ValueError("model admission requires authored link frames; build with align=False")
         report["geometry"] = collision_geometry_audit(robot, manifest)
         geometry = report["geometry"]
+        if not any(link.geoms for link in robot.links):
+            report["errors"].append({"check": "no_collision_geometry"})
         for key in ("missing_runtime_links", "count_mismatch_links", "source_mismatch_links"):
             if geometry[key]:
                 report["errors"].append({"check": key, "links": geometry[key]})
@@ -166,23 +170,24 @@ def audit_loaded_model(robot: Any, manifest: dict, destination: Path) -> dict:
             "decimate_aggressiveness": int(getattr(morph, "decimate_aggressiveness", 2)),
         }
         report["mesh_processing"] = processing
+        report["import_options"] = {
+            "fixed": getattr(morph, "fixed", None),
+            "align": getattr(morph, "align", None),
+            "merge_fixed_links": getattr(morph, "merge_fixed_links", None),
+            "watertighten": getattr(morph, "watertighten", None),
+            "decompose_robot_error_threshold": str(getattr(morph, "decompose_robot_error_threshold", None)),
+        }
+        report["tool_versions"] = model_module.tool_versions()
         report["spatial"] = _spatial_comparison(robot, manifest, processing)
         if any(item["status"] != "pass" for item in report["spatial"]):
             report["errors"].append({"check": "collision_shape_or_transform"})
-        report["solver_flags"] = {
-            key.removeprefix("_enable_"): bool(getattr(robot.solver, key))
-            for key in (
-                "_enable_collision",
-                "_enable_self_collision",
-                "_enable_adjacent_collision",
-                "_enable_neutral_collision",
-            )
-        }
+        flag_names = ("collision", "self_collision", "adjacent_collision", "neutral_collision")
+        report["solver_flags"] = {key: bool(getattr(robot.solver, f"_enable_{key}")) for key in flag_names}
         if not report["solver_flags"]["collision"]:
             report["errors"].append({"check": "collision_disabled"})
         # Pinned Genesis 1.4.4: this is the collider's built pair table, not an
         # inference from its options. Includes adjacent/neutral/mask exclusions.
-        pairs = _array(robot.solver.collider._valid_collision_pairs).astype(int)  # noqa: SLF001 -- pinned SDK
+        pairs = _array(getattr(robot.solver.collider, "_valid_collision_pairs")).astype(int)  # noqa: B009 -- SDK ABI
         own = {g.idx: link.name for link in robot.links for g in link.geoms}
         report["pair_filter"] = {
             "source": "Genesis 1.4.4 Collider._valid_collision_pairs",
@@ -195,17 +200,21 @@ def audit_loaded_model(robot: Any, manifest: dict, destination: Path) -> dict:
             not (g["contype"] or g["conaffinity"]) for link in geometry["links"].values() for g in link["geometries"]
         ):
             report["errors"].append({"check": "collision_masks_disabled"})
-        report["unverifiable"].append("Physical contact stability and exact concave surface equivalence.")
+        report["limitations"] = ["Physical contact stability and exact concave surface equivalence are not tested."]
         report["warnings"].append("Directional supports do not establish exact concave surface equivalence.")
         model_module.verify_model_files(manifest)
         report["status"] = "pass" if not report["errors"] else "error"
     except Exception as exc:
+        failure = exc
+        if isinstance(exc, (ImportError, AttributeError, TypeError)):
+            report["status"] = "unverifiable"
+            report["unverifiable"].append(f"{type(exc).__name__}: {exc}")
         report["errors"].append({"check": "readback", "error": f"{type(exc).__name__}: {exc}"})
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     if report["status"] != "pass":
-        raise ValueError(f"robot model admission failed; inspect {destination}")
+        raise ValueError(f"robot model admission failed; inspect {destination}") from failure
     return report
 
 
@@ -249,7 +258,7 @@ def _geometry(geom: Any, directory: Path, references: dict[str, dict]) -> dict:
     world = _array(geom.get_verts())
     if world.ndim == 3 and world.shape[0] == 1:
         world = world[0]
-    if local.ndim != 2 or local.shape[1:] != (3,) or not len(local):
+    if local.ndim != 2 or local.shape[1:] != (3,) or len(local) == 0:
         raise ValueError("invalid collision mesh local vertices")
     if world.ndim != 2 or world.shape[1:] != (3,):
         raise ValueError("collision audit requires non-parallel world vertices")
@@ -304,16 +313,11 @@ def _source_topology(reference: dict) -> dict:
         if not isinstance(mesh, trimesh.Trimesh):
             raise ValueError("source alias requires one mesh; scenes are not flattened")
         vertices, faces = _array(mesh.vertices), _array(mesh.faces)
-        if vertices.ndim != 2 or vertices.shape[1:] != (3,) or not len(vertices):
+        if vertices.ndim != 2 or vertices.shape[1:] != (3,) or len(vertices) == 0:
             raise ValueError("invalid source mesh vertices")
-        if (
-            faces.ndim != 2
-            or faces.shape[1:] != (3,)
-            or not len(faces)
-            or not np.issubdtype(faces.dtype, np.integer)
-            or faces.min() < 0
-            or faces.max() >= len(vertices)
-        ):
+        if faces.ndim != 2 or faces.shape[1:] != (3,) or len(faces) == 0:
+            raise ValueError("invalid source mesh triangle faces")
+        if not np.issubdtype(faces.dtype, np.integer) or faces.min() < 0 or faces.max() >= len(vertices):
             raise ValueError("invalid source mesh triangle faces")
         with Path(path).open("rb") as stream:
             current_hash = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -359,7 +363,8 @@ def _resolve_source_aliases(missing: Counter, extra: Counter, references: dict[s
                     "vertex_count": authored["vertex_count"],
                     "face_count": authored["face_count"],
                     "instance_count": count,
-                    "evidence": "identical ordered source vertices/faces with trimesh process=False, maintain_order=True; "
+                    "evidence": "identical ordered source vertices/faces with trimesh "
+                    "process=False, maintain_order=True; "
                     "no transforms, scaling, convexification, or tolerance applied",
                 }
             )
@@ -414,7 +419,8 @@ def _source_comparison(
     return {
         "matches_urdf": not reasons,
         "paths_match_urdf": expected_counts == actual_counts,
-        "method": "full-path multiset with exact ordered source-topology evidence for aliases; instance counts consumed",
+        "method": "full-path multiset with exact ordered source-topology evidence for aliases; "
+        "instance counts consumed",
         "reasons": reasons,
         "expected_mesh_path_counts": dict(sorted(expected_counts.items())),
         "runtime_mesh_path_counts": dict(sorted(actual_counts.items())),
@@ -424,9 +430,9 @@ def _source_comparison(
         "unresolved_unexpected_mesh_path_counts": dict(sorted((+extra).items())),
         "resolved_source_aliases": aliases,
         "source_topology_read_errors": {
-            path: topology_cache[path]
-            for path in sorted(references)
-            if path in topology_cache and topology_cache[path]["status"] != "available"
+            path: record
+            for path, record in sorted(topology_cache.items())
+            if path in references and record["status"] != "available"
         },
         "unavailable_urdf_collision_indices": unavailable_expected,
         "unverifiable_runtime_geom_indices": unverifiable_actual,
@@ -525,7 +531,8 @@ def collision_geometry_audit(robot: Any, model: Mapping[str, Any], *, link_names
             "local_topology": "RigidGeom.init_verts/init_faces: processed geometry-local collision mesh",
             "world_vertices": "RigidGeom.get_verts(): refreshed world collision vertices, no extra transform",
             "source_reference": "RigidGeom.metadata.mesh_path: provenance only; file hash is current disk content",
-            "shape_hash_encoding": "JSON [vertex_shape,face_shape] + C-order little-endian float64 vertices/int64 faces",
+            "shape_hash_encoding": "JSON [vertex_shape,face_shape] + "
+            "C-order little-endian float64 vertices/int64 faces",
         },
         "model": {
             "urdf": str(path),
@@ -550,7 +557,8 @@ def collision_geometry_audit(robot: Any, model: Mapping[str, Any], *, link_names
             "Counts and bounds do not prove exact surface equivalence or acceptable contact physics.",
             "Fixed-link merging and importer processing may intentionally change per-link collision counts.",
             "Matching source paths do not prove build-time file bytes or processed topology match the source mesh.",
-            "Resolved aliases prove current source topology equality, not runtime processing or collision-origin equality.",
+            "Resolved aliases prove current source topology equality, "
+            "not runtime processing or collision-origin equality.",
             "Repeated instances of one source are checked by count, not by collision origin or scale correspondence.",
             "A nonzero collision mask alone does not prove a particular pair can collide.",
         ],

@@ -224,7 +224,10 @@ def _prescan(session: Any, steps: list[ActionStep | LoopStep]) -> dict[str, dict
     if not names:
         return cache
     try:
-        api.home()
+        # Through action_scope like any dispatch: a home that fails mid-motion may
+        # already have moved the body, so the failure must invalidate too.
+        with action_scope(api, api.home, {}):
+            api.home()
         record_action(api, api.home, {}, None)
     except Exception as exc:  # noqa: BLE001 - pre-scan home() is best-effort
         logger.warning("[runner] pre-scan: home() failed: %s", exc)
@@ -645,7 +648,6 @@ def direct_executor(api_or_index: Any) -> Executor:
             raise
         except Exception as exc:  # noqa: BLE001 - convert op failure to structured result
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
-        api = getattr(fn, "__self__", None)
         if api is not None:
             record_action(api, fn, params, result)
         ok = result.get("ok", True) if isinstance(result, dict) else True
@@ -901,7 +903,7 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
         logger.warning("[runner] step %d failed: %s: %s", i, step.op, exc)
         logger.debug("[runner] step %d params: %s", i, step.params)
         if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
-            logger.info("[runner] recovery already handled by the ability rail stack")
+            logger.info("[runner] recovery handled by the ability rail stack or unnecessary (nothing dispatched)")
         elif ctx.recovery_enabled:
             _safe_retreat(session)
         # ``reason`` is the human/LLM-facing text; ``error_code`` is the machine
@@ -1036,7 +1038,7 @@ def _self_state_drift(step: ActionStep, meta: ToolMeta, session: Any) -> str | N
     if not meta.requires:
         return None
     tokens = current_tokens(session)
-    unmet = contradicted_requirements(tokens, meta.requires)
+    unmet = contradicted_requirements(tokens, meta.requires, effector=step.params.get("effector"))
     if not unmet:
         return None
     return f"{step.op} requires {list(unmet)}, but the robot is measurably {sorted(tokens)}"

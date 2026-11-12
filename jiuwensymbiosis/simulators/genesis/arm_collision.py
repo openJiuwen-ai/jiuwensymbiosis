@@ -1,9 +1,4 @@
-"""Independent sampled path gate using the collision shapes loaded by Genesis.
-
-Only immutable CPU snapshots cross into planning. No shadow physics scene, pose
-writes or simulator steps are used. This gate checks eligible engine pairs and
-reports sphere coverage; it is not a continuous collision proof.
-"""
+"""CPU snapshots and loaded-geometry sampled collision checks, not continuous collision proof."""
 
 from __future__ import annotations
 
@@ -25,18 +20,26 @@ def array(value):
     return result
 
 
+def link_pose(link):
+    """Finite, single-environment link pose shared by planning and payload readback."""
+    return _planning().transform(array(link.get_pos()).reshape(3), array(link.get_quat()).reshape(4))
+
+
 def snapshot(entity, profile, attachments=None):
     """Call on the scene owner thread after build, before background planning."""
+    attachments = attachments or {}
+    carried_bodies = [body for body in entity.solver.entities if body.idx in attachments]
+    if any(len(body.links) != 1 for body in carried_bodies):
+        raise ValueError("single-link payload required")
     planning = _planning()
     base = entity.get_link(profile["base_link"])
-    world_from_base = planning.transform(array(base.get_pos())[0], array(base.get_quat())[0])
+    world_from_base = link_pose(base)
     base_from_world = np.linalg.inv(world_from_base)
     own = {g.idx for link in entity.links for g in link.geoms}
-    attachments = attachments or {}
-    carried = {
-        g.idx for body in entity.solver.entities if body.idx in attachments for link in body.links for g in link.geoms
-    }
-    pairs = array(entity.solver.collider._valid_collision_pairs).astype(int).reshape(-1, 2)  # noqa: SLF001 -- pinned Genesis 1.4.4
+    carried = {g.idx for body in carried_bodies for g in body.links[0].geoms}
+    # Genesis 1.4.4 exposes no public built-pair table; missing ABI refuses the snapshot.
+    pairs = array(getattr(entity.solver.collider, "_valid_collision_pairs"))  # noqa: B009 -- SDK ABI
+    pairs = pairs.astype(int).reshape(-1, 2)
     pairs = [tuple(map(int, p)) for p in pairs if p[0] in own | carried or p[1] in own | carried]
     needed = {idx for pair in pairs for idx in pair} | own
     geometries = {}
@@ -45,7 +48,7 @@ def snapshot(entity, profile, attachments=None):
     for other in entity.solver.entities:
         attachment = attachments.get(other.idx)
         for link in other.links:
-            pose = base_from_world @ planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
+            pose = base_from_world @ link_pose(link)
             for geom in link.geoms:
                 if geom.idx not in needed:
                     continue
@@ -59,7 +62,7 @@ def snapshot(entity, profile, attachments=None):
                             or np.linalg.norm(array(link.get_ang())) > 0.02
                         ):
                             raise ValueError("moving obstacle unsupported")
-                        dynamic[int(link.idx)] = planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
+                        dynamic[int(link.idx)] = link_pose(link)
                 record = {"link": link.name if is_robot else None, "pose": local if is_robot else pose @ local}
                 if attachment is not None:
                     record.update(
@@ -72,21 +75,21 @@ def snapshot(entity, profile, attachments=None):
                     )
                 if "PLANE" in kind:
                     record["plane"] = True
-                    # Planning box bounds the accepted workspace; exact halfspace
-                    # remains in the independent path gate.
+                    # Workspace bounding box; the independent gate retains the exact halfspace.
                     if is_robot:
                         raise ValueError("robot plane geometry unsupported")
                     center = (pose @ local) @ np.array([0.0, 0.0, -0.05, 1.0])
                     quat = planning.Rotation.from_matrix((pose @ local)[:3, :3]).as_quat(scalar_first=True)
                     world["cuboid"][f"geom_{geom.idx}"] = {"dims": [200.0, 200.0, 0.1], "pose": [*center[:3], *quat]}
                 else:
+                    vertices = array(geom.init_verts)
                     record.update(
-                        vertices=array(geom.init_verts),
+                        vertices=vertices,
                         faces=array(geom.init_faces).astype(int),
                         convex=bool(geom.is_convex),
                     )
                     if not is_robot and attachment is None:
-                        lo, hi = record["vertices"].min(0), record["vertices"].max(0)
+                        lo, hi = vertices.min(0), vertices.max(0)
                         center = record["pose"] @ np.r_[(lo + hi) / 2, 1.0]
                         quat = planning.Rotation.from_matrix(record["pose"][:3, :3]).as_quat(scalar_first=True)
                         world["cuboid"][f"geom_{geom.idx}"] = {
@@ -96,9 +99,7 @@ def snapshot(entity, profile, attachments=None):
                 geometries[int(geom.idx)] = record
     if needed - geometries.keys():
         raise ValueError("incomplete physical collision snapshot")
-    # cuRobo's enclosing payload spheres overlap a real supporting surface at
-    # contact. Remove only measured support shapes from that coarse backend;
-    # the full-geometry gate retains them for robot and payload on every sample.
+    # Remove measured supports only from coarse spheres; full-geometry checks retain every support.
     for attachment in attachments.values():
         for idx in attachment.get("support_geoms", []):
             world["cuboid"].pop(f"geom_{idx}", None)
@@ -121,11 +122,9 @@ def world_unchanged(entity, captured):
             return False
         if np.linalg.norm(array(link.get_vel())) > 0.008 or np.linalg.norm(array(link.get_ang())) > 0.02:
             return False
-        current = planning.transform(array(link.get_pos())[0], array(link.get_quat())[0])
-        if (
-            np.linalg.norm(current[:3, 3] - original[:3, 3]) > 0.002
-            or planning.Rotation.from_matrix(current[:3, :3] @ original[:3, :3].T).magnitude() > 0.02
-        ):
+        current = link_pose(link)
+        error = planning.pose_error(original, current)
+        if error["position_m"] > 0.002 or error["rotation_rad"] > 0.02:
             return False
     return True
 
@@ -153,7 +152,7 @@ class CollisionGate:
                 shape = fcl.Convex(record["vertices"], len(record["faces"]), faces)
             else:
                 shape = fcl.BVHModel()
-                shape.beginModel(len(record["vertices"]), len(record["faces"]))
+                shape.beginModel(num_tris_=len(record["faces"]), num_vertices_=len(record["vertices"]))
                 shape.addSubModel(record["vertices"], record["faces"])
                 shape.endModel()
             self.objects[idx] = fcl.CollisionObject(shape)
@@ -168,8 +167,7 @@ class CollisionGate:
             if link is None or record.get("plane") or record.get("payload"):
                 continue
             vertices = record["vertices"] @ record["pose"][:3, :3].T + record["pose"][:3, 3]
-            # Vertices plus triangle centroids: quantitative samples, not a
-            # claim that the union of spheres conservatively covers the mesh.
+            # Vertices and centroids quantify coverage; they do not prove conservative coverage.
             points = np.concatenate((vertices, vertices[record["faces"]].mean(axis=1)))
             spheres = self.profile["collision_spheres"].get(link, [])
             if spheres:
@@ -197,13 +195,14 @@ class CollisionGate:
             self.objects[idx].setTransform(self.fcl.Transform(pose[:3, :3], pose[:3, 3]))
         for first, second in self.captured["pairs"]:
             a, b = self.captured["geometries"][first], self.captured["geometries"][second]
-            if (a.get("payload") and b["link"] in a["contact_links"] and not b.get("payload")) or (
-                b.get("payload") and a["link"] in b["contact_links"] and not a.get("payload")
-            ):
+            grasp_a = a.get("payload") and b["link"] in a["contact_links"] and not b.get("payload")
+            grasp_b = b.get("payload") and a["link"] in b["contact_links"] and not a.get("payload")
+            if grasp_a or grasp_b:
                 continue
-            # Only authored support links may touch the floor. This is not an
-            # exemption from self-collision or from any other world obstacle.
-            if (a["link"] in self.support and b.get("plane")) or (b["link"] in self.support and a.get("plane")):
+            # Floor contact only for authored support links; other collision checks still apply.
+            floor_a = a["link"] in self.support and b.get("plane")
+            floor_b = b["link"] in self.support and a.get("plane")
+            if floor_a or floor_b:
                 continue
             result = self.fcl.CollisionResult()
             request = self.fcl.CollisionRequest(num_max_contacts=1000, enable_contact=True)
@@ -212,12 +211,11 @@ class CollisionGate:
                     b.get("payload") and first in b.get("support_geoms", [])
                 )
                 up = np.asarray(self.captured.get("world_from_base", np.eye(4)))[:3, :3].T @ np.array([0.0, 0.0, 1.0])
-                if (
-                    support_contact
-                    and result.contacts
-                    and len(result.contacts) < 1000
-                    and all(c.penetration_depth <= 0.001 and abs(np.dot(c.normal, up)) >= 0.9 for c in result.contacts)
-                ):
+                bounded = bool(result.contacts) and len(result.contacts) < 1000
+                shallow = all(
+                    c.penetration_depth <= 0.001 and abs(np.dot(c.normal, up)) >= 0.9 for c in result.contacts
+                )
+                if support_contact and bounded and shallow:
                     continue
                 raise ValueError(f"physical_geometry_collision: {a['link'] or first} / {b['link'] or second}")
 

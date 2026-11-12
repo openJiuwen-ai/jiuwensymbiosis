@@ -17,8 +17,14 @@ from jiuwensymbiosis.serving.http_support import InferenceAdmission
 from jiuwensymbiosis.utils.service_http import HttpServiceClient
 
 
-@pytest.mark.parametrize("n,labels", [(0, [""]), (0, None), (1, ["bed"])])
-def test_decoded_labels_describe_predictions_and_empty_detection_is_not_server_error(monkeypatch, n, labels):
+@pytest.mark.parametrize("label_key", ["text_labels", "labels"])
+@pytest.mark.parametrize(
+    "n,labels,valid",
+    [(0, [""], True), (0, None, True), (1, ["bed"], True), (1, [17], False), (1, [["bed"]], False), (1, None, False)],
+)
+def test_decoded_labels_describe_predictions_and_empty_detection_is_not_server_error(
+    monkeypatch, n, labels, valid, label_key
+):
     import sys
     from contextlib import nullcontext
     from types import SimpleNamespace
@@ -34,11 +40,15 @@ def test_decoded_labels_describe_predictions_and_empty_detection_is_not_server_e
             return Inputs(input_ids=[])
 
         def post_process_grounded_object_detection(self, *args, **kwargs):
-            return [{"boxes": np.zeros((n, 4)), "scores": np.ones(n), "text_labels": labels}]
+            return [{"boxes": np.zeros((n, 4)), "scores": np.ones(n), label_key: labels}]
 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad=nullcontext, Tensor=type("Tensor", (), {})))
     monkeypatch.setattr(server, "_GDINO_PROCESSOR", Processor())
     monkeypatch.setattr(server, "_GDINO_MODEL", lambda **kwargs: object())
+    if not valid:
+        with pytest.raises(RuntimeError, match="decoded text labels"):
+            server._gdino_detect(Image.new("RGB", (10, 10)), "wardrobe")
+        return
     boxes, scores, actual = server._gdino_detect(Image.new("RGB", (10, 10)), "wardrobe")
     assert len(boxes) == len(scores) == n
     assert actual == ([] if n == 0 else ["bed"])

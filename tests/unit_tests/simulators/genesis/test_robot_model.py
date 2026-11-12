@@ -163,3 +163,135 @@ def test_failed_admission_precedes_all_motor_writes(model, tmp_path):
     robot.entity.set_dofs_kp.assert_not_called()
     robot.entity.set_dofs_position.assert_not_called()
     robot.upper_body.build.assert_not_called()
+
+
+def test_processed_reordering_cannot_borrow_a_sphere_tolerance(model, monkeypatch):
+    from jiuwensymbiosis.simulators.genesis import collision_audit
+
+    robot = built_robot(model)
+    # Importer order differs from authored order. The first processed geometry
+    # is a box; it must not inherit the authored sphere's radius tolerance.
+    model["links"][1]["collisions"][0] = {
+        "type": "sphere",
+        "radius": 1.0,
+        "origin": {"xyz": [0, 0, 0], "rpy": [0, 0, 0]},
+    }
+
+    def reprocess(robot, directions):
+        values = []
+        for geom in robot.links[1].geoms:
+            rotation = Rotation.from_quat(geom.init_quat, scalar_first=True)
+            vertices = rotation.apply(geom.init_verts) + geom.init_pos
+            values.append(np.max(vertices @ directions.T, axis=0))
+        values[1] -= directions @ np.array([0.001, 0, 0])
+        return {"slider": values[::-1]}
+
+    monkeypatch.setattr(collision_audit, "_processed_expectations", reprocess)
+    result = collision_audit._spatial_comparison(robot, model, {"decimate": True})
+    box = next(row for row in result if row["geom_idx"] == 1)
+    assert box["status"] == "error"
+    assert box["tolerance_m"] == 1e-5
+    assert "processed_index" in box and "collision_index" not in box
+
+
+def test_empty_model_is_not_physical_admission(tmp_path):
+    source = tmp_path / "empty.urdf"
+    source.write_text('<robot name="empty"><link name="root"/></robot>')
+    model = prepare_robot_model(source, tmp_path / "derived")
+    robot = SimpleNamespace(
+        is_built=True, solver=SimpleNamespace(n_envs=1), links=[SimpleNamespace(name="root", idx=0, geoms=[])]
+    )
+    destination = tmp_path / "audit.json"
+    with pytest.raises(ValueError):
+        audit_loaded_model(robot, model, destination)
+    assert any(row["check"] == "no_collision_geometry" for row in json.loads(destination.read_text())["errors"])
+
+
+def test_processed_expectations_reparse_and_transform(monkeypatch):
+    import sys
+
+    import trimesh
+
+    from jiuwensymbiosis.simulators.genesis.collision_audit import _processed_expectations
+
+    mesh = trimesh.creation.box(extents=[0.2, 0.4, 0.6])
+    rotation = Rotation.from_euler("z", 0.4)
+    collision = {
+        "contype": 1,
+        "conaffinity": 0,
+        "mesh": SimpleNamespace(verts=mesh.vertices),
+        "pos": [0.1, 0.2, 0.3],
+        "quat": rotation.as_quat(scalar_first=True),
+    }
+    visual = {"contype": 0, "conaffinity": 0}
+    parse = Mock(return_value=([{"name": "root"}], [], [[visual, collision]], None))
+    process = Mock(return_value=[collision])
+    monkeypatch.setitem(sys.modules, "genesis", SimpleNamespace(surfaces=SimpleNamespace(Default=lambda: "surface")))
+    monkeypatch.setitem(
+        sys.modules,
+        "genesis.utils",
+        SimpleNamespace(
+            mesh=SimpleNamespace(postprocess_collision_geoms=process), mjcf=SimpleNamespace(parse_xml=parse)
+        ),
+    )
+    morph = SimpleNamespace(
+        convexify=True,
+        watertighten=5,
+        decompose_robot_error_threshold=float("inf"),
+        decimate=True,
+        decimate_face_num=100,
+        decimate_aggressiveness=2,
+        coacd_options=None,
+        model_copy=Mock(return_value="copy"),
+    )
+    result = _processed_expectations(SimpleNamespace(morph=morph), np.eye(3))
+    expected = (rotation.apply(mesh.vertices) + [0.1, 0.2, 0.3]).max(axis=0)
+    assert result["root"][0] == pytest.approx(expected)
+    morph.model_copy.assert_called_once_with(update={"visualization": False})
+    parse.assert_called_once_with("copy", "surface")
+    assert process.call_args.args == ([collision], True, 100, 2, True, float("inf"), None, 5)
+
+
+def test_cli_destroys_scene_and_genesis_after_build_failure(model, monkeypatch, tmp_path):
+    import sys
+
+    from jiuwensymbiosis.simulators.genesis.robot_model import main
+
+    scene = Mock()
+    scene.build.side_effect = RuntimeError("build failure")
+    gs = SimpleNamespace(
+        init=Mock(),
+        destroy=Mock(),
+        cpu="cpu",
+        Scene=Mock(return_value=scene),
+        options=SimpleNamespace(RigidOptions=Mock()),
+        morphs=SimpleNamespace(URDF=Mock()),
+    )
+    monkeypatch.setitem(sys.modules, "genesis", gs)
+    monkeypatch.setattr(
+        sys, "argv", ["audit", model["source"]["path"], "--output", str(tmp_path / "cli"), "--load-audit"]
+    )
+    with pytest.raises(RuntimeError, match="build failure"):
+        main()
+    scene.destroy.assert_called_once()
+    gs.destroy.assert_called_once()
+
+
+def test_unavailable_readback_retains_cause_and_refuses_admission(model):
+    robot = built_robot(model)
+    del robot.solver.collider
+    destination = Path(model["urdf"]).parent / "unavailable.json"
+    with pytest.raises(ValueError) as failure:
+        audit_loaded_model(robot, model, destination)
+    assert isinstance(failure.value.__cause__, AttributeError)
+    report = json.loads(destination.read_text())
+    assert report["status"] == "unverifiable"
+    assert report["unverifiable"]
+
+
+def test_aligned_frames_are_rejected_with_actionable_error(model):
+    robot = built_robot(model)
+    robot.links[0].aligned = True
+    with pytest.raises(ValueError) as failure:
+        audit_loaded_model(robot, model, Path(model["urdf"]).parent / "aligned.json")
+    assert "align=False" in str(failure.value.__cause__)

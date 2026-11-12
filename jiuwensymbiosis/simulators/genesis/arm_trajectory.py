@@ -1,8 +1,4 @@
-"""Named, state-bound trajectories and a measured, single-clock follower.
-
-No simulator imports, threads or physics steps. The owner calls tick once per
-physics step and supplies read/write callbacks for its existing articulation.
-"""
+"""Named trajectories and measured single-clock execution; owner alone steps physics."""
 
 from __future__ import annotations
 
@@ -35,13 +31,9 @@ class Trajectory:
 
     def __post_init__(self):
         q = finite(self.positions)
-        if (
-            not self.names
-            or len(set(self.names)) != len(self.names)
-            or q.ndim != 2
-            or q.shape[1] != len(self.names)
-            or len(q) < 2
-        ):
+        invalid_names = not self.names or len(set(self.names)) != len(self.names)
+        invalid_shape = q.ndim != 2 or q.shape[1] != len(self.names) or len(q) < 2
+        if invalid_names or invalid_shape:
             raise ValueError("trajectory requires unique names and at least two samples")
         if not np.isfinite(self.dt) or self.dt <= 0:
             raise ValueError("invalid trajectory timestep")
@@ -78,32 +70,21 @@ class Trajectory:
     def sample(self, elapsed):
         return self._spline(np.clip(elapsed, 0.0, self.duration))
 
+    def _extrema_values(self, column, order):
+        curve = PPoly.from_spline((self._spline.t, self._spline.c[:, column], self._spline.k)).derivative(order)
+        roots = curve.derivative().roots(extrapolate=False)
+        interior = roots[np.isfinite(roots) & (roots >= 0) & (roots <= self.duration)]
+        return curve(np.r_[0.0, self.duration, interior, self._spline.t])
+
     def position_bounds(self):
-        bounds = []
-        for column in range(len(self.names)):
-            curve = PPoly.from_spline((self._spline.t, self._spline.c[:, column], self._spline.k))
-            roots = curve.derivative().roots(extrapolate=False)
-            times = np.r_[0.0, self.duration, roots[np.isfinite(roots) & (roots >= 0) & (roots <= self.duration)]]
-            values = curve(times)
-            bounds.append((values.min(), values.max()))
-        return np.array(bounds)
+        values = [self._extrema_values(column, 0) for column in range(len(self.names))]
+        return np.array([(v.min(), v.max()) for v in values])
 
     def derivative_maxima(self):
-        maxima = []
-        for order in (1, 2, 3):
-            values = []
-            for column in range(len(self.names)):
-                curve = PPoly.from_spline((self._spline.t, self._spline.c[:, column], self._spline.k))
-                roots = curve.derivative(order + 1).roots(extrapolate=False)
-                times = np.r_[
-                    0.0,
-                    self.duration,
-                    roots[np.isfinite(roots) & (roots >= 0) & (roots <= self.duration)],
-                    self._spline.t,
-                ]
-                values.append(float(np.max(np.abs(curve.derivative(order)(times)))))
-            maxima.append(np.array(values))
-        return maxima
+        return [
+            np.array([np.max(np.abs(self._extrema_values(column, order))) for column in range(len(self.names))])
+            for order in (1, 2, 3)
+        ]
 
     def validate_dynamics(self):
         for values, limits in zip(
@@ -111,21 +92,6 @@ class Trajectory:
         ):
             if np.any(values > limits * (1 + 1e-5)):
                 raise ValueError("trajectory exceeds velocity/acceleration/jerk limits")
-
-    def scaled(self, speed: float):
-        if isinstance(speed, bool) or not np.isfinite(speed) or speed <= 0:
-            raise ValueError("speed must be finite and positive")
-        return Trajectory(
-            self.names,
-            self.positions,
-            self.dt / speed,
-            self.binding,
-            dict(self.start),
-            self.velocity_limits,
-            self.acceleration_limits,
-            self.jerk_limits,
-            self.stationary_names,
-        )
 
 
 class TrajectoryFollower:
@@ -150,6 +116,9 @@ class TrajectoryFollower:
         self.result: dict = {"status": "idle", "ok": False}
         self.terminal = False
         self.phase = "idle"
+        self.elapsed = self.waited = self.stable = 0.0
+        self.failure: str | None = None
+        self.target = np.empty(0)
 
     @property
     def active(self):
@@ -189,7 +158,8 @@ class TrajectoryFollower:
     def cancel(self, reason="cancelled"):
         if not self.active:
             return
-        assert self.trajectory is not None
+        if self.trajectory is None:
+            raise RuntimeError("active executor has no trajectory")
         q, _ = self.read()
         self.target = finite([q[n] for n in self.trajectory.names])
         self.failure, self.phase, self.waited, self.stable = reason, "braking", 0.0, 0.0
@@ -201,7 +171,8 @@ class TrajectoryFollower:
         if not np.isfinite(dt) or dt <= 0:
             raise ValueError("invalid control timestep")
         t = self.trajectory
-        assert t is not None
+        if t is None:
+            raise RuntimeError("active executor has no trajectory")
         try:
             qmap, vmap = self.read()
             q, dq = finite([qmap[n] for n in t.names]), finite([vmap[n] for n in t.names])

@@ -68,6 +68,7 @@ class ResidentHost:
         self.clock, self.lease_s = clock, lease_s
         self.fingerprint = runtime_fingerprint()
         self.lock = threading.RLock()
+        self._lifecycle_lock = threading.Lock()
         self.clients: dict[str, ClientLease] = {}
         self.viewer: str | None = None
         self.closing = False
@@ -89,6 +90,12 @@ class ResidentHost:
             }
 
     def dispatch(self, message: dict) -> Any:
+        if isinstance(message, dict) and message.get("method") in {"start", "configure", "stop"}:
+            with self._lifecycle_lock:
+                return self._dispatch(message)
+        return self._dispatch(message)
+
+    def _dispatch(self, message: dict) -> Any:
         if not isinstance(message, dict):
             raise ValueError("Invalid resident request")
         method, client_id = message.get("method"), message.get("client_id", "")
@@ -145,7 +152,7 @@ class ResidentHost:
                 raise RuntimeError("Genesis 客户端连接已失效。")
             if method == "set_streaming":
                 enabled = params.get("enabled")
-                if type(enabled) is not bool:
+                if not isinstance(enabled, bool):
                     raise ValueError("streaming must be boolean")
                 if enabled:
                     if self.viewer not in (None, client_id):
@@ -173,7 +180,7 @@ class ResidentHost:
             if method == "acquire_motion":
                 client.owner = self.preview.acquire_motion()
                 return client.owner
-            if method in {"start", "configure", "camera_command", "base_command", "cancel_motion", "motion_state"}:
+            if method in {"camera_command", "base_command", "cancel_motion", "motion_state"}:
                 return getattr(self.preview, method)(**params)
             event = threading.Event()
             if request_id in client.requests:
@@ -185,7 +192,7 @@ class ResidentHost:
             result = getattr(self.preview, method)(**params)
             if method == "release_motion":
                 with self.lock:
-                    if client.owner == params["owner"]:
+                    if client.owner == params.get("owner"):
                         client.owner = None
             return result
         finally:

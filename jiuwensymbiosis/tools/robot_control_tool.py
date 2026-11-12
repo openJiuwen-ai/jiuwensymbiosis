@@ -40,13 +40,19 @@ from jiuwensymbiosis.errors import error_code
 logger = logging.getLogger(__name__)
 
 
-def begin_action(api: Any, method: Callable[..., Any]) -> None:
-    """Invalidate before calling a physical action; failure cannot restore old geometry."""
+def begin_action(api: Any, method: Callable[..., Any], params: dict[str, Any] | None = None) -> None:
+    """Invalidate before calling a physical action; failure cannot restore old geometry.
+
+    Actions that ``produces_location`` are exempt from the api-cache clear: they
+    consume the cached detection as their input (the approach loops skip a full
+    search when one is fresh) and refresh it themselves while they run; a failed
+    one is still cleared after the fact by ``_stale_sensing_cache``.
+    """
     meta = getattr(method, "__tool_meta__", None)
     memory = getattr(api, "memory", None)
     if isinstance(memory, ExecutionMemory):
-        memory.begin(meta)
-    if meta is not None and meta.invalidates_locations:
+        memory.begin(meta, params)
+    if meta is not None and meta.invalidates_locations and not meta.produces_location:
         clear = getattr(api, "invalidate_sensing_cache", None)
         if callable(clear):
             clear()
@@ -54,8 +60,13 @@ def begin_action(api: Any, method: Callable[..., Any]) -> None:
 
 @contextmanager
 def action_scope(api: Any, method: Callable[..., Any], params: dict[str, Any]) -> Iterator[None]:
-    """Invalidate around dispatch without absorbing cancellation or process interrupts."""
-    begin_action(api, method)
+    """Invalidate around dispatch without absorbing cancellation or process interrupts.
+
+    An incomplete call (exception or cancellation) is recorded as a failed action
+    so the memory invalidates — the runner's step list deliberately records
+    nothing for a cancelled step; the two records serve different consumers.
+    """
+    begin_action(api, method, params)
     completed = False
     try:
         yield
@@ -66,16 +77,31 @@ def action_scope(api: Any, method: Callable[..., Any], params: dict[str, Any]) -
 
 
 def read_grasp_confirmation(api: Any, result: Any) -> bool | None:
-    """Combine explicit evidence and body readback; contradiction wins over belief."""
+    """Combine explicit evidence and the body's hook; contradiction wins over belief.
+
+    ``env.holding_payload`` is deliberately NOT evidence here: it is the coarse
+    RecoveryRail flag (adapters may leave it stale between grasps), while this
+    decision needs per-action evidence — the result fields or ``is_grasp_confirmed``.
+    A body with no measured channel may declare ``trust_command_grasp``; then a
+    successful close command itself counts, logged so the acceptance is auditable.
+    """
+    if isinstance(result, dict) and "holding_payload" in result and result["holding_payload"] is None:
+        return None
     evidence = [payload_confirmation(result)]
     confirm = getattr(api, "is_grasp_confirmed", None)
     if callable(confirm):
         evidence.append(confirm(result))
-    env = getattr(api, "env", None)
-    evidence.append(getattr(env, "holding_payload", None))
     if any(value is False for value in evidence):
         return False
-    return True if any(value is True for value in evidence) else None
+    if any(value is True for value in evidence):
+        return True
+    if getattr(api, "trust_command_grasp", False) and action_succeeded(result):
+        logger.warning(
+            "[grasp] %s declares trust_command_grasp: unmeasured close accepted as held",
+            type(api).__name__,
+        )
+        return True
+    return None
 
 
 def record_action(api: Any, method: Callable[..., Any], params: dict[str, Any], result: Any) -> None:
@@ -96,7 +122,10 @@ def record_action(api: Any, method: Callable[..., Any], params: dict[str, Any], 
         memory.observe(meta, params, result, grasp_confirmed=confirmed)
         _stale_sensing_cache(api, meta, result)
     except Exception as exc:  # noqa: BLE001 - state bookkeeping must not break dispatch
-        memory.observe(meta, params, {"ok": False})
+        try:
+            memory.observe(meta, params, {"ok": False})
+        except Exception:  # noqa: BLE001 - neither may the fallback break dispatch
+            logger.exception("[memory] fallback record also failed for %s", getattr(method, "__name__", method))
         logger.warning("[memory] failed to record %s: %s", getattr(method, "__name__", method), exc)
 
 
@@ -223,7 +252,17 @@ class RobotControlTool(Tool):
         return sorted(self._action_index.keys())
 
     async def invoke(self, inputs: dict[str, Any], **kwargs: Any) -> ToolOutput:
-        """Dispatch an action to the corresponding api method."""
+        """Dispatch an action to the corresponding api method.
+
+        Failures are returned as ``ToolOutput(success=False)`` rather than raised,
+        so the caller (the agent loop) always gets a tool message. ``data`` says
+        whether the adapter action actually ran (``"dispatched": True``): a
+        rejection that never reached the driver cannot have left the robot
+        mid-motion, and the fast runner uses that flag to decide whether a safe
+        retreat is owed. Adapter refusals marked ``skip_recovery`` (pre-dispatch
+        envelope/IK rejections) report ``dispatched: False`` even though they are
+        raised inside the action body.
+        """
         payload = inputs or {}
         action = payload.get("action")
         params = payload.get("params") or {}
@@ -243,8 +282,31 @@ class RobotControlTool(Tool):
                 success=False,
                 error=(f"unknown action '{action}'; available={self.available_actions}"),
             )
+        # Validate the call shape BEFORE dispatch so a TypeError can only mean
+        # "bad params" (nothing ran) and is not confused with a TypeError raised
+        # by the adapter body after the motion started. ``inspect.signature``
+        # itself raises TypeError for callables it cannot introspect (C
+        # extensions, proxies); those must be trusted, not rejected — same
+        # convention as ``api/actions.py``.
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):  # un-introspectable: trust the callable
+            signature = None
+        if signature is not None:
+            try:
+                signature.bind(**params)
+            except TypeError as exc:
+                return ToolOutput(
+                    success=False,
+                    error=f"bad params for '{action}': {exc}",
+                )
+        # Set only when the scope opened, i.e. the dispatch block was actually
+        # entered; bookkeeping failures in ``action_scope.__enter__`` did not
+        # request any motion either.
+        started = False
         try:
             with action_scope(self._api, method, params):
+                started = True
                 result = method(**params)
                 if inspect.isawaitable(result):
                     result = await result
@@ -253,20 +315,23 @@ class RobotControlTool(Tool):
                 success=True,
                 data={"action": action, "result": result},
             )
-        except TypeError as exc:
-            return ToolOutput(
-                success=False,
-                error=f"bad params for '{action}': {exc}",
-            )
         except Exception as exc:  # noqa: BLE001 - convert to ToolOutput
             # ``ToolOutput.error`` is a plain string, so a coded failure would lose its
             # code here; park it in ``data`` (kept on failures too) for callers that
             # dispatch this tool directly, e.g. the fast path's ability executor.
             code = error_code(exc)
+            # A pre-dispatch refusal raised *inside* the action (SO-101's
+            # So101PreDispatchError, driver-side envelope checks) opted out via
+            # ``skip_recovery``: the arm never moved, so RecoveryRail must not
+            # release/home it after this failure.
+            dispatched = started and not bool(getattr(exc, "skip_recovery", False))
+            failure_data: dict[str, Any] = {"action": action, "dispatched": dispatched}
+            if code:
+                failure_data["error_code"] = code
             return ToolOutput(
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",
-                data={"action": action, "error_code": code} if code else None,
+                data=failure_data,
             )
 
     async def stream(self, inputs: dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:

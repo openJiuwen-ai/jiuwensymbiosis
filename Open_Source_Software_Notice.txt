@@ -913,3 +913,26 @@ Source: https://pypi.org/pypi/gs-nyx-plugin/0.1.9/json
 The Apache-2.0 license of the public genesis-nyx documentation/examples
 repository has not been established as the license of these two distributions.
 The Nyx dependency-license requirement remains incomplete.
+
+Software: coacd 1.0.14 (declared ==1.0.14)
+Copyright notice:
+Copyright (c) 2022 Xinyue Wei, Minghua Liu
+
+License: MIT License
+Please see above
+Source: https://pypi.org/pypi/coacd/1.0.14/json
+
+Software: python-fcl 0.7.0.11 (declared ==0.7.0.11)
+Copyright notice:
+Copyright (c) 2017, Matthew Matl
+All rights reserved.
+
+License: BSD 3-Clause License
+Please see above
+Source: https://pypi.org/pypi/python-fcl/0.7.0.11/json
+
+Software: nvidia-curobo 0.8.0.post1.dev43 (optional, separately installed; not bundled)
+Copyright notice: Copyright 2023-2026 NVIDIA CORPORATION & AFFILIATES
+License: Apache License V2.0
+Please see above
+Source and license: https://github.com/NVlabs/curobo/blob/78fd485fa82d9b9a063fb4985e371814587e666a/LICENSE

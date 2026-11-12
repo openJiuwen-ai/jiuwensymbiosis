@@ -75,7 +75,7 @@ class PickLift:
         self.reference = None
 
     def close(self):
-        self.ee.start(self.name, opened=False)
+        self.ee.start(self.name, opened=False, full_close=True)
         # Keep the independent PD ramp. No close-result or attachment gate.
         self.ee.cancel()
         self.started = True

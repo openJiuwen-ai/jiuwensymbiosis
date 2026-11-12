@@ -25,13 +25,17 @@ def bake_texture(path: Path, directory: Path, target: str, uv, color, scale, bia
     bias = bias or (0, 0, 0, 0)
     scalar = target in {"roughness", "metallic", "opacity"}
     normal = target == "normal"
+    # EXR/HDR pixels are already linear: neither decoding them through the sRGB
+    # transfer function nor declaring them sRGB downstream is correct.
+    linear_source = path.suffix.lower() in {".exr", ".hdr"}
     default_values = (scale == (1, 1, 1, 1) and bias == (0, 0, 0, 0)) or (
         normal and scale == (2, 2, 2, 1) and bias == (-1, -1, -1, 0)
     )
     if uv == identity and default_values and not scalar:
-        return path, color, {}
+        return path, color and not linear_source, {}
     digest = hashlib.sha256(path.read_bytes())
-    parameters = {"version": 1, "target": target, "uv": uv, "color": color, "scale": scale, "bias": bias}
+    # Version 2: linear sources are no longer pushed through the sRGB decode.
+    parameters = {"version": 2, "target": target, "uv": uv, "color": color, "scale": scale, "bias": bias}
     digest.update(json.dumps(parameters, sort_keys=True).encode())
     # HDR preserves emissive intensity beyond 1.0; other channels are bounded.
     hdr = target == "emissiveColor" and max(scale[:3]) > 1
@@ -48,10 +52,10 @@ def bake_texture(path: Path, directory: Path, target: str, uv, color, scale, bia
     }
     if output.is_file():
         return output, bool(color and not scalar and not normal and not hdr), detail
-    if path.suffix.lower() in {".exr", ".hdr"}:
-        # Pillow cannot decode EXR textures.
-        # OpenCV's bundled OpenEXR codec requires this explicit runtime opt-in.
-        os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    if linear_source:
+        # Pillow cannot decode EXR textures. OpenCV's bundled OpenEXR codec needs
+        # OPENCV_IO_ENABLE_OPENEXR=1 in the environment before cv2 is FIRST
+        # imported; process entry points (worker, probe and batch scripts) set it.
         import cv2
 
         pixels = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
@@ -65,7 +69,7 @@ def bake_texture(path: Path, directory: Path, target: str, uv, color, scale, bia
     else:
         with Image.open(path) as image:
             pixels = np.asarray(image.convert("RGB"), dtype=np.float32) / 255
-    if color:
+    if color and not linear_source:
         pixels = np.where(pixels <= 0.04045, pixels / 12.92, ((pixels + 0.055) / 1.055) ** 2.4)
     height, width = pixels.shape[:2]
     if uv != identity:
@@ -89,11 +93,15 @@ def bake_texture(path: Path, directory: Path, target: str, uv, color, scale, bia
     if output_color:
         pixels = np.where(pixels <= 0.0031308, 12.92 * pixels, 1.055 * np.maximum(pixels, 0) ** (1 / 2.4) - 0.055)
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Write then rename: a half-written file must never look like a valid cache
+    # entry. Keep the real extension so PIL/cv2 can infer the format.
+    temporary = output.with_name(output.stem + ".tmp" + output.suffix)
     if hdr:
         import cv2
 
-        if not cv2.imwrite(str(output), pixels[..., ::-1].astype(np.float32)):
+        if not cv2.imwrite(str(temporary), pixels[..., ::-1].astype(np.float32)):
             raise RuntimeError(f"Cannot write emissive texture: {output}")
     else:
-        Image.fromarray(np.uint8(np.rint(np.clip(pixels, 0, 1) * 255))).save(output)
+        Image.fromarray(np.uint8(np.rint(np.clip(pixels, 0, 1) * 255))).save(temporary)
+    os.replace(temporary, output)
     return output, output_color, detail

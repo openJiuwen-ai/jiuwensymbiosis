@@ -101,6 +101,8 @@ def test_renderer_exports_effective_color_without_changing_lights(
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     settings = SimpleNamespace(width=1280, height=720, spp=8, scene_id="indoor", render_mode="fast")
+    # No material rules: default preview must work without the optional USD SDK.
+    monkeypatch.setitem(sys.modules, "pxr", None)
     source = None
     if with_source:
         source = tmp_path / "source.usda"

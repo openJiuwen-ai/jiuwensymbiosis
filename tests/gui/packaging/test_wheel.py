@@ -174,7 +174,8 @@ sys.path.insert(0, sys.argv[1])
 import usd_probe
 from scene_catalog import material_rules_for_asset
 from types import SimpleNamespace
-assert material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(root_id="interioragent")))
+assert material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(material_rules="interioragent")))
+assert not material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(root_id="interioragent")))
 assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
 sys.argv = ["usd_probe", "--help"]
 usd_probe.main()

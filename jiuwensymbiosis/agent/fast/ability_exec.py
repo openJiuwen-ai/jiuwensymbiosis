@@ -24,7 +24,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from jiuwensymbiosis.errors import error_code
+from jiuwensymbiosis.errors import SAFETY_REJECTED, error_code
+from jiuwensymbiosis.rails.recovery import RECOVERY_PERFORMED_KEY, find_skip_recovery_exception
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +81,33 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
         ctx = AgentCallbackContext(agent=react_agent, session=session)
         results = await ability_manager.execute(ctx, [tc], session)
         output = results[0][0]  # ToolOutput, or None when the call never produced one
-        if not getattr(output, "success", False):
-            # The ability manager has already fired the exception hooks, so
-            # RecoveryRail (when applicable) owns recovery for this failure.
-            # The fast runner must not immediately repeat release/home.
+        if output is None:
+            # A rail aborted the call before the tool produced a ToolOutput, so
+            # the rail stack (SafetyRail reject / RecoveryRail) settled it; the
+            # fast runner must not repeat release/home.
             return {
                 "ok": False,
                 "reason": _failure_reason(output, results[0]),
-                "error_code": _failure_code(output),
                 "recovery_managed": True,
             }
+        if not getattr(output, "success", False):
+            data = getattr(output, "data", None)
+            # Only a failure that reached the adapter can leave the arm
+            # mid-motion. RecoveryRail sees that case at ``after_tool_call`` and
+            # leaves a marker on the context once it has released/homed; when the
+            # rail declined (or is disabled) the runner still owes its own
+            # retreat. A rejected/malformed call never ran anything, so homing
+            # over it would be motion nobody asked for.
+            dispatched = bool(data.get("dispatched")) if isinstance(data, dict) else False
+            recovered = bool(getattr(ctx, "extra", {}).get(RECOVERY_PERFORMED_KEY))
+            failure: dict[str, Any] = {
+                "ok": False,
+                "reason": _failure_reason(output, results[0]),
+                "error_code": _failure_code(output),
+            }
+            if recovered or not dispatched:
+                failure["recovery_managed"] = True
+            return failure
         # RobotControlTool wraps the api return under data["result"].
         data = getattr(output, "data", None) or {}
         result = data.get("result", data)
@@ -108,6 +126,20 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
             return asyncio.run(_execute(op, params))
         except Exception as exc:  # noqa: BLE001 - surface as structured failure
             logger.warning("[ability_exec] %s(%s) raised: %s", op, params, exc)
-            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "error_code": error_code(exc)}
+            failure: dict[str, Any] = {
+                "ok": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "error_code": error_code(exc),
+            }
+            # A rail that aborts before dispatch (SafetyRail raises through
+            # openjiuwen's AbortError) rejected the command without moving
+            # anything; RecoveryRail declines via ``skip_recovery``, and the
+            # runner must not home over a command that never reached hardware.
+            # The framework wraps tool failures (``AbilityExecutionError``), so
+            # the marker is searched through the cause chain, not on the outer
+            # exception only.
+            if find_skip_recovery_exception(exc) is not None or error_code(exc) == SAFETY_REJECTED:
+                failure["recovery_managed"] = True
+            return failure
 
     return run

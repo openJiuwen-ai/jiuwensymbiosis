@@ -187,7 +187,13 @@ def test_session_binds_only_the_current_scenes_configured_model():
     preview = SimpleNamespace(
         status=lambda: {"scene": scene}, query_scene=lambda *args, **kw: {"scene_instance_id": "one", "config": config}
     )
-    assert make_session(preview, observation_mode="ground_truth").env.grasp_backend.source == "ground_truth"
+    session = make_session(preview, observation_mode="ground_truth")
+    assert session.env.grasp_backend.source == "ground_truth"
+    from jiuwensymbiosis.tools.builder import list_tool_meta
+
+    actions = {meta["name"] for meta in list_tool_meta(session.api)}
+    assert {"pick_target", "open_gripper", "close_gripper"} <= actions
+    assert "set_gripper" not in actions
     assert not hasattr(make_session(preview, observation_mode="visual").api, "pick_target")
     preview.query_scene = lambda *args, **kw: {"scene_instance_id": "two", "config": config}
     with pytest.raises(RuntimeError, match="Scene changed"):

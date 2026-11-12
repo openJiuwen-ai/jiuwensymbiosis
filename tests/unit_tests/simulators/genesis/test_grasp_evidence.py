@@ -1,8 +1,12 @@
 """False positives and lost-payload state must not become planning facts."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
+from jiuwensymbiosis.simulators.genesis.end_effectors import EndEffectors
 from jiuwensymbiosis.simulators.genesis.grasp_evidence import GraspEvidence
 
 
@@ -22,26 +26,36 @@ def observe(evidence, seconds=0.3, **changes):
         evidence.observe(dt=0.01, **sample)
 
 
-def test_contact_alone_does_not_confirm_payload():
+@pytest.mark.parametrize(
+    "sequence,holding,placement",
+    [
+        ("contact", None, False),
+        ("empty", False, False),
+        ("contact lift", True, False),
+        ("contact lift drop", None, False),
+        ("contact lift release", False, True),
+        ("contact release fall", False, False),
+        ("midair lift", None, False),
+    ],
+)
+def test_contact_lift_release_and_fall_evidence(sequence, holding, placement):
+    samples = {
+        "contact": {},
+        "empty": {"contact": False},
+        "midair": {"supported": False},
+        "lift": {"height": 0.52, "supported": False},
+        "release": {"opened": True, "contact": False},
+        "drop": {"opened": True, "contact": False, "supported": False},
+        "fall": {"opened": True, "contact": False, "supported": False, "speed": 0.1},
+    }
     evidence = GraspEvidence()
-    observe(evidence)
-    assert evidence.state == "contact"
-    assert evidence.holding is None
-    assert evidence.report()["contact_confirmed"]
-    assert not evidence.report()["grasp_confirmed"]
-
-
-def test_trial_lift_then_supported_release():
-    evidence = GraspEvidence()
-    observe(evidence)
-    observe(evidence, height=0.52, supported=False)
-    assert evidence.holding is True
-    observe(evidence, opened=True, contact=False, supported=False)
-    assert evidence.holding is None
-    assert not evidence.report()["placement_confirmed"]
-    observe(evidence, opened=True, contact=False, supported=True)
-    assert evidence.holding is False
-    assert evidence.report()["placement_confirmed"]
+    for stage in sequence.split():
+        observe(evidence, **samples[stage])
+    assert evidence.holding is holding
+    assert evidence.report()["placement_confirmed"] is placement
+    assert evidence.report()["grasp_confirmed"] is (holding is True)
+    if sequence == "contact":
+        assert evidence.state == "contact" and evidence.report()["contact_confirmed"]
 
 
 @pytest.mark.parametrize("changes", [{"contact": False}, {"object_id": 8}, {"relative": np.diag([1.0, 1.0, 1.0, 2.0])}])
@@ -76,28 +90,63 @@ def test_nonfinite_measurement_invalidates_previous_confirmation():
     assert evidence.holding is None
 
 
-def test_single_sided_or_empty_contact_remains_clear():
-    evidence = GraspEvidence()
-    observe(evidence, contact=False)
-    assert evidence.holding is False
-    assert not evidence.report()["grasp_confirmed"]
+def test_retry_and_cancel_preserve_latched_grip_target():
+    writes = []
+    controller = EndEffectors.__new__(EndEffectors)
+    controller.entity = SimpleNamespace(
+        get_dofs_position=lambda ids: np.array([[0.02]]),
+        get_dofs_velocity=lambda ids: np.array([[0.0]]),
+        control_dofs_position=lambda q, ids: writes.append(q.copy()),
+    )
+    motor = {"open": 0.04, "close": 0.0, "velocity": 0.03, "tolerance": 0.002, "preload": 0.002}
+    controller.configurations = {"arbitrary": {"joints": {"slider": motor}}}
+    controller.evidence = {"arbitrary": GraspEvidence(state="held", object_id=4, contact_time=0.3)}
+    controller.ids = {"arbitrary": [0]}
+    controller.targets = {"arbitrary": np.array([0.018])}
+    controller.latched = {"arbitrary": True}
+    controller.closing = set()
+    controller.full_close = set()
+    controller.opening = {}
+    controller.measure = lambda dt: None
+    for _ in range(3):
+        controller.start("arbitrary", opened=False)
+        controller.tick(0.01)
+        controller.cancel()
+    assert np.allclose(writes, [[0.018]] * 3)
+    with pytest.raises(ValueError, match="stable support"):
+        controller.start("arbitrary", opened=True)
 
 
-def test_fall_after_release_revokes_place_but_hand_stays_clear():
-    evidence = GraspEvidence()
-    observe(evidence)
-    observe(evidence, opened=True, contact=False)
-    assert evidence.report()["placement_confirmed"]
-    observe(evidence, opened=True, contact=False, supported=False, speed=0.1)
-    assert evidence.holding is False
-    assert not evidence.report()["placement_confirmed"]
-
-
-def test_midair_contact_does_not_create_a_verified_grasp():
-    evidence = GraspEvidence()
-    observe(evidence, supported=False)
-    observe(evidence, height=0.52, supported=False)
-    assert evidence.holding is None
+@pytest.mark.parametrize(
+    "opened,state,object_id,ok",
+    [(False, "unknown", 1, False), (True, "clear", 1, False), (True, "clear", None, True), (False, "contact", 1, True)],
+)
+@pytest.mark.parametrize("unwritable", [False, True])
+def test_selected_gripper_confirmation_while_other_hand_holds(tmp_path, opened, state, object_id, ok, unwritable):
+    motion = ArmMotion.__new__(ArmMotion)
+    evidence = GraspEvidence(state=state, object_id=object_id, contact_time=0.3)
+    motion.effectors = SimpleNamespace(
+        tick=lambda dt: None, evidence={"hand": evidence, "other": GraspEvidence(state="held")}
+    )
+    motion.runtime = SimpleNamespace(robot=SimpleNamespace(stop=lambda: None))
+    motion.follower = SimpleNamespace(tick=lambda dt: None, terminal=False)
+    motion.stopped = lambda: True
+    motion.check_tool_goal = lambda: None
+    motion.phase = "confirming"
+    motion.captured = None
+    motion.elapsed = 0.0
+    motion.stable = 0.25
+    motion.reason = None
+    motion.gripper_request = ("hand", opened)
+    motion.result = {}
+    motion.execution_path = tmp_path if unwritable else tmp_path / "result.json"
+    motion.tick(0.01)
+    assert motion.result["settled"]
+    assert motion.result["ok"] is (ok and not unwritable)
+    assert motion.result["holding_payload"] is evidence.holding
+    reason = None if ok else "grasp_or_release_confirmation_lost"
+    assert motion.result["reason"] == ("evidence_unwritable" if unwritable else reason)
+    assert not motion.follower.terminal
 
 
 def test_close_ramps_to_endpoint_through_contact_completion_and_idle():
@@ -128,14 +177,16 @@ def test_close_ramps_to_endpoint_through_contact_completion_and_idle():
     controller.ids = {"arbitrary": [0]}
     controller.targets = {"arbitrary": np.array([0.018])}
     controller.closing = set()
+    controller.full_close = {"arbitrary"}
+    controller.latched = {"arbitrary": False}
     controller.opening = {}
     controller.measure = lambda dt: None
     for _ in range(3):
-        controller.start("arbitrary", opened=False)
+        controller.start("arbitrary", opened=False, full_close=True)
         controller.tick(0.01)
         controller.cancel()
     assert np.allclose(writes, [[0.0177], [0.0174], [0.0171]])
-    controller.start("arbitrary", opened=False)
+    controller.start("arbitrary", opened=False, full_close=True)
     for _ in range(100):
         controller.tick(0.01)
     assert controller.result["ok"]

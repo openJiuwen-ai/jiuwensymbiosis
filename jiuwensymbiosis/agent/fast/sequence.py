@@ -156,8 +156,9 @@ def _manipulates(meta: ToolMeta | None) -> bool:
     return meta is not None and bool(set(meta.provides) & PAYLOAD_TOKENS)
 
 
-def _clearing_steps(raw: list[Any], focus: list[tuple[str | None, str | None]],
-                    metas: Mapping[str, ToolMeta]) -> dict[str, int]:
+def _clearing_steps(
+    raw: list[Any], focus: list[tuple[str | None, str | None]], metas: Mapping[str, ToolMeta]
+) -> dict[str, int]:
     """``{referent_key: first index that clears it}`` — the plan's own testimony.
 
     A plan that opens X at step k is *stating* X was shut before k. That makes every
@@ -640,10 +641,9 @@ def parse_sequence(
         _check_param_names(i, op, params, meta)
         _check_qualifier(i, op, params, meta, grounding or {})
         _check_bindings(i, params, bound=bound, fresh=fresh, producer=producer, metas=metas)
-        _check_location_need(i, op, params, meta, fresh=fresh, bound=bound,
-                             producer=producer, metas=metas)
+        _check_location_need(i, op, params, meta, fresh=fresh, bound=bound, producer=producer, metas=metas)
         if track_state and meta is not None:
-            unmet = missing_requirements(state, meta.requires)
+            unmet = missing_requirements(state, meta.requires, effector=params.get("effector"))
             if unmet:
                 raise SequenceError(
                     f"step {i}: {op} requires {list(unmet)} but the state here is "
@@ -651,9 +651,18 @@ def parse_sequence(
                 )
         subject, enclosure = focus[i]
         if _manipulates(meta):
-            _check_access(i, op, subject, enclosure, cleared=cleared, clears_at=clears_at,
-                          blocked=blocked, shut_again=shut_again, pending_clear=pending_clear,
-                          metas=metas)
+            _check_access(
+                i,
+                op,
+                subject,
+                enclosure,
+                cleared=cleared,
+                clears_at=clears_at,
+                blocked=blocked,
+                shut_again=shut_again,
+                pending_clear=pending_clear,
+                metas=metas,
+            )
 
         steps.append(ActionStep(op=op, params=dict(params), bind=bind))
         # Effects: staleness first, then this step's own production, so a search-and-
@@ -671,7 +680,9 @@ def parse_sequence(
         elif meta is not None and meta.produces_location:
             fresh.add(_CACHE_SLOT)  # sensed, but left in the api cache rather than a bind
         if track_state and meta is not None:
-            state = apply_effects(state, provides=meta.provides, invalidates=meta.invalidates)
+            state = apply_effects(
+                state, provides=meta.provides, invalidates=meta.invalidates, effector=params.get("effector")
+            )
         if subject:
             key = _referent_key(subject)
             if _clears_access(meta):
@@ -722,7 +733,10 @@ def qualifiers_for(grounding: Mapping[str, Any] | None, name: Any) -> tuple[dict
 
 
 def _check_qualifier(
-    index: int, op: str, params: Mapping[str, Any], meta: ToolMeta | None,
+    index: int,
+    op: str,
+    params: Mapping[str, Any],
+    meta: ToolMeta | None,
     grounding: Mapping[str, Any],
 ) -> None:
     """Reject a step that drops or contradicts the spatial qualifier the task stated.
@@ -751,8 +765,11 @@ def _check_qualifier(
         return
     options = " 或 ".join(f"reference={w['reference']!r}, relation={w['relation']!r}" for w in wanted)
     as_stated = " / ".join(f"{w['relation']} {w['reference']!r}" for w in wanted)
-    stated = (f"but it passes reference={got_ref!r}, relation={got_rel!r}"
-              if got_ref is not None or got_rel is not None else "but it passes neither")
+    stated = (
+        f"but it passes reference={got_ref!r}, relation={got_rel!r}"
+        if got_ref is not None or got_rel is not None
+        else "but it passes neither"
+    )
     raise SequenceError(
         f"step {index}: the task locates {obj!r} as {as_stated}, {stated}. "
         f"There may be more than one {obj} in view and this is what tells them apart — "

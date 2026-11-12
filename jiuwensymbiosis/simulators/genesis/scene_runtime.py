@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from jiuwensymbiosis.simulators.genesis.robot_cameras import RobotCamera
     from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
+    from jiuwensymbiosis.simulators.genesis.truth import EntityRegistry
 
 from camera import OrbitCamera, PreviewSettings
 from rendering import SceneRenderer
@@ -36,6 +37,7 @@ class RuntimeScene:
         startup: StartupDiagnostics | None = None,
     ) -> None:
         self.settings = settings
+        self._model_directory: Path | None = None
         self._planning_profile = {}
         if settings.planning_profile:
             from planning_profile import load_profile
@@ -57,6 +59,10 @@ class RuntimeScene:
         self.steps = self.cycle = 0
         self._directory = tempfile.TemporaryDirectory(prefix="scene-", dir=directory)
         self.directory = Path(self._directory.name)
+        # Persistent across renderer rebuilds (render-* dirs are temporary):
+        # baked textures are content-addressed, so a surviving directory means
+        # a resolution change reuses them instead of re-baking everything.
+        self._material_directory = Path(directory) / "materials"
         self._render_directory: tempfile.TemporaryDirectory | None = None
         self.source = None
         self.lighting = None
@@ -64,7 +70,7 @@ class RuntimeScene:
         self.selection: dict | None = None
         self.selected_entity = None
         self.pick_index: Any = None
-        self.truth: Any = None
+        self.truth: EntityRegistry | None = None
         self.info = {"id": "demo", "mode": "dynamic_demo", "collision": True, "reset_interval_steps": 480}
         try:
             with self._phase("asset_resolve"):
@@ -146,16 +152,7 @@ class RuntimeScene:
 
                 self.motion = RelativeMotion(self.robot)
                 if settings.planning_profile:
-                    from arm_motion import ArmMotion
-
-                    self.arm_motion = ArmMotion(
-                        self,
-                        self._planning_profile,
-                        self._evidence_directory / "arm-plans" / str(self.info["instance_id"]),
-                    )
-                    self.info["grasp_pose_backends"] = list(self._planning_profile.get("grasp_pose_backends", {}))
-                    self.info["arm_planning_ready"] = True
-                    self.info["effectors_ready"] = bool(self.arm_motion.effectors.evidence)
+                    self._install_arm(self._new_arm(self.info["instance_id"]))
             if self.robot is not None:
                 self.info["robot_bounds_m"] = self.robot.bounds
                 if self.source is None:
@@ -173,6 +170,16 @@ class RuntimeScene:
             self.close()
             raise
 
+    def _new_arm(self, instance_id):
+        from arm_motion import ArmMotion
+
+        return ArmMotion(self, self._planning_profile, self._evidence_directory / "arm-plans" / instance_id)
+
+    def _install_arm(self, arm):
+        self.info["grasp_pose_backends"] = list(self._planning_profile.get("grasp_pose_backends", {}))
+        self.arm_motion = arm
+        self.info.update(arm_planning_ready=arm is not None, effectors_ready=bool(arm and arm.effectors.evidence))
+
     def _phase(self, name: str) -> AbstractContextManager[None]:
         return self._startup.phase(name) if self._startup is not None and not self._startup.finished else nullcontext()
 
@@ -189,7 +196,9 @@ class RuntimeScene:
                 "substeps": 4 if room_physics else 1,
                 "gravity": [0, 0, 0] if self.info["mode"] == "robot_preview" else [0, 0, -9.81],
             },
-            "rigid": {"enable_self_collision": not room_physics or self.info["mode"] == "robot_mobile"},
+            # Preserve the mobile body's existing self-collision policy. Room
+            # contacts are between separate entities and remain enabled.
+            "rigid": {"enable_self_collision": self.info["mode"] != "robot_mobile"},
         }
         fixture = (
             self._planning_profile.get("tabletop_fixture")
@@ -242,6 +251,14 @@ class RuntimeScene:
                 )
             else:
                 self.scene.add_entity(morph=gs.morphs.Plane(), surface=gs.surfaces.Rough(color=(0.32, 0.36, 0.4)))
+            self.info["robot_model_instance_id"] = self.info["instance_id"]
+            self._model_directory = (
+                self._evidence_directory / "robot-models" / str(self.info["robot_model_instance_id"])
+            )
+            self.info["model_admission"] = {
+                "status": "pending",
+                "report": str(self._model_directory / "loaded-model.json"),
+            }
             with self._phase("robot_entity"):
                 self.robot = Moz1Base(
                     self.scene,
@@ -250,17 +267,13 @@ class RuntimeScene:
                     name=self.robot_asset.asset.name,
                     render_urdf=validate_material_bundle(self.robot_asset),
                     spawn=spawn,
-                    **(
-                        {"collision_policy": self._planning_profile["robot_collision_policy"]}
-                        if "robot_collision_policy" in self._planning_profile
-                        else {}
-                    ),
-                    **(
-                        {"initial_posture": self._planning_profile.get("fixture_posture")}
+                    collision_policy=self._planning_profile.get("robot_collision_policy"),
+                    initial_posture=(
+                        self._planning_profile.get("fixture_posture")
                         if self._planning_profile.get("tabletop_fixture") and self.source is None
-                        else {}
+                        else None
                     ),
-                    model_directory=self._evidence_directory / "robot-models" / str(self.info["instance_id"]),
+                    model_directory=self._model_directory,
                 )
             if self._planning_profile.get("tabletop_fixture") and self.source is None:
                 self.scene.add_entity(morph=gs.morphs.Box(size=(0.4, 0.35, 0.04), pos=(-0.25, -0.5, 0.8), fixed=True))
@@ -320,6 +333,10 @@ class RuntimeScene:
             with self._phase("robot_controller"):
                 self.robot.build()
             if self.info["mode"] == "robot_mobile":
+                self.info["model_admission"] = {
+                    "status": self.robot.model_audit["status"],
+                    "report": str(self.robot.path.parent / "loaded-model.json"),
+                }
                 with self._phase("settle"):
                     for _ in range(round(2 / self.settings.dt)):
                         self.robot.before_step(self.settings.dt)
@@ -377,6 +394,7 @@ class RuntimeScene:
             cameras=self.cameras,
             startup=self._startup,
             material_rules=material_rules_for_asset(self.asset),
+            material_directory=self._material_directory,
         )
         self.info["appearance"] = self.renderer.appearance
         self.settings = settings
@@ -499,11 +517,10 @@ class RuntimeScene:
         before = self.info["instance_id"]
         if self.motion is not None and self.motion.active:
             raise RuntimeError("运动任务仍在执行，不能复位。")
-        if getattr(self, "arm_motion", None) is not None and (
-            self.arm_motion.active
-            or self.arm_motion.follower.terminal
-            or any(e.holding is not False for e in self.arm_motion.effectors.evidence.values())
-        ):
+        arm = getattr(self, "arm_motion", None)
+        unsafe_arm = arm is not None and (arm.active or arm.follower.terminal)
+        carrying = arm is not None and any(e.holding is not False for e in arm.effectors.evidence.values())
+        if unsafe_arm or carrying:
             raise RuntimeError("Arm motion active or stopping unconfirmed; cannot reset")
         with phase("reset_stop"):
             if self.motion is not None:
@@ -525,6 +542,8 @@ class RuntimeScene:
                         break
                 else:
                     raise RuntimeError("复位前未确认停车，保留当前世界。")
+        instance_id = uuid.uuid4().hex
+        replacement = self._new_arm(instance_id) if arm is not None else None
         with phase("reset_restore"):
             self.scene.reset(self._initial_state)
             if self.motion is not None:
@@ -535,8 +554,11 @@ class RuntimeScene:
             self.steps = self._initial_steps
             self.cycle += 1
             self.selection = self.selected_entity = self.truth = None
-            self.info["instance_id"] = uuid.uuid4().hex
+            self.info["instance_id"] = instance_id
             self.info["reset_generation"] = self.cycle
+            if arm is not None:
+                self._install_arm(replacement)
+                arm.close()
         return {
             "previous_instance_id": before,
             "scene_instance_id": self.info["instance_id"],
@@ -555,4 +577,6 @@ class RuntimeScene:
                 self.scene.destroy()
                 self.scene = None
             self.bodies = []
+            if self._model_directory is not None and self._model_directory.exists():
+                (self._model_directory / "closed").touch()
             self._directory.cleanup()

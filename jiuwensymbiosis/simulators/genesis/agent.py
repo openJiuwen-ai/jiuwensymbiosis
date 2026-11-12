@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -22,16 +23,17 @@ from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     APPROACH_TARGET,
+    CLOSE_GRIPPER,
     LOCATE_TARGET,
     MOVE_JOINT,
     MOVE_TOOL_POSES,
     NAVIGATE_RELATIVE,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
+    OPEN_GRIPPER,
     PICK_TARGET,
     ROTATE_BASE,
     SEARCH_TARGET,
-    SET_GRIPPER,
     SIM_GET_ENTITY_STATE,
     SIM_GET_ROBOT_STATE,
     SIM_LIST_ENTITIES,
@@ -39,7 +41,7 @@ from jiuwensymbiosis.api.actions import (
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.contracts import (
-    GripperCommandResult,
+    CloseEffectorResult,
     NavigationResult,
     PickTargetResult,
     PlannedMotionResult,
@@ -183,25 +185,11 @@ class GenesisDriver:
         if result.get("stop_confirmation") != "measured" or not result.get("settled"):
             self.fail_stop_confirmation()
         self.results.append(result)
-        feedback = {
-            key: result.get(key)
-            for key in (
-                "ok",
-                "plan_success",
-                "failure_stage",
-                "goal_reached",
-                "settled",
-                "stop_confirmation",
-                "reason",
-                "holding_payload",
-                "grasp_confirmed",
-                "contact_confirmed",
-                "placement_confirmed",
-            )
-        }
-
-        feedback.update({k: result[k] for k in ("held_s", "lift_m") if k in result})
-        return feedback
+        keys = (
+            "ok plan_success failure_stage goal_reached settled stop_confirmation "
+            "reason holding_payload grasp_confirmed contact_confirmed placement_confirmed held_s lift_m"
+        ).split()
+        return {key: result[key] for key in keys if key in result}
 
     def accept_camera_observation(self, camera_name: str, captured_at: float) -> None:
         """Unlock movement only after a post-stop head image reaches model context."""
@@ -274,9 +262,9 @@ class GenesisEnv(BaseRobotEnv):
         from jiuwensymbiosis.simulators.genesis.base_motion import validate_move
 
         validate_move(dx_m, dy_m, dyaw_rad)
-        if self.driver.observation_mode == "perception" and dyaw_rad != 0:
+        if self.driver.observation_mode == "perception" and any((dx_m, dy_m, dyaw_rad)):
             from jiuwensymbiosis.motion.target_approach import TargetApproachTuning
-            from jiuwensymbiosis.perception.frame import check_observed_rotation
+            from jiuwensymbiosis.perception.frame import check_observed_corridor, check_observed_rotation
 
             # Also cover direct navigate_relative / rotate_base tool calls; a
             # caller must not bypass the approach action's observation guard.
@@ -284,9 +272,17 @@ class GenesisEnv(BaseRobotEnv):
             if not stopped.get("ok") or not stopped.get("settled") or stopped.get("stop_confirmation") != "measured":
                 return {**stopped, "ok": False, "reason": "stop_unconfirmed"}
             frame = self.grab_calibrated_frame()
+            tuning = TargetApproachTuning()
             refusal = check_observed_rotation(
-                frame, dyaw_rad, frame.metadata.get("body_bounds_m"), TargetApproachTuning().min_clearance_m
+                frame, dyaw_rad, frame.metadata.get("body_bounds_m"), tuning.min_clearance_m
             )
+            if not refusal:
+                translation_unsupported = dy_m != 0 or dx_m < 0
+                combined = dx_m != 0 and dyaw_rad != 0
+                if translation_unsupported or combined:
+                    refusal = "translation_clearance_unobserved"
+                else:
+                    refusal = check_observed_corridor(frame, dx_m, tuning.body_radius_m, tuning.min_clearance_m)
             self.validate_frame(frame)
             if refusal:
                 return {
@@ -304,20 +300,27 @@ class GenesisEnv(BaseRobotEnv):
         return self.driver.move_arm(group=group, poses=poses, speed=speed)
 
     @property
-    def holding_payload(self) -> bool | None:
+    def effector_payloads(self) -> dict[str, bool | None]:
         state = self.driver.preview.status()
-        if state.get("state") != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
-            return None
-        values = [e.get("holding_payload") for e in state.get("effectors", {}).values()]
+        fresh = state.get("state") == "ready" and time.monotonic() - state.get("measured_at", 0) <= 2
+        return {n: e.get("holding_payload") if fresh else None for n, e in state.get("effectors", {}).items()}
+
+    @property
+    def holding_payload(self) -> bool | None:
+        values = list(self.effector_payloads.values())
         return True if True in values else False if values and all(v is False for v in values) else None
 
     def set_gripper(self, opened: bool, effector: str | None = None) -> dict:
         state = self.driver.preview.status()
+        if state.get("state") != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
+            raise RuntimeError("Effector state unavailable or stale")
         names = list(state.get("effectors", {}))
         if effector is None:
             if len(names) != 1:
-                raise ValueError("Specify an effector name for a body with multiple effectors")
+                raise ValueError("Specify a configured effector; automatic selection requires exactly one")
             effector = names[0]
+        if effector not in names:
+            raise ValueError("Unknown effector")
         return self.driver.move_arm(effector=effector, opened=opened)
 
     def get_observation(self) -> RobotObservation:
@@ -364,22 +367,22 @@ class GenesisEnv(BaseRobotEnv):
         if self.driver.cancelled.is_set():
             raise RuntimeError("Perception cancelled")
         status = self.driver.preview.status()
-        if (
-            status.get("state") != "ready"
-            or time.monotonic() - status.get("measured_at", 0) > 2
-            or status.get("scene", {}).get("instance_id") != frame.metadata.get("scene_instance_id")
-            or status.get("config_revision") != frame.metadata.get("config_revision")
-            or (status.get("base_motion") or {}).get("id") != frame.metadata.get("motion_id")
-            or frame.captured_monotonic_s is None
-            or not 0 <= time.monotonic() - frame.captured_monotonic_s < 5.0
-        ):
+        identity = (
+            status.get("scene", {}).get("instance_id"),
+            status.get("config_revision"),
+            (status.get("base_motion") or {}).get("id"),
+        )
+        expected = tuple(frame.metadata.get(key) for key in ("scene_instance_id", "config_revision", "motion_id"))
+        fresh = frame.captured_monotonic_s is not None and 0 <= time.monotonic() - frame.captured_monotonic_s < 5.0
+        ready = status.get("state") == "ready" and time.monotonic() - status.get("measured_at", 0) <= 2
+        if not ready or not fresh or identity != expected:
             raise RuntimeError("RGB-D scene changed or state expired")
         observation = status.get("base_observation") or {}
         before = frame.metadata.get("base_sample", {})
+        if len(observation.get("position_m", [])) != 3 or len(before.get("position_m", [])) != 3:
+            raise RuntimeError("RGB-D base pose unavailable")
         if (
-            len(observation.get("position_m", [])) != 3
-            or len(before.get("position_m", [])) != 3
-            or math.dist(observation["position_m"], before["position_m"]) > 0.005
+            math.dist(observation["position_m"], before["position_m"]) > 0.005
             or abs(math.remainder(observation["body_yaw_rad"] - before["body_yaw_rad"], 2 * math.pi)) > 0.01
         ):
             raise RuntimeError("RGB-D base pose changed during sensing")
@@ -535,9 +538,13 @@ class GenesisArmMotionApi(GenesisTruthMotionApi):
 
 
 class GenesisManipulationApi(GenesisArmMotionApi):
-    @implements(SET_GRIPPER)
-    def set_gripper(self, effector: str, opened: bool) -> GripperCommandResult:
-        return cast(GripperCommandResult, self.env.set_gripper(opened, effector))
+    @implements(OPEN_GRIPPER)
+    def open_gripper(self, width_mm: float = 80.0, *, effector: str | None = None) -> CloseEffectorResult:
+        return cast(CloseEffectorResult, self.env.set_gripper(True, effector))
+
+    @implements(CLOSE_GRIPPER)
+    def close_gripper(self, force_n: float | None = None, *, effector: str | None = None) -> CloseEffectorResult:
+        return cast(CloseEffectorResult, self.env.set_gripper(False, effector))
 
 
 class GenesisPerceptionPickApi(GenesisPerceptionMotionApi):
@@ -592,7 +599,9 @@ def make_session(
                 api = GenesisTruthPickApi(env)
         else:
             api = GenesisTruthMotionApi(env) if actions_enabled else GenesisTruthApi(env)
-    elif observation_mode == "perception" and detector_config.mode != "disabled":
+    elif observation_mode == "perception":
+        if detector_config.mode == "disabled":
+            raise ValueError("RGB-D perception requires an enabled detector")
         from jiuwensymbiosis.adapters._common.builder import make_detector_sidecar
         from jiuwensymbiosis.perception.detector_client import create_detector_client
 
@@ -657,7 +666,7 @@ def run_agent_query(
         max_frames=64 if actions_enabled else 4,
     )
     if isinstance(session.api, GenesisPerceptionApi):
-        session.env.on_rgbd_frame = lambda frame: camera.record_capture(frame, replace_pending=True)
+        session.env.on_rgbd_frame = partial(camera.record_capture, replace_pending=True)
         session.env.on_detection = camera.record_detection
     prompt = """你是 Symbiosis-sim 纯视觉仿真助手，使用中文。
 除用户指令和历史对话外，你只能获得 head_cam 头部相机图片及动作执行反馈。

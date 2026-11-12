@@ -1,13 +1,25 @@
 """Robot-independent motion contracts: smooth limits, stale state and physical stop."""
 
+import json
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.api.actions import OPEN_GRIPPER
+from jiuwensymbiosis.simulators.genesis.agent import GenesisManipulationApi, make_session
+from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate, link_pose, snapshot, world_unchanged
+from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
 from jiuwensymbiosis.simulators.genesis.arm_planning import CuroboPlanner, forward_kinematics
 from jiuwensymbiosis.simulators.genesis.arm_trajectory import Trajectory, TrajectoryFollower
+from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
+from jiuwensymbiosis.simulators.genesis.observation_policy import TRUTH_PROMPT, allowed_tools, history_for
+from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
+from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 from jiuwensymbiosis.simulators.genesis.robot_model import prepare_robot_model
 
 
@@ -37,11 +49,11 @@ def test_smooth_limits_include_start_stop_and_speed_multiplier():
         )
     )
     with pytest.raises(ValueError, match="exceeds"):
-        t.scaled(3.0)
-    assert t.scaled(0.5).duration == 4.0
+        trajectory(dt=2 / 3)
+    assert trajectory(dt=4).duration == 4.0
     for bad in (0, -1, True, float("nan")):
         with pytest.raises(ValueError):
-            t.scaled(bad)
+            CuroboPlanner.plan(object.__new__(CuroboPlanner), "", {}, {}, "", speed=bad)
     with pytest.raises(TypeError):
         t.start["slide"] = 3
     with pytest.raises(ValueError):
@@ -118,7 +130,8 @@ def test_readback_loss_preserves_last_target_without_claiming_stopped():
 
 def model(tmp_path):
     source = tmp_path / "source.urdf"
-    source.write_text("""<robot name="slider"><link name="root"/><link name="tip"/><link name="finger"/>
+    source.write_text("""<robot name="slider"><link name="root"/><link name="tip"/><link name="finger"/><link name="fixed_tip"/>
+<joint name="fixed" type="fixed"><parent link="root"/><child link="fixed_tip"/><axis xyz="0 0 0"/></joint>
 <joint name="slide" type="prismatic"><parent link="root"/><child link="tip"/><axis xyz="1 0 0"/><limit lower="0" upper="1" effort="10" velocity="1"/></joint>
 <joint name="follower" type="prismatic"><parent link="tip"/><child link="finger"/><axis xyz="0 1 0"/><mimic joint="slide" multiplier="-1" offset=".1"/></joint></robot>""")
     manifest = prepare_robot_model(source, tmp_path / "derived")
@@ -132,17 +145,11 @@ def model(tmp_path):
     return manifest, profile
 
 
-def test_one_prismatic_joint_and_mimic_require_no_robot_name(tmp_path):
-    manifest, profile = model(tmp_path)
-    p = CuroboPlanner(manifest, profile, tmp_path / "plans")
-    frames = forward_kinematics(p.root, {"slide": 0.3})
-    assert np.allclose(frames["finger"][:3, 3], [0.3, -0.2, 0])
-    p.close()
-
-
-@pytest.mark.parametrize("bad", ["name", "limit", "tool", "mimic", "hash"])
+@pytest.mark.parametrize("bad", ["name", "limit", "tool", "mimic", "hash", "uncontrolled"])
 def test_bad_profile_or_changed_model_rejected_before_gpu(tmp_path, bad):
     manifest, profile = model(tmp_path)
+    if bad == "uncontrolled":
+        profile["uncontrolled_support_joints"] = ["slide"]
     if bad == "name":
         profile["groups"]["tool"]["joints"] = ["invented"]
     if bad == "limit":
@@ -181,21 +188,28 @@ def test_measured_start_outside_limits_is_reported_before_backend(tmp_path, monk
     assert state == original  # Never clamp measured state to manufacture feasibility.
 
 
-def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(tmp_path):
+@pytest.fixture
+def collision_model(tmp_path):
     pytest.importorskip("fcl")
     import trimesh
 
-    from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate
-
     manifest, profile = model(tmp_path)
-    root = ET.parse(manifest["urdf"]).getroot()
-    box = trimesh.creation.box(extents=[0.04, 0.04, 0.04])
+    box = trimesh.creation.box(extents=[0.04] * 3)
+    return (
+        ET.parse(manifest["urdf"]).getroot(),
+        profile,
+        {"vertices": box.vertices, "faces": box.faces, "pose": np.eye(4), "convex": True},
+    )
+
+
+def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(collision_model):
+    root, profile, geometry = collision_model
     obstacle = np.eye(4)
     obstacle[0, 3] = 0.05
     captured = {
         "geometries": {
-            1: {"link": "tip", "vertices": box.vertices, "faces": box.faces, "pose": np.eye(4), "convex": True},
-            2: {"link": None, "vertices": box.vertices, "faces": box.faces, "pose": obstacle, "convex": True},
+            1: dict(geometry, link="tip"),
+            2: dict(geometry, link=None, pose=obstacle),
         },
         "pairs": [(1, 2)],
     }
@@ -205,19 +219,11 @@ def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(tmp_path):
     with pytest.raises(ValueError, match="physical_geometry_collision"):
         gate.check(trajectory())
     profile["collision_spheres"] = {}
-    assert gate.coverage()["tip"][0]["uncovered"] == len(box.vertices) + len(box.faces)
+    assert gate.coverage()["tip"][0]["uncovered"] == len(geometry["vertices"]) + len(geometry["faces"])
 
 
-def test_payload_contact_permission_does_not_hide_world_collision(tmp_path):
-    pytest.importorskip("fcl")
-    import trimesh
-
-    from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate
-
-    manifest, profile = model(tmp_path)
-    root = ET.parse(manifest["urdf"]).getroot()
-    box = trimesh.creation.box(extents=[0.04] * 3)
-    geometry = {"vertices": box.vertices, "faces": box.faces, "pose": np.eye(4), "convex": True}
+def test_payload_contact_permission_does_not_hide_world_collision(collision_model):
+    root, profile, geometry = collision_model
     captured = {
         "geometries": {
             1: dict(geometry, link="tip", payload=True, contact_links=["tip"]),
@@ -234,143 +240,107 @@ def test_payload_contact_permission_does_not_hide_world_collision(tmp_path):
 
 
 def test_world_binding_rejects_velocity_before_displacement():
-    from types import SimpleNamespace
-
-    from jiuwensymbiosis.simulators.genesis.arm_collision import world_unchanged
-
     link = SimpleNamespace(idx=8, get_vel=lambda: np.array([[0.1, 0.0, 0.0]]), get_ang=lambda: np.zeros((1, 3)))
     entity = SimpleNamespace(solver=SimpleNamespace(entities=[SimpleNamespace(links=[link])]))
     assert not world_unchanged(entity, {"dynamic": {8: np.eye(4)}})
 
 
-def test_named_gripper_uses_shared_session_transport(monkeypatch, tmp_path):
-    import time
+@pytest.fixture
+def transport(monkeypatch, tmp_path):
+    def build(*, configured=True, stopped=True):
+        preview = GenesisPreview(
+            state_dir=tmp_path,
+            settings=PreviewSettings(robot_mode="moz1_wheels", planning_profile="/profile.json" if configured else ""),
+        )
+        state = {
+            "state": "ready",
+            "measured_at": time.monotonic(),
+            "scene": {"instance_id": "scene", "arm_planning_ready": configured, "effectors_ready": configured},
+            "robot": {"control_mode": "wheel_velocity_physics"},
+            "base_motion": {},
+            "effectors": {"arbitrary_name": {"holding_payload": None}} if configured else {},
+        }
+        requests = []
 
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+        def worker():
+            request = preview._motion_request
+            if request:
+                requests.append(request.copy())
+                state["base_motion"] = {
+                    "id": request["id"],
+                    "status": "completed",
+                    "ok": stopped,
+                    "settled": stopped,
+                    "stop_confirmation": "measured" if stopped else "unknown",
+                    "holding_payload": None,
+                    "grasp_confirmed": False,
+                    "contact_confirmed": True,
+                }
 
-    preview = GenesisPreview(
-        state_dir=tmp_path, settings=PreviewSettings(robot_mode="moz1_wheels", planning_profile="/profile.json")
-    )
-    state = {
-        "state": "ready",
-        "measured_at": time.monotonic(),
-        "scene": {"instance_id": "scene", "arm_planning_ready": True, "effectors_ready": True},
-        "robot": {"control_mode": "wheel_velocity_physics"},
-        "base_motion": {},
-        "effectors": {"arbitrary_name": {"holding_payload": None}},
-    }
-    monkeypatch.setattr(preview, "status", lambda: state)
-    requests = []
+        monkeypatch.setattr(preview, "status", lambda: state)
+        monkeypatch.setattr(preview, "_send_control", worker)
+        session = make_session(preview, observation_mode="ground_truth")
+        session.strict_capabilities = True
+        session.connect()
+        return session, requests, state
 
-    def worker():
-        request = preview._motion_request
-        if request:
-            requests.append(request.copy())
-            state["base_motion"] = {
-                "id": request["id"],
-                "status": "completed",
-                "ok": True,
-                "settled": True,
-                "stop_confirmation": "measured",
-                "holding_payload": None,
-                "grasp_confirmed": False,
-                "contact_confirmed": True,
-            }
+    return build
 
-    monkeypatch.setattr(preview, "_send_control", worker)
-    session = make_session(preview, observation_mode="ground_truth")
-    session.strict_capabilities = True
-    session.connect()
+
+def test_named_gripper_uses_shared_session_transport(transport):
+    meta = GenesisManipulationApi.open_gripper.__tool_meta__
+    assert not meta.input_params.get("required")
+    assert OPEN_GRIPPER.param_schema["effector"]["type"] == "string"
+    session, requests, state = transport()
     try:
-        result = session.api.set_gripper("arbitrary_name", False)
+        result = session.api.close_gripper(effector="arbitrary_name")
         assert result["ok"] and not result["grasp_confirmed"]
         assert result["holding_payload"] is None
         assert requests[-1]["kind"] == "arm" and requests[-1]["effector"] == "arbitrary_name"
         assert requests[-1]["opened"] is False
         assert session.env.holding_payload is None
+        state["effectors"]["other"] = {"holding_payload": True}
+        assert session.env.holding_payload is True
+        count = len(requests)
+        for selector in (None, "unknown"):
+            with pytest.raises(ValueError):
+                session.api.open_gripper(effector=selector)
+        assert len(requests) == count
+        state["measured_at"] = 0
+        assert session.env.holding_payload is None
+        with pytest.raises(RuntimeError, match="stale"):
+            session.api.close_gripper(effector="arbitrary_name")
     finally:
         session.disconnect()
 
 
-def test_uncontrolled_support_exception_cannot_hide_arm_motion(tmp_path):
-    manifest, profile = model(tmp_path)
-    profile["uncontrolled_support_joints"] = ["slide"]
-    with pytest.raises(ValueError, match="uncontrolled"):
-        CuroboPlanner(manifest, profile, tmp_path / "plans")
-
-
 def test_profile_external_source_is_hashed_and_limits_are_explicit(tmp_path, monkeypatch):
-    import json
-
-    from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
-
     manifest, profile = model(tmp_path)
     source = tmp_path / "spheres.json"
-    source.write_text(
-        json.dumps(
-            {
-                "robot_cfg": {
-                    "kinematics": {"collision_spheres": profile.pop("collision_spheres"), "self_collision_ignore": {}}
-                }
-            }
-        )
-    )
+    kin = {"collision_spheres": profile.pop("collision_spheres"), "self_collision_ignore": {}}
+    source.write_text(json.dumps({"robot_cfg": {"kinematics": kin}}))
     profile["collision_source"] = {"format": "curobo", "path": "${TEST_SPHERES}", "ignore_rationale": "No exclusions"}
     path = tmp_path / "profile.json"
     path.write_text(json.dumps(profile))
     monkeypatch.setenv("TEST_SPHERES", str(source))
     loaded = load_profile(path)
-    CuroboPlanner(manifest, loaded, tmp_path / "valid").close()
+    planner = CuroboPlanner(manifest, loaded, tmp_path / "valid")
+    assert np.allclose(forward_kinematics(planner.root, {"slide": 0.3})["finger"][:3, 3], [0.3, -0.2, 0])
+    assert np.array_equal(forward_kinematics(planner.root, {})["fixed_tip"], np.eye(4))
+    planner.close()
     source.write_text("{}")
     with pytest.raises(ValueError, match="source changed"):
         CuroboPlanner(manifest, loaded, tmp_path / "invalid")
 
 
-def test_arm_transport_uses_existing_owner_and_unknown_stop_is_terminal(monkeypatch, tmp_path):
-    import time
-
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-    from jiuwensymbiosis.simulators.genesis.observation_policy import allowed_tools
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-
-    preview = GenesisPreview(
-        state_dir=tmp_path, settings=PreviewSettings(robot_mode="moz1_wheels", planning_profile="/configured.json")
-    )
-    state = {
-        "state": "ready",
-        "measured_at": time.monotonic(),
-        "scene": {"instance_id": "scene", "arm_planning_ready": True},
-        "robot": {"control_mode": "wheel_velocity_physics"},
-        "base_motion": {},
-    }
-    monkeypatch.setattr(preview, "status", lambda: state)
-    requests = []
-
-    def worker():
-        request = preview._motion_request
-        if request:
-            requests.append(request.copy())
-            state["base_motion"] = {
-                "id": request["id"],
-                "status": "completed",
-                "ok": False,
-                "goal_reached": False,
-                "settled": False,
-                "stop_confirmation": "unknown",
-                "plan_success": False,
-                "reason": "test_stop_unknown",
-            }
-
-    monkeypatch.setattr(preview, "_send_control", worker)
-    session = make_session(preview, observation_mode="ground_truth")
-    session.strict_capabilities = True
-    session.connect()
+def test_arm_transport_uses_existing_owner_and_unknown_stop_is_terminal(transport):
+    session, requests, _ = transport(stopped=False)
     assert "motion.tool_pose" in session.env.capabilities
     assert "move_tool_poses" not in allowed_tools("ground_truth", True)
     assert "move_tool_poses" in allowed_tools("ground_truth", True, planning_enabled=True)
+    assert all(name in TRUTH_PROMPT for name in ("move_joint", "move_tool_poses", "open_gripper", "close_gripper"))
+    old = {"role": "user", "content": "old", "observation_policy": "simulation-ground-truth-v1"}
+    assert not history_for("ground_truth", [old])
     result = session.api.move_tool_poses("arm", {"tip": [0, 0, 0, 1, 0, 0, 0]}, 1.5)
     assert result["stop_confirmation"] == "unknown" and requests[0]["kind"] == "arm"
     assert requests[0]["poses"] == {"tip": [0, 0, 0, 1, 0, 0, 0]}
@@ -380,35 +350,14 @@ def test_arm_transport_uses_existing_owner_and_unknown_stop_is_terminal(monkeypa
         session.env.disconnect()
 
 
-def test_unconfigured_scene_keeps_strict_capability_contract(tmp_path, monkeypatch):
-    import time
-
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-
-    p = GenesisPreview(state_dir=tmp_path)
-    state = {
-        "state": "ready",
-        "measured_at": time.monotonic(),
-        "scene": {"instance_id": "scene"},
-        "robot": {"control_mode": "wheel_velocity_physics"},
-        "base_motion": {},
-    }
-    monkeypatch.setattr(p, "status", lambda: state)
-    monkeypatch.setattr(p, "_send_control", lambda: None)
-    session = make_session(p, observation_mode="ground_truth")
-    session.strict_capabilities = True
-    session.connect()
+def test_unconfigured_scene_keeps_strict_capability_contract(transport):
+    session, _, _ = transport(configured=False)
     assert "motion.tool_pose" not in session.api.capabilities
     assert "motion.joint" not in session.api.capabilities
     session.disconnect()
 
 
 def test_status_summary_never_copies_large_trajectory_or_unbounded_error():
-    import json
-
-    from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
-
     motion = object.__new__(ArmMotion)
     motion.result = {
         "id": "request",
@@ -423,3 +372,51 @@ def test_status_summary_never_copies_large_trajectory_or_unbounded_error():
     assert "positions" not in result and "timing" not in result
     assert len(json.dumps(result).encode()) < 1024
     assert len(motion.result["reason"]) == 100000
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_shared_link_pose_preserves_frame_and_rejects_nonfinite_readback(batched):
+    position, quaternion = np.array([1.0, 2.0, 3.0]), np.array([1.0, 0.0, 0.0, 0.0])
+    link = SimpleNamespace(
+        get_pos=lambda: position[None] if batched else position,
+        get_quat=lambda: quaternion[None] if batched else quaternion,
+    )
+    assert np.allclose(link_pose(link)[:3, 3], position)
+    assert np.allclose(link_pose(link)[:3, :3], np.eye(3))
+    position[0] = np.nan
+    with pytest.raises(ValueError, match="nonfinite"):
+        link_pose(link)
+
+
+def test_snapshot_rejects_multilink_payload_before_readback():
+    body = SimpleNamespace(idx=4, links=[SimpleNamespace(), SimpleNamespace()])
+    entity = SimpleNamespace(solver=SimpleNamespace(entities=[body]))
+    with pytest.raises(ValueError, match="single-link payload"):
+        snapshot(entity, {}, {4: {}})
+
+
+@pytest.mark.parametrize("poses", [{}, {"unknown": [0] * 7}])
+def test_tool_names_are_rejected_before_snapshot_or_planner(poses):
+    motion = object.__new__(ArmMotion)
+    motion.follower, motion.process = Mock(terminal=False), None
+    motion.runtime, motion.stopped, motion.read = Mock(), lambda: True, lambda: ({}, {})
+    motion.runtime.motion.active = False
+    motion.profile = {"groups": {"arm": {"joints": ["joint"], "tools": ["tool"]}}}
+    motion.base_pose = Mock()
+    with pytest.raises(ValueError, match="all group tool poses"):
+        motion.start({"group": "arm", "poses": poses})
+    motion.base_pose.assert_not_called()
+
+
+def test_tick_readback_or_artifact_failure_stops_and_reports_unknown():
+    motion = object.__new__(ArmMotion)
+    motion.follower, motion.effectors, motion.runtime = Mock(), Mock(), Mock()
+    motion.result = {"ok": True, "settled": True}
+    motion._tick = Mock(side_effect=OSError("readback or disk unavailable"))
+    motion.cancel = Mock()
+    motion.tick(0.01)
+    motion.cancel.assert_called_once()
+    motion.effectors.invalidate.assert_not_called()
+    assert motion.follower.terminal and motion.phase == "completed"
+    assert not motion.result["ok"] and not motion.result["settled"]
+    assert motion.result["stop_confirmation"] == "unknown"

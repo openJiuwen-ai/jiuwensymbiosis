@@ -27,6 +27,10 @@ else:
 
 
 def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
+    import os
+
+    # OpenCV reads this at FIRST import; EXR material textures need it before that.
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
     import genesis as gs
     import gs_nyx.nyx_py_sdk as nps

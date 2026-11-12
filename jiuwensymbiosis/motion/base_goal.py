@@ -27,16 +27,8 @@ def plan_target_step(
     """Common visible-point approach geometry; rotate before advancing, never reverse blind."""
     if len(point_base_mm) != 3 or not all(math.isfinite(v) for v in point_base_mm):
         raise ValueError("Target must be a finite base-frame point")
-    if not all(
-        math.isfinite(v) and v > 0
-        for v in (
-            target_distance_m,
-            distance_tolerance_m,
-            bearing_tolerance_rad,
-            max_forward_m,
-            max_turn_rad,
-        )
-    ):
+    limits = (target_distance_m, distance_tolerance_m, bearing_tolerance_rad, max_forward_m, max_turn_rad)
+    if not all(math.isfinite(value) and value > 0 for value in limits):
         raise ValueError("Approach distances, bounds and tolerances must be finite and positive")
     x, y = point_base_mm[0] / 1000, point_base_mm[1] / 1000
     bearing = math.atan2(y, x)

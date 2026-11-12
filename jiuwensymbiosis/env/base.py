@@ -566,6 +566,8 @@ class BaseRobotEnv(ABC):
 
         Blocking; returns ``{ok, reason, ...}``. Metres here, millimetres in detections —
         the framework's convention. Envs declaring ``motion.base`` implement it.
+        Binding ``approach_target`` additionally requires ``MeasuredBaseDriver``
+        semantics: even a zero-distance request must confirm stopping by measurement.
         """
         raise NotImplementedError(f"{self.name}: navigate_relative not implemented (declare/implement 'motion.base').")
 

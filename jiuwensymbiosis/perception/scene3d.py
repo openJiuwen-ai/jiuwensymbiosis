@@ -334,7 +334,7 @@ def candidate_geometries(
     geos = []
     detections = seg_fn(rgb, text_prompt=object_name)
     if distinct:
-        detections = _distinct_masks(detections)
+        detections = _distinct_masks(detections, np.asarray(depth_m).shape)
     for r in detections:
         if r.get("score", 0.0) < score_threshold:
             continue
@@ -352,28 +352,33 @@ def candidate_geometries(
     return geos
 
 
-def _distinct_masks(detections: list[dict]) -> list[dict]:
+def _distinct_masks(detections: list[dict], shape: tuple[int, int]) -> list[dict]:
     """Collapse repeated/nested masks of the same visible instance, highest score first."""
     import numpy as np
+
+    from jiuwensymbiosis.perception.frame import FrameValidationError
+    from jiuwensymbiosis.perception.object_geometry import _resize_mask_nearest
 
     kept: list[dict] = []
     for item in sorted(detections, key=lambda d: d.get("score", 0), reverse=True):
         mask = np.asarray(item["mask"], dtype=bool)
+        if mask.ndim != 2 or min(mask.shape) == 0:
+            raise FrameValidationError("invalid_target_mask")
+        mask = _resize_mask_nearest(mask, *shape)
         area = int(mask.sum())
         if not area:
             continue
         duplicate = False
         for other in kept:
             previous = np.asarray(other["mask"], dtype=bool)
-            if previous.shape == mask.shape:
-                overlap = int(np.count_nonzero(mask & previous))
-                # Two detections of a complete object and its visible part should
-                # not be counted as two separate approach targets.
-                if overlap / min(area, int(np.count_nonzero(previous))) >= 0.9:
-                    duplicate = True
-                    break
+            overlap = int(np.count_nonzero(mask & previous))
+            # Two detections of a complete object and its visible part should
+            # not be counted as two separate approach targets.
+            if overlap / min(area, int(np.count_nonzero(previous))) >= 0.9:
+                duplicate = True
+                break
         if not duplicate:
-            kept.append(item)
+            kept.append({**item, "mask": mask})
     return kept
 
 
@@ -804,8 +809,6 @@ def locate_target(
     api: Any, object_name: str, reference: str | None = None, relation: str = "on", *, previous=None
 ) -> dict:
     """Visible-point geometry for local approach; makes no graspability claim."""
-    import math
-
     from jiuwensymbiosis.perception.frame import FrameValidationError
     from jiuwensymbiosis.perception.target_identity import TargetObservation
 

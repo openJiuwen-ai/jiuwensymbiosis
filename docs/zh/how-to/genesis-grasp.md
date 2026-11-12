@@ -16,19 +16,19 @@ MOZ1 和 Panda 模板只是配置示例，控制代码没有本体名称白名�
 
 ## 动作与证据
 
-实际场景接纳效应器配置后，ground-truth Agent 才得到共享 `set_gripper(effector, opened)` 动作及 `grasp.parallel` 能力。既有其他适配器的 `open_gripper` / `close_gripper` 参数保持不变。
+实际场景接纳效应器配置后，ground-truth Agent 才得到共享 `open_gripper(*, effector=name)` / `close_gripper(*, effector=name)` 动作及 `grasp.parallel` 能力。既有其他适配器的 `open_gripper` / `close_gripper` 参数保持不变。
 
 推荐调用次序由 Agent 或测试脚本决定：
 
-1. 用 `move_tool_poses` 到夹取姿态，`set_gripper(name, False)` 闭合。
-2. 多面接触持续 0.15 s 后仅得到 `contact_confirmed`。闭合目标按配置速度持续推进至 `close`，包括指面已接触、动作已返回及机械臂抬升期间。Genesis 保持最终位置驱动，物体挡住指面时由位置误差产生持续夹紧力，关节输出受 `effort` 限制；实际指面接触力随几何和运动变化。
+1. 用 `move_tool_poses` 到夹取姿态，`close_gripper(effector=name)` 闭合。
+2. 多面接触持续 0.15 s 后仅得到 `contact_confirmed`。普通闭合在持续接触后锁存一次预紧目标；GraspGenX 试抬升显式让闭合目标按配置速度持续推进至 `close`，包括指面已接触、动作已返回及机械臂抬升期间。Genesis 保持最终位置驱动，物体挡住指面时由位置误差产生持续夹紧力，关节输出受 `effort` 限制；实际指面接触力随几何和运动变化。
 3. 沿已有规划接口试抬升至少 15 mm，并保持接触、工具相对物体位姿稳定，才得到 `holding_payload=True`。
-4. 使用相同规划接口带载移动。回到支撑面、确认外部向上支撑力和稳定速度后，才允许 `set_gripper(name, True)`。
+4. 使用相同规划接口带载移动。回到支撑面、确认外部向上支撑力和稳定速度后，才允许 `open_gripper(effector=name)`。
 5. 开放到位、无夹持接触且外部支撑稳定 0.25 s，才报告 `placement_confirmed`；释放后的对象继续被观测，退离时掉落会撤销放置确认。
 
-`sim_get_robot_state` 的 `effectors` 返回逐夹爪状态；`holding_payload` 是 true/false/unknown。`set_gripper` 不凭命令给 ExecutionMemory 添加 `payload.held`，世界状态读取实测结果。空夹失败；接触丢失 0.1 s、相对平移超过 3 mm、相对旋转超过 0.05 rad、非夹取链节接触或穿透超过 2 mm 都不能成为成功抓取。
+`sim_get_robot_state` 的 `effectors` 返回逐夹爪状态；`holding_payload` 是 true/false/unknown。夹爪动作不凭命令给 ExecutionMemory 添加 `payload.held`，世界状态读取实测结果。空夹失败；接触丢失 0.1 s、相对平移超过 3 mm、相对旋转超过 0.05 rad、非夹取链节接触或穿透超过 2 mm 都不能成为成功抓取。
 
-已接纳的闭合在取消动作回报后仍继续向闭合端点施力，显式张开指令会终止该闭合驱动。未知持物不能继续规划；未测得支撑不能释放。持物或未知持物时拒绝底盘移动和场景复位，直到实现相应的负载扫掠检查。自动机械臂回家仍未开放。每个夹爪可以独立追踪一个对象；两个夹爪持同一个对象会拒绝，需要单独的闭链控制设计与验收。
+普通闭合取消后保留最后的有界目标；GraspGenX 试抬升已接纳的持续闭合在取消动作回报后仍继续向闭合端点施力，显式张开指令会终止该闭合驱动。未知持物不能继续规划；未测得支撑不能释放。持物或未知持物时拒绝底盘移动和场景复位，直到实现相应的负载扫掠检查。自动机械臂回家仍未开放。每个夹爪可以独立追踪一个对象；两个夹爪持同一个对象会拒绝，需要单独的闭链控制设计与验收。
 
 ## 带载几何与范围
 
@@ -40,7 +40,7 @@ MOZ1 和 Panda 模板只是配置示例，控制代码没有本体名称白名�
 
 ## 完全闭合驱动的仿真验收
 
-MOZ1 左右夹爪的闭合端点为 −0.0095 rad，电机力矩上限为 16.5 N·m。Panda 的直线关节闭合端点为 0 m，驱动刚度和阻尼参考 RoboSim 的 5000 N/m 和 500 N·s/m，输出上限取自 Genesis 所加载模型的 20 N。已有自定义配置中的 `preload` 不再参与目标计算。
+MOZ1 左右夹爪的闭合端点为 −0.0095 rad，电机力矩上限为 16.5 N·m。Panda 的直线关节闭合端点为 0 m，驱动刚度和阻尼参考 RoboSim 的 5000 N/m 和 500 N·s/m，输出上限取自 Genesis 所加载模型的 20 N。普通夹爪命令使用可选 `preload`；以下历史实验的持续闭合路径不使用预紧目标。
 
 MOZ1 固定底座右手使用上一轮的 GraspGenX 候选，在 Genesis 中重新执行 cuRobo 规划。每组先规划抬升，再闭爪，下一物理步开始抬升。实验在动作结束后评分。最后连续 2 秒（240 步）内，物体相对闭爪前升高至少 50 mm，且两侧指面接触力各超过 0.05 N，计为成功。
 

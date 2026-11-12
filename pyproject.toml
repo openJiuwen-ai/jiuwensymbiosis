@@ -68,6 +68,8 @@ chattts-server = [
     "torchaudio==2.8.0",
 ]
 dev = [
+    "python-fcl==0.7.0.11",  # Exercise the CPU loaded-geometry gate in core CI.
+    "trimesh>=4.8.2,<6",
     "setuptools>=68",  # offline wheel smoke test uses the declared build backend
     "wheel",
     "pytest>=8",
@@ -135,6 +137,7 @@ simulator-scenes = [
     "pillow>=11.3",
 ]
 simulator-collision = [
+    # CPU geometry preparation; POSIX cache locks. Genesis is a separate extra.
     "coacd==1.0.14",
     "trimesh>=4.8.2,<6",
 ]
@@ -145,6 +148,7 @@ simulator-media = [
 ]
 genesis = [
     # Dedicated simulation environment; see configs/simulators/README.md.
+    "scipy>=1.14,<2",
     "usd-core==25.11",
     "trimesh>=4.8.2,<6",
     "rtree>=1",
@@ -160,9 +164,8 @@ genesis = [
 ]
 genesis-graspgenx = ["pyzmq>=25,<28", "msgpack>=1,<2"]
 genesis-planning = [
-    # cuRobo V2 is installed separately from its pinned upstream checkout.
+    # cuRobo 78fd485 is installed separately. Use with the genesis extra.
     "python-fcl==0.7.0.11",
-    "scipy>=1.14,<2",
 ]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
@@ -217,6 +220,10 @@ jiuwensymbiosis_gui = [
     "workbench/data/configs/*/*.yaml",
     "workbench/assets/*",
 ]
+
+[tool.uv]
+# coverage 7.17.1 fails to combine data with SQLite 3.26 (coveragepy/coveragepy#2357).
+constraint-dependencies = ["coverage!=7.17.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

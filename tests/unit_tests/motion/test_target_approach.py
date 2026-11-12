@@ -118,6 +118,81 @@ def test_missing_evidence_never_moves_or_claims_arrival(condition, reason):
     assert api.last_detection is None
 
 
+@pytest.mark.parametrize("changed_reference", ["odom_frame", "scene_instance_id"])
+@pytest.mark.parametrize(
+    "initial_reference,new_reference", [("original", "reset-reference"), ("original", None), (None, "new-reference")]
+)
+def test_reference_reset_between_confirmation_frames_prevents_motion(
+    changed_reference, initial_reference, new_reference
+):
+    api, scene = make_api(bearing=0.0)
+    original = scene.grab_calibrated_frame
+
+    def grab(camera=None):
+        frame = original(camera)
+        frame.metadata["scene_instance_id"] = "scene-1"
+        metadata = frame.metadata["base_sample"] if changed_reference == "odom_frame" else frame.metadata
+        metadata[changed_reference] = initial_reference
+        if scene.frames == 2:
+            metadata[changed_reference] = new_reference
+        return frame
+
+    scene.grab_calibrated_frame = grab
+    result = approach_target(api, "box")
+    assert not result["ok"] and not result["goal_reached"]
+    assert result["reason"] == "target_reference_changed"
+    assert scene.commands == [(0.0, 0.0, 0.0)]
+
+
+def test_stable_scene_reference_can_supply_capture_aligned_base_coordinates():
+    api, scene = make_api(bearing=0.0)
+    original = scene.grab_calibrated_frame
+
+    def grab(camera=None):
+        frame = original(camera)
+        frame.metadata["scene_instance_id"] = "stable-scene"
+        del frame.metadata["base_sample"]["odom_frame"]
+        return frame
+
+    scene.grab_calibrated_frame = grab
+    result = approach_target(api, "box")
+    assert result["ok"] and result["goal_reached"]
+
+
+@pytest.mark.parametrize(
+    "motion",
+    [{"ok": True}, {"ok": True, "settled": True}, {"ok": True, "settled": True, "stop_confirmation": "unknown"}],
+)
+def test_plain_success_or_unmeasured_stop_cannot_start_target_approach(motion):
+    api, scene = make_api()
+
+    def navigate(dx, dy, turn):
+        scene.commands.append((dx, dy, turn))
+        return motion
+
+    scene.navigate_relative = navigate
+    result = approach_target(api, "box")
+    assert not result["ok"] and result["reason"] == "stop_unconfirmed"
+    assert scene.frames == 0
+    assert scene.commands == [(0.0, 0.0, 0.0)]
+
+
+def test_default_minimum_target_distance_remains_reachable_with_clearance():
+    api, scene = make_api(distance=1.0, bearing=0.0)
+    result = approach_target(api, "box", TargetApproachTuning().min_target_distance_m)
+    assert result["ok"] and result["goal_reached"]
+    assert any(dx > 0 for dx, _, _ in scene.commands)
+
+
+def test_valid_goal_does_not_override_increased_body_clearance():
+    api, scene = make_api(distance=1.0, bearing=0.0)
+    api.target_approach_tuning = TargetApproachTuning(body_radius_m=0.84)
+    result = approach_target(api, "box", 0.8)
+    assert result["reason"] == "insufficient_target_clearance"
+    assert not result["goal_reached"]
+    assert scene.commands == [(0.0, 0.0, 0.0)]
+
+
 def test_confirmation_failure_preserves_service_error_code_without_claiming_arrival():
     from jiuwensymbiosis.errors import InferenceServiceError
 
@@ -244,6 +319,96 @@ def test_two_distinct_targets_fail_but_duplicate_masks_do_not():
     assert scene.commands == [(0.0, 0.0, 0.0)]
     api._seg_fn = lambda *a, **k: [original, {**original, "score": 0.9}]
     assert locate_target(api, "box")["ok"]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_target_masks_are_aligned_before_geometry_and_identity(duplicate):
+    api, scene = make_api(bearing=0.0)
+    original = scene.segment(None, "box")[0]
+    reduced = {**original, "mask": original["mask"][::2, ::2]}
+    api._seg_fn = lambda *args, **kwargs: [reduced, original] if duplicate else [reduced]
+    assert locate_target(api, "box")["ok"]
+    previous = api.target_observation
+    assert previous is not None
+    assert locate_target(api, "box", previous=previous)["ok"]
+
+
+@pytest.mark.parametrize("failure", ["not_found", "invalid_frame", "service", "unexpected", "identity"])
+def test_failed_relocalization_discards_previous_target_anchor(failure):
+    from jiuwensymbiosis.errors import InferenceServiceError
+    from jiuwensymbiosis.perception.frame import FrameValidationError
+
+    api, scene = make_api(bearing=0.0)
+    assert locate_target(api, "box")["ok"]
+    previous = api.target_observation
+    assert previous is not None
+    if failure == "not_found":
+        scene.found = False
+    elif failure == "identity":
+        scene.x = 1.2
+    else:
+        error = {
+            "invalid_frame": FrameValidationError("stale_target_frame"),
+            "service": InferenceServiceError("unavailable", service="vision", code="inference_unavailable"),
+            "unexpected": RuntimeError("capture interrupted"),
+        }[failure]
+
+        def failed_capture(camera=None):
+            raise error
+
+        scene.grab_calibrated_frame = failed_capture
+    if failure == "unexpected":
+        with pytest.raises(RuntimeError, match="capture interrupted"):
+            locate_target(api, "box", previous=previous)
+    else:
+        assert not locate_target(api, "box", previous=previous)["ok"]
+    assert api.target_observation is None
+    assert api.last_detection is None
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        SimpleNamespace(odom_frame="test-odom"),
+        {"odom_frame": "test-odom", "position_m": [0, 0, 0]},
+        {"odom_frame": "test-odom", "body_yaw_rad": 0.0},
+        {"odom_frame": "test-odom", "body_yaw_rad": 0.0, "position_m": [0, 0]},
+        {"odom_frame": "test-odom", "body_yaw_rad": 0.0, "position_m": 0},
+        {"odom_frame": "test-odom", "body_yaw_rad": float("inf"), "position_m": [0, 0, 0]},
+        {"odom_frame": "test-odom", "body_yaw_rad": "invalid", "position_m": [0, 0, 0]},
+        {"odom_frame": "test-odom", "body_yaw_rad": 0.0, "position_m": [0, float("nan"), 0]},
+    ],
+)
+def test_invalid_egomotion_keeps_localization_but_prevents_approach(base):
+    api, scene = make_api(bearing=0.0)
+    capture = scene.grab_calibrated_frame
+
+    def invalid_base(camera=None):
+        frame = capture(camera)
+        frame.metadata["base_sample"] = base
+        return frame
+
+    scene.grab_calibrated_frame = invalid_base
+    assert locate_target(api, "box")["ok"]
+    assert api.target_observation is None
+    assert approach_target(api, "box")["reason"] == "association_odometry_unavailable"
+    assert scene.commands == [(0.0, 0.0, 0.0)]
+
+
+@pytest.mark.parametrize("refusal", [None, "turn_clearance_unobserved"])
+def test_pure_rotation_uses_rotation_guard_without_forward_clearance(refusal):
+    api, scene = make_api(distance=0.8, bearing=0.55)
+    api.target_approach_tuning = TargetApproachTuning(max_iterations=1)
+    assert locate_target(api, "box")["near_surface_x_m"] < 0.7
+    scene.refusal = refusal
+    result = approach_target(api, "box", 0.8)
+    assert result["reason"] != "insufficient_target_clearance"
+    if refusal:
+        assert result["reason"] == refusal
+        assert scene.commands == [(0.0, 0.0, 0.0)]
+    else:
+        assert scene.commands[1][:2] == (0.0, 0.0)
+        assert scene.commands[1][2] > 0
 
 
 def test_many_depth_points_in_one_corner_do_not_establish_geometry():

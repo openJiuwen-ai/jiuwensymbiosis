@@ -113,7 +113,7 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
         guard(request, "capture")
         try:
             result = await asyncio.to_thread(service.preview.capture_image, body.camera_name)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         jpeg = result.pop("jpeg")
         return Response(
@@ -143,13 +143,16 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
         guard(request, "start")
         try:
             return await service.start(body.model_dump() if body is not None else None)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/genesis/backend/stop")
     async def stop(request: Request):
         guard(request, "stop")
-        return await service.stop()
+        try:
+            return await service.stop()
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/genesis/backend/reset")
     async def reset_scene(request: Request):

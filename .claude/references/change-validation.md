@@ -4,6 +4,13 @@ Use this map when designing, implementing, or reviewing a change. Paths below
 are relative to the repository root. Select rows affected by the actual
 behavior or dependency changes; this is not a requirement to run every suite.
 
+For GitCode PR review, use this map only to locate test source and the behavior
+it should cover. Review is static: do not execute tests, lint, type checks,
+builds, scans, or other gates locally. CI owns those checks. Cite existing CI
+results with their revision when available; otherwise state that results were
+not read or are pending, without waiting for them. The execution guidance below
+applies to implementation and CI, not to the static PR review workflow.
+
 Architecture requirements come from `AGENTS.md` and the relevant design
 documents; implementation and tests establish what is currently enforced.
 When they disagree, record the discrepancy rather than silently rewriting
@@ -16,6 +23,7 @@ or vendor SDK cleanup guarantees.
 
 | Change or invariant | Existing verification entry points | What to examine |
 |---|---|---|
+| Third-party additions, version/source changes, and redistribution | `pyproject.toml`, `Open_Source_Software_Notice.txt`, `LICENSE`; [third-party review method](third-party-review.md) | Trace actual use to dependency declarations and version-specific license/copyright/NOTICE evidence; assess compatibility and obligations for the integration and distribution; vulnerability scans do not establish license compatibility |
 | Shared action contracts and carrier | `tests/unit_tests/api/test_actions.py`, `tests/unit_tests/api/test_decorators.py` | Contract ownership, accepted parameters, result schema, capability/state tokens; keep metadata tied to its spec |
 | Tool exposure and capability intersection | `tests/unit_tests/tools/test_builder.py`, `tests/unit_tests/tools/test_planner_vocabulary.py` | Actions absent from the body's capabilities stay unavailable to planners |
 | Cross-body action vocabulary | `tests/unit_tests/test_vocabulary_forks.py` | Body differences do not silently create competing names; inspect the registered bodies and documented accepted forks/xfails |
@@ -38,7 +46,7 @@ or vendor SDK cleanup guarantees.
 | Runtime persistence store | `tests/unit_tests/runtime/test_store.py` | Snapshot/event transactions, request ID idempotency/conflict, ordering, and close behavior; this does not establish execution or resource-lifecycle guarantees |
 | Runtime job execution and resource admission | `tests/unit_tests/runtime/`, `tests/unit_tests/agent/test_cancel_tracking.py`, `tests/unit_tests/agent/test_session_cleanup.py` | Source/config isolation, cross-process contention, request retries, state/event transactions, bounded artifact reads, pending helpers and failed cleanup; official CLI paths share admission |
 
-## Commands and evidence
+## Commands and evidence for implementation and CI
 
 Use the project environment from `AGENTS.md`. Run the selected files first,
 for example:

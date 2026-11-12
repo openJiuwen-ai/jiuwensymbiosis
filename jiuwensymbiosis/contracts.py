@@ -44,11 +44,14 @@ __all__ = [
     "ObjectGeometryResult",
     "SurfaceGeometryResult",
     "SceneScanResult",
+    "TargetLocationResult",
     "SPATIAL_RELATIONS",
     # Base approach
     "ApproachResult",
     "ApproachFailure",
     "SearchResult",
+    "TargetApproachResult",
+    "MeasuredBaseMotionResult",
     # Frame projection
     "BasePoint",
     "SimulationSnapshotResult",
@@ -73,6 +76,20 @@ class SimulationSnapshotResult(TypedDict):
     entities: NotRequired[list[dict]]
     total: NotRequired[int]
     next_offset: NotRequired[int | None]
+
+
+class MeasuredBaseMotionResult(TypedDict):
+    """Blocking base step with observed stopping, including a zero-distance step.
+
+    ``ok`` alone is not evidence of stopping. Only ``settled=True`` together
+    with ``stop_confirmation='measured'`` permits target sensing/another step.
+    A command acknowledgement or elapsed duration cannot establish these fields.
+    """
+
+    ok: bool
+    settled: bool
+    stop_confirmation: Literal["measured", "unknown"]
+    reason: NotRequired[str]
 
 
 class NavigationResult(TypedDict):
@@ -125,27 +142,6 @@ class GraspFailure(TypedDict):
     error_code: NotRequired[str]
 
 
-class GripperCommandResult(TypedDict):
-    """Actuation success is separate from measured grasp and placement."""
-
-    ok: bool
-    settled: bool
-    stop_confirmation: str
-    reason: str | None
-    holding_payload: bool | None
-    grasp_confirmed: bool
-    contact_confirmed: bool
-    placement_confirmed: bool
-
-
-class PickTargetResult(GripperCommandResult):
-    """A physical lift can report measured height and continuous hold duration."""
-
-    goal_reached: bool
-    lift_m: NotRequired[float]
-    held_s: NotRequired[float]
-
-
 class GraspResult(TypedDict, total=False):
     """Success shape returned by ``get_grasp_info_simple``.
 
@@ -165,6 +161,38 @@ class GraspResult(TypedDict, total=False):
     depth_m: float
     grasp_rz: float  # top-surface yaw (deg); only present when top-surface grasp is enabled
     grasp_width_mm: float  # object extent along the gripper closing axis; top-surface grasp only
+
+
+class CloseEffectorResult(TypedDict, total=False):
+    """Gripper open/close and suction result; evidence is optional and may be unknown.
+
+    ``ok`` / ``state`` are the command-level shape every body returns. The
+    evidence fields are what a body with a measured channel adds — they assert
+    the close stopped on object contact, and only they (or the body's
+    ``is_grasp_confirmed`` hook) establish ``payload.held``: a successful
+    command alone does not. A body with no measured channel declares
+    ``trust_command_grasp`` instead (adapter reference, grasp evidence).
+    """
+
+    ok: bool
+    state: str
+    grasp_confirmed: bool
+    contact: bool
+    holding_payload: bool | None
+    plan_success: bool
+    goal_reached: bool
+    settled: bool
+    stop_confirmation: Literal["measured", "unknown"]
+    reason: str | None
+    contact_confirmed: bool
+    placement_confirmed: bool
+
+
+class PickTargetResult(CloseEffectorResult):
+    """A physical lift reports measured height and continuous hold duration."""
+
+    lift_m: NotRequired[float]
+    held_s: NotRequired[float]
 
 
 # =============================================================================
@@ -358,12 +386,4 @@ class BasePoint(TypedDict):
     z: float
 
 
-class PlannedMotionResult(TypedDict):
-    """Planning, physical arrival and stopping are separate observations."""
-
-    ok: bool
-    plan_success: bool
-    goal_reached: bool
-    settled: bool
-    stop_confirmation: str
-    reason: str | None
+PlannedMotionResult = CloseEffectorResult  # Shared optional motion and payload evidence fields.

@@ -1,8 +1,4 @@
-"""Robot-independent cuRobo V2 adapter. Planning never drives physics.
-
-Profiles contain body semantics; every plan freezes non-group joints at measured
-positions, and binds its result to the complete start state and world revision.
-"""
+"""Body-independent cuRobo planning, bound to frozen non-group joints and world state."""
 
 from __future__ import annotations
 
@@ -32,6 +28,13 @@ def transform(position, quaternion):
     result[:3, :3] = Rotation.from_quat(quaternion, scalar_first=True).as_matrix()
     result[:3, 3] = position
     return result
+
+
+def pose_error(expected, actual):
+    return {
+        "position_m": float(np.linalg.norm(expected[:3, 3] - actual[:3, 3])),
+        "rotation_rad": float(Rotation.from_matrix(expected[:3, :3] @ actual[:3, :3].T).magnitude()),
+    }
 
 
 def required_element(parent: ET.Element, tag: str) -> ET.Element:
@@ -103,14 +106,10 @@ class CuroboPlanner:
         self.directory.mkdir(parents=True, exist_ok=True)
         for group in profile["groups"].values():
             names = group["joints"]
-            if (
-                not names
-                or not group["tools"]
-                or len(set(group["tools"])) != len(group["tools"])
-                or len(set(names)) != len(names)
-                or set(names) - self.joints.keys()
-                or set(group["tools"]) - links
-            ):
+            invalid_joints = not names or len(set(names)) != len(names) or set(names) - self.joints.keys()
+            tools = group["tools"]
+            invalid_tools = not tools or len(set(tools)) != len(tools) or set(tools) - links
+            if invalid_joints or invalid_tools:
                 raise ValueError("invalid planning group names")
             for name in names:
                 if self.joints[name].find("mimic") is not None or self.joints[name].get("type") == "fixed":
@@ -135,8 +134,7 @@ class CuroboPlanner:
             for s in entries:
                 if len(s["center"]) != 3 or not np.isfinite([*s["center"], s["radius"]]).all() or s["radius"] <= 0:
                     raise ValueError("invalid collision sphere")
-        # A freely rotating, centred support sphere has no orientation state.
-        # This narrowly verified exception never applies to arms or arbitrary joints.
+        # Only verified centred support spheres can ignore orientation; never arms/arbitrary joints.
         ignored = profile.get("uncontrolled_support_joints", [])
         children_with_joints = {required_element(j, "parent").get("link") for j in self.joints.values()}
         all_group_names = {n for g in profile["groups"].values() for n in g["joints"]}
@@ -175,19 +173,17 @@ class CuroboPlanner:
             name = j.get("name")
             if name not in names and j.get("type") != "fixed":
                 pose = joint_transform(j, static[name])
-                o = j.find("origin")
-                if o is None:
-                    o = ET.SubElement(j, "origin")
-                o.set("xyz", " ".join(map(str, pose[:3, 3])))
-                o.set("rpy", " ".join(map(str, Rotation.from_matrix(pose[:3, :3]).as_euler("xyz"))))
+                origin = j.find("origin")
+                if origin is None:
+                    origin = ET.SubElement(j, "origin")
+                origin.set("xyz", " ".join(map(str, pose[:3, 3])))
+                origin.set("rpy", " ".join(map(str, Rotation.from_matrix(pose[:3, :3]).as_euler("xyz"))))
                 j.set("type", "fixed")
                 for child in list(j):
                     if child.tag in {"axis", "limit", "mimic", "dynamics"}:
                         j.remove(child)
             elif name in names:
                 limit = required_element(j, "limit")
-                if limit is None:
-                    raise ValueError("planning requires explicit joint bounds")
                 limit.set("velocity", str(self.profile["limits"][name]["velocity"]))
                 limit.set("effort", str(self.profile["limits"][name]["effort"]))
         path = self.directory / f"planning-{key}.urdf"
@@ -229,7 +225,8 @@ class CuroboPlanner:
         self.key = key
         return group
 
-    def _state(self, q, names):
+    @staticmethod
+    def _state(q, names):
         import torch
         from curobo.types import JointState
 
@@ -260,13 +257,13 @@ class CuroboPlanner:
             expected = set(self.profile["groups"][group]["joints"])
             if not isinstance(targets, dict) or not targets or set(targets) - expected:
                 raise ValueError("unknown/empty joint targets")
-            for name, value in targets.items():
+            for name in expected:
+                value = targets.get(name, state[name])
                 limit = required_element(self.joints[name], "limit")
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not np.isfinite(value)
-                    or not float(limit.get("lower", "-inf")) <= value <= float(limit.get("upper", "inf"))
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError("target outside joint limits")
+                if not np.isfinite(value) or not float(limit.get("lower", "-inf")) <= value <= float(
+                    limit.get("upper", "inf")
                 ):
                     raise ValueError("target outside joint limits")
         sibling("robot_model").verify_model_files(self.model)
@@ -280,23 +277,12 @@ class CuroboPlanner:
             actual = fk.tool_poses.get_link_pose(tool)
             position = actual.position.detach().cpu().numpy().reshape(3)
             quaternion = actual.quaternion.detach().cpu().numpy().reshape(4)
-            if (
-                np.linalg.norm(position - expected[:3, 3]) > 1e-4
-                or (
-                    Rotation.from_matrix(expected[:3, :3]).inv() * Rotation.from_quat(quaternion, scalar_first=True)
-                ).magnitude()
-                > 1e-3
-            ):
+            error = pose_error(expected, transform(position, quaternion))
+            if error["position_m"] > 1e-4 or error["rotation_rad"] > 1e-3:
                 raise ValueError("planner FK differs from independent model")
         begin = time.monotonic()
         if targets is not None:
-            if set(targets) - set(names) or not targets:
-                raise ValueError("unknown/empty joint targets")
             q = [targets.get(n, state[n]) for n in names]
-            for n, v in zip(names, q, strict=True):
-                limit = required_element(self.joints[n], "limit")
-                if not np.isfinite(v) or not float(limit.get("lower", "-inf")) <= v <= float(limit.get("upper", "inf")):
-                    raise ValueError("target outside joint limits")
             result = self.backend.plan_cspace(self._state(q, names), start, max_attempts=3)
         else:
             import torch
@@ -326,8 +312,7 @@ class CuroboPlanner:
             held = [i for i, n in enumerate(names) if n not in targets]
             if held and np.max(np.abs(q[:, held] - np.array([state[names[i]] for i in held]))) > 1e-5:
                 raise ValueError("planner moved joints omitted from targets")
-        # Fit a C4 path with zero endpoint velocity and acceleration. Retiming
-        # uses analytic derivative extrema, including the start/stop boundaries.
+        # C4 path, zero endpoint velocity/acceleration; retime using analytic extrema including boundaries.
         trajectory_type = sibling("arm_trajectory").Trajectory
         limits = [
             np.array([self.profile["limits"][n][key] for n in names]) for key in ("velocity", "acceleration", "jerk")

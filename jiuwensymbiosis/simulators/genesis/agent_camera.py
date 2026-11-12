@@ -36,6 +36,7 @@ class CameraObservation(AgentRail):
         self.on_frame = on_frame
         self.on_observation = on_observation
         self.max_frames = max_frames
+        self._capture_count = 0
         self.frames: list[dict] = []
         self.pending: list[dict] = []
         self.error: str | None = None
@@ -81,7 +82,7 @@ class CameraObservation(AgentRail):
         self._check()
         if camera_name != "head_cam":
             raise ValueError("纯视觉模式仅允许 head_cam 头部相机。")
-        if len(self.frames) >= self.max_frames:
+        if self._capture_count >= self.max_frames:
             return {"error": f"本次任务已取 {self.max_frames} 张图片，无法继续获取新图；请报告进度，不要盲目移动。"}
         if not any(c.get("name") == "head_cam" for c in self.preview.status().get("cameras", [])):
             raise RuntimeError("头部相机不可用；纯视觉模式不会使用其他视角。")
@@ -95,7 +96,7 @@ class CameraObservation(AgentRail):
     def record_capture(self, frame: dict, *, replace_pending: bool = False) -> dict:
         """Retain the exact sensor input; internal approach steps inject only the latest image."""
         self._check()
-        if len(self.frames) >= self.max_frames:
+        if not replace_pending and self._capture_count >= self.max_frames:
             raise RuntimeError("本轮相机帧预算已用尽，请停止移动并报告进度。")
         if frame.get("camera_name") != "head_cam" or not 0 <= time.monotonic() - frame.get("captured_at", 0) < 2:
             raise RuntimeError("相机图像不匹配或已过期，请重新取图。")
@@ -132,6 +133,8 @@ class CameraObservation(AgentRail):
                 valid_depth_points=int(np.isfinite(frame["depth_m"]).sum()),
             )
         self.frames.append(record)
+        if not replace_pending:
+            self._capture_count += 1
         # Calibration, scene identity and physical step stay in private evidence.
         metadata = {"camera_name": "head_cam", "id": frame_id, "image_sha256": metadata["image_sha256"]}
         if "sensor_frame_id" in record:

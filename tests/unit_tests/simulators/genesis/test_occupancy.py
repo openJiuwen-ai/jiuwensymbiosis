@@ -6,6 +6,10 @@ import pytest
 from jiuwensymbiosis.simulators.genesis.indoor import RoomMesh
 from jiuwensymbiosis.simulators.genesis.occupancy import build_occupancy
 
+# build_occupancy rasterizes through OpenCV, which the CPU test extras do not
+# install (opencv lives in the genesis extra only).
+pytest.importorskip("cv2")
+
 
 def box(size, position, name):
     trimesh = pytest.importorskip("trimesh")
@@ -74,3 +78,25 @@ def test_large_underlying_slab_does_not_override_finished_floor():
     result = build_occupancy(meshes, rooms)
     assert result.floor_z == pytest.approx(0)
     assert cell(result, 0, 0) == 0
+
+
+def test_free_space_agrees_with_the_runtime_navigation_map():
+    meshes = [
+        box((4, 4, 0.1), (0, 0, -0.05), "floor"),
+        box((0.6, 0.6, 3), (1, 0, 1.5), "tall_cabinet"),
+    ]
+    rooms = [{"polygon": [[-2, -2], [2, -2], [2, 2], [-2, 2]]}]
+    exported = build_occupancy(meshes, rooms)
+    from jiuwensymbiosis.simulators.genesis.navigation import NavigationMap
+
+    runtime = NavigationMap.from_meshes(meshes, floor_z=exported.floor_z, radius=0)
+    for world_x, world_y in ((-1, -1), (0, 1), (-1.4, 1.4)):
+        assert cell(exported, world_x, world_y) == 0
+        assert runtime.clear((world_x, world_y))
+    # The cabinet's wall footprint blocks both maps. Their interior semantics
+    # deliberately differ: the export marks the whole solid as occupied, while
+    # the runtime map blocks the band-crossing faces' perimeter (an enclosed
+    # interior cell reads free but is unreachable) — free REACHABILITY is what
+    # the two must agree on.
+    assert cell(exported, 0.7, 0) == 100
+    assert not runtime.clear((0.7, 0))

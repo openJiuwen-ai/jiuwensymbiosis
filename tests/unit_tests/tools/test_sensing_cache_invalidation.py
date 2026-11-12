@@ -20,7 +20,7 @@ from jiuwensymbiosis.api.actions import APPROACH_FOR_GRASP, LOCATE_FOR_GRASP, NA
 from jiuwensymbiosis.api.base import BaseRobotApi
 from jiuwensymbiosis.env.mock import MockArmEnv
 from jiuwensymbiosis.tools.builder import build_robot_tools
-from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, record_action
+from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, begin_action, record_action
 
 
 class CacheApi(BaseRobotApi):
@@ -84,6 +84,42 @@ class TestProducingActionsKeepWhatTheyMeasured:
         assert api.last_detection is not None, "the reading the action just took was thrown away"
         assert api.last_detection["position"] == [200.0, 0.0, 50.0]
         assert api.memory.get("box") is not None
+
+    def test_begin_action_preserves_the_input_cache_for_producing_actions(self):
+        # Approach consumes the cached detection as its input (the real loops skip a
+        # full search when one is fresh); clearing it pre-dispatch would force a
+        # re-search on every approach. Failure clearing stays post-hoc.
+        api = _sensed_api()
+        begin_action(api, api.approach_for_grasp)
+        assert api.last_detection is not None, "approach lost the detection it consumes as input"
+
+    def test_begin_action_clears_the_cache_for_pure_motions(self):
+        api = _sensed_api()
+        begin_action(api, api.navigate_relative)
+        assert api.last_detection is None
+
+    async def test_approach_consumes_the_detection_locate_just_produced(self):
+        seen = {}
+
+        class ApproachingApi(CacheApi):
+            @implements(APPROACH_FOR_GRASP)
+            def approach_for_grasp(self, object_name="box", reference=None, relation="on"):
+                seen["input"] = self.last_detection
+                return {"ok": True}
+
+        api = ApproachingApi(MockArmEnv())
+        api.last_detection = {"ok": True, "position": [100.0, 0.0, 50.0]}
+        await RobotControlTool(api).invoke({"action": "approach_for_grasp", "params": {}})
+        assert seen["input"] is not None, "dispatch cleared the cache the approach consumes"
+
+
+def test_home_stales_sensed_positions_like_any_motion():
+    # Homing may move the body (a mobile base drives home), so positions sensed from a
+    # departed standpoint do not survive it — same rule as any other motion.
+    api = _sensed_api()
+    record_action(api, api.home, {}, None)
+    assert api.last_detection is None
+    assert api.memory.get("box") is None
 
 
 class TestEveryDispatchPathAgrees:

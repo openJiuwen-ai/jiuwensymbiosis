@@ -55,7 +55,21 @@ def current_tokens(session: Any) -> frozenset[str]:
     api = getattr(session, "api", None)
     memory = getattr(api, "memory", None)
     believed = memory.self_state if isinstance(memory, ExecutionMemory) else frozenset()
-    observed = _observed_payload(getattr(session, "env", None))
+    env = getattr(session, "env", None)
+    try:
+        payloads = getattr(env, "effector_payloads", None)
+    except Exception:
+        payloads = {}  # Failed authoritative readback must not resurrect old beliefs.
+    observed = _observed_payload(env)
+    if isinstance(payloads, dict):
+        believed = frozenset(t for t in believed if not t.startswith("payload."))
+        observed = frozenset(
+            f"payload.{'held' if v else 'clear'}:{n}" for n, v in payloads.items() if isinstance(v, bool)
+        )
+        if any(v is True for v in payloads.values()):
+            observed |= {"payload.held"}
+        elif payloads and all(v is False for v in payloads.values()):
+            observed |= {"payload.clear"}
     # Observation wins, but only over what it actually contradicts: ``holding_payload`` is a
     # bool, so it can rule out "empty" or "holding" and says nothing about ``payload.stowed``.
     ruled_out = ruled_out_by(observed)

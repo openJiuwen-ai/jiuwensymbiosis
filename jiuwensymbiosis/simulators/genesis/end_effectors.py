@@ -1,8 +1,4 @@
-"""Scene-owned, profile-driven parallel effectors and measured payloads.
-
-Only independent joints receive motor targets. Mimic coupling remains owned by
-the imported model. This object never steps physics or attaches objects.
-"""
+"""Scene-owned profile-driven motors and payload evidence; model owns mimic coupling."""
 
 from __future__ import annotations
 
@@ -16,21 +12,17 @@ def sibling(name):
 
 
 def pose(link):
-    array = sibling("arm_collision").array
-    return sibling("arm_planning").transform(array(link.get_pos()).reshape(3), array(link.get_quat()).reshape(4))
+    return sibling("arm_collision").link_pose(link)
 
 
 class EndEffectors:
     def __init__(self, entity, root, configurations):
-        self.entity = entity
-        self.configurations = configurations
+        self.entity, self.configurations = entity, configurations
         self.evidence = {}
-        self.targets = {}
-        self.ids = {}
-        self.groups = {}
-        self.opening = {}
+        self.targets, self.ids, self.groups = {}, {}, {}
         self.closing = set()
-        self.support_geoms = {}
+        self.full_close = set()
+        self.opening, self.latched, self.support_geoms = {}, {}, {}
         joints = {joint.get("name"): joint for joint in root.findall("joint")}
         links = {link.name: link for link in entity.links}
         used = set()
@@ -51,15 +43,16 @@ class EndEffectors:
                     raise ValueError("effector motor must be an independent bounded joint")
                 limit = joint.find("limit")
                 values = [motor[k] for k in ("open", "close", "velocity", "effort", "kp", "kd", "tolerance")]
-                if (
-                    any(isinstance(v, bool) for v in values)
-                    or not np.isfinite(values).all()
-                    or min(values[2:]) <= 0
-                    or values[0] == values[1]
-                ):
+                invalid_values = any(isinstance(v, bool) for v in values) or not np.isfinite(values).all()
+                if invalid_values or min(values[2:]) <= 0 or values[0] == values[1]:
                     raise ValueError("invalid effector motor settings")
-                if limit is None or any(
-                    not float(limit.get("lower")) <= q <= float(limit.get("upper")) for q in values[:2]
+                preload = motor.get("preload", 0.0)
+                if not np.isfinite(preload) or not 0 <= preload <= abs(motor["close"] - motor["open"]) / 4:
+                    raise ValueError("invalid effector contact preload")
+                if (
+                    limit is None
+                    or not {"lower", "upper"} <= limit.attrib.keys()
+                    or any(not float(limit.get("lower")) <= q <= float(limit.get("upper")) for q in values[:2])
                 ):
                     raise ValueError("effector target outside model limits")
                 if motor["effort"] > float(limit.get("effort", "0")) or motor["velocity"] > float(
@@ -75,8 +68,9 @@ class EndEffectors:
             self.groups[name] = [{links[link].idx for link in group} for group in groups]
             ids = [entity.get_joint(j).dofs_idx_local[0] for j in motors]
             self.ids[name] = ids
-            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1).astype(float)
+            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1)
             self.opening[name] = False
+            self.latched[name] = False
             self.support_geoms[name] = set()
             self.evidence[name] = sibling("grasp_evidence").GraspEvidence()
         # Validate every effector before changing any motor configuration.
@@ -88,6 +82,7 @@ class EndEffectors:
             entity.set_dofs_force_range(-effort, effort, ids)
         self.command = None
         self.result = {}
+        self.elapsed = self.stable = 0.0
 
     def bodies(self):
         return {body.idx: body for body in self.entity.solver.entities if body is not self.entity}
@@ -116,8 +111,7 @@ class EndEffectors:
         a, b, force = a[valid], b[valid], force[valid]
         own = {link.idx for link in body.links}
         robot = {link.idx for link in self.entity.links}
-        # Upward external force, excluding all robot links. A side contact is
-        # not support. Genesis force_a acts on link_a; reverse it for link_b.
+        # Upward external force only: exclude robot links and reverse force_a when the object is link_b.
         vertical = sum(
             (f[2] if x in own else -f[2])
             for x, y, f in zip(a, b, force, strict=True)
@@ -169,9 +163,10 @@ class EndEffectors:
                 a = array(contacts["geom_a"]).reshape(-1)
                 b = array(contacts["geom_b"]).reshape(-1)
                 valid = array(contacts.get("valid_mask", np.ones(len(a), dtype=bool))).reshape(-1).astype(bool)
-                fixed = {
-                    g.idx for other in bodies.values() for link in other.links if link.is_fixed for g in link.geoms
-                }
+                fixed_links = []
+                for other in bodies.values():
+                    fixed_links.extend(link for link in other.links if link.is_fixed)
+                fixed = {g.idx for link in fixed_links for g in link.geoms}
                 self.support_geoms[name].update(int(idx) for idx in np.r_[a[valid], b[valid]] if idx in fixed)
             evidence.observe(
                 dt=dt,
@@ -188,8 +183,8 @@ class EndEffectors:
         if len(owners) != len(set(owners)):
             raise ValueError("shared-object multi-effector grasp requires a coupled controller")
 
-    def start(self, name, *, opened):
-        if name not in self.evidence or type(opened) is not bool:
+    def start(self, name, *, opened, full_close=False):
+        if name not in self.evidence or not isinstance(opened, bool):
             raise ValueError("known effector and boolean opened required")
         evidence = self.evidence[name]
         if opened and evidence.holding is not False and evidence.support_time < evidence.release_s:
@@ -199,20 +194,25 @@ class EndEffectors:
         self.command = name
         if evidence.state == "clear" and not opened:
             self.support_geoms[name].clear()
-            evidence.object_id = None
-            evidence.reference = None
-            evidence.height = None
+            evidence.object_id = evidence.reference = evidence.height = None
             evidence.released_time = evidence.support_time = 0.0
+        if opened or (not self.latched[name] and name not in self.full_close):
+            self.targets[name] = (
+                sibling("arm_collision").array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
+            )
         self.opening[name] = opened
         if opened:
+            self.latched[name] = False
             self.closing.discard(name)
-        else:
+            self.full_close.discard(name)
+        elif full_close:
             self.closing.add(name)
+            self.full_close.add(name)
         self.elapsed = self.stable = 0.0
         self.result = {}
 
     def cancel(self):
-        # Cancel result tracking. An accepted close keeps squeezing until release.
+        # Keep the last bounded motor target. Never open on cancellation.
         self.command = None
 
     def _advance_target(self, name, opened, dt):
@@ -244,8 +244,20 @@ class EndEffectors:
             self.result = {**evidence.report(), "ok": False, "reason": evidence.reason or "payload_unknown"}
             self.command = None
             return
-        if opened:
-            self._advance_target(name, True, dt)
+        target = np.array([m["open" if opened else "close"] for m in motors])
+        # Stop advancing at sustained contact; retries retain exactly this target.
+        if name in self.full_close:
+            pass  # The explicit trial-lift ramp remains active through result completion.
+        elif opened or (not self.latched[name] and evidence.contact_time < 0.025):
+            rate = np.array([m["velocity"] for m in motors]) * dt
+            self.targets[name] += np.clip(target - self.targets[name], -rate, rate)
+        elif not self.latched[name]:
+            q = sibling("arm_collision").array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
+            preload = np.array([m.get("preload", 0.0) for m in motors])
+            self.targets[name] = q + np.sign(target - q) * np.minimum(preload, abs(target - q))
+            self.latched[name] = True
+        if name not in self.full_close:
+            self.entity.control_dofs_position(self.targets[name], self.ids[name])
         array = sibling("arm_collision").array
         q = array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
         v = array(self.entity.get_dofs_velocity(self.ids[name])).reshape(-1)
@@ -300,11 +312,8 @@ class EndEffectors:
             bodies = self.bodies()
             for idx, record in captured.items():
                 current = np.linalg.inv(pose(self.entity.get_link(record["tool"]))) @ pose(bodies[idx].links[0])
-                delta = np.linalg.inv(record["relative"]) @ current
-                if (
-                    np.linalg.norm(delta[:3, 3]) > 0.002
-                    or sibling("arm_planning").Rotation.from_matrix(delta[:3, :3]).magnitude() > 0.02
-                ):
+                error = sibling("arm_planning").pose_error(record["relative"], current)
+                if error["position_m"] > 0.002 or error["rotation_rad"] > 0.02:
                     return False
             return True
         except (ValueError, KeyError):

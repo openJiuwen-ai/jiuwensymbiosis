@@ -33,6 +33,7 @@ class SceneRenderer:
         cameras=None,
         startup=None,
         material_rules: MaterialRules | None = None,
+        material_directory: Path | None = None,
     ):
         import gs_nyx.nyx_py_renderer as npr
         import gs_nyx.nyx_py_sdk as nps
@@ -171,29 +172,13 @@ class SceneRenderer:
                 "quality_policy": presentation["quality_policy"],
             }
         if source is not None:
-            if TYPE_CHECKING or __package__:
-                from .material_repair import prepare_materials
-            else:
-                from material_repair import prepare_materials
-
-            source, repair = prepare_materials(source, directory / "materials", rules=material_rules)
-            if presentation is not None:
-                if TYPE_CHECKING or __package__:
-                    from .material_repair import require_supported_materials
-                else:
-                    from material_repair import require_supported_materials
-
-                self.appearance["material_validation"] = require_supported_materials(source, repair)
-            # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
-            # paths and bake manifests on disk instead of sending megabytes.
-            self.appearance["material_repair"] = {
-                "converted": repair["converted"],
-                "textures": repair["textures"],
-                "remaining": len(repair["remaining"]),
-                "issues": dict(Counter(item["kind"] for item in repair["issues"])),
-                "baked_textures": len(repair["baked_textures"]),
-                "report_path": str(directory / "materials/material-repair.json") if repair["converted"] else None,
-            }
+            # Without rules prepare_materials converts nothing and returns the
+            # source unchanged, so skip it: the default preview path must not
+            # require pxr just to report what it would leave untouched.
+            if material_rules or presentation is not None:
+                source = self._repair_materials(
+                    source, directory, material_rules, material_directory, validate=presentation is not None
+                )
             asset = nps.SceneAsset()
             if not nps.import_scene_file(path, asset):
                 raise RuntimeError("无法创建 Nyx 背景场景。")
@@ -237,6 +222,44 @@ class SceneRenderer:
         except BaseException:
             self.close()
             raise
+
+    def _repair_materials(
+        self,
+        source: Path,
+        directory: Path,
+        rules: MaterialRules | None,
+        material_directory: Path | None,
+        *,
+        validate: bool = False,
+    ) -> Path:
+        """Return the material-repaired source layer and record a compact summary."""
+        if TYPE_CHECKING or __package__:
+            from .material_repair import prepare_materials
+        else:
+            from material_repair import prepare_materials
+
+        # Baked textures are content-addressed (source digest + parameters):
+        # a persistent material_directory lets renderer rebuilds reuse them
+        # instead of re-baking a full texture session on every resolution change.
+        materials_dir = Path(material_directory) if material_directory is not None else directory / "materials"
+        repaired, repair = prepare_materials(source, materials_dir, rules=rules)
+        if validate:
+            if TYPE_CHECKING or __package__:
+                from .material_repair import require_supported_materials
+            else:
+                from material_repair import require_supported_materials
+            self.appearance["material_validation"] = require_supported_materials(repaired, repair)
+        # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
+        # paths and bake manifests on disk instead of sending megabytes.
+        self.appearance["material_repair"] = {
+            "converted": repair["converted"],
+            "textures": repair["textures"],
+            "remaining": len(repair["remaining"]),
+            "issues": dict(Counter(item["kind"] for item in repair["issues"])),
+            "baked_textures": len(repair["baked_textures"]),
+            "report_path": str(materials_dir / "material-repair.json") if repair["converted"] else None,
+        }
+        return repaired
 
     def update_camera_pose(self, *, pos, lookat, up):
         self._renderer.update_camera_tensor(0, pos, lookat, up)
@@ -290,6 +313,9 @@ class SceneRenderer:
             raise ValueError("RGB-D requires a calibrated robot camera")
         check()
         rgb = self.read_rgb(camera_name, rectified=True).cpu().numpy().copy()
+        # gs-nyx-plugin 0.1.9 has no public accessor for the native depth ray API.
+        # Keep this bridge explicit; an incompatible SDK must fail, not invent depth.
+        # pylint: disable=protected-access
         depth = sample_depth(
             self._renderer._renderer,  # noqa: SLF001 -- pinned native bridge
             self.cameras[camera_name],
@@ -298,6 +324,7 @@ class SceneRenderer:
             check=check,
             region=region,
         )
+        # pylint: enable=protected-access
         self.last_camera.update(depth_type="optical_z", depth_unit="m", depth_sampling_stride=stride)
         if region is not None:
             self.last_camera.update(depth_sampling_region=region, depth_sampling_stride=None)

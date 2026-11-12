@@ -41,19 +41,24 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 |---|---|
 | `motion.cartesian` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` |
 | `motion.joint` | `move_joint`、`move_named_joint`、`get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | （无独立公共动作；由 fast path 实时伺服 op `track_detect`/`track_grasp` 经 `api.servo_to_tip`/`env.servo_to_flange` 驱动） |
 | `motion.base` | `navigate_relative`、`rotate_base`、`drive_arc` |
 | `motion.base_servo` | （连续底盘驱动原语） |
 | `motion.lift` | `set_lift_pose`、`lift_to_clearance` |
 | `motion.waist` | `turn_waist` |
-| `motion.goal` | `approach_for_grasp`、`approach_for_place` |
+| `motion.goal` | `approach_for_grasp`、`approach_for_place`、`approach_target`、`navigate_to_pose`、`navigate_to_entity` |
 | `motion.dual_arm` | `dual_arm_grasp`、`dual_arm_place` |
 | `grasp.parallel` | `open_gripper`、`close_gripper` |
 | `grasp.suction` | `activate_suction`、`deactivate_suction` |
 | `grasp.paddle` | （经 `dual_arm_grasp` 实现） |
 | `vision.camera` | `get_image`、`pixel_to_base_xyz` |
-| `vision.detection` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene` |
+| `vision.detection` | `get_grasp_info_simple`、`locate_for_grasp`、`locate_for_place`、`analyze_scene`、`locate_target` |
 | `vision.search` | `search_target` |
+| `simulation.truth` | `sim_list_entities`、`sim_get_robot_state`、`sim_get_entity_state` |
+
+新增 RGB-D、导航、仿真契约不会自动为旧适配器提供实现，绑定前提见
+[目标定位与接近](robot-api.md#rgb-d-目标定位与接近)。
 
 Env 手动声明硬件能力；Api 的能力**反推自它实现的动作的 spec**（加上声明的 marker 能力类属性）；有效工具能力为二者交集。Env 可声明无对应动作的标记能力，Api 有而 Env 无的能力不会生成工具。
 
@@ -71,6 +76,7 @@ Protocol 定义在 `jiuwensymbiosis/env/protocol.py`，**按能力切片**——
 | `NamedJointDriver` | `motion.joint`（命名式，可部分命令） | `get_joint_positions()`、`move_joints_blocking(targets, timeout_s=...)` |
 | `ServoDriver` | `motion.servo` | `servo_to_pose(pose)`（非阻塞） |
 | `BaseDriver` | `motion.base`/`motion.goal` | `navigate_relative(dx_m, dy_m=0, dyaw_rad=0)`、`navigate_arc(radius_m, dyaw_rad)` |
+| `MeasuredBaseDriver`（可选） | RGB-D 目标接近扩展 | `navigate_relative(...) -> MeasuredBaseMotionResult`，零位移请求也须实测停车 |
 | `ContinuousBaseDriver` | `motion.base_servo` | `start_base_drive()`、`base_drive_running(handle)`、`steer_base_drive(handle, bearing_rad)`、`hold_base_drive(handle)`、`stop_base_drive(handle)` |
 | `LifterDriver` | `motion.lift` | `set_lifter(q_lifter)` |
 | `WaistDriver` | `motion.waist` | `turn_waist(delta_rad)` |
@@ -162,6 +168,15 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 `@implements` 将 `ToolMeta`（spec + 由这个本体签名推导的 `input_params`）挂到方法上；签名接不下 spec 承诺的参数时，导入即抛 `ContractViolation`。bring-up、标定与调试视图**不是动作**：不加装饰器，用 `scripts/` 下的脚本驱动。
 
 视觉适配器实现 `@implements(PIXEL_TO_BASE_XYZ)` 的 `pixel_to_base_xyz(u, v, depth_m)` 投影动作：eye-in-hand 可转发 `perception/vision.default_pixel_to_base_xyz`（提供 `pose_to_tf` 回调，组合实时 `T_base_flange @ T_flange_cam`，并按标定应用 XY 校正），eye-to-hand 使用 `T_base_cam`。`locate_for_grasp`/`locate_for_place`/`analyze_scene` 已由 `perception/scene3d` 共享实现（`api/defaults` 转发），直接消费标定 `CameraFrame` 与检测器钩子；`search_target`/`approach_for_grasp`/`approach_for_place` 已由 `motion/approach` 共享实现——适配器只提供相机/标定/检测钩子，并在需要机型专属几何时覆写。
+
+### 抓取证据（grasp evidence）
+
+`close_gripper` / `activate_suction` 指令成功**不等于**已持物：fastagent 只在拿到实测证据时才建立 `payload.held`，证据未知即失败关闭（fail closed）。证据按以下优先级聚合，任一否定证据（矛盾）优先：
+
+1. 结果字典里的显式证据字段：`grasp_confirmed`、`holding_payload`、`contact`（`contact` 双向计数——`False` 表示空闭合，`True` 表示停在物体上；见 `contracts.CloseEffectorResult`）。
+2. Api 上的可选钩子 `is_grasp_confirmed(result) -> bool`（so101 风格：由驱动给出保守的接触判定）。
+
+末端没有实测通道的本体，在 Api 类上声明 `trust_command_grasp = True`：指令成功即被接受为证据（运行时打 warning 日志，可审计）。这是**显式降级声明**——默认 fail closed 不变；驱动获得反馈通道后删除该声明并改为提供实测证据。`env.holding_payload` 不参与该判定，它仍是 RecoveryRail 专用的粗粒度标志。
 
 ## 6. Config 与 Session Builder
 

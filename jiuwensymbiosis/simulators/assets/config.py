@@ -50,6 +50,10 @@ class RootSpec(StrictModel):
     content_path: str = "."
     exclude: list[str] = Field(default_factory=list)
     families: dict[str, ContentFamily] = Field(default_factory=dict)
+    # Which material conversion recipe set applies to this root; resolved by
+    # simulators/genesis/material_rules. Behaviour switches on this DECLARED
+    # key, never on the root id a local user happened to pick.
+    material_rules: str | None = None
 
     @field_validator("content_path")
     @classmethod

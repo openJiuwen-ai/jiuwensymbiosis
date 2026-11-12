@@ -115,6 +115,13 @@ ruff check .            # lint; ruff check --fix . to auto-fix
 mypy jiuwensymbiosis/
 ```
 
+## Robot model admission
+
+`simulators/genesis/robot_model.py`, `collision_preparation.py` and `collision_audit.py`
+provide body-independent preparation and fail-closed loaded-model admission. Keep robot policy examples
+in `configs/simulators/collision/`; do not add body names or gains to the generic modules.
+See [model admission](docs/en/how-to/audit-robot-models.md) for supported assets and evidence lifecycle.
+
 ## Generated Results
 
 Use `outputs/<topic>/` for generated reports, benchmark results, and retained acceptance artifacts.
@@ -175,11 +182,12 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 **RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (Env + registered resources), `__exit__` calls `disconnect()`. Both are idempotent. The Session owns its HTTP clients and any explicitly enabled local subprocesses (sidecars); it never starts or stops externally managed inference servers, including manually started localhost services. The internal `sidecar_starters` name also covers client contexts and cleanup callbacks.
 
 **Known Capabilities** (defined in `env/base.py:KNOWN_CAPABILITIES`):
-- arm — `motion.cartesian`, `motion.joint`, `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
+- arm — `motion.cartesian`, `motion.joint`, `motion.tool_pose` (jointly planned tool poses), `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
 - mobile manipulator — `motion.base`, `motion.base_servo`, `motion.lift`, `motion.waist`, `motion.goal`
 - end effector — `grasp.suction`, `grasp.parallel`, `grasp.paddle` (two flat plates clamping a face on each side)
 - sensing / planning — `vision.camera`, `vision.depth`, `vision.detection`, `vision.eye_to_hand`, `vision.search`, `planning.reachability`
 - misc — `sorting.command`, `speech.tts`
+- simulation — `simulation.truth` (explicit ground-truth snapshots; never sensor evidence)
 
 ### Safety & Auxiliary Rails
 
@@ -234,7 +242,7 @@ New robot types follow this pattern under `jiuwensymbiosis/adapters/<name>/`:
 1. `config.py` — `@dataclass` with `from_yaml()`/`from_dict()`
 2. `lowlevel.py` — Driver implementing the **capability-sliced** Protocols in `env/protocol.py`: `RobotDriver` is only `close()`, and a body implements the slices matching what it declares — `CartesianDriver` / `JointDriver` / `ServoDriver` / `BaseDriver` / `ContinuousBaseDriver` / `LifterDriver` / `WaistDriver` / `DualArmDriver` / `CameraDriver` / `SuctionDriver` / `GripperDriver` / `VisionDriver`. A mobile dual-arm body owes nothing to the single-arm Cartesian contract.
 3. `env.py` — `BaseRobotEnv` subclass: `capabilities` frozenset, `connect`/`disconnect`/`get_observation`, expose `home_pose`/`tool_offset_mm` plus whichever SafetyRail envelopes the hardware can actually state (`z_min_safe`/`workspace_bounds`/`joint_limits`/`base_step_limits`/`lift_limits`/`waist_step_limit_rad`; each defaults to `None` = unchecked), and `holding_payload` if the body can carry something
-4. `api.py` — Subclasses `BaseRobotApi` (the mixin layer is gone); every action is an explicit `@implements(SPEC)` method, forwarding to `api/defaults.py` where the body adds nothing; overrides geometry-specific methods, implements vision methods
+4. `api.py` — Subclasses `BaseRobotApi` (the mixin layer is gone); every action is an explicit `@implements(SPEC)` method, forwarding to `api/defaults.py` where the body adds nothing; overrides geometry-specific methods, implements vision methods. A body whose end effector has no measured grasp channel must declare `trust_command_grasp = True` here — under fastagent a close command alone does not establish `payload.held` and unknown evidence fails closed (grasp-evidence section of the adapter reference)
 5. `calibration.py` — Optional hand-eye calibration wrapper exposing `CALIBRATION_ADAPTER_SPEC` (see the calibration section)
 6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor. `managed_detector=True` injects a Session-owned HTTP client; `make_detector_sidecar()` provides a managed local model subprocess only for `detector.mode: local`.
    For Runtime/official CLI admission, pass `resource_keys(cfg)` identifying the physical command endpoint. The builder exposes `.config_factory` and `.resource_keys`; common admission adds cameras and spawned detectors. An explicit `physical_device_id` supplements derived identities. Builders do not acquire locks themselves. Drivers/Env must propagate cleanup errors and retain failed handles; constructors with unconfirmed rollback raise `HardwareCleanupError` (`agent.lifecycle`).
@@ -340,6 +348,9 @@ jiuwensymbiosis/          # Main package
   skills/                 # Built-in SKILL.md files (visual_pick, visual_place, transport)
   perception/             # Body-agnostic vision: frame, calibration, object_geometry, scene3d
   motion/                 # Body-agnostic motion: base_goal, approach, diff_drive, dual_arm, lift
+  simulators/             # Genesis/Nyx simulator: assets index, scene runtime + worker,
+                          #   material repair/baking (rules declared per root in assets.yaml), occupancy export,
+                          #   generic robot-model preparation and loaded-collision admission
   adapters/
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)

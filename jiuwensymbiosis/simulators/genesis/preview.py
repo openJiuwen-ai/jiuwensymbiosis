@@ -177,12 +177,18 @@ class GenesisPreview:
                     "phase_elapsed_ms": (time.monotonic() - (loading["phase_started_at"] or loading["started_at"]))
                     * 1000,
                 }
-            if self._reset_request and result["state"] != "failed":
+            if self._reset_request:
                 reset_result = result.get("reset_result") or {}
-                if reset_result.get("id") != self._reset_request["id"] or not reset_result.get("complete"):
+                completed = reset_result.get("id") == self._reset_request["id"] and reset_result.get("complete")
+                if completed:
+                    # Keep the result for the waiting caller, but release the
+                    # request even when the worker rejected this reset.
+                    self._reset_request = None
+                    self._send_control()
+                elif result.get("state") != "failed":
+                    # A host timeout does not cancel or confirm the worker's
+                    # reset. Keep new work isolated until its terminal reply.
                     result.update(state="resetting", message="正在复位当前世界…")
-                elif reset_result.get("error"):
-                    result.update(state="failed", message=reset_result["error"])
             if (
                 self._switch_started
                 and self._observed_revision != self._config_revision
@@ -286,9 +292,9 @@ class GenesisPreview:
         request_id = uuid.uuid4().hex
         path = self.state_dir / f"capture-{request_id}.jpg"
         depth_path = self.state_dir / f"capture-{request_id}.npz"
-        if include_depth and (
-            camera_name == "observer" or type(depth_stride) is not int or not 4 <= depth_stride <= 32
-        ):
+        if include_depth and camera_name == "observer":
+            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
+        if include_depth and (type(depth_stride) is not int or not 4 <= depth_stride <= 32):
             raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
         if depth_region is not None and (
             not include_depth or len(depth_region) != 4 or any(type(i) is not int for i in depth_region)
@@ -355,12 +361,9 @@ class GenesisPreview:
                             with np.load(depth_path, allow_pickle=False) as arrays:
                                 rgb, depth = arrays["rgb"], arrays["depth_m"]
                             shape = (result["height"], result["width"])
-                            if (
-                                rgb.shape != (*shape, 3)
-                                or rgb.dtype != np.uint8
-                                or depth.shape != shape
-                                or depth.dtype != np.float32
-                            ):
+                            shape_invalid = rgb.shape != (*shape, 3) or depth.shape != shape
+                            dtype_invalid = rgb.dtype != np.uint8 or depth.dtype != np.float32
+                            if shape_invalid or dtype_invalid:
                                 raise ValueError("RGB-D payload shape or dtype mismatch")
                             observation.update(rgb=rgb, depth_m=depth)
                         return observation
@@ -698,11 +701,12 @@ class GenesisPreview:
             if self._motion_cancelled or (cancelled is not None and cancelled.is_set()):
                 raise RuntimeError("任务已取消。")
             previous = state.get("base_motion", {})
-            if self._motion_request and (
-                previous.get("id") != self._motion_request["id"]
+            incomplete = (
+                previous.get("id") != (self._motion_request or {}).get("id")
                 or previous.get("status") != "completed"
                 or not previous.get("settled")
-            ):
+            )
+            if self._motion_request and incomplete:
                 raise RuntimeError("上一条底盘动作尚未完成。")
             request: dict[str, Any] = {
                 "id": uuid.uuid4().hex,

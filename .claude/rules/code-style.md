@@ -16,7 +16,7 @@ paths:
   Ruff owns formatting, linting, and import sorting.
 - Match nearby code and add type annotations to new public interfaces. Use
   absolute package imports and explicit public exports in `__init__.py`.
-  The isolated Genesis file worker and assets directory CLI are documented
+  The isolated Genesis file worker, robot-model inspection CLI, and assets directory CLI are documented
   exceptions: their script imports must avoid package initialization and
   openjiuwen hooks. Keep bootstrap paths temporary so they cannot shadow the
   installed Genesis SDK; retain subprocess import-isolation tests.

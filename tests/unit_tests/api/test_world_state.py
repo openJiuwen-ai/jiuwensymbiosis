@@ -404,24 +404,32 @@ def test_unmeasured_close_never_establishes_payload_held():
 
 
 @pytest.mark.parametrize(
-    "result,hook,observed,expected",
+    "result,hook,trusted,expected",
     [
-        ({"ok": True, "state": "closed"}, None, None, None),
-        ({"ok": True, "contact": True}, None, None, None),
-        ({"grasp_confirmed": True}, None, None, True),
-        ({"grasp_confirmed": True}, None, False, False),
+        # No evidence and no declaration: unknown fails closed.
+        ({"ok": True, "state": "closed"}, None, False, None),
+        # A declared body accepts a successful command; a failed one it does not.
+        ({"ok": True, "state": "closed"}, None, True, True),
+        ({"ok": False, "reason": "timeout"}, None, True, None),
+        # ``contact`` counts in both directions (same judgement as so101's hook).
+        ({"ok": True, "contact": True}, None, False, True),
+        # Explicit result evidence.
+        ({"grasp_confirmed": True}, None, False, True),
+        # Explicit negative evidence beats the hook AND beats a trust declaration.
+        ({"contact": False}, True, False, False),
         ({"contact": False}, True, True, False),
-        ({}, True, None, True),
-        ({}, None, True, True),
-        ({"grasp_confirmed": "true"}, None, None, None),
+        # The hook alone is measured evidence.
+        ({}, True, False, True),
+        # A truthy string is not evidence.
+        ({"grasp_confirmed": "true"}, None, False, None),
     ],
 )
-def test_grasp_confirmation_requires_evidence_and_respects_contradictions(result, hook, observed, expected):
+def test_grasp_confirmation_requires_evidence_and_respects_contradictions(result, hook, trusted, expected):
     from types import SimpleNamespace
 
     from jiuwensymbiosis.tools.robot_control_tool import read_grasp_confirmation
 
-    api = SimpleNamespace(env=SimpleNamespace(holding_payload=observed))
+    api = SimpleNamespace(trust_command_grasp=trusted)
     if hook is not None:
         api.is_grasp_confirmed = lambda result: hook
     assert read_grasp_confirmation(api, result) is expected

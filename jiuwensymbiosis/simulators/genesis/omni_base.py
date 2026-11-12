@@ -116,12 +116,10 @@ def validate_twist(vx: float, vy: float, wz: float) -> None:
         raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
 
 
-def prepare_mobile_urdf(
-    source: Path, target: Path, layout: OmniWheelLayout, *, initial_posture=None
-) -> dict[str, float]:
+def mobile_home_targets(source: Path, layout: OmniWheelLayout, *, initial_posture=None) -> dict[str, float]:
     """Keep articulated joints and mimic constraints; return the upper-body home.
 
-    Only mesh paths change in this disposable copy. Zero exported motor limits
+    The source is only read. Zero exported motor limits
     are overridden explicitly by the simulation-only posture controller.
     """
     tree = ET.parse(source)
@@ -152,10 +150,6 @@ def prepare_mobile_urdf(
             progressed = True
         if not progressed:
             raise ValueError("Unresolved mimic references")
-    for mesh in root.findall(".//mesh"):
-        mesh.set("filename", str((source.parent / mesh.attrib["filename"]).resolve()))
-    ET.indent(tree, space="  ")
-    tree.write(target, encoding="utf-8", xml_declaration=True)
     return {
         j.attrib["name"]: positions[j.attrib["name"]]
         for j in root.findall("joint")
@@ -175,6 +169,8 @@ class UpperBodyHold:
         self.entity = entity
         self.names = list(targets)
         self.target = np.asarray(list(targets.values()))
+        self.dofs: list[int] = []
+        self.motor_dofs: list[int] = []
         joints = {j.attrib["name"]: j for j in ET.parse(urdf).findall("joint")}
         self.driven = [i for i, name in enumerate(self.names) if joints[name].find("mimic") is None]
         self.kp, self.kv, self.effort = [], [], []
@@ -254,27 +250,20 @@ class Moz1Base:
         spawn: tuple[float, float, float] = (0.0, 0.0, 0.0),
         collision_policy: dict | None = None,
         initial_posture: dict | None = None,
-        model_directory: Path | None = None,
+        model_directory: Path,
     ) -> None:
         import genesis as gs
 
         self.layout = OmniWheelLayout.from_urdf(source)
-        self.path = directory / "moz1-mobile.urdf"
-        targets = prepare_mobile_urdf(source, self.path, self.layout, initial_posture=initial_posture)
+        targets = mobile_home_targets(source, self.layout, initial_posture=initial_posture)
         model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
-        self.model_manifest = model_module.prepare_robot_model(
-            source, model_directory if model_directory is not None else directory / "model", policy=collision_policy
-        )
+        self.model_manifest = model_module.prepare_robot_model(source, model_directory, policy=collision_policy)
         self.path = Path(self.model_manifest["urdf"])
         self.source, self.name, self.render_urdf = source, name, render_urdf
         self.entity = scene.add_entity(
             morph=gs.morphs.URDF(
                 file=str(self.path),
-                fixed=False,
-                merge_fixed_links=False,
-                collision=True,
-                convexify=True,
-                decimate=True,
+                **model_module.admission_morph_options(fixed=False, decimate=True),
                 file_meshes_are_zup=True,
                 pos=(spawn[0], spawn[1], spawn[2] + self.layout.radius_m + 0.005),
             )
@@ -283,6 +272,7 @@ class Moz1Base:
         self.remaining_s = 0.0
         self.wheels: list[int] | range = []
         self._wheel_hold: Any = None
+        self.model_audit = None
         self._velocity_target: tuple[float, float, float] | None = None
         self.upper_body = UpperBodyHold(self.entity, self.path, targets)
 
@@ -358,12 +348,15 @@ class Moz1Base:
         """Read actual solver flags, including Genesis' default pair exclusions."""
         solver = self.entity.solver
         # Pinned Genesis 1.4.4 exposes no public accessor for these solver flags.
+        # Read the live flags, not a copy of the requested scene options.
+        # pylint: disable=protected-access
         return {
             "enabled": bool(solver._enable_collision),  # noqa: SLF001 -- pinned SDK readback
             "self_collision": bool(solver._enable_self_collision),  # noqa: SLF001 -- pinned SDK readback
             "adjacent_collision": bool(solver._enable_adjacent_collision),  # noqa: SLF001 -- pinned SDK readback
             "neutral_collision": bool(solver._enable_neutral_collision),  # noqa: SLF001 -- pinned SDK readback
         }
+        # pylint: enable=protected-access
 
     def snapshot(self) -> dict:
         collisions = self.collision_settings()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
@@ -24,8 +25,7 @@ def main(path: Path):
                 if field in geom:
                     geom[field] = np.array(geom[field], dtype=int if field == "faces" else float)
             if geom.get("payload"):
-                # Conservatively enclose actual loaded geometry in the measured
-                # tool frame. Full geometry remains independently checked below.
+                # Enclose loaded geometry in tool frame; independently check full geometry below.
                 points = geom["vertices"] @ geom["pose"][:3, :3].T + geom["pose"][:3, 3]
                 center = (points.max(0) + points.min(0)) / 2
                 radius = float(np.linalg.norm(points - center, axis=1).max()) + 0.003
@@ -62,17 +62,7 @@ def main(path: Path):
                 "command_derivative_maxima": [values.tolist() for values in trajectory.derivative_maxima()],
             },
             "collision_validation": validation,
-            "trajectory": {
-                "names": trajectory.names,
-                "stationary_names": trajectory.stationary_names,
-                "positions": trajectory.positions.tolist(),
-                "dt": trajectory.dt,
-                "binding": trajectory.binding,
-                "start": dict(trajectory.start),
-                "velocity_limits": trajectory.velocity_limits.tolist(),
-                "acceleration_limits": trajectory.acceleration_limits.tolist(),
-                "jerk_limits": trajectory.jerk_limits.tolist(),
-            },
+            "trajectory": {field.name: getattr(trajectory, field.name) for field in fields(trajectory)},
         }
     except Exception as exc:
         result = {
@@ -83,7 +73,11 @@ def main(path: Path):
         }
     finally:
         planner.close()
-    (path.parent / "result.json").write_text(json.dumps(result, indent=2, allow_nan=False))
+    (path.parent / "result.json").write_text(
+        json.dumps(
+            result, default=lambda v: v.tolist() if isinstance(v, np.ndarray) else dict(v), indent=2, allow_nan=False
+        )
+    )
 
 
 if __name__ == "__main__":

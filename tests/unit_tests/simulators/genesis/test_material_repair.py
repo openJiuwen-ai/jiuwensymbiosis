@@ -109,14 +109,56 @@ def test_caller_rule_preserves_metadata_and_records_overlay(tmp_path):
     assert json.loads((path.parent / "material-repair.json").read_text()) == report
 
 
-@pytest.mark.parametrize("root_id, expected", [("interioragent", 1), ("geniesim", 0), ("custom", 0)])
-def test_rules_follow_indexed_provenance_not_material_name(tmp_path, root_id, expected):
+@pytest.mark.parametrize(
+    "material_rules, expected",
+    [("interioragent", 1), ("geniesim", 0), (None, 0), ("no-such-key", 0)],
+)
+def test_rules_follow_the_declared_key_not_the_root_id(tmp_path, material_rules, expected):
     from types import SimpleNamespace
 
     from jiuwensymbiosis.simulators.genesis.scene_catalog import material_rules_for_asset
 
     source = fixture(tmp_path)
-    asset = SimpleNamespace(asset=SimpleNamespace(root_id=root_id))
+    # The root id is deliberately unrelated to the declared key.
+    asset = SimpleNamespace(asset=SimpleNamespace(root_id="custom", material_rules=material_rules))
     _, report = prepare_materials(source, tmp_path / "cache", rules=material_rules_for_asset(asset))
     assert report["converted"] == expected
     assert material_rules_for_asset(None) is None
+
+
+def test_an_unknown_declared_key_warns_and_converts_nothing(tmp_path, caplog):
+    from types import SimpleNamespace
+
+    from jiuwensymbiosis.simulators.genesis.material_rules import rules_for
+    from jiuwensymbiosis.simulators.genesis.scene_catalog import material_rules_for_asset
+
+    asset = SimpleNamespace(asset=SimpleNamespace(root_id="custom", material_rules="typo-key"))
+    with caplog.at_level("WARNING", logger="jiuwensymbiosis.simulators.genesis.material_rules"):
+        assert material_rules_for_asset(asset) is None
+    assert "Unknown material_rules key 'typo-key'" in caplog.text
+    assert rules_for("interioragent") is not None
+
+
+def test_one_failing_material_is_isolated_and_rolls_back_its_textures(tmp_path):
+    from PIL import Image
+
+    from jiuwensymbiosis.simulators.genesis.material_surface import texture
+
+    texture_path = tmp_path / "tiny.png"
+    Image.new("RGB", (4, 4), (10, 20, 30)).save(texture_path)
+    source = fixture(tmp_path, family="BoomMaterial")
+
+    def boom_after_recording(stage, preview, shader, family, report, directory):
+        # A non-identity UV forces a real bake, so the counters move before the crash.
+        texture(stage, preview, texture_path, "diffuseColor", report, uv=((2.0, 1.0), 0.0, (0.0, 0.0)))
+        raise RuntimeError("template blew up")
+
+    path, report = prepare_materials(source, tmp_path / "cache", rules={"BoomMaterial": boom_after_recording})
+    assert path == source
+    assert report["converted"] == 0
+    assert report["remaining"] == [
+        {"path": "/World/Material", "family": "BoomMaterial", "reason": "conversion_unavailable"}
+    ]
+    assert report["textures"] == 0, "a failed conversion must not count as processed textures"
+    assert report["baked_textures"] == []
+    assert [issue["kind"] for issue in report["issues"]] == ["conversion_error"]

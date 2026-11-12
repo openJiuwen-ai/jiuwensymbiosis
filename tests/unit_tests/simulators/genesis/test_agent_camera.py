@@ -109,8 +109,10 @@ async def test_exact_pixels_staged_until_tool_reply_and_bounded(preview, tmp_pat
     assert shown.call_args.args[0]["image_url"] == url
     assert camera.frames[0]["injected"]
     assert (tmp_path / "run-1.jpg").read_bytes() == b"exact-camera-jpeg"
+    for _ in range(6):
+        camera.record_capture(preview.capture_image.side_effect("head_cam"), replace_pending=True)
     for _ in range(3):
-        await camera.capture("head_cam")
+        assert "error" not in await camera.capture("head_cam")
     assert "error" in await camera.capture("head_cam")
     assert preview.capture_image.call_count == 4
 
@@ -370,3 +372,10 @@ async def test_vendor_exception_class_name_cannot_leak_credentials(preview, tmp_
         await camera.capture("head_cam")
     assert "genesis.camera.capture_failed (Exception)" in caplog.text
     assert "PRIVATE" not in caplog.text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_perception_requires_detector_before_connect(preview, enabled):
+    with pytest.raises(ValueError, match="detector"):
+        make_session(preview, actions_enabled=enabled, observation_mode="perception")
+    preview.acquire_motion.assert_not_called()

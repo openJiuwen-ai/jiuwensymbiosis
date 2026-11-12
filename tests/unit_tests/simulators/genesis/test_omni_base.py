@@ -12,7 +12,7 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
     Moz1Base,
     OmniWheelLayout,
     UpperBodyHold,
-    prepare_mobile_urdf,
+    mobile_home_targets,
 )
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
@@ -69,11 +69,11 @@ def test_wheel_directions_follow_actual_diagonal_omni_axes(urdf):
     assert OmniWheelLayout.from_urdf(urdf).wheel_rates(0.1, 0, 0)[0] > 0
 
 
-def test_disposable_copy_retains_rollers_mass_and_mimic_posture(urdf, tmp_path):
+def test_home_targets_preserve_rollers_mass_and_mimic_posture(urdf, tmp_path):
     before = urdf.read_bytes()
     layout = OmniWheelLayout.from_urdf(urdf)
-    target = tmp_path / "mobile.urdf"
-    targets = prepare_mobile_urdf(urdf, target, layout)
+    target = urdf
+    targets = mobile_home_targets(urdf, layout)
     assert urdf.read_bytes() == before
     root = ET.parse(target)
     moving = [j.get("name") for j in root.findall("joint") if j.get("type") != "fixed"]
@@ -124,9 +124,9 @@ def test_upper_hold_keeps_home_through_motion_expiry_stop_and_reset(urdf, tmp_pa
     finger.set("type", "revolute")
     finger.find("mimic").set("joint", "tn__RightArm0_tD")
     tree.write(urdf)
-    target = tmp_path / "mobile.urdf"
+    target = urdf
     layout = OmniWheelLayout.from_urdf(urdf)
-    targets = prepare_mobile_urdf(urdf, target, layout)
+    targets = mobile_home_targets(urdf, layout)
     entity = Mock()
     indices = dict(zip(WHEEL_NAMES, (6, 17, 28, 39), strict=True)) | {"tn__RightArm0_tD": 50, "finger": 51}
     entity.get_joint.side_effect = lambda name: SimpleNamespace(dofs_idx_local=[indices[name]])
@@ -365,3 +365,17 @@ def test_preview_binds_pulse_to_live_scene_and_clears_on_disconnect(tmp_path):
     assert preview._base_request["id"] == first["queued_id"]
     preview.set_streaming(False)
     assert preview._base_request is None
+
+
+def test_fixture_posture_survives_read_only_model_preparation(urdf):
+    tree = ET.parse(urdf)
+    tree.find("joint[@name='arm']").set("type", "revolute")
+    tree.write(urdf)
+    before = urdf.read_bytes()
+    layout = OmniWheelLayout.from_urdf(urdf)
+    assert mobile_home_targets(urdf, layout, initial_posture={"arm": 0.4}) == pytest.approx(
+        {"arm": 0.4, "finger": -0.37}
+    )
+    assert urdf.read_bytes() == before
+    with pytest.raises(ValueError, match="independent upper-body"):
+        mobile_home_targets(urdf, layout, initial_posture={"finger": 0.1})

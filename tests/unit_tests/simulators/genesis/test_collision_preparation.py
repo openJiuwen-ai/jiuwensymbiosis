@@ -1,4 +1,4 @@
-"""CPU contract tests for the auditable MOZ1 collision profile."""
+"""CPU contract tests for explicit, robot-independent collision policies."""
 
 from __future__ import annotations
 

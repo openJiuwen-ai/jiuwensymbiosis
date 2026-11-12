@@ -43,6 +43,8 @@ class ResidentPreview:
     def _rpc(self, method: str, *, timeout: float = 5, cancelled: threading.Event | None = None, **params: Any) -> Any:
         if cancelled is not None and cancelled.is_set():
             raise RuntimeError("任务已取消。")
+        if method not in {"ping", "attach", "detach", "stop"} and not self._attached:
+            raise RuntimeError("Genesis 客户端连接已失效，请重新连接。")
         request_id = uuid.uuid4().hex
         sent_cancel = False
 
@@ -143,10 +145,15 @@ class ResidentPreview:
             self._heartbeat_thread.start()
 
     def _heartbeat(self) -> None:
-        while not self._heartbeat_stop.wait(1):
+        stop = self._heartbeat_stop
+        while not stop.wait(1):
             try:
                 self._rpc("heartbeat", timeout=2)
-            except (RuntimeError, TimeoutError):
+            except (RuntimeError, TimeoutError) as exc:
+                with self._lock:
+                    if self._heartbeat_stop is stop and not stop.is_set():
+                        self._attached = False
+                        self._state = {"state": "failed", "message": str(exc)}
                 return  # Lost ownership is terminal for existing work.
 
     def status(self) -> dict:

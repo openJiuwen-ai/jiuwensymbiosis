@@ -49,7 +49,8 @@ def _paint(mask, origin, resolution, triangle, padding):
     inside = (np.minimum.reduce(signs) >= -1e-10) | (np.maximum.reduce(signs) <= 1e-10)
     if area < 1e-12:
         inside[:] = False
-    mask[low[1] : high[1], low[0] : high[0]] |= inside | edge_hit
+    rows, columns = slice(low[1], high[1]), slice(low[0], high[0])
+    mask[rows, columns] |= inside | edge_hit
 
 
 def _paint_obstacles(mask, origin, resolution, triangles):
@@ -59,7 +60,7 @@ def _paint_obstacles(mask, origin, resolution, triangles):
     array unions their rectangles in O(triangles + cells), without a Python loop
     per face. This can only add blocked cells, never remove an obstacle.
     """
-    if not len(triangles):
+    if triangles.size == 0:
         return
     padding = resolution / math.sqrt(2)
     low = np.maximum(0, np.floor((triangles[:, :, :2].min(axis=1) - padding - origin) / resolution).astype(int))
@@ -121,7 +122,9 @@ class NavigationMap:
         for dy in range(-cells, cells + 1):
             for dx in range(-cells, cells + 1):
                 if math.hypot(dx, dy) * resolution <= radius + resolution / math.sqrt(2):
-                    free &= padded[cells + dy : cells + dy + size[1], cells + dx : cells + dx + size[0]]
+                    rows = slice(cells + dy, cells + dy + size[1])
+                    columns = slice(cells + dx, cells + dx + size[0])
+                    free &= padded[rows, columns]
         return cls(low, free, resolution, radius)
 
     @classmethod

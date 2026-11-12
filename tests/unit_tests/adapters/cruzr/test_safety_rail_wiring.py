@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
@@ -73,7 +74,7 @@ class TestLiftPolicy:
     async def test_out_of_urdf_range_is_rejected(self, rail):
         joint, (_, hi) = next(iter(LIFTER_LIMITS.items()))
         ctx = FakeCtx(tool_name="set_lift_pose", tool_args={"q_lifter": {joint: hi + 1.0}})
-        with pytest.raises(ValueError, match="out of limits"):
+        with pytest.raises(AbortError, match="out of limits"):
             await rail.before_tool_call(ctx)
 
 
@@ -102,7 +103,7 @@ class TestNamedJointRangeIsEnforced:
 
     async def test_out_of_range_is_rejected(self, rail_with_range):
         args = {"joint_name": "waist_yaw_joint", "position_rad": 2.5}
-        with pytest.raises(ValueError, match="out of limits"):
+        with pytest.raises(AbortError, match="out of limits"):
             await rail_with_range.before_tool_call(FakeCtx(tool_name="move_named_joint", tool_args=args))
 
     async def test_joint_the_body_states_no_limit_for_passes(self, rail_with_range):

@@ -371,3 +371,16 @@ def test_reset_endpoint_requires_local_action_header(client):
     response = http.post("/genesis/backend/reset", headers=headers("reset"))
     assert response.status_code == 200 and response.json()["reset_result"]["complete"]
     assert preview.resets == 1
+
+
+@pytest.mark.parametrize("action", ["start", "configure", "stop"])
+def test_backend_timeout_returns_recoverable_error(client, monkeypatch, action):
+    http, backend, _ = client
+
+    def timeout(**kwargs):
+        raise TimeoutError("backend unavailable")
+
+    monkeypatch.setattr(backend, action, timeout)
+    response = http.post(f"/genesis/backend/{action}", headers=headers(action), json={})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "backend unavailable"

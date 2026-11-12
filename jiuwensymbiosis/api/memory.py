@@ -22,10 +22,14 @@ identical everywhere and only the framework knows the action contracts that driv
 it. It does not replace the api's ``last_detection`` / ``last_surface`` cache,
 which still holds the sensing *payload* a grasp/place step consumes — that cache
 keeps two role-separated slots (object vs support surface) which ``locations``,
-keyed by referent, cannot express. The two stay consistent because one hook drives
-both: the dispatch layer clears the cache exactly when it invalidates these
-locations (``tools/robot_control_tool.py:_stale_sensing_cache`` →
-``BaseRobotApi.invalidate_sensing_cache``). Do not add a second invalidation site.
+keyed by referent, cannot express. The two stay consistent because the dispatch
+layer owns both timed applications in one module
+(``tools/robot_control_tool.py``), always through the single
+``BaseRobotApi.invalidate_sensing_cache`` hook: ``begin_action`` clears before a
+motion that does not itself re-measure (``invalidates_locations`` and not
+``produces_location``), and ``_stale_sensing_cache`` clears after a failed motion
+while keeping what a producing action refreshed mid-flight. Do not add
+invalidation call sites outside ``tools/robot_control_tool.py``.
 
 Invalidating effects apply even on failure: a failed motion may already have moved.
 Only successful, measured effects establish new state. A detection that ran and returned
@@ -43,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwensymbiosis.api.decorators import ToolMeta
-from jiuwensymbiosis.api.state import apply_effects
+from jiuwensymbiosis.api.state import PAYLOAD_TOKENS, apply_effects
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +63,19 @@ def action_succeeded(result: Any) -> bool:
 
 
 def payload_confirmation(result: Any) -> bool | None:
-    """Read explicit grasp evidence; closed fingers alone say nothing about a payload."""
+    """Read explicit grasp evidence; closed fingers alone say nothing about a payload.
+
+    ``contact`` counts in both directions: an adapter putting it in the result
+    asserts the close stopped on object contact — ``False`` means it closed on
+    empty space, ``True`` that it stopped on something — the same judgement
+    so101's driver-level hook makes of its contact state.
+    """
     if not isinstance(result, Mapping):
         return None
-    evidence = [result.get("grasp_confirmed"), result.get("holding_payload")]
-    if any(value is False for value in evidence) or result.get("contact") is False:
+    if "holding_payload" in result and result["holding_payload"] is None:
+        return None
+    evidence = [result.get("grasp_confirmed"), result.get("holding_payload"), result.get("contact")]
+    if any(value is False for value in evidence):
         return False
     if any(value is True for value in evidence):
         return True
@@ -93,15 +105,18 @@ class ExecutionMemory:
     _order: list[str] = field(default_factory=list, repr=False)  # referents, oldest first
 
     # ------------------------------------------------------------------ update
-    def begin(self, meta: ToolMeta | None) -> None:
+    def begin(self, meta: ToolMeta | None, params: Mapping[str, Any] | None = None) -> None:
         """Invalidate knowledge before dispatch, including exceptions and cancellation."""
         if meta is None:
             return
         if meta.invalidates_locations:
             self.invalidate_locations(f"{meta.name} may move the body")
-        self.self_state = apply_effects(self.self_state, invalidates=meta.invalidates)
+        invalidates = set(meta.invalidates)
         if "payload.held" in meta.provides:
-            self.self_state -= {"payload.held", "payload.stowed", "payload.clear"}
+            invalidates |= PAYLOAD_TOKENS
+        self.self_state = apply_effects(
+            self.self_state, invalidates=invalidates, effector=(params or {}).get("effector")
+        )
 
     def observe(
         self,
@@ -112,7 +127,7 @@ class ExecutionMemory:
         grasp_confirmed: bool | None = None,
     ) -> None:
         """Record successful effects; a grasp requires affirmative physical evidence."""
-        self.begin(meta)
+        self.begin(meta, params)
         if meta is None or not action_succeeded(result):
             return
         if meta.produces_location and isinstance(result, Mapping):
@@ -126,7 +141,10 @@ class ExecutionMemory:
                 provides = tuple(t for t in provides if t not in {"payload.held", "payload.stowed"})
                 if confirmation is False:
                     provides += ("payload.clear",)
-        self.self_state = apply_effects(self.self_state, provides=provides)
+        if "payload.clear" in provides and isinstance(result, Mapping) and "holding_payload" in result:
+            if result["holding_payload"] is not False:
+                provides = tuple(t for t in provides if t != "payload.clear")
+        self.self_state = apply_effects(self.self_state, provides=provides, effector=params.get("effector"))
 
     def record_location(self, referent: str, op: str, result: dict[str, Any]) -> None:
         """Store (or refresh) the sensing for ``referent``."""

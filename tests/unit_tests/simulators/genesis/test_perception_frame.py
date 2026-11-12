@@ -79,7 +79,7 @@ def test_pure_rotation_cannot_bypass_the_shared_target_guard():
     assert env.check_target_step(0.0, 0.2, frame.frame_id, TargetApproachTuning()) == "turn_clearance_unobserved"
 
 
-@pytest.mark.parametrize("action", ["rotate", "relative_turn", "turn_and_translate"])
+@pytest.mark.parametrize("action", ["rotate", "relative_turn", "turn_and_translate", "forward", "backward", "lateral"])
 def test_agent_motion_tools_cannot_bypass_unobserved_turn(action):
     from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionMotionApi
 
@@ -96,9 +96,17 @@ def test_agent_motion_tools_cannot_bypass_unobserved_turn(action):
     api = GenesisPerceptionMotionApi(env, lambda *a, **kw: [])
     if action == "rotate":
         result = api.rotate_base(0.2)
+    elif action in {"forward", "backward", "lateral"}:
+        result = api.navigate_relative(-0.25 if action == "backward" else 0.25, 0.2 if action == "lateral" else 0)
     else:
         result = api.navigate_relative(0.25 if action == "turn_and_translate" else 0.0, 0.0, 0.2)
-    assert result["reason"] == "turn_clearance_unobserved"
+    assert result["reason"] == (
+        "clearance_unavailable"
+        if action == "forward"
+        else "translation_clearance_unobserved"
+        if action in {"backward", "lateral"}
+        else "turn_clearance_unobserved"
+    )
     assert not result["ok"] and not result["motion_executed"]
     assert result["settled"] and result["stop_confirmation"] == "measured"
     assert commands == [(0.0, 0.0, 0.0)]

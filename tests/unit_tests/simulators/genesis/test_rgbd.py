@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 from jiuwensymbiosis.simulators.genesis.rgbd import base_body_bounds, base_from_camera, effective_focal, rectified_grid
 
 
@@ -134,3 +135,12 @@ def test_depth_region_samples_only_rectified_requested_pixels(ray_sdk):
     assert depth.shape == (48, 64) and len(calls) == 120
     with pytest.raises(ValueError, match="outside"):
         sample_depth(native, camera, np.eye(4), stride=8, check=lambda: None, region=[-1, 5, 14, 15])
+
+
+@pytest.mark.parametrize(
+    "camera,stride", [("observer", 8), ("head_cam", True), ("head_cam", 3), ("head_cam", 33), ("head_cam", 8.0)]
+)
+def test_invalid_rgbd_request_is_rejected_before_worker_access(tmp_path, camera, stride):
+    preview = GenesisPreview(state_dir=tmp_path)
+    with pytest.raises(ValueError, match="robot camera and sampling stride"):
+        preview.capture_image(camera, include_depth=True, depth_stride=stride)

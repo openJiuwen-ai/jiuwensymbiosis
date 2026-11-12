@@ -30,6 +30,10 @@ def _recording(api: Any, bound: Callable[..., Any]) -> Callable[..., Any]:
     strategy an agent was built with. The wrapper preserves ``__tool_meta__``
     (via ``functools.wraps``) because the tool builder and rails read it back off
     the callable.
+
+    Only keyword params reach the recording (``params`` feeds referent resolution):
+    tools are invoked by name per the action contract, and a positional call —
+    pre-existing behaviour — records under the action's default referent.
     """
 
     if inspect.iscoroutinefunction(bound):

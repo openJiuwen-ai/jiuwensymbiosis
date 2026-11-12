@@ -94,11 +94,26 @@ A supported NVIDIA GPU/driver is required; successful installation is not GPU ac
 Do not combine this profile with `full`, `vision-server` or `voice-local` (different Torch),
 or `dev`/`remote` (Pillow>=12). CPU tests can use `.[dev,gui,simulator-scenes]`.
 A standalone worker and WebRTC backend are available; the browser UI and workbench integration arrive in the next batch.
-Source materials and textures are passed directly to the renderer, without material
-conversion, texture baking or glass substitution. Exposure and tone mapping affect only
-the camera display. Material appearance depends on renderer support and may differ from
-the source authoring application.
-USD/geometry tests are not physics or robot-task acceptance.
+Source USD and texture files stay unchanged; roots that declare `material_rules` get a
+non-destructive material conversion and texture bake before rendering (see the
+"Source material rendering" section in the Chinese README), with per-material details in
+the output directory's `material-repair.json`.
+Exposure and tone mapping affect only the camera display; conversions are explicit
+approximations, and USD/geometry tests are not physics or robot-task acceptance.
+
+Companion batch and export tools (in the `.[genesis]` environment; output directories are
+keyed by asset ID):
+
+```bash
+python scripts/simulator/genesis/genesis_interioragent_batch.py --output outputs/interioragent-batch
+python scripts/simulator/genesis/genesis_material_acceptance.py --output outputs/material-acceptance
+python scripts/simulator/genesis/genesis_scene_occupancy.py --scene <asset-id> --output outputs/scene-map
+```
+
+The batch renders and maps each scene in its own process; the acceptance script
+aggregates converted/remaining/baked counts and exits non-zero when any scene fails
+to render; the occupancy script exports png/pgm/npz/yaml plus a dependency-hash
+report (it also runs in the CPU `.[simulator-scenes]` environment).
 
 ## Standalone runtime and media verification
 
@@ -119,3 +134,16 @@ cache configuration.
 GPU acceptance is opt-in through `JIUWEN_GENESIS_INTEGRATION=1`; set
 `JIUWEN_GENESIS_EVIDENCE` to an `outputs/` directory to retain images and measurements.
 CPU transport, GPU rendering, physical-task success and browser QA are separate checks.
+
+## Robot model preparation and admission
+
+Use `.[simulator-collision]` for CPU preparation (POSIX locking, Linux x86_64); load auditing also needs Genesis 1.4.4.
+Run `python jiuwensymbiosis/simulators/genesis/robot_model.py <source.urdf> --output outputs/robot-audit/example`;
+`--load-audit` builds and reads back without stepping. Assets require single-root URDF trees, acyclic mimic,
+fixed/revolute/continuous/prismatic joints, positive scales and box/sphere/cylinder or OBJ/STL/PLY collisions.
+The runtime supplies no package URI mapping: resolve resource paths before admission. Unsupported assets fail startup;
+reports are in the state directory’s `robot-models/<robot_model_instance_id>/loaded-model.json`.
+[MOZ1 policies](collision/README.md) are examples, not GUI defaults. See the
+[admission guide](../../docs/en/how-to/audit-robot-models.md) for lifecycle and acceptance limits.
+
+Arm planning profiles and the Python-only preview entry point: [Genesis arm planning](../../docs/en/how-to/genesis-arm-planning.md).

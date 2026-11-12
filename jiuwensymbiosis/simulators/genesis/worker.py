@@ -13,6 +13,7 @@ from collections import deque
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from base_motion import measure
@@ -28,6 +29,10 @@ from startup_diagnostics import StartupDiagnostics
 from usd_scene import prepare_static_stage
 
 logger = logging.getLogger("jiuwensymbiosis.simulators.genesis.worker")
+
+# OpenCV reads this at its first import, which happens inside this process when
+# the renderer bakes EXR material textures; setting it later has no effect.
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 
 def run_preview(mailbox: Mailbox, directory: Path) -> None:
@@ -201,22 +206,26 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             reset = command.get("reset")
             if reset and reset["id"] != reset_result.get("id"):
                 reset_result = {"id": reset["id"], "complete": False}
+
+                def publish_reset(data, revision, settings, runtime, reset_result):
+                    mailbox.write_status(
+                        {
+                            "state": "resetting",
+                            "message": "正在复位当前世界…",
+                            "config_revision": revision,
+                            "settings": asdict(settings),
+                            "scene": runtime.info,
+                            "loading": data,
+                            "startup": startup.snapshot(),
+                            "reset_result": reset_result,
+                        }
+                    )
+
                 loading = StartupDiagnostics(
                     logger=logger,
                     operation="reset",
-                    publish=lambda data, revision=revision, settings=settings, runtime=runtime, reset_result=reset_result: (
-                        mailbox.write_status(
-                            {
-                                "state": "resetting",
-                                "message": "正在复位当前世界…",
-                                "config_revision": revision,
-                                "settings": asdict(settings),
-                                "scene": runtime.info,
-                                "loading": data,
-                                "startup": startup.snapshot(),
-                                "reset_result": reset_result,
-                            }
-                        )
+                    publish=partial(
+                        publish_reset, revision=revision, settings=settings, runtime=runtime, reset_result=reset_result
                     ),
                 )
                 try:
@@ -252,12 +261,21 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             if command.get("config_revision", 0) != revision or command["stream_epoch"] != stream_epoch:
                 continue
             streaming = command["streaming"]
+            rejected_motion = {}
             if runtime.info["mode"] == "robot_mobile":
                 motion_request = command.get("base_motion")
                 arm_request = bool(motion_request and motion_request.get("kind") == "arm")
-                motion = runtime.arm_motion if arm_request else runtime.motion
+                motion = getattr(runtime, "arm_motion", None) if arm_request else runtime.motion
                 if motion is None:
-                    raise ValueError("Arm planning not configured")
+                    rejected_motion = {
+                        "id": motion_request["id"],
+                        "status": "completed",
+                        "ok": False,
+                        "settled": False,
+                        "stop_confirmation": "unknown",
+                        "reason": "Arm planning not configured",
+                    }
+                    motion, motion_request = runtime.motion, None
                 if getattr(runtime, "arm_motion", None) is not None and not arm_request:
                     runtime.arm_motion.accept_request(
                         None,
@@ -291,7 +309,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 )
                 if motion.active or (getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active):
                     pass  # Motion owns wheel targets until measured completion, including braking.
-                elif not valid:
+                elif rejected_motion or not valid:
                     runtime.robot.stop()
                 elif base["id"] != base_result.get("id"):
                     base_result = {"id": base["id"], "applied": False}
@@ -381,9 +399,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             ):
                                 nonlocal last_capture_status
                                 current = mailbox.read_control()
+                                expired = mailbox.stopping() or time.monotonic() > deadline
                                 if (
-                                    mailbox.stopping()
-                                    or time.monotonic() > deadline
+                                    expired
                                     or (current.get("capture") or {}).get("id") != capture["id"]
                                     or current.get("config_revision", 0) != revision
                                 ):
@@ -424,7 +442,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             capture_result.update(
                                 base_sample=base_sample,
                                 body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
-                                motion_id=motion.result.get("id"),
+                                motion_id=runtime.motion.result.get("id"),
                             )
                             depth_path = directory / f"capture-{capture['id']}.npz"
                             np.savez(depth_path, rgb=pixels, depth_m=depth)
@@ -546,7 +564,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             if runtime.info["mode"] == "static_background"
                             else "（固定姿态检视，无碰撞）"
                             if runtime.info["mode"] == "robot_preview"
-                            else "（轮速驱动、地面接触、上身锁定）"
+                            else "（轮速驱动、地面接触、受限关节控制）"
                             if runtime.info["mode"] == "robot_mobile"
                             else ""
                         )
@@ -586,7 +604,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "capture_result": capture_result,
                         "scene_query_result": query_result,
                         "base_command_result": base_result,
-                        "base_motion": (
+                        "base_motion": rejected_motion
+                        or (
                             runtime.arm_motion.snapshot()
                             if getattr(runtime, "arm_motion", None) is not None
                             and (command.get("base_motion") or {}).get("kind") == "arm"

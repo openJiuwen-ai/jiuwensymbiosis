@@ -1,0 +1,12 @@
+# Opt-in example only; see README.md for source hashes and verification.
+schema_version: 1
+name: moz1_left_hand_robosim_v1
+disabled_links:
+  left_hand_narrow_loop_Link: 'MOZ1 moz1_omni_gripper_double_narrow.usda: geometry under left_hand_narrow_loop_Link
+    has authored physics:collisionEnabled=false (verified 2026-11-03).'
+  left_hand_wide_loop_Link: 'MOZ1 moz1_omni_gripper_double_narrow.usda: geometry under left_hand_wide_loop_Link
+    has authored physics:collisionEnabled=false (verified 2026-11-03).'
+decomposed_links:
+- left_hand_narrow3_Link
+- left_hand_wide3_Link
+- left_hand_wide2_Link

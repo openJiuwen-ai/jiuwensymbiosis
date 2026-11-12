@@ -44,18 +44,13 @@ def _validated_part(vertices, faces):
     import trimesh
 
     vertices, faces = np.asarray(vertices), np.asarray(faces)
-    if (
-        vertices.ndim != 2
-        or vertices.shape[1:] != (3,)
-        or len(vertices) < 4
-        or not np.isfinite(vertices).all()
-        or faces.ndim != 2
-        or faces.shape[1:] != (3,)
-        or len(faces) < 4
-        or not np.issubdtype(faces.dtype, np.integer)
-        or faces.min() < 0
-        or faces.max() >= len(vertices)
-    ):
+    vertex_shape_ok = vertices.ndim == 2 and vertices.shape[1:] == (3,) and len(vertices) >= 4
+    face_shape_ok = faces.ndim == 2 and faces.shape[1:] == (3,) and len(faces) >= 4
+    if not vertex_shape_ok or not face_shape_ok:
+        raise ValueError("invalid decomposition vertices or triangle indices")
+    if not np.isfinite(vertices).all() or not np.issubdtype(faces.dtype, np.integer):
+        raise ValueError("invalid decomposition vertices or triangle indices")
+    if faces.min() < 0 or faces.max() >= len(vertices):
         raise ValueError("invalid decomposition vertices or triangle indices")
     part = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
     if not part.is_watertight or not part.is_winding_consistent:
@@ -149,6 +144,7 @@ def _cached_parts(source: Path, directory: Path, version: str, parameters: dict)
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     identity = {
         "schema": 2,
+        "preparer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source_sha256": source_sha256,
         "source_file_type": source.suffix.lower(),
         "coacd_version": version,
@@ -158,15 +154,15 @@ def _cached_parts(source: Path, directory: Path, version: str, parameters: dict)
     }
     key = _cache_key(identity)
     path = directory / key
-    source_mesh = trimesh.load(io.BytesIO(source_bytes), file_type=source.suffix[1:], force="mesh", process=True)
-    if (
-        not isinstance(source_mesh, trimesh.Trimesh)
-        or len(source_mesh.vertices) < 4
-        or not len(source_mesh.faces)
-        or not np.isfinite(source_mesh.vertices).all()
-        or not np.isfinite(source_mesh.bounds).all()
-        or float(np.max(source_mesh.extents)) <= 0
-    ):
+    source_mesh = trimesh.load(
+        io.BytesIO(source_bytes), file_type=source.suffix[1:].lower(), force="mesh", process=True
+    )
+    if not isinstance(source_mesh, trimesh.Trimesh):
+        raise ValueError(f"invalid decomposition source mesh: {source}")
+    if len(source_mesh.vertices) < 4 or len(source_mesh.faces) == 0:
+        raise ValueError(f"invalid decomposition source mesh: {source}")
+    finite = np.isfinite(source_mesh.vertices).all() and np.isfinite(source_mesh.bounds).all()
+    if not finite or float(np.max(source_mesh.extents)) <= 0:
         raise ValueError(f"invalid decomposition source mesh: {source}")
     directory.mkdir(parents=True, exist_ok=True)
     # A per-key process lock prevents publishing a partial/racing cache. All
@@ -229,12 +225,9 @@ def apply_collision_policy(root: ET.Element, directory: Path, policy: dict) -> d
     A corrupt cache raises ValueError; it is never silently used or replaced by
     an undecomposed hull. The input root is only changed after all parts pass.
     """
-    if (
-        not isinstance(policy, dict)
-        or policy.get("schema_version") != 1
-        or not isinstance(policy.get("name"), str)
-        or not policy["name"].strip()
-    ):
+    if not isinstance(policy, dict) or policy.get("schema_version") != 1:
+        raise ValueError("collision policy requires schema_version=1 and a name")
+    if not isinstance(policy.get("name"), str) or not policy["name"].strip():
         raise ValueError("collision policy requires schema_version=1 and a name")
     if set(policy) - {"schema_version", "name", "disabled_links", "decomposed_links", "parameters"}:
         raise ValueError("unknown collision policy field")
@@ -295,7 +288,8 @@ def apply_collision_policy(root: ET.Element, directory: Path, policy: dict) -> d
                 replacement = copy.deepcopy(collision)
                 replacement.set("name", f"{name}_collision_{index}_part_{part_index}")
                 replacement_mesh = replacement.find("geometry/mesh")
-                assert replacement_mesh is not None  # The source element was validated above.
+                if replacement_mesh is None:
+                    raise ValueError(f"missing replacement collision mesh: {name}")
                 replacement_mesh.set("filename", part["path"])
                 generated.append(replacement)
             replacements.append((link, collision, generated))

@@ -9,7 +9,7 @@ Genesis 仿真作为可选插件安装，通过工作台的「仿真」页使用
 仓库配置采用 Python 3.12、PyTorch 2.11.0 + CUDA 13.0；当前运行环境为
 RTX 5090 D v2、驱动 595.91.07，其他设备需自行验证兼容性。
 
-仿真依赖及已验证的关键版本统一在 [`pyproject.toml`](../../../pyproject.toml) 的 `genesis` extra 声明，
+Genesis 运行时依赖及已验证的关键版本在 [`pyproject.toml`](../../../pyproject.toml) 的 `genesis` extra 声明，
 并非完整锁文件。仿真使用独立环境；不要混装根目录 `requirements.txt` 或
 `dev`、`full`、`remote`、`vision-server` extras：它们要求 Pillow ≥12，当前仿真需要 Pillow <12。
 
@@ -78,3 +78,6 @@ python -m jiuwensymbiosis.serving.grounding_dino_sam2_server \
 它会检查端口占用，并在结束会话时关闭自己启动的进程；不接管已有服务。
 Nyx 投影修正仅覆盖当前已验证版本 `gs-nyx 0.1.7` / `gs-nyx-plugin 0.1.9`，升级后需要重新验证配准。
 检测失败、深度缺失或转向空间不可见时，RGB-D 接近会拒绝动作，具体语义见使用指南。
+
+纯 CPU 碰撞模型准备可单独安装 `.[simulator-collision]`（不含 Genesis）；需要显式固定 CoACD 的
+完整仿真环境可安装 `.[gui,genesis,simulator-collision]`。参见[模型准入指南](../how-to/audit-robot-models.md)。

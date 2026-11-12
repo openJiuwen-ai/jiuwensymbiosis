@@ -97,6 +97,11 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
             # selftest tools can see ``move`` / ``set_suction`` / ``home_pose``.
             env: MockArmEnv
 
+            # 模拟本体没有反馈通道：声明「指令成功即证据」。真实本体请实现
+            # is_grasp_confirmed 或在结果里返回 grasp_confirmed/contact 字段，
+            # 见 adapter-reference 的抓取证据小节。
+            trust_command_grasp = True
+
             @implements(GET_POSE)
             def get_pose(self) -> dict:
                 """获取当前位姿。"""

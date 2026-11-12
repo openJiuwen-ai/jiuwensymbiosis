@@ -225,3 +225,39 @@ def test_sensor_connection_only_attaches_and_preserves_capture_mode(service):
     finally:
         client.close()
     service.preview.stop.assert_not_called()
+
+
+def test_heartbeat_failure_is_visible_and_terminal(tmp_path):
+    client = ResidentPreview(state_dir=tmp_path)
+    client._attached = True
+    client._rpc = Mock(side_effect=RuntimeError("lease lost"))
+    client._heartbeat_stop.wait = Mock(return_value=False)
+    client._heartbeat()
+    assert not client._attached
+    assert client.status() == {"state": "failed", "message": "lease lost"}
+    with pytest.raises(RuntimeError, match="失效"):
+        ResidentPreview._rpc(client, "acquire_motion")
+
+
+@pytest.mark.parametrize("operation", ["start", "configure"])
+def test_slow_lifecycle_call_does_not_block_heartbeat(service, operation):
+    from concurrent.futures import ThreadPoolExecutor
+
+    client = uuid.uuid4().hex
+    dispatch(service.host, client, "attach")
+    entered, release = threading.Event(), threading.Event()
+
+    def slow():
+        entered.set()
+        assert release.wait(3)
+
+    getattr(service.preview, operation).side_effect = slow
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(dispatch, service.host, client, operation)
+        try:
+            assert entered.wait(1)
+            heartbeat = pool.submit(dispatch, service.host, client, "heartbeat")
+            assert heartbeat.result(timeout=1) == {"alive": True}
+        finally:
+            release.set()
+            pending.result(timeout=1)

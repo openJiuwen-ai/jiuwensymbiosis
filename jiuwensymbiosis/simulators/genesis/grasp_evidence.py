@@ -1,8 +1,4 @@
-"""Measured grasp lifecycle, independent of robot names and physics engines.
-
-Contact is provisional until a supported object is lifted. A lost or unreadable
-grasp stays unknown until an explicit, supported release is measured.
-"""
+"""Measured grasp lifecycle: contact needs lift; lost payload needs supported release."""
 
 from __future__ import annotations
 
@@ -39,14 +35,10 @@ class GraspEvidence:
         from scipy.spatial.transform import Rotation
 
         relative = np.asarray(relative, dtype=float)
-        if (
-            relative.shape != (4, 4)
-            or not np.isfinite(relative).all()
-            or not np.isfinite([dt, height, speed, angular_speed]).all()
-            or dt <= 0
-            or speed < 0
-            or angular_speed < 0
-        ):
+        invalid_pose = relative.shape != (4, 4) or not np.isfinite(relative).all()
+        invalid_motion = not np.isfinite([dt, height, speed, angular_speed]).all()
+        invalid_ranges = dt <= 0 or speed < 0 or angular_speed < 0
+        if invalid_pose or invalid_motion or invalid_ranges:
             self.state = "unknown"
             self.reason = "invalid_readback"
             raise ValueError("invalid grasp observation")
@@ -72,23 +64,16 @@ class GraspEvidence:
         if self.state in {"contact", "held"} and (slipped or self.loss_time >= self.loss_s):
             self.state = "unknown"
             self.reason = "payload_slip" if slipped else "payload_contact_lost"
-        if (
-            self.state == "contact"
-            and self.contact_time >= self.contact_s
-            and self.height is not None
-            and height - self.height >= self.lift_m
-            and not supported
-        ):
+        lifted = self.height is not None and height - self.height >= self.lift_m and not supported
+        if self.state == "contact" and self.contact_time >= self.contact_s and lifted:
             self.state = "held"
         # Opening alone does not certify either an empty hand or a stable place.
         released = same and opened and not contact and resting
         self.released_time = self.released_time + dt if released else 0.0
         if self.released_time >= self.release_s:
             self.state = "clear"
-            # Keep observing the released object until the next close command,
-            # so a fall during retreat revokes placement confirmation.
-            self.reference = None
-            self.height = None
+            # Observe until next close so a fall during retreat revokes placement confirmation.
+            self.reference = self.height = None
             self.contact_time = self.loss_time = 0.0
             self.reason = None
 

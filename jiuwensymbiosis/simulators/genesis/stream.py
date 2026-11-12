@@ -7,6 +7,7 @@ import contextlib
 import time
 import uuid
 from fractions import Fraction
+from functools import partial
 from typing import Any
 
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
@@ -37,10 +38,17 @@ def make_video_track(preview: GenesisPreview | ResidentPreview) -> Any:
             self.epoch: float | None = None
             self.keyframes = 0
             self.waiting_keyframe = False
+            self.keyframe_requested = False
+
+        def request_keyframe(self):
+            self.keyframe_requested = True
 
         async def recv(self):
             await asyncio.sleep(0)
             while self.readyState == "live":
+                if self.keyframe_requested:
+                    self.keyframe_requested = False
+                    await asyncio.to_thread(preview.request_keyframe)
                 sample = await asyncio.to_thread(preview.latest_frame)
                 status = await asyncio.to_thread(preview.status)
                 state = status["state"]
@@ -52,17 +60,18 @@ def make_video_track(preview: GenesisPreview | ResidentPreview) -> Any:
                 if sample is not None and sample["sequence"] != self.sequence:
                     self.sequence = sample["sequence"]
                     identity = status.get("scene", {}).get("instance_id")
-                    if identity and (
+                    mismatched = (
                         sample.get("scene_instance_id") != identity
                         or sample.get("config_revision") != status.get("config_revision")
                         or sample.get("stream_epoch") != status.get("stream_epoch")
-                    ):
+                    )
+                    if identity and mismatched:
                         await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
                         await asyncio.to_thread(preview.request_keyframe)
                         self.waiting_keyframe = True
                         continue
                     if time.monotonic() - sample["captured_at"] >= 2:
-                        preview.request_keyframe()
+                        await asyncio.to_thread(preview.request_keyframe)
                         self.waiting_keyframe = True
                     if self.waiting_keyframe:
                         if not sample.get("keyframe") or time.monotonic() - sample["captured_at"] >= 2:
@@ -156,13 +165,13 @@ class PreviewStream:
                     render_quality=options.get("render_quality", "reference"),
                     camera_name=options.get("camera_name", "observer"),
                 )
-            except (ValueError, RuntimeError) as exc:
+            except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 409) from exc
 
     async def offer(self, sdp: str) -> dict[str, str]:
         """Answer a browser receive-only offer; release failed negotiations immediately."""
         async with self._lock:
-            if self.preview.status()["state"] != "ready":
+            if (await asyncio.to_thread(self.preview.status))["state"] != "ready":
                 raise StreamError("请先启动 Genesis，等待后台就绪。")
             if self._peer is not None:
                 raise StreamError("已有视频连接，请先断开原窗口；关闭窗口后最多等待 20 秒。")
@@ -197,7 +206,7 @@ class PreviewStream:
                     # No public PLI/FIR callback exists in the pinned version; bridge
                     # this sender only. The real CPU WebRTC test exercises RTCP PLI.
                     # pylint: disable=protected-access
-                    sender._send_keyframe = self.preview.request_keyframe  # type: ignore[method-assign]  # noqa: SLF001
+                    sender._send_keyframe = self._track.request_keyframe  # type: ignore[method-assign]  # noqa: SLF001
                     # pylint: enable=protected-access
                     answer = SessionDescription.parse((await peer.createAnswer()).sdp)
                     for media in answer.media:
@@ -210,7 +219,7 @@ class PreviewStream:
                                 profile = str(codec.parameters["profile-level-id"])
                                 codec.parameters["profile-level-id"] = profile[:4] + "33"
                     await peer.setLocalDescription(RTCSessionDescription(sdp=str(answer), type="answer"))
-                self.preview.set_streaming(True)
+                await asyncio.to_thread(self.preview.set_streaming, True)
                 self._watchdog = asyncio.create_task(self._watch(session))
                 succeeded = True
                 return {"sdp": peer.localDescription.sdp, "type": "answer", "session_id": session}
@@ -233,8 +242,8 @@ class PreviewStream:
             if self._peer.connectionState != "connected":
                 raise StreamError("视频连接尚未建立。")
             try:
-                return self.preview.camera_command(action, **values)
-            except (ValueError, RuntimeError) as exc:
+                return await asyncio.to_thread(self.preview.camera_command, action, **values)
+            except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 400) from exc
 
     async def select(self, session: str, **values) -> dict:
@@ -244,7 +253,7 @@ class PreviewStream:
                 raise StreamError("视频连接尚未建立。")
             try:
                 return await asyncio.to_thread(self.preview.select, **values)
-            except (ValueError, RuntimeError) as exc:
+            except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 400) from exc
 
     async def base_command(self, session: str, **values) -> dict:
@@ -253,8 +262,8 @@ class PreviewStream:
             if self._peer.connectionState != "connected":
                 raise StreamError("视频连接尚未建立。")
             try:
-                return self.preview.base_command(**values)
-            except (ValueError, RuntimeError) as exc:
+                return await asyncio.to_thread(partial(self.preview.base_command, **values))
+            except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 400) from exc
 
     def _require_session(self, session: str) -> None:
@@ -270,7 +279,7 @@ class PreviewStream:
     async def _watch(self, session: str) -> None:
         while session == self._session:
             await asyncio.sleep(2)
-            status = self.preview.status()
+            status = await asyncio.to_thread(self.preview.status)
             viewer_expired = time.monotonic() - self._last_seen > 20 or (
                 self._peer is not None
                 and self._peer.connectionState != "connected"

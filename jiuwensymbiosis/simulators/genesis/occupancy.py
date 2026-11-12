@@ -2,6 +2,12 @@
 
 These are evaluator maps, not sensor observations or proof of traversability.
 Known free space requires both a room polygon and an authored floor surface.
+The runtime planner is authoritative: ``navigation.NavigationMap`` builds its
+own floor/obstacle bands from the same meshes (support within 0.015 m of the
+floor level, obstacles spanning +0.06 m to the band top). This export mirrors
+those band edges — the export script's defaults are 0.06/1.95 for exactly that
+reason — but derives its floor level by area vote instead, so an disagreement
+between the two is a defect in one of them, never a tiebreak for planning.
 """
 
 from __future__ import annotations
@@ -71,7 +77,9 @@ def build_occupancy(
     values = (resolution, min_height, max_height, floor_tolerance, padding)
     if not all(np.isfinite(values)) or not (resolution > 0 and 0 <= min_height < max_height):
         raise ValueError("Invalid grid resolution or obstacle height interval")
-    if floor_tolerance < 0 or padding < resolution or not meshes or not rooms:
+    if not meshes or not rooms:
+        raise ValueError("Require meshes, rooms, nonnegative floor tolerance and at least one padding cell")
+    if floor_tolerance < 0 or padding < resolution:
         raise ValueError("Require meshes, rooms, nonnegative floor tolerance and at least one padding cell")
     polygons = [np.asarray(room["polygon"], dtype=float) for room in rooms]
     if any(p.ndim != 2 or p.shape[1] != 2 or len(p) < 3 or not np.isfinite(p).all() for p in polygons):
@@ -180,6 +188,9 @@ def build_occupancy(
             "robot_radius_m": 0,
             "sensor_derived": False,
             "physics_collision_equivalence_verified": False,
+            "navigation_map_relationship": (
+                "Evaluator export; navigation.NavigationMap is authoritative for runtime planning."
+            ),
             "limitations": [
                 "Static source geometry, not SLAM or measured robot traversability.",
                 "One dominant floor level; stairs and other levels are not represented as traversable.",

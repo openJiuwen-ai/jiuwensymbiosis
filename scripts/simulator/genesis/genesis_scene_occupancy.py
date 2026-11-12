@@ -9,38 +9,48 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
+import logging
 from importlib.metadata import version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING or __package__:
+    from ._bootstrap import configure_script_logging, load_genesis_module
+else:
+    from _bootstrap import configure_script_logging, load_genesis_module
+
+
+logger = logging.getLogger("jiuwensymbiosis.scripts.genesis_scene_occupancy")
 
 
 def export_map(scene_id: str, output: Path, resolution: float, min_height: float, max_height: float) -> dict:
     from PIL import Image
     from pxr import Usd, UsdGeom
 
-    # Match the isolated Genesis worker without importing core/openjiuwen.
-    directory = Path(__file__).resolve().parents[3] / "jiuwensymbiosis/simulators/genesis"
-    sys.path.insert(0, str(directory))
-    try:
-        from indoor import read_room_meshes
-        from occupancy import build_occupancy
-        from scene_catalog import resolve_scene
+    read_room_meshes = load_genesis_module("indoor").read_room_meshes
+    build_occupancy = load_genesis_module("occupancy").build_occupancy
+    resolve_scene = load_genesis_module("scene_catalog").resolve_scene
 
-        asset = resolve_scene(scene_id)
-        source = asset.preview_path
-        stage = Usd.Stage.Open(str(source))
-        if UsdGeom.GetStageUpAxis(stage) != "Z" or UsdGeom.GetStageMetersPerUnit(stage) != 1:
-            raise ValueError("InteriorAgent rooms.json requires an authored metre/Z-up stage")
-        rooms_path = source.parent / "rooms.json"
-        rooms = json.loads(rooms_path.read_text())
-        meshes = read_room_meshes(source)
-        result = build_occupancy(meshes, rooms, resolution=resolution, min_height=min_height, max_height=max_height)
-    finally:
-        sys.path.pop(0)
+    asset = resolve_scene(scene_id)
+    source = asset.preview_path
+    stage = Usd.Stage.Open(str(source))
+    if stage is None:
+        raise ValueError(f"Cannot open USD stage: {source}")
+    if UsdGeom.GetStageUpAxis(stage) != "Z" or UsdGeom.GetStageMetersPerUnit(stage) != 1:
+        raise ValueError("InteriorAgent rooms.json requires an authored metre/Z-up stage")
+    rooms_path = source.parent / "rooms.json"
+    rooms = json.loads(rooms_path.read_text())
+    meshes = read_room_meshes(source)
+    result = build_occupancy(meshes, rooms, resolution=resolution, min_height=min_height, max_height=max_height)
 
     output.mkdir(parents=True, exist_ok=True)
+    # Validate before writing any artifact: a degenerate map must not leave a
+    # half-exported directory that looks like a successful run.
+    for name, value in (("free", 0), ("occupied", 100)):
+        if not np.count_nonzero(result.cells == value):
+            raise ValueError(f"Degenerate map: no {name} cells")
     image = np.full(result.cells.shape, 205, np.uint8)
     image[result.cells == 0] = 254
     image[result.cells == 100] = 0
@@ -81,9 +91,6 @@ def export_map(scene_id: str, output: Path, resolution: float, min_height: float
         },
         **result.metadata,
     }
-    for name in ("free", "occupied"):
-        if not report["cells"][name]:
-            raise ValueError(f"Degenerate map: no {name} cells")
     (output / "map-report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
     return report
 
@@ -96,8 +103,10 @@ def main() -> None:
     parser.add_argument("--min-height", type=float, default=0.06)
     parser.add_argument("--max-height", type=float, default=1.95)
     args = parser.parse_args()
+    configure_script_logging(logger)
     report = export_map(args.scene, args.output.resolve(), args.resolution, args.min_height, args.max_height)
-    print(json.dumps({key: report[key] for key in ("scene_id", "resolution_m", "width", "height", "cells")}))
+    summary = {key: report[key] for key in ("scene_id", "resolution_m", "width", "height", "cells")}
+    logger.info("%s", json.dumps(summary))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """URDF preparation contract shared by robot profiles and Genesis admission.
 
 The source is immutable. All derived files belong to a caller-owned output
-directory. This module knows no robot names and does not create or step a scene.
+directory. Library calls know no robot names and never create or step a scene.
+The optional CLI owns a separate, inspection-only Genesis process lifecycle.
 """
 
 from __future__ import annotations
@@ -39,7 +40,9 @@ def tool_versions() -> dict:
 
 def _numbers(text: str, count: int, *, positive: bool = False) -> list[float]:
     values = [float(v) for v in text.split()]
-    if len(values) != count or any(not math.isfinite(v) or (positive and v <= 0) for v in values):
+    if len(values) != count or any(not math.isfinite(v) for v in values):
+        raise ValueError(f"invalid URDF numeric vector: {text}")
+    if positive and any(v <= 0 for v in values):
         raise ValueError(f"invalid URDF numeric vector: {text}")
     return values
 
@@ -67,18 +70,13 @@ def _inspect_mesh(path: Path) -> dict:
     if not isinstance(mesh, trimesh.Trimesh):
         raise ValueError(f"collision resource is not a triangle mesh: {path}")
     vertices, faces = np.asarray(mesh.vertices), np.asarray(mesh.faces)
-    if (
-        vertices.ndim != 2
-        or vertices.shape[1:] != (3,)
-        or len(vertices) < 3
-        or not np.isfinite(vertices).all()
-        or faces.ndim != 2
-        or faces.shape[1:] != (3,)
-        or not len(faces)
-        or not np.issubdtype(faces.dtype, np.integer)
-        or faces.min() < 0
-        or faces.max() >= len(vertices)
-    ):
+    vertex_shape_ok = vertices.ndim == 2 and vertices.shape[1:] == (3,) and len(vertices) >= 3
+    face_shape_ok = faces.ndim == 2 and faces.shape[1:] == (3,) and len(faces) > 0
+    if not vertex_shape_ok or not face_shape_ok:
+        raise ValueError(f"invalid collision triangle mesh: {path}")
+    if not np.isfinite(vertices).all() or not np.issubdtype(faces.dtype, np.integer):
+        raise ValueError(f"invalid collision triangle mesh: {path}")
+    if faces.min() < 0 or faces.max() >= len(vertices):
         raise ValueError(f"invalid collision triangle mesh: {path}")
     return {
         "vertices": len(vertices),
@@ -90,7 +88,7 @@ def _inspect_mesh(path: Path) -> dict:
     }
 
 
-def _structure(root: ET.Element) -> tuple[list[dict], list[dict]]:
+def inspect_structure(root: ET.Element) -> tuple[list[dict], list[dict]]:
     if root.tag != "robot":
         raise ValueError("expected a URDF robot")
     links: list[dict[str, Any]] = []
@@ -130,7 +128,9 @@ def _structure(root: ET.Element) -> tuple[list[dict], list[dict]]:
         if kind not in {"fixed", "revolute", "continuous", "prismatic"}:
             raise ValueError(f"unsupported URDF joint type: {kind}")
         parent, child = joint.find("parent"), joint.find("child")
-        if parent is None or child is None or parent.get("link") not in names or child.get("link") not in names:
+        if parent is None or child is None:
+            raise ValueError("unresolved URDF joint link")
+        if parent.get("link") not in names or child.get("link") not in names:
             raise ValueError("unresolved URDF joint link")
         if child.get("link") in children:
             raise ValueError("multiple parents/closed loops are unsupported")
@@ -199,12 +199,11 @@ def prepare_robot_model(
     original = source.read_bytes()
     policy = deepcopy(policy)
     root = ET.fromstring(original)
-    _structure(root)
     resources: dict[str, dict[str, Any]] = {}
     for mesh in root.findall(".//mesh"):
         uri = mesh.attrib["filename"]
         if uri.startswith("package://"):
-            package, relative = uri[len("package://") :].split("/", 1)
+            package, relative = uri.removeprefix("package://").split("/", 1)
             if not packages or package not in packages:
                 raise ValueError(f"unresolved package URI: {uri}")
             base = Path(packages[package]).resolve()
@@ -217,15 +216,16 @@ def prepare_robot_model(
             path = (source.parent / uri).resolve(strict=True)
         resources[str(path)] = {"path": str(path), "sha256": file_hash(path)}
         mesh.set("filename", str(path))
-    directory.mkdir(parents=True, exist_ok=True)
     for mesh in root.findall(".//collision/geometry/mesh"):
         path = Path(mesh.attrib["filename"])
         if "mesh_validation" not in resources[str(path)]:
             resources[str(path)]["mesh_validation"] = _inspect_mesh(path)
+    links, joints = inspect_structure(root)
     preparation = None
     if policy is not None:
         preparation = _module("collision_preparation").apply_collision_policy(root, directory, policy)
-    links, joints = _structure(root)
+        links, joints = inspect_structure(root)
+    directory.mkdir(parents=True, exist_ok=True)
     target = directory / "robot.urdf"
     ET.indent(root)
     ET.ElementTree(root).write(target, encoding="utf-8", xml_declaration=True)
@@ -269,6 +269,20 @@ def verify_model_files(manifest: dict) -> None:
             raise ValueError(f"model resource changed: {record['path']}")
 
 
+def admission_morph_options(*, fixed: bool, decimate: bool) -> dict:
+    """Pinned import settings shared by the CLI and scene controller."""
+    return {
+        "fixed": fixed,
+        "align": False,
+        "merge_fixed_links": False,
+        "collision": True,
+        "convexify": True,
+        "decimate": decimate,
+        "watertighten": 5,
+        "decompose_robot_error_threshold": float("inf"),
+    }
+
+
 def main() -> None:
     """Explicit prepare/inspect CLI; no controllers, actions or simulation steps."""
     import argparse
@@ -280,34 +294,51 @@ def main() -> None:
     parser.add_argument("--package", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--load-audit", action="store_true", help="Build one Genesis scene and audit; never step")
     parser.add_argument("--floating", action="store_true", help="Use floating rather than fixed base for inspection")
+    parser.add_argument("--decimate", action="store_true", help="Reproduce the mobile runtime simplification")
+    parser.add_argument("--self-collision", action="store_true", help="Enable robot self-collision in the audit scene")
     args = parser.parse_args()
     policy = None
     if args.policy:
         import yaml
 
         policy = yaml.safe_load(args.policy.read_text())
-    packages = dict(item.split("=", 1) for item in args.package)
+    packages = {}
+    for item in args.package:
+        name, separator, path = item.partition("=")
+        if not separator or not name.strip() or not path.strip():
+            parser.error("--package requires NAME=PATH with nonempty name and path")
+        packages[name] = Path(path)
     manifest = prepare_robot_model(args.source, args.output, policy=policy, packages=packages)
     if args.load_audit:
         import genesis as gs
 
         gs.init(backend=gs.cpu, logging_level="warning")
-        scene = gs.Scene(show_viewer=False, rigid_options=gs.options.RigidOptions(enable_self_collision=True))
+        scene = None
         try:
+            scene = gs.Scene(
+                show_viewer=False, rigid_options=gs.options.RigidOptions(enable_self_collision=args.self_collision)
+            )
             entity = scene.add_entity(
                 gs.morphs.URDF(
-                    file=manifest["urdf"],
-                    fixed=not args.floating,
-                    merge_fixed_links=False,
-                    decimate=False,
-                    convexify=True,
+                    file=manifest["urdf"], **admission_morph_options(fixed=not args.floating, decimate=args.decimate)
                 )
             )
             scene.build()
             _module("collision_audit").audit_loaded_model(entity, manifest, args.output / "loaded-model.json")
         finally:
-            scene.destroy()
-    print(args.output / "model.json")
+            try:
+                if scene is not None:
+                    scene.destroy()
+            finally:
+                gs.destroy()
+    import logging
+
+    logger = logging.getLogger("jiuwensymbiosis.simulators.genesis.robot_model")
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler())
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.info("Model: %s", args.output / "model.json")
 
 
 if __name__ == "__main__":

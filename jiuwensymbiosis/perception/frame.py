@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from itertools import product
 
 import numpy as np
 
@@ -40,7 +41,19 @@ def project_to_base(
 
 @dataclass
 class CameraFrame:
-    """One grabbed frame. ``depth_m`` / ``intrinsics`` / ``tf_base_cam`` may be None when unavailable."""
+    """One grabbed frame; depth/intrinsics/extrinsics may be None when unavailable.
+
+    RGB-D target association requires a unique ``frame_id`` and acquisition time
+    on the host monotonic clock. ``tf_base_cam`` maps camera to base (translation
+    in mm); depth is metres. ``metadata['base_sample']`` is measured at capture:
+    ``position_m`` is a finite xyz vector in a stable reference, ``body_yaw_rad``
+    is finite yaw in that same reference, and ``odom_frame`` identifies its epoch.
+    Optional ``scene_instance_id`` identifies the scene/reset epoch independently.
+    At least one reference ID is required. A scene-only reference is valid only
+    if base_sample uses its stable coordinates and its ID changes on every reset.
+    When both IDs exist, neither overrides the other; any change, appearance or
+    disappearance invalidates association. Never supply object ground truth here.
+    """
 
     rgb: np.ndarray
     depth_m: np.ndarray | None = None
@@ -79,33 +92,25 @@ def check_observed_rotation(
     depth = np.asarray(frame.depth_m)
     k = np.asarray(frame.intrinsics, dtype=float)
     transform = np.asarray(frame.tf_base_cam, dtype=float)
-    if (
-        depth.ndim != 2
-        or min(depth.shape) < 2
-        or depth.shape != frame.rgb.shape[:2]
-        or k.shape != (3, 3)
-        or transform.shape != (4, 4)
-        or not np.isfinite(k).all()
-        or not np.isfinite(transform).all()
-        or k[0, 0] <= 0
-        or k[1, 1] <= 0
-        or not np.allclose(k[2], [0, 0, 1])
-        or not np.allclose(transform[3], [0, 0, 0, 1])
-        or not np.allclose(transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-5)
-        or not np.isclose(np.linalg.det(transform[:3, :3]), 1.0, atol=1e-5)
-    ):
+    if depth.ndim != 2 or min(depth.shape) < 2 or depth.shape != frame.rgb.shape[:2]:
+        return "turn_clearance_unobserved"
+    if k.shape != (3, 3) or transform.shape != (4, 4):
+        return "turn_clearance_unobserved"
+    if not np.isfinite(k).all() or k[0, 0] <= 0 or k[1, 1] <= 0:
+        return "turn_clearance_unobserved"
+    if not np.isfinite(transform).all() or not np.allclose(k[2], [0, 0, 1]):
+        return "turn_clearance_unobserved"
+    if not np.allclose(transform[3], [0, 0, 0, 1]):
+        return "turn_clearance_unobserved"
+    rotation = transform[:3, :3]
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
+        return "turn_clearance_unobserved"
+    if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5):
         return "turn_clearance_unobserved"
     radius = float(np.linalg.norm(np.max(np.abs(bounds[:, :2]), axis=0))) + clearance_m
     # A rotation does not move the ground-contact surface downwards. Retain
     # the bottom bound, and reserve clearance above the actual top surface.
-    corners = np.array(
-        [
-            [x, y, z]
-            for x in (-radius, radius)
-            for y in (-radius, radius)
-            for z in (bounds[0, 2], bounds[1, 2] + clearance_m)
-        ]
-    )
+    corners = np.array(list(product((-radius, radius), (-radius, radius), (bounds[0, 2], bounds[1, 2] + clearance_m))))
     camera = (corners - transform[:3, 3] / 1000) @ transform[:3, :3]
     if np.any(camera[:, 2] <= 0):
         return "turn_clearance_unobserved"
@@ -118,7 +123,9 @@ def check_observed_rotation(
         return "turn_clearance_unobserved"
     lo = np.floor(pixels.min(axis=0)).astype(int)
     hi = np.ceil(pixels.max(axis=0)).astype(int)
-    measured = depth[lo[1] : hi[1] + 1, lo[0] : hi[0] + 1]
+    rows = slice(lo[1], hi[1] + 1)
+    columns = slice(lo[0], hi[0] + 1)
+    measured = depth[rows, columns]
     # Checking the complete projected rectangle against its farthest Z is a
     # sufficient, deliberately conservative certificate for the whole prism.
     if not np.isfinite(measured).all() or np.any(measured <= camera[:, 2].max() + 0.02):
@@ -197,6 +204,6 @@ def check_observed_corridor(
             or np.linalg.norm(point - [forward_m, 0.0]) > body_radius_m + clearance_m
         ):
             continue  # Only newly swept support; the currently occupied footprint is stationary.
-        if not len(floor) or np.min(np.linalg.norm(floor - point, axis=1)) > 0.1:
+        if floor.size == 0 or np.min(np.linalg.norm(floor - point, axis=1)) > 0.1:
             return "ground_coverage_incomplete"
     return None

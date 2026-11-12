@@ -7,9 +7,13 @@ import pytest
 pytest.importorskip("pxr")
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 
+# Sibling import by module name, NOT by package path: this directory has no
+# __init__.py, so the package-path form would load a SECOND instance of
+# test_material_repair next to the one pytest already collected.
+from test_material_repair import converted, fixture
+
 from jiuwensymbiosis.simulators.genesis.material_repair import prepare_materials
 from jiuwensymbiosis.simulators.genesis.material_rules.interioragent import RULES
-from tests.unit_tests.simulators.genesis.test_material_repair import converted, fixture
 
 
 def test_color_gloss_opacity_and_source_are_preserved(tmp_path):

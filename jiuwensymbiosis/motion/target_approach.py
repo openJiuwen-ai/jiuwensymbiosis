@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from jiuwensymbiosis.motion.base_goal import plan_target_step
 from jiuwensymbiosis.perception.scene3d import locate_target
@@ -39,6 +39,20 @@ class TargetApproachTuning:
             raise ValueError("Invalid target-distance interval")
 
 
+class TargetStepGuard(Protocol):
+    """Env extension required before target approach can issue a nonzero step."""
+
+    def check_target_step(self, forward: float, turn: float, frame_id: str, tuning: TargetApproachTuning) -> str | None:
+        """Certify the proposed swept body volume from fresh sensor evidence.
+
+        ``forward`` is metres and ``turn`` radians (turn first, then advance).
+        Resolve ``frame_id`` to the current validated RGB-D frame, check its
+        epoch/freshness and the full body envelope, including a pure turn.
+        Return None only when safe; otherwise return a nonempty refusal reason.
+        Missing or insufficient evidence must refuse, never infer free space.
+        """
+
+
 def approach_target(
     api: Any,
     object_name: str,
@@ -46,7 +60,14 @@ def approach_target(
     reference: str | None = None,
     relation: str = "on",
 ) -> dict:
-    """One explicit action owns this loop; there is no background retry or routing."""
+    """One explicit action owns this loop; there is no background retry or routing.
+
+    The binding supplies calibrated RGB-D and measured base pose (CameraFrame),
+    ``env.check_target_step`` (TargetStepGuard), and ``env.navigate_relative``
+    or ``api.nav_relative`` with MeasuredBaseDriver stopping semantics. Missing
+    clearance evidence or unconfirmed stopping prevents further motion.
+    See docs/en/reference/robot-api.md for optional frame-validation hooks.
+    """
     tuning = getattr(api, "target_approach_tuning", TargetApproachTuning())
     if (
         isinstance(target_distance_m, bool)

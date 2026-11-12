@@ -33,6 +33,8 @@ def navigate(driver: GenesisDriver, params: dict) -> NavigationResult:
         return current
 
     def failure(result: dict, state: dict | None = None) -> NavigationResult:
+        if result.get("settled") is not True:
+            driver.fail_stop_confirmation()
         outcome: NavigationResult = {
             "ok": False,
             "goal_reached": False,

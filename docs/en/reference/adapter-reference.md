@@ -41,19 +41,24 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 |---|---|
 | `motion.cartesian` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` |
 | `motion.joint` | `move_joint`, `move_named_joint`, `get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | (no standalone public action; fast-path `track_detect`/`track_grasp` ops drive `api.servo_to_tip`/`env.servo_to_flange`) |
 | `motion.base` | `navigate_relative`, `rotate_base`, `drive_arc` |
 | `motion.base_servo` | (continuous base-drive primitive) |
 | `motion.lift` | `set_lift_pose`, `lift_to_clearance` |
 | `motion.waist` | `turn_waist` |
-| `motion.goal` | `approach_for_grasp`, `approach_for_place` |
+| `motion.goal` | `approach_for_grasp`, `approach_for_place`, `approach_target`, `navigate_to_pose`, `navigate_to_entity` |
 | `motion.dual_arm` | `dual_arm_grasp`, `dual_arm_place` |
 | `grasp.parallel` | `open_gripper`, `close_gripper` |
 | `grasp.suction` | `activate_suction`, `deactivate_suction` |
 | `grasp.paddle` | (implemented via `dual_arm_grasp`) |
 | `vision.camera` | `get_image`, `pixel_to_base_xyz` |
-| `vision.detection` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene` |
+| `vision.detection` | `get_grasp_info_simple`, `locate_for_grasp`, `locate_for_place`, `analyze_scene`, `locate_target` |
 | `vision.search` | `search_target` |
+| `simulation.truth` | `sim_list_entities`, `sim_get_robot_state`, `sim_get_entity_state` |
+
+New RGB-D/goal/simulation contracts do not automatically bind existing adapters.
+See [target approach binding prerequisites](robot-api.md#rgb-d-target-location-and-approach).
 
 The Env manually declares hardware capabilities; the Api **derives** its own from the specs of the actions it implements (plus declared marker-capability class attributes); the effective tool set is their intersection. An Env may declare marker capabilities with no corresponding action; an Api capability absent from the Env never becomes a tool.
 
@@ -71,6 +76,7 @@ Protocols are defined in `jiuwensymbiosis/env/protocol.py`, **sliced by capabili
 | `NamedJointDriver` | `motion.joint` (named, partial command) | `get_joint_positions()`, `move_joints_blocking(targets, timeout_s=...)` |
 | `ServoDriver` | `motion.servo` | `servo_to_pose(pose)` (non-blocking) |
 | `BaseDriver` | `motion.base`/`motion.goal` | `navigate_relative(dx_m, dy_m=0, dyaw_rad=0)`, `navigate_arc(radius_m, dyaw_rad)` |
+| `MeasuredBaseDriver` (optional) | RGB-D target approach extension | `navigate_relative(...) -> MeasuredBaseMotionResult`, including measured stopping for zero-distance requests |
 | `ContinuousBaseDriver` | `motion.base_servo` | `start_base_drive()`, `base_drive_running(handle)`, `steer_base_drive(handle, bearing_rad)`, `hold_base_drive(handle)`, `stop_base_drive(handle)` |
 | `LifterDriver` | `motion.lift` | `set_lifter(q_lifter)` |
 | `WaistDriver` | `motion.waist` | `turn_waist(delta_rad)` |
@@ -161,6 +167,15 @@ The Api subclasses `BaseRobotApi` and binds each action with `@implements(SPEC)`
 `@implements` attaches a `ToolMeta` (spec + `input_params`, the call schema derived from this body's signature); a signature that cannot accept a parameter the spec promises raises `ContractViolation` at import time. Bring-up, calibration and debug views are **not** actions: leave them undecorated and drive them from `scripts/`.
 
 A visual adapter explicitly binds `pixel_to_base_xyz(u, v, depth_m)` with `@implements(PIXEL_TO_BASE_XYZ)`: eye-in-hand bodies may forward to `perception/vision.default_pixel_to_base_xyz` with a `pose_to_tf` callback (combining live `T_base_flange @ T_flange_cam` and applying calibration XY correction), while eye-to-hand bodies implement it with `T_base_cam`. `locate_for_grasp`/`locate_for_place`/`analyze_scene` are shared by `perception/scene3d` and consume a calibrated `CameraFrame` plus detector hook directly; `search_target`/`approach_for_grasp`/`approach_for_place` are shared by `motion/approach`. An adapter supplies camera/calibration/detector hooks and overrides only body-specific geometry.
+
+### Grasp evidence
+
+A successful `close_gripper` / `activate_suction` command is **not** the same as holding: fastagent establishes `payload.held` only from measured evidence, and unknown confirmation fails closed. Evidence is aggregated with contradiction winning:
+
+1. Explicit evidence fields in the result dict: `grasp_confirmed`, `holding_payload`, `contact` (`contact` counts in both directions — `False` means it closed on empty space, `True` that it stopped on something; see `contracts.CloseEffectorResult`).
+2. The optional Api hook `is_grasp_confirmed(result) -> bool` (so101-style: the driver's conservative contact judgement).
+
+A body whose end effector has no measured channel declares `trust_command_grasp = True` on its Api class: a successful command is then accepted as evidence (logged as a warning at runtime, so the acceptance is auditable). This is an **explicit downgrade declaration** — the fail-closed default is unchanged; remove it and provide measured evidence once the driver gains a feedback channel. `env.holding_payload` takes no part in this decision; it remains the coarse RecoveryRail-only flag.
 
 ## 6. Config and Session builder
 

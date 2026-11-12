@@ -12,6 +12,7 @@ import math
 import time
 import uuid
 from collections import OrderedDict
+from itertools import product
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -42,7 +43,7 @@ def in_base(entity: dict, robot: dict) -> dict:
     result["quaternion_wxyz"] = _quat_multiply([math.cos(yaw / 2), 0, 0, -math.sin(yaw / 2)], result["quaternion_wxyz"])
     if result["bounds_m"] is not None:
         low, high = result["bounds_m"]
-        corners = np.array([[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])])
+        corners = np.array(list(product(*zip(low, high, strict=True))))
         corners = (corners - anchor) @ rotation.T
         result["bounds_m"] = [corners.min(axis=0).tolist(), corners.max(axis=0).tolist()]
         result["center_m"] = corners.mean(axis=0).tolist()
@@ -222,7 +223,9 @@ class EntityRegistry:
         metadata = {key: value for key, value in snapshot.items() if key not in {"robot", "entities"}}
         if operation == "list_entities":
             limit, offset = params.get("limit", 20), params.get("offset", 0)
-            if type(limit) is not int or not 1 <= limit <= 50 or type(offset) is not int or offset < 0:
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise ValueError("invalid_pagination")
+            if type(offset) is not int or offset < 0:
                 raise ValueError("invalid_pagination")
             query, kind = str(params.get("query", "")).casefold(), params.get("kind", "")
             entities = [
@@ -230,11 +233,12 @@ class EntityRegistry:
                 for e in snapshot["entities"].values()
                 if query in e["name"].casefold() and (not kind or kind == e["kind"])
             ]
+            page = slice(offset, offset + limit)
             return {
                 **metadata,
                 "entities": [
                     {k: e[k] for k in ("entity_id", "name", "kind", "category", "dynamic", "collision")}
-                    for e in entities[offset : offset + limit]
+                    for e in entities[page]
                 ],
                 "total": len(entities),
                 "next_offset": offset + limit if offset + limit < len(entities) else None,
