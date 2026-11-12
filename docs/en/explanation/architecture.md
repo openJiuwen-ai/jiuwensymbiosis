@@ -86,6 +86,7 @@ The capability vocabulary is defined in `env/base.py`:
 |---|---|
 | `motion.cartesian` | End-effector pose motion in the base coordinate frame |
 | `motion.joint` | Joint-space motion |
+| `motion.tool_pose` | Joint planning for all tool poses in a group |
 | `motion.servo` | Nonblocking servo pose commands |
 | `motion.base` | Relative planar base motion; current shared actions support differential drive, not lateral translation |
 | `motion.base_servo` | Nonblocking continuous base control |

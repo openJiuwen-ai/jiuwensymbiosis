@@ -50,6 +50,10 @@ _WORKER_ENV_KEYS = frozenset(
         "CUDA_DEVICE_ORDER",
         "CUDA_CACHE_PATH",
         "GS_CACHE_FILE_PATH",
+        "TORCH_EXTENSIONS_DIR",
+        "NUMBA_CACHE_DIR",
+        "MPLCONFIGDIR",
+        "PYTHONDONTWRITEBYTECODE",
         "NVIDIA_VISIBLE_DEVICES",
         "NVIDIA_DRIVER_CAPABILITIES",
         "VK_ICD_FILENAMES",
@@ -437,6 +441,7 @@ class GenesisPreview:
         robot_id: str = "",
         render_quality: str = "reference",
         camera_name: str = "observer",
+        planning_profile: str | None = None,
     ) -> dict:
         with self._lock:
             state = self.status()["state"]
@@ -467,6 +472,11 @@ class GenesisPreview:
                 robot_mode=robot_mode,
                 robot_id=robot_id,
                 camera_name=camera_name,
+                planning_profile=(
+                    self.settings.planning_profile
+                    if planning_profile is None and same_scene
+                    else planning_profile or ""
+                ),
             )
             if settings == self.settings:
                 return self.status()
@@ -633,6 +643,27 @@ class GenesisPreview:
         from jiuwensymbiosis.simulators.genesis.base_motion import validate_move
 
         validate_move(dx, dy, dyaw)
+        return self._execute_motion(owner, {"dx": dx, "dy": dy, "dyaw": dyaw}, cancelled=cancelled)
+
+    def move_arm(
+        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+    ) -> dict:
+        if not self.settings.planning_profile:
+            raise RuntimeError("No arm planning profile configured")
+        payload = {
+            "kind": "arm",
+            "targets": targets,
+            "poses": poses,
+            "group": group,
+            "speed": speed,
+            "effector": effector,
+            "opened": opened,
+        }
+        if len(json.dumps(payload, allow_nan=False).encode()) > 2048:
+            raise ValueError("Arm request too large")
+        return self._execute_motion(owner, payload, cancelled=cancelled)
+
+    def _execute_motion(self, owner: str, payload: dict, *, cancelled=None) -> dict:
         with self._lock:
             state = self.status()
             if self._motion_owner != owner or self._motion_binding != (
@@ -645,23 +676,24 @@ class GenesisPreview:
             if self._motion_cancelled or (cancelled is not None and cancelled.is_set()):
                 raise RuntimeError("任务已取消。")
             previous = state.get("base_motion", {})
-            if self._motion_request and (
-                previous.get("id") != self._motion_request["id"] or previous.get("status") != "completed"
-            ):
+            incomplete = (
+                previous.get("id") != (self._motion_request or {}).get("id")
+                or previous.get("status") != "completed"
+                or not previous.get("settled")
+            )
+            if self._motion_request and incomplete:
                 raise RuntimeError("上一条底盘动作尚未完成。")
             request: dict[str, Any] = {
                 "id": uuid.uuid4().hex,
                 "scene_instance_id": self._motion_binding[0],
                 "config_revision": self._motion_binding[1],
-                "dx": dx,
-                "dy": dy,
-                "dyaw": dyaw,
+                **payload,
                 "lease_until": time.monotonic() + 2,
                 "cancelled": False,
             }
             self._motion_request = request
             self._send_control()
-        deadline = time.monotonic() + 100
+        deadline = time.monotonic() + (180 if payload.get("kind") == "arm" else 100)
         try:
             while time.monotonic() < deadline:
                 with self._lock:

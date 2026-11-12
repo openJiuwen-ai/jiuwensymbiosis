@@ -1038,7 +1038,7 @@ def _self_state_drift(step: ActionStep, meta: ToolMeta, session: Any) -> str | N
     if not meta.requires:
         return None
     tokens = current_tokens(session)
-    unmet = contradicted_requirements(tokens, meta.requires)
+    unmet = contradicted_requirements(tokens, meta.requires, effector=step.params.get("effector"))
     if not unmet:
         return None
     return f"{step.op} requires {list(unmet)}, but the robot is measurably {sorted(tokens)}"

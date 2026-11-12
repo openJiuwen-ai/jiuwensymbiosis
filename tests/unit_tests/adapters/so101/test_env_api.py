@@ -321,12 +321,12 @@ class TestSo101ApiStructure:
         # The shared action declares width_mm; this body accepts and ignores it. The CONTRACT
         # calls it a hint, so no per-body caveat is needed and one skill drives either gripper.
         meta = So101Api.open_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"width_mm"}
+        assert set(meta.input_params["properties"]) == {"width_mm", "effector"}
         assert "HINT" in meta.description
 
     def test_close_gripper_advertises_the_shared_contract(self):
         meta = So101Api.close_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"force_n"}
+        assert set(meta.input_params["properties"]) == {"force_n", "effector"}
         assert "HINT" in meta.description
 
     def test_private_fast_tracking_hook_is_not_an_action(self):
@@ -531,10 +531,15 @@ class TestSo101ApiDelegates:
     def test_move_joint_reaches_driver(self):
         """Named in, vector out — the Env converts via ARM_JOINT_ORDER-keyed joint_limits."""
         api, _env, driver = _build_api()
-        api.move_joint({
-            "shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0,
-            "wrist_flex": 4.0, "wrist_roll": 5.0,
-        })
+        api.move_joint(
+            {
+                "shoulder_pan": 1.0,
+                "shoulder_lift": 2.0,
+                "elbow_flex": 3.0,
+                "wrist_flex": 4.0,
+                "wrist_roll": 5.0,
+            }
+        )
         assert ("joint", [1.0, 2.0, 3.0, 4.0, 5.0]) in driver.log
 
     def test_move_direction_routes_so101pose_not_namespace(self):

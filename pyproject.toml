@@ -65,6 +65,8 @@ chattts-server = [
     "torchaudio==2.8.0",
 ]
 dev = [
+    "python-fcl==0.7.0.11",  # Exercise the CPU loaded-geometry gate in core CI.
+    "trimesh>=4.8.2,<6",
     "setuptools>=68",  # offline wheel smoke test uses the declared build backend
     "wheel",
     "pytest>=8",
@@ -143,6 +145,7 @@ simulator-media = [
 ]
 genesis = [
     # Dedicated simulation environment; see configs/simulators/README.md.
+    "scipy>=1.14,<2",
     "usd-core==25.11",
     "trimesh>=4.8.2,<6",
     "rtree>=1",
@@ -155,6 +158,10 @@ genesis = [
     "av==17.1.0",
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
+]
+genesis-planning = [
+    # cuRobo 78fd485 is installed separately. Use with the genesis extra.
+    "python-fcl==0.7.0.11",
 ]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，

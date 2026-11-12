@@ -1,0 +1,20 @@
+schema_version: 1
+base_link: panda_link0
+groups:
+  arm:
+    joints: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
+    tools: [panda_hand]
+default_limits: {velocity: 0.6, acceleration: 2.0, jerk: 20.0, effort: 87.0}
+collision_source: {format: curobo, path: '${CUROBO_FRANKA_CONFIG}', ignore_rationale: Upstream sphere approximation exclusions. Independent loaded-geometry gate uses only actual Genesis pair filtering; these exclusions never bypass that gate.}
+support_links: [panda_link0]
+limits:
+  panda_joint5: {effort: 12.0}
+  panda_joint6: {effort: 12.0}
+  panda_joint7: {effort: 12.0}
+contact_solver: {noslip_iterations: 5}
+effectors:
+  hand:
+    tool: panda_hand
+    joints:
+      panda_finger_joint1: {open: 0.04, close: 0.0, velocity: 0.03, effort: 20.0, kp: 4000.0, kd: 100.0, tolerance: 0.002, preload: 0.002}
+    contact_groups: [[panda_leftfinger], [panda_rightfinger]]

@@ -53,7 +53,7 @@ The host rejects stale/mismatched results, invalid array shapes/dtypes and RGB-D
 | operation | Parameters and behavior |
 |---|---|
 | `list_entities` | Filter by `query`/`kind`; integer `limit` 1–50, nonnegative `offset`; returns next offset. |
-| `robot_state` | Measured mobile-robot state; unsupported scenes fail explicitly. |
+| `robot_state` | Measured mobile state; planning also exposes joint_positions/joint_velocities/joint_units (rad/m), planning_groups, planning_base_link, tool_poses_base_m_wxyz (metres, wxyz) and effectors; unsupported scenes fail. |
 | `entity_state` | `entity_id` with `frame="world"` or `"base"`; transforms origin, orientation and bounds together. |
 | `plan_navigation` | Exact `x_m/y_m/yaw_rad`, or a static bounded `entity_id` plus `stand_off_m`; plans without executing. |
 
@@ -77,3 +77,5 @@ with a `closed` marker after shutdown for operator-managed archival. See the
 [model admission guide](../how-to/audit-robot-models.md) for import settings and retention requirements.
 Source asset manifests pair physical and visual URDFs; derived model manifests identify loaded collisions.
 Visual materials are handled separately by `material_surface.py`; visual appearance is not collision evidence.
+
+Planning profile: `planning_profile.load_profile` requires `schema_version=1`, `base_link`, and `groups` (independent joints/tools). `limits`/`default_limits` supply velocity/acceleration/jerk (rad or m per time to powers 1–3), and effort (N/Nm); overrides must belong to groups. Optional `collision_source` (format/path/ignore_rationale) imports and hashes spheres; otherwise provide collision_spheres. `CuroboPlanner` validates `uncontrolled_support_joints` as continuous, centred-sphere support leaves; `CollisionGate` admits floor contact only for `support_links`. Optional `effectors` is consumed by EndEffectors (fields in the grasp guide); `contact_solver.noslip_iterations` configures the scene solver.

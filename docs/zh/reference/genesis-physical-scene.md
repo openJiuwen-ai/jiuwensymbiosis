@@ -47,7 +47,7 @@ Nyx 投影仅接受代码已验证的 SDK 0.1.7 / plugin 0.1.9 组合；其他�
 | operation | 参数与行为 |
 |---|---|
 | `list_entities` | `query`、`kind` 过滤；`limit` 为 1–50，`offset` 为非负整数；返回下一页偏移。 |
-| `robot_state` | 返回实测移动机器人状态；不支持时明确失败。 |
+| `robot_state` | 实测移动状态；规划模式还返回 joint_positions/joint_velocities/joint_units（rad/m）、planning_groups、planning_base_link、tool_poses_base_m_wxyz（米、wxyz）和 effectors；不支持时失败。 |
 | `entity_state` | 指定 `entity_id`，`frame` 为 `world` 或 `base`；位置、姿态和包围盒一并变换。 |
 | `plan_navigation` | 指定 `x_m/y_m/yaw_rad`，或静态有界 `entity_id` 与 `stand_off_m`；只产生规划，不执行运动。 |
 
@@ -80,3 +80,5 @@ Nyx 投影仅接受代码已验证的 SDK 0.1.7 / plugin 0.1.9 组合；其他�
 `info.model_admission` 提供报告路径，`robot_model_instance_id` 在 reset 后保持不变。
 持久化证据位于状态目录 `robot-models/`，关闭后标记 `closed`，由运维归档，不随渲染缓存删除。
 支持范围、实际导入参数与清理要求见[模型准入指南](../how-to/audit-robot-models.md)。
+
+规划 profile：`planning_profile.load_profile` 要求 `schema_version=1`、`base_link`、`groups`（独立 joints 与 tools）。`limits`/`default_limits` 提供 velocity/acceleration/jerk（rad 或 m 的一至三阶时间导数）及 effort（N/Nm）；覆盖项须属于组。可选 `collision_source`（format/path/ignore_rationale）导入并哈希碰撞球；否则显式 collision_spheres。`CuroboPlanner` 验证 `uncontrolled_support_joints` 为原点球形、连续、无下游的支撑叶关节；`CollisionGate` 仅允许 `support_links` 接触地面。可选 `effectors` 由 EndEffectors 消费，字段见夹持指南；`contact_solver.noslip_iterations` 是场景求解器迭代数。

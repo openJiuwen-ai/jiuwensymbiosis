@@ -41,6 +41,7 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 |---|---|
 | `motion.cartesian` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` |
 | `motion.joint` | `move_joint`、`move_named_joint`、`get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | （无独立公共动作；由 fast path 实时伺服 op `track_detect`/`track_grasp` 经 `api.servo_to_tip`/`env.servo_to_flange` 驱动） |
 | `motion.base` | `navigate_relative`、`rotate_base`、`drive_arc` |
 | `motion.base_servo` | （连续底盘驱动原语） |

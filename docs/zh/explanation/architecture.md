@@ -86,6 +86,7 @@ capabilities = frozenset({
 |---|---|
 | `motion.cartesian` | 基座坐标系下的末端位姿运动 |
 | `motion.joint` | 关节空间运动 |
+| `motion.tool_pose` | 组内多工具联合位姿规划 |
 | `motion.servo` | 非阻塞伺服位姿命令 |
 | `motion.base` | 平面底盘相对运动；当前共享动作支持差分运动，不支持横移 |
 | `motion.base_servo` | 非阻塞连续底盘驱动 |

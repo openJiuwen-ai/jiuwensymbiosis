@@ -41,6 +41,7 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 |---|---|
 | `motion.cartesian` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` |
 | `motion.joint` | `move_joint`, `move_named_joint`, `get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | (no standalone public action; fast-path `track_detect`/`track_grasp` ops drive `api.servo_to_tip`/`env.servo_to_flange`) |
 | `motion.base` | `navigate_relative`, `rotate_base`, `drive_arc` |
 | `motion.base_servo` | (continuous base-drive primitive) |
