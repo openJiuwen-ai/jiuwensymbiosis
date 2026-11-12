@@ -33,15 +33,32 @@ class SimulationRuntime(Protocol):
     cycle: int
     selection: dict | None
 
-    def step(self) -> None: ...
-    def close(self) -> None: ...
-    def build_renderer(self, settings: Any) -> None: ...
-    def close_renderer(self) -> None: ...
-    def frame_size(self, name: str) -> tuple[int, int]: ...
-    def update_camera(self, pose: dict) -> None: ...
-    def selection_snapshot(self) -> dict | None: ...
-    def pick(self, u: float, v: float) -> Any: ...
-    def query_truth(self, operation: str, params: dict) -> dict: ...
+    def step(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def build_renderer(self, settings: Any) -> None:
+        pass
+
+    def close_renderer(self) -> None:
+        pass
+
+    def frame_size(self, name: str) -> tuple[int, int]:
+        pass
+
+    def update_camera(self, pose: dict) -> None:
+        pass
+
+    def selection_snapshot(self) -> dict | None:
+        pass
+
+    def pick(self, u: float, v: float) -> Any:
+        pass
+
+    def query_truth(self, operation: str, params: dict) -> dict:
+        pass
 
 
 class MujocoPolicyRuntime(ABC):

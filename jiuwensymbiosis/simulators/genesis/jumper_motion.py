@@ -116,7 +116,8 @@ class JumperMotion:
 
     def _reject_transition(self) -> None:
         """Reject a controller mismatch without letting it escape the worker tick."""
-        assert self.task is not None
+        if self.task is None:
+            raise RuntimeError("Cannot reject a policy transition without an active task")
         self.task.update(phase="rejected", failure="policy_transition_failed")
         self.robot.policy.key_events.clear()
         self.robot.stop()

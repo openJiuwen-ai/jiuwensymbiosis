@@ -50,7 +50,6 @@ def main():
     parser.add_argument("--home", type=Path, default=simulator_root())
     args = parser.parse_args()
     json.dump(register(args.source, args.home), sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
 
 
 if __name__ == "__main__":
