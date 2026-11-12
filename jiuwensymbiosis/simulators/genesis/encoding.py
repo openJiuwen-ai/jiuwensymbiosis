@@ -96,3 +96,52 @@ class NvEncoder:
                 self._encoder.encode(None)
             finally:
                 self._encoder = None
+
+
+class SoftwareEncoder:
+    """Low-latency H264 for the macOS rasterizer, retaining the IPC contract."""
+
+    def __init__(self, settings: Any, *, resolution: tuple[int, int] | None = None) -> None:
+        import av
+        from av.video.codeccontext import VideoCodecContext
+
+        self._av = av
+        codec = av.CodecContext.create("libx264", "w")
+        if not isinstance(codec, VideoCodecContext):
+            raise RuntimeError("libx264 must be a video encoder")
+        codec.width, codec.height = resolution or (settings.width, settings.height)
+        codec.pix_fmt = "yuv420p"
+        codec.framerate = Fraction(settings.fps)
+        codec.time_base = Fraction(1, settings.fps)
+        codec.max_b_frames = 0
+        codec.gop_size = max(1, settings.fps // 2)
+        codec.thread_count = 2
+        codec.options = {"preset": "ultrafast", "tune": "zerolatency", "crf": "23", "profile": "baseline"}
+        codec.open()
+        self._encoder: VideoCodecContext | None = codec
+        self.copy_ms = self.encode_ms = 0.0
+
+    def encode(self, rgb: Any, metadata: dict, *, force_keyframe: bool) -> list[dict]:
+        if self._encoder is None:
+            raise RuntimeError("H264 encoder is closed")
+        started = time.monotonic()
+        frame = self._av.VideoFrame.from_ndarray(rgb.cpu().numpy(), format="rgb24")
+        frame.pts = metadata["sequence"]
+        frame.time_base = self._encoder.time_base
+        if force_keyframe:
+            frame.pict_type = self._av.video.frame.PictureType.I
+        self.copy_ms = (time.monotonic() - started) * 1000
+        started = time.monotonic()
+        packets = self._encoder.encode(frame)
+        if len(packets) != 1 or packets[0].pts != frame.pts:
+            raise RuntimeError("H264 must emit exactly one immediate access unit per input frame")
+        self.encode_ms = (time.monotonic() - started) * 1000
+        packet = packets[0]
+        return [{**metadata, "h264": bytes(packet), "keyframe": packet.is_keyframe}]
+
+    def close(self) -> None:
+        if self._encoder is not None:
+            try:
+                self._encoder.encode(None)
+            finally:
+                self._encoder = None

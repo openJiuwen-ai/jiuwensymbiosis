@@ -91,6 +91,25 @@ def test_client_cannot_use_another_clients_motion_owner(service):
     service.preview.navigate_relative.assert_not_called()
 
 
+def test_policy_action_roundtrip_enforces_owner_and_passes_cancellation(service):
+    service.preview.policy_action.return_value = {"ok": True, "settled": True}
+    service.preview.release_motion.return_value = None
+    first, second = ResidentPreview(state_dir=service.root), ResidentPreview(state_dir=service.root)
+    try:
+        first.start()
+        second.start()
+        owner = first.acquire_motion()
+        with pytest.raises(RuntimeError, match="控制权"):
+            second.policy_action(owner, "jump")
+        service.preview.policy_action.assert_not_called()
+        assert first.policy_action(owner, "jump") == {"ok": True, "settled": True}
+        assert isinstance(service.preview.policy_action.call_args.kwargs["cancelled"], threading.Event)
+        first.release_motion(owner)
+    finally:
+        first.close()
+        second.close()
+
+
 def test_expired_gui_cancels_inflight_request_and_confirms_stop(service):
     now = [0.0]
     host = ResidentHost(service.preview, clock=lambda: now[0], lease_s=6)

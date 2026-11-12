@@ -255,6 +255,24 @@ class TestPiperApiDelegatesThroughEnv:
         api.goto_xyzr(100.0, 0.0, 200.0, 0.0)
         assert any(c[0] == "move" for c in driver.log)
 
+    @pytest.mark.parametrize("action", ["open_gripper", "close_gripper"])
+    @pytest.mark.parametrize("side", ["default", "left", "right", None])
+    def test_single_gripper_side_is_validated_before_hardware(self, action, side):
+        from unittest.mock import MagicMock
+
+        api, env, _driver = self._build()
+        env.set_end_effector = MagicMock()
+        method = getattr(api, action)
+        schema = method.__tool_meta__.input_params["properties"]["side"]
+        assert schema["enum"] == ["default"] and schema["default"] == "default"
+        if side == "default":
+            assert method(side=side)["ok"]
+            env.set_end_effector.assert_called_once_with(action == "close_gripper")
+        else:
+            with pytest.raises(ValueError, match="side=default"):
+                method(side=side)
+            env.set_end_effector.assert_not_called()
+
     def test_close_gripper_calls_env_set_end_effector(self):
         from unittest.mock import MagicMock
 

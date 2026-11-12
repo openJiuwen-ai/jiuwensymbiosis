@@ -91,8 +91,9 @@ class XxxApi(BaseRobotApi):
         }
 
     @implements(GOTO_XYZR)
-    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
-                  orientation_policy: Literal["top_down"] = "top_down") -> None:
+    def goto_xyzr(
+        self, x: float, y: float, z: float, r: float | None = None, orientation_policy: Literal["top_down"] = "top_down"
+    ) -> None:
         """Move the tip to an absolute pose; ``orientation_policy`` picks the tilt.
 
         The generic default (``defaults.goto_xyzr``) does ``top_down`` and ``preserve``, so
@@ -114,12 +115,12 @@ class XxxApi(BaseRobotApi):
     # nothing to add. A body with real width or force control writes its own instead.
     #
     # @implements(OPEN_GRIPPER)
-    # def open_gripper(self, width_mm: float = 80.0) -> dict:
-    #     return defaults.open_gripper(self, width_mm)
+    # def open_gripper(self, width_mm: float = 80.0, *, side: Literal["default"] = "default") -> dict:
+    #     return defaults.open_gripper(self, width_mm, side=side)
     #
     # @implements(CLOSE_GRIPPER)
-    # def close_gripper(self, force_n: float | None = None) -> dict:
-    #     return defaults.close_gripper(self, force_n)
+    # def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
+    #     return defaults.close_gripper(self, force_n, side=side)
     #
     # @implements(ACTIVATE_SUCTION)
     # def activate_suction(self) -> dict:

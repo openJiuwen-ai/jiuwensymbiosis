@@ -84,9 +84,9 @@ class ResidentPreview:
             return None
 
     def _ensure_service(self) -> None:
-        if sys.platform != "linux":
-            raise RuntimeError("Genesis 后台目前需要 Linux。")
-        if len(os.fsencode(self.path)) >= 108:
+        if sys.platform not in {"linux", "darwin"}:
+            raise RuntimeError("Genesis 后台支持 Linux 或 macOS。")
+        if len(os.fsencode(self.path)) >= (104 if sys.platform == "darwin" else 108):
             raise ValueError("Genesis state directory is too long for a Unix socket")
         import fcntl
 
@@ -248,6 +248,9 @@ class ResidentPreview:
         self, camera_name: str = "observer", *, cancelled: threading.Event | None = None, **options: Any
     ) -> dict:
         return self._object("capture_image", camera_name=camera_name, timeout=15, cancelled=cancelled, **options)
+
+    def policy_action(self, owner: str, kind: str, *, cancelled: threading.Event | None = None, **options: Any) -> dict:
+        return self._object("policy_action", owner=owner, kind=kind, timeout=65, cancelled=cancelled, **options)
 
     def query_scene(self, operation: str, params: dict, *, cancelled: threading.Event | None = None) -> dict:
         return self._object("query_scene", operation=operation, params=params, timeout=65, cancelled=cancelled)

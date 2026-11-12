@@ -15,6 +15,7 @@ let observedConfig = -1;
 let sceneCatalog = [];
 let configGeneration = 0;
 let viewState = null, selection = null, selecting = false, selectionGeneration = 0;
+let rasterRendering = false;
 let selectionTask = Promise.resolve(), cameraRequest = Promise.resolve();
 
 async function post(path, action, body = {}, keepalive = false) {
@@ -48,7 +49,7 @@ function buttons() {
   byId('focus').disabled = byId('reset').disabled;
   byId('clear-selection').disabled = byId('reset').disabled;
   for (const button of document.querySelectorAll('[data-camera]')) button.disabled = byId('reset').disabled;
-  const mobile = viewState?.robot?.control_mode === 'wheel_velocity_physics';
+  const mobile = ['wheel_velocity_physics', 'policy_locomotion'].includes(viewState?.robot?.control_mode);
   byId('base-controls').hidden = !mobile;
   byId('robot-stop').hidden = !mobile;
   for (const button of document.querySelectorAll('[data-base]')) {
@@ -57,7 +58,7 @@ function buttons() {
   drawSelection();
 }
 function showBackend(state) {
-  const mode = state.scene?.background_id ? 'MOZ1 室内物理 · 固定家具碰撞' : {static_background: '静态背景', robot_preview: '机器人检视 · 固定姿态', robot_mobile: 'MOZ1 底盘物理 · 上身锁定'}[state.scene?.mode] || '物理仿真';
+  const mode = state.scene?.control_description || (state.scene?.background_id ? 'MOZ1 室内物理 · 固定家具碰撞' : {static_background: '静态背景', robot_preview: '机器人检视 · 固定姿态', robot_mobile: 'MOZ1 底盘物理 · 上身锁定'}[state.scene?.mode]) || '物理仿真';
   byId('backend').textContent = state.state === 'ready'
     ? `后台运行中 · ${mode}`
     : state.message;
@@ -141,7 +142,7 @@ async function connect() {
 async function backendAction(action) {
   configGeneration += 1;
   busy = true; buttons(); byId('notice').textContent = '';
-  byId('backend').textContent = action === 'start' ? '正在启动 Genesis / Nyx…' : action === 'configure' ? '正在切换，视频将自动恢复…' : action === 'reset' ? '正在复位当前世界…' : '正在释放 Genesis 后台…';
+  byId('backend').textContent = action === 'start' ? '正在启动 Genesis…' : action === 'configure' ? '正在切换，视频将自动恢复…' : action === 'reset' ? '正在复位当前世界…' : '正在释放 Genesis 后台…';
   try {
     if (action === 'stop') await disconnect();
     const options = action !== 'stop' ? {resolution: byId('resolution').value, fps: Number(byId('fps').value), scene_id: byId('scene').value, robot_mode: byId('robot-mode').value, robot_id: byId('robot').value, render_quality: byId('render-quality').value, camera_name: byId('camera-source').value} : {};
@@ -248,7 +249,7 @@ for (const id of ['scene', 'resolution', 'fps', 'robot-mode', 'robot', 'render-q
   const mode = sceneCatalog.find(asset => asset.id === byId('scene').value)?.preview_mode;
   if (id === 'scene' && mode !== 'static_usd') {
     byId('robot').value = '';
-    if (mode !== 'urdf') byId('robot-mode').value = 'inspection';
+    if (mode !== 'urdf') byId('robot-mode').value = ['jumper', 'microduck'].includes(mode) ? mode : 'inspection';
   }
   if (id === 'scene' && mode === 'static_usd' && !byId('robot').value) byId('robot-mode').value = 'inspection';
   if (id === 'robot') byId('robot-mode').value = byId('robot').value ? 'moz1_wheels' : 'inspection';
@@ -262,7 +263,12 @@ byId('connect').onclick = () => connect().catch(showError);
 byId('disconnect').onclick = () => disconnect().catch(showError);
 byId('reset').onclick = () => { navigation.stop(); camera('reset'); };
 byId('settings').onclick = () => { showQuality(); byId('settings-dialog').showModal(); };
-byId('manual').onclick = () => byId('manual-dialog').showModal();
+byId('manual').onclick = () => {
+  const panel = byId('manual-dialog');
+  if (panel.open) panel.close(); else panel.show();
+  byId('manual').setAttribute('aria-expanded', String(panel.open));
+};
+byId('manual-dialog').addEventListener('close', () => byId('manual').setAttribute('aria-expanded', 'false'));
 byId('help').onclick = () => byId('help-dialog').showModal();
 byId('diagnostics').onclick = () => byId('diagnostics-dialog').showModal();
 for (const button of document.querySelectorAll('[data-close]')) {
@@ -334,7 +340,8 @@ async function poll() {
       decodedFps = presentedFps = null;
       byId('notice').textContent = state.reconfigure_error || '';
     }
-    if (state.settings && ['ready', 'starting', 'reconfiguring'].includes(backendState)) {
+    if (state.settings && (['ready', 'starting', 'reconfiguring'].includes(backendState)
+      || (backendState === 'stopped' && state.renderer === 'Genesis Rasterizer'))) {
       const selected = backendState === 'reconfiguring' ? state.requested_settings : state.settings;
       const cameraSelect = byId('camera-source');
       if (state.cameras) {
@@ -349,6 +356,8 @@ async function poll() {
       byId('resolution').value = `${selected.width}x${selected.height}`;
       byId('fps').value = String(selected.fps);
       byId('render-quality').value = 'reference';
+      rasterRendering = ['Genesis Rasterizer', 'MuJoCo OpenGL'].includes(state.renderer);
+      byId('render-quality').options[0].textContent = state.renderer === 'MuJoCo OpenGL' ? 'MuJoCo · OpenGL' : rasterRendering ? 'Rasterizer · macOS' : 'Reference · 64 采样';
       byId('robot-mode').value = selected.robot_mode || 'inspection';
       byId('robot').value = selected.robot_id || '';
       if ([...byId('scene').options].some(option => option.value === (selected.scene_id || 'demo'))) byId('scene').value = selected.scene_id || 'demo';
@@ -453,8 +462,13 @@ function showMetrics() {
 }
 
 function showQuality() {
-  byId('quality-description').textContent = 'Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。';
-  const label = 'Reference / 64';
+  const mujoco = viewState?.renderer === 'MuJoCo OpenGL';
+  byId('quality-description').textContent = mujoco
+    ? 'MuJoCo 接触物理与官方步态策略；建议 540p / 30 fps。头部相机输出 640 × 480。'
+    : rasterRendering
+    ? 'macOS：光栅化渲染，建议 540p / 30 fps。仅支持动态演示和观察视角；USD 场景、URDF 机器人请使用 Linux / NVIDIA。'
+    : 'Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。';
+  const label = mujoco ? 'MuJoCo OpenGL' : rasterRendering ? 'Rasterizer' : 'Reference / 64';
   const sensor = viewState?.cameras?.find(camera => camera.name === byId('camera-source').value);
   const size = sensor ? `${sensor.width} × ${sensor.height}` : byId('resolution').value.replace('x', ' × ');
   byId('requested-profile').textContent = `${size} · ${label} · ${byId('fps').value} FPS 上限`;

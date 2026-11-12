@@ -53,7 +53,7 @@ def scene_catalog() -> list[dict[str, str]]:
     """列出支持的预览候选；文件是否仍有效在加载前再次检查。"""
     entries = [{"id": DEMO, "label": "动态物理演示"}]
     library = AssetLibrary()
-    for mode in ("urdf", "static_usd"):
+    for mode in ("urdf", "static_usd", "jumper", "microduck"):
         offset = 0
         while True:
             page = library.search(preview_mode=mode, limit=1000, offset=offset)
@@ -74,7 +74,7 @@ def scene_catalog() -> list[dict[str, str]]:
 def resolve_scene(scene_id: str) -> ResolvedAsset:
     """只接受索引 ID/配置别名；不接受调用者直接提供路径或 URL。"""
     resolved = AssetLibrary().resolve(scene_id)
-    if resolved.asset.preview_mode not in {"urdf", "static_usd"}:
+    if resolved.asset.preview_mode not in {"urdf", "static_usd", "jumper", "microduck"}:
         raise AssetError("该资产暂无 Genesis 预览；机器人需要 scanner 识别到关联的 URDF")
     return resolved
 

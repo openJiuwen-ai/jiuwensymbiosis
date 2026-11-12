@@ -7,6 +7,7 @@ owns cancellation; only the four wheel motors are actuated.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 # This controller executes body-frame translation along both horizontal axes.
 MOZ1_SUPPORTS_LATERAL = True
@@ -25,6 +26,8 @@ def validate_move(dx: float, dy: float, dyaw: float) -> None:
 
 def measure(robot) -> dict:
     """Read real root state; yaw describes the body front, not URDF root +X."""
+    if hasattr(robot, "observe_base"):
+        return dict(robot.observe_base())
     import torch
 
     entity = robot.entity
@@ -49,11 +52,26 @@ def measure(robot) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class MotionTuning:
+    position_tolerance: float = 0.008
+    yaw_tolerance: float = 0.012
+    position_resume: float = 0.015
+    yaw_resume: float = 0.025
+    linear_still: float = 0.008
+    angular_still: float = 0.02
+    settle_s: float = 0.6
+    min_linear: float = 0.0
+    min_angular: float = 0.0
+    max_angular: float = 0.3
+
+
 class RelativeMotion:
     """Turn, translate, brake, then require measured stability for 0.6 seconds."""
 
-    def __init__(self, robot):
+    def __init__(self, robot, tuning: MotionTuning | None = None):
         self.robot = robot
+        self.tuning = tuning or MotionTuning()
         self.result: dict = {}
         self.active = False
         self.elapsed = self.stable = 0.0
@@ -104,7 +122,7 @@ class RelativeMotion:
         self.elapsed = self.stable = 0.0
         self._control_elapsed = 0.0
         self.active = True
-        self.phase = "rotate" if abs(dyaw) > 0.012 else "translate"
+        self.phase = "rotate" if abs(dyaw) > self.tuning.yaw_tolerance else "translate"
         self.failure = None
         self.result = {
             "id": request_id,
@@ -148,20 +166,23 @@ class RelativeMotion:
         distance = math.hypot(self.target[0] - x, self.target[1] - y)
         linear_speed = math.sqrt(sum(v * v for v in state["linear_velocity_m_s"]))
         angular_speed = math.sqrt(sum(v * v for v in state["angular_velocity_rad_s"]))
-        if self.phase == "rotate" and abs(yaw_error) < 0.012:
+        tuning = self.tuning
+        if self.phase == "rotate" and abs(yaw_error) < tuning.yaw_tolerance:
             self.phase = "translate"
-        at_goal = distance <= 0.008 and abs(yaw_error) <= 0.012
+        at_goal = distance <= tuning.position_tolerance and abs(yaw_error) <= tuning.yaw_tolerance
         if self.phase == "translate" and at_goal:
             self.phase = "settle"
-        if self.phase == "settle" and (distance > 0.015 or abs(yaw_error) > 0.025):
+        if self.phase == "settle" and (distance > tuning.position_resume or abs(yaw_error) > tuning.yaw_resume):
             self.phase = "translate"
             self.stable = 0.0
         if self.phase in {"settle", "brake"}:
             self.robot.stop()
-            self.stable = self.stable + dt if linear_speed < 0.008 and angular_speed < 0.02 else 0.0
+            self.stable = (
+                self.stable + dt if linear_speed < tuning.linear_still and angular_speed < tuning.angular_still else 0.0
+            )
             if self.phase == "brake":
                 self.brake_elapsed += dt
-            settled = self.stable >= 0.6
+            settled = self.stable >= tuning.settle_s
             if settled or (self.phase == "brake" and self.brake_elapsed >= 5):
                 self.active = False
                 self.result.update(
@@ -186,7 +207,11 @@ class RelativeMotion:
             magnitude = math.hypot(vx, vy)
             if magnitude > 0.15:
                 vx, vy = vx * 0.15 / magnitude, vy * 0.15 / magnitude
-            wz = max(-0.3, min(0.3, 1.8 * yaw_error))
+            elif 0 < magnitude < tuning.min_linear and distance > tuning.position_tolerance:
+                vx, vy = vx * tuning.min_linear / magnitude, vy * tuning.min_linear / magnitude
+            wz = max(-tuning.max_angular, min(tuning.max_angular, 1.8 * yaw_error))
+            if abs(yaw_error) > tuning.yaw_tolerance and abs(wz) < tuning.min_angular:
+                wz = math.copysign(tuning.min_angular, yaw_error)
             self.robot.command(vx, vy, wz, min(2 * dt, 0.2))
         self.result.update(
             phase=self.phase, measured=state, measured_step=step, position_error_m=distance, yaw_error_rad=yaw_error

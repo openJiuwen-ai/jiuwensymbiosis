@@ -179,21 +179,25 @@ class So101Api(BaseRobotApi):
 
     # --- gripper overrides (two-state percentage, no mm/N params) ------------
     @implements(OPEN_GRIPPER)
-    def open_gripper(self, width_mm: float = 80.0) -> dict:
+    def open_gripper(self, width_mm: float = 80.0, *, side: Literal["default"] = "default") -> dict:
         """Open the gripper. ``width_mm`` is accepted for API parity and ignored —
         the SO-101 gripper is a two-state percentage actuator (no width control).
         Maps to ``env.set_end_effector(False)`` -> driver sends ``gripper_open_pos``.
         """
+        if side != "default":
+            raise ValueError("Single gripper only supports side=default")
         del width_mm  # ignored: SO-101 is two-state, no width calibration yet.
         self.env.set_end_effector(False)
         return self._gripper_response("open")
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None) -> dict:
+    def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
         """Close the gripper. ``force_n`` is accepted for API parity and ignored —
         the SO-101 gripper is a two-state percentage actuator (no force control).
         Maps to ``env.set_end_effector(True)`` -> driver sends ``gripper_close_pos``.
         """
+        if side != "default":
+            raise ValueError("Single gripper only supports side=default")
         del force_n  # ignored: SO-101 is two-state, no force calibration yet.
         self.env.set_end_effector(True)
         return self._gripper_response("closed")

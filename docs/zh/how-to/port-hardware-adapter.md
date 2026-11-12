@@ -57,6 +57,9 @@ class MyEnv(BaseRobotEnv):
 Api 用 `@implements(SPEC)` 绑定共享词表里本体支持的动作，公开软件能力：
 
 ```python
+from typing import Literal
+
+
 class MyApi(BaseRobotApi):
     # 末端没有实测通道时必须声明：fastagent 下「指令成功」不建立 payload.held，
     # 证据未知即失败（见适配器参考的「抓取证据」小节）。有反馈通道的本体请改为
@@ -69,8 +72,8 @@ class MyApi(BaseRobotApi):
         return defaults.goto_xyzr(self, x, y, z, r)
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None) -> dict:
-        return defaults.close_gripper(self, force_n)
+    def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
+        return defaults.close_gripper(self, force_n, side=side)
 ```
 
 工具按 `api.capabilities ∩ env.capabilities` 生成。完成接线后必须检查：

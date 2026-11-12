@@ -32,3 +32,21 @@ def motion_feedback(result: dict) -> dict:
     if feedback["recoverable"]:
         feedback["next_observation"] = "capture_camera(head_cam)"
     return feedback
+
+
+def policy_feedback(result: dict) -> dict:
+    """Action outcomes only; joint angles, world height and contact truth stay private."""
+    feedback = motion_feedback(result)
+    if result.get("reason") in {
+        "gripper_requires_open",
+        "unsafe_start",
+        "policy_timeout",
+        "policy_safe",
+        "flight_unconfirmed",
+    }:
+        feedback["reason"] = result["reason"]
+    if result.get("kind") == "jump":
+        feedback["airborne"] = result.get("flight_s", 0) >= 0.02
+    elif result.get("kind") == "set_gripper":
+        feedback.update(side=result.get("side"), closed=result.get("closed"), grasp_verified=False)
+    return feedback

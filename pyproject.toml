@@ -156,6 +156,26 @@ genesis = [
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
 ]
+jumper = [
+    # Official native controller + CPU ONNX; use with the simulation workbench.
+    "mujoco==3.17.0",
+    "onnxruntime==1.31.1",
+]
+microduck = [
+    "mujoco==3.17.0",
+    "onnxruntime==1.31.1",
+    "better-actuator-models==1.0.3",
+]
+genesis-macos = [
+    # Apple Silicon: CPU/Metal physics + OpenGL, no CUDA/Nyx/NVENC.
+    "torch==2.11.0",
+    "numpy==2.3.5",
+    "genesis-world==1.4.4",
+    "aiortc==1.15.0",
+    "av==17.1.0",
+    "pillow==11.3.0",
+    "opencv-python>=4.8,<5",
+]
 calib = [
     # 手眼标定脚本 scripts/calibrate/calibrate_hand_eye.py 的依赖，刻意独立于重型 [full] GPU 栈，
     # 也不进 core（core 须保持无硬件/无视觉，mock 测试要离线跑）。

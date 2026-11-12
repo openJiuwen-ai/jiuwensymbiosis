@@ -10,6 +10,7 @@ import signal
 import socket
 import socketserver
 import struct
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -30,7 +31,7 @@ from jiuwensymbiosis.utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
 _CLIENT_ID = re.compile(r"[a-f0-9]{32}\Z")
-_CANCELLABLE = {"navigate_relative", "capture_image", "query_scene"}
+_CANCELLABLE = {"navigate_relative", "policy_action", "capture_image", "query_scene"}
 _METHODS = {
     "start",
     "configure",
@@ -45,6 +46,7 @@ _METHODS = {
     "cancel_motion",
     "motion_state",
     "navigate_relative",
+    "policy_action",
 }
 
 
@@ -173,7 +175,7 @@ class ResidentHost:
             )
             if requires_viewer and self.viewer != client_id:
                 raise RuntimeError("请连接当前 GUI 的视频后操作。")
-            if method in {"release_motion", "cancel_motion", "motion_state", "navigate_relative"}:
+            if method in {"release_motion", "cancel_motion", "motion_state", "navigate_relative", "policy_action"}:
                 if client.owner is None or params.get("owner") != client.owner:
                     raise RuntimeError("该客户端没有此运动任务的控制权。")
             if method == "acquire_motion":
@@ -253,7 +255,18 @@ class ResidentHandler(socketserver.BaseRequestHandler):
     server: ResidentServer
 
     def handle(self) -> None:
-        _, uid, _ = struct.unpack("3i", self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if sys.platform == "darwin":
+            # Darwin has getpeereid(), not Linux SO_PEERCRED. Keep the same
+            # same-user boundary; never substitute an unauthenticated socket.
+            import ctypes
+
+            uid_value, gid_value = ctypes.c_uint(), ctypes.c_uint()
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.getpeereid(self.request.fileno(), ctypes.byref(uid_value), ctypes.byref(gid_value)) != 0:
+                return
+            uid = uid_value.value
+        else:
+            _, uid, _ = struct.unpack("3i", self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         if uid != os.getuid():
             return
         try:

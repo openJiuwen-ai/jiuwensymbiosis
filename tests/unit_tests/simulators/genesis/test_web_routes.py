@@ -106,6 +106,9 @@ def test_library_routes_use_independent_index_and_accept_asset_ids(client, tmp_p
 
     from jiuwensymbiosis.simulators.assets import build_index, load_config
     from jiuwensymbiosis.simulators.assets import index as asset_index
+    from jiuwensymbiosis.simulators.genesis.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
 
     http, backend, _ = client
     source = tmp_path / "assets/background/room/one/background.usda"
@@ -130,6 +133,19 @@ def test_library_routes_use_independent_index_and_accept_asset_ids(client, tmp_p
     assert response.status_code == 200
     assert backend.configuration["scene_id"] == identifier
     assert http.get("/genesis/library?limit=1001").status_code == 422
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_scene_selector_keeps_native_robots_and_hides_unsupported_mac_assets(client, monkeypatch, platform):
+    from jiuwensymbiosis.simulators.genesis.web import routes
+
+    entries = [{"id": "demo"}] + [
+        {"id": mode, "preview_mode": mode} for mode in ("urdf", "static_usd", "jumper", "microduck")
+    ]
+    monkeypatch.setattr(routes, "scene_catalog", lambda: entries)
+    monkeypatch.setattr(routes.sys, "platform", platform)
+    expected = ["demo", "jumper", "microduck"] if platform == "darwin" else [entry["id"] for entry in entries]
+    assert [entry["id"] for entry in client[0].get("/genesis/scenes").json()] == expected
 
 
 @pytest.mark.parametrize(

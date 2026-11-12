@@ -15,7 +15,7 @@ from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 
 from jiuwensymbiosis.agent.config import ModelSpec, RobotAgentConfig, build_model
 from jiuwensymbiosis.agent.run import run_robot_task
@@ -23,10 +23,13 @@ from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     APPROACH_TARGET,
+    CLOSE_GRIPPER,
+    JUMP,
     LOCATE_TARGET,
     NAVIGATE_RELATIVE,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
+    OPEN_GRIPPER,
     ROTATE_BASE,
     SEARCH_TARGET,
     SIM_GET_ENTITY_STATE,
@@ -52,7 +55,7 @@ from jiuwensymbiosis.simulators.genesis.observation_policy import (
     policy_id,
 )
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-from jiuwensymbiosis.simulators.genesis.visual_policy import motion_feedback
+from jiuwensymbiosis.simulators.genesis.visual_policy import motion_feedback, policy_feedback
 
 
 class GenesisDriver:
@@ -167,6 +170,22 @@ class GenesisDriver:
         ):
             self._recovery_observation_after = None
 
+    def policy_action(self, kind: str, *, side="left", closed=False) -> dict:
+        if self.cancelled.is_set():
+            raise RuntimeError("任务已取消。")
+        if self.owner is None:
+            raise RuntimeError("Simulation session is not connected")
+        try:
+            result = self.preview.policy_action(self.owner, kind, side=side, closed=closed, cancelled=self.cancelled)
+        except Exception as exc:
+            self.cancelled.set()
+            report_failure("jumper.policy_action.failed", exc)
+            raise RuntimeError("策略动作异常，停止结果尚未确认。") from None
+        self.results.append(result)
+        if not result.get("ok"):
+            self.cancelled.set()
+        return policy_feedback(result)
+
     def observe(self) -> dict:
         """Private physical readback for host validation/evidence, never model context."""
         if not self.actions_enabled:
@@ -193,7 +212,7 @@ class GenesisDriver:
 
 class GenesisEnv(BaseRobotEnv):
     low_level: GenesisDriver
-    name = "genesis_moz1"
+    name = "symbiosis_sim"
     capabilities = frozenset({"motion.base"})
     supports_lateral = MOZ1_SUPPORTS_LATERAL
     cameras = ("head_cam",)
@@ -336,7 +355,7 @@ class GenesisEnv(BaseRobotEnv):
         return self._last_frame
 
     def home(self) -> None:
-        # Upper body is already locked at home. Do not drive the base back to its spawn point.
+        # A stationary posture; never drive the robot back to its spawn point.
         result = self.navigate_relative(0.0)
         if not result["ok"]:
             raise RuntimeError("Cannot confirm stationary home posture")
@@ -451,6 +470,44 @@ class GenesisTruthMotionApi(GenesisTruthApi):
         return navigate(self.env.low_level, {"entity_id": entity_id, "stand_off_m": stand_off_m})
 
 
+class JumperEnv(GenesisEnv):
+    capabilities = frozenset({"motion.base", "motion.jump", "grasp.parallel"})
+
+    def __init__(self, driver):
+        super().__init__(driver)
+        self.capabilities = type(self).capabilities if driver.actions_enabled else frozenset()
+
+    def jump(self) -> dict:
+        return self.driver.policy_action("jump")
+
+    def set_gripper(self, closed: bool, side: Literal["left", "right"] = "left") -> dict:
+        if side not in {"left", "right"}:
+            raise ValueError("Jumper gripper requires left/right side")
+        return self.driver.policy_action("set_gripper", side=side, closed=closed)
+
+
+class JumperApi(GenesisApi):
+    def __init__(self, env: JumperEnv):
+        super().__init__(env)
+        self.jumper_env = env
+
+    @implements(JUMP)
+    def jump(self) -> dict:
+        return self.jumper_env.jump()
+
+    @implements(OPEN_GRIPPER)
+    def open_gripper(self, width_mm: float = 80.0, *, side: Literal["left", "right"] = "left") -> dict:
+        del width_mm  # Official controller uses fixed open/closed targets.
+        result = self.jumper_env.set_gripper(False, side)
+        return {**result, "state": "open" if result.get("ok") else "unconfirmed"}
+
+    @implements(CLOSE_GRIPPER)
+    def close_gripper(self, force_n: float | None = None, *, side: Literal["left", "right"] = "left") -> dict:
+        del force_n  # Official controller does not expose force control.
+        result = self.jumper_env.set_gripper(True, side)
+        return {**result, "state": "closed" if result.get("ok") else "unconfirmed"}
+
+
 def make_session(
     preview: GenesisPreview,
     *,
@@ -459,9 +516,14 @@ def make_session(
     observation_mode: str = "visual",
     detector_config: DetectorConfig | None = None,
 ) -> RobotSession:
-    env = GenesisEnv(
-        GenesisDriver(preview, cancelled, actions_enabled=actions_enabled, observation_mode=observation_mode)
-    )
+    driver = GenesisDriver(preview, cancelled, actions_enabled=actions_enabled, observation_mode=observation_mode)
+    state = preview.status() if hasattr(preview, "status") else {}
+    policy_actions = (state.get("robot") or {}).get("policy_actions", [])
+    if observation_mode != "visual" and state.get("scene", {}).get("engine") == "MuJoCo":
+        raise ValueError("Jumper/Microduck 当前支持 RGB 相机观察；RGB-D 感知和真值导航尚未接入。")
+    if observation_mode == "perception" and state.get("renderer") == "Genesis Rasterizer":
+        raise ValueError("Mac Genesis 仅支持动态演示，RGB-D 机器人感知尚未接入；请使用 Linux / NVIDIA。")
+    env = JumperEnv(driver) if {"jump", "set_gripper"} <= set(policy_actions) else GenesisEnv(driver)
     api: BaseRobotApi
     starters = []
     detector_config = detector_config or DetectorConfig()
@@ -490,7 +552,11 @@ def make_session(
 
         starters.append(client_starter)
     else:
-        api = GenesisApi(env) if actions_enabled else BaseRobotApi(env)
+        api = (
+            (JumperApi(env) if isinstance(env, JumperEnv) else GenesisApi(env))
+            if actions_enabled
+            else BaseRobotApi(env)
+        )
     return RobotSession(env=env, api=api, name=env.name, sidecar_starters=starters)
 
 
@@ -545,7 +611,12 @@ def run_agent_query(
 机身前方为 +X、左侧为 +Y、逆时针为正偏航，支持横移；这是相对动作约定，不是位置测量。
 navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位米、弧度。
 每条平移最多 1 米，旋转最多 pi 弧度；应根据视野选择保守步长并在移动后重新看图。
-只执行用户要求的运动，不增加 home 或收尾运动；这里没有机械臂、抓取或避障工具。
+只执行用户要求的动作，不增加 home 或收尾运动；只可使用实际列出的工具，没有自动避障工具。
+若提供 jump，可执行一次官方固定轨迹跳跃；必须先观察、停车并确认夹爪已张开，不能指定高度或连续连跳。
+若提供 open_gripper(side) / close_gripper(side)，可张开/闭合指定侧夹爪；side 为 left/right，默认 left。
+一次只抬起一侧夹爪，由官方五足支撑策略保持平衡。闭合夹爪不表示抓住物体，不得声称抓取成功。
+切换夹爪侧别、移动或跳跃前，先张开当前夹爪；移动会先收回已张开的机械臂。不要在未获授权时释放夹爪。
+取消跳跃会等待当前腾空落地后停稳；闭合命令完成后会保留夹爪状态，停止不会自动松爪。
 只有工具结果 ok=true 且 settled=true 才能报告该动作完成；到达导航目标必须另用新图验证。
 若动作返回 recoverable=true，表示移动超时但已确认停车，任务尚未完成：先调用 capture_camera(head_cam)，
 根据新图和失败反馈自行调整路线或步长，再调用运动工具继续尝试。不可盲目重复失败动作。
@@ -561,7 +632,10 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
         # run_robot_task owns a short-lived event loop in this worker thread.
         # Never share its HTTP connections with the workbench's async chat loop.
         model=build_model(spec, use_shared_http_client=False),
-        workspace=str(output_dir / "workspace"),
+        # Each invoke owns a short-lived event loop. The SDK caches workspace
+        # file locks across loops; reusing a path can deadlock the next turn.
+        # Conversation history is supplied explicitly by the host below.
+        workspace=str(output_dir / "workspace" / run_id),
         strict_capabilities=True,
         extra_tools=[camera.tool()],
         extra_rails=[camera],
@@ -570,6 +644,11 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             observation_mode,
             actions_enabled,
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
+        )
+        | (
+            frozenset({"jump", "open_gripper", "close_gripper"})
+            if actions_enabled and isinstance(session.api, JumperApi)
+            else frozenset()
         ),
         execution={
             "mode": "stepagent",

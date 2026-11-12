@@ -213,7 +213,11 @@ async def test_readonly_chat_reuses_agent_and_discards_late_ui_callback(monkeypa
 
 
 @pytest.mark.parametrize("default_output", [False, True])
-def test_shared_agent_sends_camera_pixels_to_model_without_motion(preview, tmp_path, monkeypatch, default_output):
+@pytest.mark.parametrize("turns", [1, 2])
+@pytest.mark.timeout(25)
+def test_shared_agent_sends_camera_pixels_to_model_without_motion(
+    preview, tmp_path, monkeypatch, default_output, turns
+):
     """Local HTTP model drives a real tool call, then checks the next wire request."""
     monkeypatch.setenv("JIUWENSYMBIOSIS_SIMULATOR_HOME", str(tmp_path))
     expected_output = tmp_path / "outputs/genesis-agent" if default_output else tmp_path
@@ -272,14 +276,17 @@ def test_shared_agent_sends_camera_pixels_to_model_without_motion(preview, tmp_p
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            result = run_agent_query(
-                preview,
-                ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="camera-test"),
-                "看看头部画面",
-                actions_enabled=False,
-                output_dir=None if default_output else tmp_path,
-                on_frame=shown.append,
-            )
+            results = []
+            for _ in range(turns):
+                result = run_agent_query(
+                    preview,
+                    ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="camera-test"),
+                    "看看头部画面",
+                    actions_enabled=False,
+                    output_dir=None if default_output else tmp_path,
+                    on_frame=shown.append,
+                )
+                results.append(result)
         finally:
             server.shutdown()
             thread.join(2)
@@ -311,7 +318,9 @@ def test_shared_agent_sends_camera_pixels_to_model_without_motion(preview, tmp_p
     assert "PRIVATE_EXTRINSICS" in json.dumps(result["frames"])  # private audit stays available
     assert shown[0]["image_url"] == image
     assert result["frames"][0]["injected"] and not result["actions"]
-    assert preview.capture_image.call_count == 1
+    assert preview.capture_image.call_count == turns
+    assert len({item["id"] for item in results}) == turns
+    assert all(item["execution_status"] == "completed" for item in results)
     preview.acquire_motion.assert_not_called()
 
 

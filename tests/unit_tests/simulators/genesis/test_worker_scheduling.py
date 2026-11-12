@@ -109,16 +109,22 @@ def worker_loop(monkeypatch, tmp_path):
 
     module("base_motion", measure=lambda robot: {})
     module("camera", PreviewSettings=PreviewSettings)
-    module("encoding", NvEncoder=encoder)
+    module("encoding", NvEncoder=encoder, SoftwareEncoder=encoder)
     module("ipc", Mailbox=object)
     module("scene_catalog", resolve_scene=lambda _: None, validate_material_bundle=lambda _: None)
-    module("scene_runtime", RuntimeScene=lambda *a, **kw: runtime)
+    module("scene_runtime", create_runtime=lambda *a, **kw: runtime, reset_runtime=lambda *a, **kw: (runtime, {}))
     module("quadrants")
     module("scheduling", PhysicsClock=lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
     module("startup_diagnostics", StartupDiagnostics=lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
     module("usd_scene", prepare_static_stage=lambda *a: None)
-    module("genesis", cuda=object(), init=lambda **kw: None, destroy=lambda: None)
-    module("quadrants")  # Optional cfg diagnostics report unavailable; never load the real SDK.
+    module(
+        "genesis",
+        cuda="cuda",
+        cpu="cpu",
+        metal="metal",
+        init=lambda **kw: setattr(state, "backend", kw["backend"]),
+        destroy=lambda: None,
+    )
     sdk = module("gs_nyx.nyx_py_sdk", startup=lambda: None, shutdown=lambda: None)
     module("gs_nyx", nyx_py_sdk=sdk)
     module("torch", cuda=SimpleNamespace(current_stream=lambda: SimpleNamespace(synchronize=lambda: None)))
@@ -126,10 +132,36 @@ def worker_loop(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("worker_scheduling_under_test", path)
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
+    monkeypatch.setattr(worker.sys, "platform", "linux")
     monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: state.now, sleep=advance))
     state.run = lambda: worker.run_preview(mailbox, tmp_path)
+    state.worker = worker
     state.directory = tmp_path
     return state
+
+
+@pytest.mark.parametrize("requested, expected", [(None, "cpu"), ("cpu", "cpu"), ("metal", "metal")])
+def test_macos_physics_backend_keeps_the_worker_contract(worker_loop, monkeypatch, requested, expected):
+    state = worker_loop
+    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
+    if requested is None:
+        monkeypatch.delenv("JIUWEN_GENESIS_MACOS_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", requested)
+    state.run()
+    assert state.backend == expected
+    assert state.statuses[-1]["state"] == "ready"
+    assert state.statuses[-1]["physics_backend"] == expected
+
+
+def test_macos_invalid_backend_fails_before_scene_or_encoder(worker_loop, monkeypatch):
+    state = worker_loop
+    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
+    monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", "invalid")
+    state.run()
+    assert state.encoders == 0
+    assert state.statuses[-1]["state"] == "failed"
+    assert state.statuses[-1]["startup"]["failed_phase"] == "genesis_init"
 
 
 def capture_request():

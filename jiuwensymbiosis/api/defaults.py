@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 
 def pose_to_dict(pose: Any) -> dict:
@@ -195,19 +195,23 @@ def deactivate_suction(api: Any) -> dict:
     return {"ok": True, "state": "off"}
 
 
-def open_gripper(api: Any, width_mm: float = 80.0) -> dict:
+def open_gripper(api: Any, width_mm: float = 80.0, *, side: Literal["default"] = "default") -> dict:
     """Open the gripper. ``width_mm`` is accepted for contract parity and ignored —
     a body with real width control writes its own.
     """
+    if side != "default":
+        raise ValueError("Single gripper only supports side=default")
     del width_mm
     api.env.set_end_effector(False)
     return {"ok": True, "state": "open"}
 
 
-def close_gripper(api: Any, force_n: float | None = None) -> dict:
+def close_gripper(api: Any, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
     """Close the gripper. ``force_n`` is accepted for contract parity and ignored —
     a body with real force control writes its own.
     """
+    if side != "default":
+        raise ValueError("Single gripper only supports side=default")
     del force_n
     api.env.set_end_effector(True)
     return {"ok": True, "state": "closed"}

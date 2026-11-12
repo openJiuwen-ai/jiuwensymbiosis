@@ -177,6 +177,11 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 
 末端没有实测通道的本体，在 Api 类上声明 `trust_command_grasp = True`：指令成功即被接受为证据（运行时打 warning 日志，可审计）。这是**显式降级声明**——默认 fail closed 不变；驱动获得反馈通道后删除该声明并改为提供实测证据。`env.holding_payload` 不参与该判定，它仍是 RecoveryRail 专用的粗粒度标志。
 
+`open_gripper(width_mm=..., side=...)` 和 `close_gripper(force_n=..., side=...)` 的 `side` 是可选参数，
+取值由本体签名的 `Literal` 决定；省略时使用默认夹爪。单夹爪（Piper、SO-101）仅接受
+`"default"`，Jumper 接受 `"left"` / `"right"`，默认左侧。已有无 `side` 调用保持不变；
+仓库外的自定义适配器需要在两个实现中补充可选 `side` 参数，否则共享契约的导入校验会拒绝加载。
+
 ## 6. Config 与 Session Builder
 
 路径字段由 Config 的 `path_fields: ClassVar[tuple[str, ...]]` 声明（无路径可省略）。`from_yaml` 使用 `adapters._common.config.load_yaml_config`，与 Runtime、smoke 共用 `parse_config`；解析支持扁平及历史嵌套配置，不因文件暂不存在而退回当前工作目录。

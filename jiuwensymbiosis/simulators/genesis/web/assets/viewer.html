@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Genesis · Nyx 实时仿真</title>
+<title>Genesis 实时仿真</title>
 <link rel="stylesheet" href="/genesis/assets/viewer.css">
 <script type="module" src="/genesis/assets/viewer.js"></script>
 </head>
@@ -26,7 +26,7 @@
   <div class="camera-buttons">
     <span class="control-caption">视角</span>
     <select id="camera-source" aria-label="相机视角" disabled><option value="observer">观察视角</option></select>
-    <button id="manual">手动控制</button>
+    <button id="manual" aria-controls="manual-dialog" aria-expanded="false">手动控制</button>
     <button id="robot-stop" data-base="stop" class="danger" hidden disabled>停止机器人</button>
     <button id="reset" title="回到当前场景的初始视角" aria-label="重置视角" disabled>重置视角</button>
     <button id="focus" title="聚焦选中对象；未选择时显示整个场景 · F" aria-label="聚焦选中对象" disabled>聚焦 F</button>
@@ -36,6 +36,22 @@
     <button id="fullscreen" title="全屏画面" aria-label="全屏画面"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg><span id="fullscreen-label">全屏</span></button>
   </div>
 </section>
+
+<dialog id="manual-dialog" aria-label="手动控制">
+<section id="base-controls" class="camera-toolbar" aria-label="机器人移动控制" title="方向以机器人自身为准；每次最多运行 1 秒，速度 0.15 m/s，转速 0.3 rad/s" hidden>
+  <div class="camera-buttons">
+    <span class="control-caption">底盘</span>
+    <button data-base="forward" disabled>前进</button><button data-base="backward" disabled>后退</button>
+    <button data-base="left" disabled>左移</button><button data-base="right" disabled>右移</button>
+    <button data-base="ccw" disabled>左旋</button><button data-base="cw" disabled>右旋</button>
+    <button data-base="stop" class="danger" disabled>停止机器人</button>
+  </div>
+</section>
+  <section class="camera-toolbar" aria-label="观察视角控制" title="仅调整观察相机，不移动机器人"><span class="control-caption">视角</span><div class="camera-buttons">
+    <button data-camera="left" title="左转" aria-label="左转" disabled>←</button><button data-camera="right" title="右转" aria-label="右转" disabled>→</button><button data-camera="up" title="抬高" aria-label="抬高" disabled>↑</button><button data-camera="down" title="降低" aria-label="降低" disabled>↓</button><span class="divider"></span><button data-camera="in" title="拉近" aria-label="拉近" disabled>＋</button><button data-camera="out" title="拉远" aria-label="拉远" disabled>−</button>
+  </div></section>
+  <button data-close="manual-dialog" aria-label="关闭手动控制">×</button>
+</dialog>
 
 <footer class="session-bar">
   <div class="session-buttons">
@@ -58,9 +74,10 @@
 <dialog id="settings-dialog">
   <div class="dialog-heading"><strong>渲染设置</strong><button data-close="settings-dialog" aria-label="关闭渲染设置">×</button></div>
   <div class="settings-fields">
-    <label><span>观察分辨率</span><select id="resolution" aria-label="分辨率"><option value="1280x720">720p</option><option value="1920x1080">1080p</option></select></label>
+    <label><span>观察分辨率</span><select id="resolution" aria-label="分辨率"><option value="960x540">540p</option><option value="1280x720" selected>720p</option><option value="1920x1080">1080p</option></select></label>
     <label><span>渲染</span><select id="render-quality" aria-label="渲染质量"><option value="reference" selected>Reference · 64 采样</option></select></label>
     <label><span>FPS 上限</span><select id="fps" aria-label="帧率"><option value="30">30 fps</option><option value="60" selected>60 fps</option></select></label>
+    <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式"><option value="inspection">姿态检视</option><option value="moz1_wheels">MOZ1 底盘物理</option><option value="jumper">Jumper 六足步态物理</option><option value="microduck">Microduck 双足步态物理</option></select></label>
   </div>
   <p id="quality-description">Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。</p>
   <div class="settings-performance"><span>请求档位</span><strong id="requested-profile">—</strong><span>实际表现</span><strong id="actual-performance">等待有效测量</strong></div>
@@ -68,27 +85,7 @@
   <p class="muted">仅使用 Reference 渲染，固定 64 采样。可调整观察分辨率和 FPS 上限。</p>
   <p class="muted">机器人相机使用模型标定的分辨率与镜头参数；视角随机器人运动。只更新正在观看或请求取图的相机。</p>
 </dialog>
-<dialog id="manual-dialog">
-  <div class="dialog-heading"><strong>手动控制</strong><button data-close="manual-dialog" aria-label="关闭手动控制">×</button></div>
-  <div class="settings-fields">
-    <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式"><option value="inspection">姿态检视</option><option value="moz1_wheels">MOZ1 底盘物理</option></select></label>
-  </div>
-  <p class="muted">视角操作只移动观察相机；底盘操作移动机器人。</p>
-  <section class="camera-toolbar"><span class="control-caption">视角</span><div class="camera-buttons">
-    <button data-camera="left" title="左转" aria-label="左转" disabled>←</button><button data-camera="right" title="右转" aria-label="右转" disabled>→</button><button data-camera="up" title="抬高" aria-label="抬高" disabled>↑</button><button data-camera="down" title="降低" aria-label="降低" disabled>↓</button><span class="divider"></span><button data-camera="in" title="拉近" aria-label="拉近" disabled>＋</button><button data-camera="out" title="拉远" aria-label="拉远" disabled>−</button>
-  </div></section>
-<section id="base-controls" class="camera-toolbar" aria-label="MOZ1 底盘控制" hidden>
-  <div class="camera-buttons">
-    <span class="control-caption">底盘</span>
-    <button data-base="forward" disabled>前进</button><button data-base="backward" disabled>后退</button>
-    <button data-base="left" disabled>左移</button><button data-base="right" disabled>右移</button>
-    <button data-base="ccw" disabled>左旋</button><button data-base="cw" disabled>右旋</button>
-    <button data-base="stop" class="danger" disabled>停止机器人</button>
-    <span>单击运行最多 1 秒 · 0.15 m/s / 0.3 rad/s</span>
-  </div>
-</section>
-  <p class="muted">底盘按钮仅在机器人底盘物理模式、视频连接后可用。方向以机器人自身为准。</p>
-</dialog>
+
 <dialog id="help-dialog">
   <div class="dialog-heading"><strong>操作说明</strong><button data-close="help-dialog" aria-label="关闭操作说明">×</button></div>
   <p>先在画面内操作，使用下列鼠标和键盘手势控制视角；快捷键只作用于画面。</p>

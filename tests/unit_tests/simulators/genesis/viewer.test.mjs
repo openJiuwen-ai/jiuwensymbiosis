@@ -19,6 +19,7 @@ function viewer() {
   const elements = new Map([
     ['camera-source', new Select(['observer', 'head_cam', 'left_gripper_cam'])],
     ['scene', new Select(['room'])],
+    ['render-quality', new Select(['reference'])],
   ]);
   const byId = id => {
     if (!elements.has(id)) elements.set(id, {});
@@ -41,6 +42,22 @@ function viewer() {
   vm.runInContext(source.slice(source.indexOf('async function poll()'), source.indexOf('poll(); setInterval')), context);
   vm.runInContext(source.slice(source.indexOf('async function backendAction('), source.indexOf('const clamp =')), context);
   return context;
+}
+
+for (const mode of ['jumper', 'microduck']) {
+  test(`selecting ${mode} chooses its physics mode and clears an attached robot`, () => {
+    const ui = viewer();
+    ui.sceneCatalog = [{id: 'room', preview_mode: mode}];
+    ui.navigation = {stop() {}};
+    ui.backendState = 'stopped';
+    ui.byId('robot').value = 'old-robot';
+    const start = source.indexOf("for (const id of ['scene', 'resolution'");
+    vm.runInContext(source.slice(start, source.indexOf("byId('stop').onclick", start)), ui);
+    ui.byId('scene').onchange();
+    assert.equal(ui.byId('robot-mode').value, mode);
+    assert.equal(ui.byId('robot').value, '');
+    assert.equal(ui.byId('camera-source').value, 'observer');
+  });
 }
 
 for (const pending of ['starting', 'reconfiguring']) {

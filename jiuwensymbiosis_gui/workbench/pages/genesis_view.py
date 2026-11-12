@@ -348,14 +348,21 @@ class GenesisView:
         elif not snapshot["fresh"]:
             help_text = "已开启：等待新鲜的仿真状态；请检查后台连接与运行状态。"
         elif not snapshot["robot_actions_available"]:
-            help_text = "已开启：请选择 MOZ1，并切换为“MOZ1 底盘物理”模式。"
+            help_text = "已开启：请选择支持移动的机器人及其物理模式（MOZ1 / Jumper）。"
         else:
             help_text = "已开启：可控制前后、左右横移和旋转；关闭将取消当前任务。"
+            if {"jump", "set_gripper"} <= set((status.get("robot") or {}).get("policy_actions", [])):
+                help_text = "已开启：可移动、跳跃及开合左右夹爪。移动或跳跃前须先张开夹爪；取消跳跃会等待落地。"
         if self._chat.observation_mode == "perception" and self._chat.detector_config.mode == "disabled":
             help_text += "检测未启用：目标定位与接近不可用。"
+        if status.get("scene", {}).get("engine") == "MuJoCo":
+            help_text += " Jumper/Microduck 请使用相机观察模式；尚无 RGB-D 和真值导航。"
+        elif status.get("renderer") == "Genesis Rasterizer" and self._chat.observation_mode == "perception":
+            help_text += " Mac Genesis 演示不提供 RGB-D 机器人感知，请使用 Linux / NVIDIA。"
         self._mode_help.set_text(help_text)
         self._robot_stop.set_visibility(
-            (status.get("robot") or {}).get("control_mode") == "wheel_velocity_physics" or self._chat.motion_running
+            (status.get("robot") or {}).get("control_mode") in {"wheel_velocity_physics", "policy_locomotion"}
+            or self._chat.motion_running
         )
         self._robot_stop.set_enabled(self._chat.preview is not None)
         state = snapshot["state"]
@@ -384,7 +391,7 @@ class GenesisView:
     async def _stop_robot(self) -> None:
         """Cancel Agent ownership and request zero wheel speed; do not claim a measured stop."""
         status = self._read_status()
-        mobile = (status.get("robot") or {}).get("control_mode") == "wheel_velocity_physics"
+        mobile = (status.get("robot") or {}).get("control_mode") in {"wheel_velocity_physics", "policy_locomotion"}
         if self._chat.preview is None or not (mobile or self._chat.motion_running):
             self._chat_status.set_text("当前没有可停止的机器人控制；请检查仿真状态。")
             return

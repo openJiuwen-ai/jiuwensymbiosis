@@ -75,9 +75,11 @@ pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px
 .settings-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .settings-fields label { display: flex; flex-direction: column; gap: 6px; }
 .settings-fields label > span { color: #91a4b7; font-size: 12px; }
-#manual-dialog .camera-toolbar { flex-wrap: wrap; padding: 12px 0; }
-#manual-dialog .camera-buttons { flex-wrap: wrap; }
-#base-controls .camera-buttons > span:last-child { width: 100%; font-size: 11px; color: #91a4b7; }
+#manual-dialog { position: static; flex: 0 0 auto; margin: 0; width: 100%; max-width: none; overflow-x: auto; padding: 4px 10px; border: 0; border-top: 1px solid #34414e; border-radius: 0; box-shadow: none; }
+#manual-dialog[open] { display: flex; align-items: center; gap: 16px; }
+#manual-dialog .camera-toolbar { flex: 0 0 auto; padding: 0; border: 0; }
+#manual-dialog .camera-buttons { flex-wrap: nowrap; }
+#manual-dialog > [data-close] { flex: 0 0 auto; margin-left: auto; padding: 0 6px; border: 0; background: transparent; font-size: 20px; }
 #manual-dialog [data-base="stop"] { border: 1px solid #82554e; color: #ffc6bd; }
 .settings-performance { display: grid; grid-template-columns: 65px minmax(0, 1fr); gap: 7px 10px; padding: 12px; background: #101a24; border-radius: 7px; font-size: 11px; }
 .settings-performance > span { color: #91a4b7; }

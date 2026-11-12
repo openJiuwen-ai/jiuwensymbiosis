@@ -209,6 +209,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         from pathlib import Path
         from types import ModuleType, SimpleNamespace as NS
         import worker
+        worker.sys.platform = 'linux'
         from camera import OrbitCamera, PreviewSettings
         logging.basicConfig(level=logging.INFO)
 
@@ -281,7 +282,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
                     return False
                 return super().render_ready()
 
-        worker.RuntimeScene = Runtime
+        worker.create_runtime = Runtime
         worker.NvEncoder = lambda *a, **kw: NS(close=lambda: calls.append('encoder_close'))
         worker.PhysicsClock = Clock
         mailbox = Mailbox()

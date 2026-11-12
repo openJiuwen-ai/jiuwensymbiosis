@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
 import time
 import uuid
@@ -25,6 +26,64 @@ from source_lighting import load_source_lighting, make_environment
 from usd_scene import initial_camera, prepare_static_stage
 
 
+def create_runtime(settings, directory, revision=0, *, startup=None):
+    if settings.robot_mode == "jumper":
+        from jumper_runtime import JumperRuntime
+
+        return JumperRuntime(settings, directory, revision, startup=startup)
+    if settings.robot_mode == "microduck":
+        from microduck_runtime import MicroduckRuntime
+
+        return MicroduckRuntime(settings, directory, revision, startup=startup)
+    if sys.platform == "darwin" and settings.scene_id != "demo":
+        raise ValueError("Mac Genesis 仅支持动态演示；USD 场景和 URDF 机器人请使用 Linux / NVIDIA。")
+    return RuntimeScene(settings, directory, revision, startup=startup)
+
+
+def reset_runtime(runtime, settings, directory, *, phase=nullcontext, stopping=lambda: False):
+    """Use the scene's checkpoint, or rebuild a native policy world after measured stopping."""
+    if runtime.info.get("engine") != "MuJoCo":
+        return runtime, runtime.reset(phase=phase, stopping=stopping)
+    if runtime.motion.active:
+        raise RuntimeError("运动任务仍在执行，不能复位。")
+    from base_motion import measure
+
+    tuning = getattr(runtime.motion, "base", runtime.motion).tuning
+    with phase("reset_stop"):
+        runtime.stop()
+        stable = 0.0
+        for _ in range(round(5 / settings.dt)):
+            if stopping():
+                raise RuntimeError("复位已取消，保留当前世界。")
+            runtime.step()
+            sample = measure(runtime.robot)
+            stopped = (
+                math.dist(sample["linear_velocity_m_s"], (0, 0, 0)) < tuning.linear_still
+                and math.dist(sample["angular_velocity_rad_s"], (0, 0, 0)) < tuning.angular_still
+            )
+            stable = stable + settings.dt if stopped else 0.0
+            if stable >= tuning.settle_s:
+                break
+        else:
+            raise RuntimeError("复位前未确认停车，保留当前世界。")
+    with phase("reset_restore"):
+        replacement = create_runtime(settings, directory, runtime.pose["revision"] + 1)
+        previous = runtime.info["instance_id"]
+        replacement.cycle = runtime.cycle + 1
+        replacement.info["reset_generation"] = replacement.cycle
+        try:
+            runtime.close()
+        except BaseException:
+            replacement.close()
+            raise
+    return replacement, {
+        "previous_instance_id": previous,
+        "scene_instance_id": replacement.info["instance_id"],
+        "reset_generation": replacement.cycle,
+        "stop_confirmation": "measured",
+    }
+
+
 class RuntimeScene:
     """One physical world; resizing never replaces this world or its state."""
 
@@ -42,6 +101,7 @@ class RuntimeScene:
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
+        self.raster_renderer: Any = None
         self.bodies: list[Any] = []
         self.robot: Any = None
         self.robot_asset: Any = None
@@ -68,6 +128,8 @@ class RuntimeScene:
             with self._phase("asset_resolve"):
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
                 self.robot_asset = resolve_scene(settings.robot_id) if settings.robot_id else self.asset
+            if self.asset and self.asset.asset.preview_mode in {"jumper", "microduck"}:
+                raise ValueError("策略机器人需要选择对应的步态物理模式。")
             mobile = settings.robot_mode == "moz1_wheels"
             if settings.robot_id and (self.asset is None or self.asset.asset.preview_mode != "static_usd"):
                 raise ValueError("组合场景需要 USD 背景资产。")
@@ -140,9 +202,7 @@ class RuntimeScene:
         return self._startup.phase(name) if self._startup is not None and not self._startup.finished else nullcontext()
 
     def _build_physics(self) -> None:
-        import cv2
         import genesis as gs
-        import gs_nyx.nyx_py_sdk as nps
         import numpy as np
 
         room_physics = self.source is not None or self.info["mode"] == "robot_mobile"
@@ -242,6 +302,10 @@ class RuntimeScene:
                     morph=gs.morphs.Sphere(radius=0.11, pos=(0.34, 0.05, 1.8)), surface=gs.surfaces.Copper()
                 ),
             ]
+        if sys.platform == "darwin":
+            from rendering import RasterRenderer
+
+            self.raster_renderer = RasterRenderer(self.scene, self.pose)
         with self._phase("scene_build"):
             self.scene.build(n_envs=1)
         if self.robot is not None:
@@ -272,6 +336,11 @@ class RuntimeScene:
                     self.info["spawn_support_verified"] = True
         self._initial_state = self.scene.get_state()
         self._initial_steps = self.steps
+        if sys.platform == "darwin":
+            return
+        import cv2
+        import gs_nyx.nyx_py_sdk as nps
+
         if self.lighting is not None:
             self.env = make_environment(self.lighting)
             return
@@ -287,6 +356,12 @@ class RuntimeScene:
 
     def build_renderer(self, settings: PreviewSettings) -> None:
         """Re-export the current world, retaining its physical and camera state."""
+        if sys.platform == "darwin":
+            self.renderer = self.raster_renderer
+            self.renderer.configure(settings, self.pose)
+            self.info["appearance"] = self.renderer.appearance
+            self.settings = settings
+            return
         import torch
 
         # Physics construction leaves cached Torch scratch buffers. Nyx allocates

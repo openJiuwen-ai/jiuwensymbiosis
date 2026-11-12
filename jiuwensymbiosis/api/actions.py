@@ -274,12 +274,27 @@ GET_JOINT_POSITIONS = ActionSpec(
 # =============================================================================
 # End effector — grasp.parallel / grasp.suction
 # =============================================================================
+JUMP = ActionSpec(
+    name="jump",
+    description="Execute one body-defined jump from a stationary supported stance, then wait "
+    "for measured landing and settling. The body chooses its validated trajectory; no arbitrary "
+    "height or distance is requested. Success requires observed flight and a stable landing. "
+    "Release the grippers first. Cancellation prevents another jump and waits for the current "
+    "flight to land; it cannot stop a robot in midair.",
+    capability="motion.jump",
+    params=(),
+    invalidates=("body.home",),
+    invalidates_locations=True,
+    tags=("motion",),
+)
+
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
-    "with no width control accepts it and ignores it.",
+    "with no width control accepts it and ignores it. side selects a gripper using this body's "
+    "advertised choices; omit it to use the default gripper.",
     capability="grasp.parallel",
-    params=("width_mm",),
+    params=("width_mm", "side"),
     provides=("payload.clear",),
     tags=("grasp",),
 )
@@ -290,9 +305,10 @@ CLOSE_GRIPPER = ActionSpec(
     "pose. A successful close command alone does not establish payload.held: measured grasp confirmation "
     "(grasp_confirmed / contact in the result, or the body's is_grasp_confirmed hook) is required — a body "
     "with no measured channel must declare trust_command_grasp. force_n is a HINT: a gripper with no force "
-    "control accepts it and ignores it.",
+    "control accepts it and ignores it. side selects a gripper using this body's advertised choices; "
+    "omit it to use the default gripper.",
     capability="grasp.parallel",
-    params=("force_n",),
+    params=("force_n", "side"),
     result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
@@ -746,6 +762,7 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     MOVE_JOINT,
     MOVE_NAMED_JOINT,
     GET_JOINT_POSITIONS,
+    JUMP,
     OPEN_GRIPPER,
     CLOSE_GRIPPER,
     ACTIVATE_SUCTION,

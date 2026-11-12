@@ -29,6 +29,7 @@ class TestKnownCapabilities:
             "speech.tts",
             # Mobility capabilities (P1, 2026-07-15)
             "motion.base",
+            "motion.jump",
             "motion.base_servo",
             "motion.lift",
             "motion.waist",

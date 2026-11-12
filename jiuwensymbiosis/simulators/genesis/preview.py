@@ -65,6 +65,7 @@ _WORKER_ENV_KEYS = frozenset(
         "OPENBLAS_NUM_THREADS",
         "NUMBA_NUM_THREADS",
         "QD_NUM_THREADS",
+        "JIUWEN_GENESIS_MACOS_BACKEND",
     }
 )
 
@@ -96,7 +97,9 @@ class GenesisPreview:
     """One physical world owned by a host (normally the per-user resident service)."""
 
     def __init__(self, *, state_dir: Path | None = None, settings: PreviewSettings | None = None) -> None:
-        self.settings = settings or PreviewSettings()
+        self.settings = settings or (
+            PreviewSettings(width=960, height=540, fps=30) if sys.platform == "darwin" else PreviewSettings()
+        )
         self._requested_settings = self.settings
         self._config_revision = 0
         self._observed_revision = -1
@@ -153,7 +156,11 @@ class GenesisPreview:
             result = {
                 **self._state,
                 "backend": "genesis",
-                "renderer": "Nyx RefPathTracer" if self.settings.render_mode == "reference" else "Nyx FastPathTracer",
+                "renderer": "MuJoCo OpenGL"
+                if self.settings.robot_mode in {"jumper", "microduck"}
+                else "Genesis Rasterizer"
+                if sys.platform == "darwin"
+                else ("Nyx RefPathTracer" if self.settings.render_mode == "reference" else "Nyx FastPathTracer"),
                 "settings": asdict(self.settings),
                 "requested_settings": asdict(self._requested_settings),
                 "requested_config_revision": self._config_revision,
@@ -204,16 +211,21 @@ class GenesisPreview:
             self.stop()
             if self.settings.scene_id != "demo":
                 scene_path(self.settings.scene_id)
-            if sys.platform != "linux":
-                self._state = {"state": "failed", "message": "Genesis / Nyx 预览目前支持 Linux + NVIDIA GPU。"}
+            if sys.platform not in {"linux", "darwin"}:
+                self._state = {"state": "failed", "message": "Genesis 预览支持 Linux + NVIDIA 或 Apple Silicon macOS。"}
                 return self.status()
-            missing = [
-                name for name in ("genesis", "gs_nyx_plugin", "aiortc", "av") if importlib.util.find_spec(name) is None
-            ]
+            required: tuple[str, ...] = ("genesis", "aiortc", "av")
+            if self.settings.robot_mode in {"jumper", "microduck"}:
+                required += ("mujoco", "onnxruntime")
+            if self.settings.robot_mode == "microduck":
+                required += ("bam",)
+            if sys.platform != "darwin":
+                required += ("gs_nyx_plugin",)
+            missing = [name for name in required if importlib.util.find_spec(name) is None]
             if missing:
                 self._state = {
                     "state": "failed",
-                    "message": f"缺少 {', '.join(missing)}。请在 symbiosis_genesis 环境安装 .[genesis]。",
+                    "message": f"缺少 {', '.join(missing)}。请在独立环境安装 .[{'genesis-macos' if sys.platform == 'darwin' else 'genesis'}]。",
                 }
                 return self.status()
             worker_env = _worker_environment()
@@ -229,7 +241,7 @@ class GenesisPreview:
             self._pick_request = None
             self._base_request = None
             self._send_control()
-            self._state = {"state": "starting", "message": "正在启动 Genesis / Nyx…"}
+            self._state = {"state": "starting", "message": "正在启动 Genesis…"}
             self._mailbox.write_status(self._state)
             try:
                 with (self.state_dir / "worker.log").open("a") as log:
@@ -544,8 +556,8 @@ class GenesisPreview:
             state = self.status()
             if state["state"] != "ready" or not self._streaming:
                 raise RuntimeError("请等待底盘物理场景就绪并连接视频。")
-            if (state.get("robot") or {}).get("control_mode") != "wheel_velocity_physics":
-                raise ValueError("当前场景未启用 MOZ1 底盘物理控制。")
+            if (state.get("robot") or {}).get("control_mode") not in {"wheel_velocity_physics", "policy_locomotion"}:
+                raise ValueError("当前场景未启用机器人移动控制。")
             if config_revision != self._config_revision or scene_instance_id != state.get("scene", {}).get(
                 "instance_id"
             ):
@@ -569,8 +581,8 @@ class GenesisPreview:
             state = self.status()
             if state["state"] != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
                 raise RuntimeError("Genesis 物理状态不可用或已过期。")
-            if (state.get("robot") or {}).get("control_mode") != "wheel_velocity_physics":
-                raise RuntimeError("请先加载 MOZ1 底盘物理场景。")
+            if (state.get("robot") or {}).get("control_mode") not in {"wheel_velocity_physics", "policy_locomotion"}:
+                raise RuntimeError("请先加载支持移动控制的机器人物理场景。")
             if self._motion_owner is not None:
                 raise RuntimeError("另一个任务正在控制底盘。")
             self._motion_owner = uuid.uuid4().hex
@@ -633,6 +645,18 @@ class GenesisPreview:
         from jiuwensymbiosis.simulators.genesis.base_motion import validate_move
 
         validate_move(dx, dy, dyaw)
+        return self._run_motion(owner, {"dx": dx, "dy": dy, "dyaw": dyaw}, cancelled=cancelled)
+
+    def policy_action(self, owner: str, kind: str, *, side="left", closed=False, cancelled=None) -> dict:
+        from jiuwensymbiosis.simulators.genesis.jumper_motion import validate_policy_action
+
+        validate_policy_action(kind, side=side, closed=closed)
+        with self._lock:
+            if kind not in (self.motion_state(owner).get("robot") or {}).get("policy_actions", []):
+                raise ValueError("当前机器人未开放此策略动作。")
+        return self._run_motion(owner, {"kind": kind, "side": side, "closed": closed}, cancelled=cancelled)
+
+    def _run_motion(self, owner: str, params: dict, *, cancelled=None) -> dict:
         with self._lock:
             state = self.status()
             if self._motion_owner != owner or self._motion_binding != (
@@ -653,9 +677,7 @@ class GenesisPreview:
                 "id": uuid.uuid4().hex,
                 "scene_instance_id": self._motion_binding[0],
                 "config_revision": self._motion_binding[1],
-                "dx": dx,
-                "dy": dy,
-                "dyaw": dyaw,
+                **params,
                 "lease_until": time.monotonic() + 2,
                 "cancelled": False,
             }

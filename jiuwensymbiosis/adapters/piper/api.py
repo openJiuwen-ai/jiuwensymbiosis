@@ -257,12 +257,12 @@ class PiperApi(BaseRobotApi):
     # v1 is two-state: the configured width/effort is used and width_mm / force_n are
     # accepted for contract parity only.
     @implements(OPEN_GRIPPER)
-    def open_gripper(self, width_mm: float = 80.0) -> dict:
-        return defaults.open_gripper(self, width_mm)
+    def open_gripper(self, width_mm: float = 80.0, *, side: Literal["default"] = "default") -> dict:
+        return defaults.open_gripper(self, width_mm, side=side)
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None) -> dict:
-        return defaults.close_gripper(self, force_n)
+    def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
+        return defaults.close_gripper(self, force_n, side=side)
 
     # ============================================================  Vision
     @implements(PIXEL_TO_BASE_XYZ)

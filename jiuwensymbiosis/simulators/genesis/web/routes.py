@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -61,10 +62,10 @@ class BaseCommand(Session):
 
 class StartOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    resolution: Literal["1280x720", "1920x1080"] = "1280x720"
+    resolution: Literal["960x540", "1280x720", "1920x1080"] = "1280x720"
     fps: Literal[30, 60] = 60
     render_quality: Literal["reference"] = "reference"
-    robot_mode: Literal["inspection", "moz1_wheels"] = "inspection"
+    robot_mode: Literal["inspection", "moz1_wheels", "jumper", "microduck"] = "inspection"
     robot_id: str = Field(default="", max_length=1024, pattern=r"^(|library://[a-zA-Z0-9_-]+/[a-zA-Z0-9_./%~-]+)$")
     camera_name: str = Field(default="observer", max_length=64, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     scene_id: str = Field(
@@ -104,7 +105,14 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
     @app.get("/genesis/scenes")
     def scenes():
         try:
-            return scene_catalog()
+            entries = scene_catalog()
+            if sys.platform == "darwin":
+                entries = [
+                    entry
+                    for entry in entries
+                    if entry["id"] == "demo" or entry.get("preview_mode") in {"jumper", "microduck"}
+                ]
+            return entries
         except AssetError as exc:
             raise HTTPException(409, str(exc)) from exc
 

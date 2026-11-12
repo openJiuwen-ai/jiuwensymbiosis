@@ -107,6 +107,66 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
     content = local_file(root, spec.content_path)
     if not content.is_dir():
         raise AssetError(f"资产根目录不存在：{spec.id}: {content}")
+    if spec.scanner == "microduck":
+        # Official microduck_rl layout. Indexing MJCF does not grant control capabilities.
+        model_dir = "src/mjlab_microduck/robot/microduck"
+        microduck_paths = {
+            "source": f"{model_dir}/robot_walk.xml",
+            "scene": f"{model_dir}/scene_walk.xml",
+            "code_license": "LICENSE",
+            "model_license": "LICENSE-MODELS.md",
+        }
+        for microduck_file in microduck_paths.values():
+            if not local_file(root, microduck_file).is_file():
+                raise AssetError(f"官方 Microduck 资产缺失：{microduck_file}")
+        policy_paths = {
+            "policy_manifest": "policies/manifest.json",
+            "walking_policy": "policies/velstand.onnx",
+            "policy_reference": "scripts/infer_policy.py",
+            "runtime_scene": f"{model_dir}/scene.xml",
+        }
+        runnable = local_file(root, policy_paths["walking_policy"]).is_file()
+        if runnable:
+            for role, relative in policy_paths.items():
+                if not local_file(root, relative).is_file():
+                    raise AssetError(f"Microduck 策略配套文件缺失：{relative}")
+                microduck_paths[role] = relative
+        return ScanResult(
+            assets=[
+                Asset(
+                    id=asset_id(spec.id, microduck_paths["source"]),
+                    root_id=spec.id,
+                    name="Microduck",
+                    kind="robot",
+                    category="biped",
+                    representations=microduck_paths,
+                    preview_mode="microduck" if runnable else None,
+                )
+            ]
+        )
+    if spec.scanner == "jumper":
+        # Explicit upstream layout, not a guess based on a robot's filename.
+        jumper_paths = {
+            "source": "assets/jumper/jumper.xml",
+            "policy_bundle": "out/bundle_example/jumper/bundle.json",
+            "motor_config": "assets/jumper/motor/motor_config.yaml",
+        }
+        for jumper_file in jumper_paths.values():
+            if not local_file(root, jumper_file).is_file():
+                raise AssetError(f"官方 Jumper 资产缺失：{jumper_file}")
+        return ScanResult(
+            assets=[
+                Asset(
+                    id=asset_id(spec.id, jumper_paths["source"]),
+                    root_id=spec.id,
+                    name="Jumper",
+                    kind="robot",
+                    category="hexapod",
+                    representations=jumper_paths,
+                    preview_mode="jumper",
+                )
+            ]
+        )
     result = ScanResult()
     selected: dict[str, Asset] = {}
     # Scope the cache to this build: enumerate each directory once, never across rebuilds.

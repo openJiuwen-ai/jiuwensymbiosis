@@ -26,6 +26,7 @@ def wait_for(predicate, seconds=10):
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview.sys, "platform", "linux")
     worker = tmp_path / "cpu_worker.py"
     worker.write_text(
         "import sys, time\nfrom pathlib import Path\n"
@@ -112,6 +113,32 @@ def test_missing_dependency_never_spawns(manager, monkeypatch):
     message = manager.status()["message"]
     assert ".[genesis]" in message
     assert "gui" not in message
+
+
+def test_macos_starts_without_nyx_and_keeps_its_process_contract(manager, monkeypatch):
+    monkeypatch.setattr(preview.sys, "platform", "darwin")
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        preview.importlib.util, "find_spec", lambda name: None if name == "gs_nyx_plugin" else original(name)
+    )
+    assert manager.start()["state"] == "starting"
+    wait_for(lambda: manager.status()["state"] == "ready")
+    assert manager.status()["renderer"] == "Genesis Rasterizer"
+    pid = manager.status()["pid"]
+    assert pid is not None
+    assert manager.stop()["pid"] is None
+
+
+def test_macos_defaults_and_missing_dependency_guidance(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview.sys, "platform", "darwin")
+    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: None)
+    instance = preview.GenesisPreview(state_dir=tmp_path / "macos")
+    assert (instance.settings.width, instance.settings.height, instance.settings.fps) == (960, 540, 30)
+    state = instance.start()
+    assert state["state"] == "failed"
+    assert ".[genesis-macos]" in state["message"]
+    assert "gs_nyx" not in state["message"]
+    assert not instance.state_dir.exists()
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.01, 1.01, True, "1"])

@@ -321,12 +321,12 @@ class TestSo101ApiStructure:
         # The shared action declares width_mm; this body accepts and ignores it. The CONTRACT
         # calls it a hint, so no per-body caveat is needed and one skill drives either gripper.
         meta = So101Api.open_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"width_mm"}
+        assert set(meta.input_params["properties"]) == {"width_mm", "side"}
         assert "HINT" in meta.description
 
     def test_close_gripper_advertises_the_shared_contract(self):
         meta = So101Api.close_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"force_n"}
+        assert set(meta.input_params["properties"]) == {"force_n", "side"}
         assert "HINT" in meta.description
 
     def test_private_fast_tracking_hook_is_not_an_action(self):
@@ -388,6 +388,24 @@ class TestSo101ApiDelegates:
         assert np.array_equal(private["_tracking_mask"], mask)
         assert private["_tracking_depth_span_mm"] == pytest.approx(0.0)
         assert private["_tracking_valid_depth_ratio"] == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("action", ["open_gripper", "close_gripper"])
+    @pytest.mark.parametrize("side", ["default", "left", "right", None])
+    def test_single_gripper_side_is_validated_before_hardware(self, action, side):
+        from unittest.mock import MagicMock
+
+        api, env, _driver = _build_api()
+        env.set_end_effector = MagicMock()
+        method = getattr(api, action)
+        schema = method.__tool_meta__.input_params["properties"]["side"]
+        assert schema["enum"] == ["default"] and schema["default"] == "default"
+        if side == "default":
+            assert method(side=side)["ok"]
+            env.set_end_effector.assert_called_once_with(action == "close_gripper")
+        else:
+            with pytest.raises(ValueError, match="side=default"):
+                method(side=side)
+            env.set_end_effector.assert_not_called()
 
     def test_open_gripper_calls_set_end_effector_false(self):
         api, env, _driver = _build_api()
@@ -531,10 +549,15 @@ class TestSo101ApiDelegates:
     def test_move_joint_reaches_driver(self):
         """Named in, vector out — the Env converts via ARM_JOINT_ORDER-keyed joint_limits."""
         api, _env, driver = _build_api()
-        api.move_joint({
-            "shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0,
-            "wrist_flex": 4.0, "wrist_roll": 5.0,
-        })
+        api.move_joint(
+            {
+                "shoulder_pan": 1.0,
+                "shoulder_lift": 2.0,
+                "elbow_flex": 3.0,
+                "wrist_flex": 4.0,
+                "wrist_roll": 5.0,
+            }
+        )
         assert ("joint", [1.0, 2.0, 3.0, 4.0, 5.0]) in driver.log
 
     def test_move_direction_routes_so101pose_not_namespace(self):

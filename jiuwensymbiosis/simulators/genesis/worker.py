@@ -1,4 +1,4 @@
-"""Resident worker: sole owner of Genesis, CUDA, Nyx and scene mutations."""
+"""Resident worker: sole owner of Genesis, rendering and scene mutations."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from camera import PreviewSettings
 from encoding import NvEncoder
 from ipc import Mailbox
 from scene_catalog import resolve_scene, validate_material_bundle
-from scene_runtime import RuntimeScene
+from scene_runtime import create_runtime, reset_runtime
 from scheduling import PhysicsClock
 from startup_diagnostics import StartupDiagnostics
 from usd_scene import prepare_static_stage
@@ -35,9 +35,24 @@ logger = logging.getLogger("jiuwensymbiosis.simulators.genesis.worker")
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 
+def _encoder_type(settings):
+    if sys.platform == "darwin" or settings.robot_mode in {"jumper", "microduck"}:
+        from encoding import SoftwareEncoder
+
+        return SoftwareEncoder
+    return NvEncoder
+
+
 def run_preview(mailbox: Mailbox, directory: Path) -> None:
     """Keep Genesis initialized while replacing only the resources that changed."""
     settings = PreviewSettings(**mailbox.read_control()["settings"])
+    macos = sys.platform == "darwin"
+    # Single-robot stepping on Apple Silicon is dominated by Metal dispatch
+    # overhead. CPU keeps the same solver/timestep and leaves the GPU to GL.
+    physics_backend = os.environ.get("JIUWEN_GENESIS_MACOS_BACKEND", "cpu") if macos else "cuda"
+    encoder_type = _encoder_type(settings)
+    renderer_name = "Genesis Rasterizer" if macos else "Nyx"
+    encoder_name = "libx264 / ultrafast / CRF 23" if macos else "NVENC H264 / pinned RGBA / QP 20 / P4"
     initialized = sdk_initialized = False
     encoder = runtime = None
     capture_path: Path | None = None
@@ -51,32 +66,42 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     startup = StartupDiagnostics(
         logger=logger,
         publish=lambda data: mailbox.write_status(
-            {"state": "starting", "message": "正在初始化 Genesis / Nyx…", "startup": data, "loading": data}
+            {
+                "state": "starting",
+                "message": f"正在初始化 Genesis / {renderer_name}…",
+                "startup": data,
+                "loading": data,
+            }
         ),
     )
     loading = startup
     try:
         with startup.phase("imports"):
             import genesis as gs
-            import gs_nyx.nyx_py_sdk as nps
             import numpy as np
             import quadrants
             import torch
+
+            if not macos:
+                import gs_nyx.nyx_py_sdk as nps
         # Bake scene tensor shapes into kernels; keep physical timestep,
         # substeps and collision geometry unchanged. New scenes may compile.
         with startup.phase("genesis_init"):
-            gs.init(backend=gs.cuda, logging_level="warning", performance_mode=True)
+            if macos and physics_backend not in {"cpu", "metal"}:
+                raise ValueError("JIUWEN_GENESIS_MACOS_BACKEND must be cpu or metal")
+            gs.init(backend=getattr(gs, physics_backend), logging_level="warning", performance_mode=True)
             initialized = True
         startup.collect_runtime(quadrants)
-        with startup.phase("nyx_startup"):
-            nps.startup()
-            sdk_initialized = True
+        if not macos:
+            with startup.phase("nyx_startup"):
+                nps.startup()
+                sdk_initialized = True
         with startup.phase("runtime_scene"):
-            runtime = RuntimeScene(settings, directory, startup=startup)
-        logger.info("Genesis world and Nyx renderer ready")
-        with startup.phase("nvenc_init"):
-            encoder = NvEncoder(settings, resolution=runtime.frame_size(settings.camera_name))
-        logger.info("NVENC encoder ready")
+            runtime = create_runtime(settings, directory, startup=startup)
+        logger.info("Genesis world and %s renderer ready", renderer_name)
+        with startup.phase("encoder_init" if macos else "nvenc_init"):
+            encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
+        logger.info("%s encoder ready", encoder_name)
         stream_epoch = -1
         keyframe_request = -1
         camera_dirty = True
@@ -136,7 +161,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
 
                             validate_urdf(asset.preview_path)
                             validate_material_bundle(asset)
-                        else:
+                        elif asset.asset.preview_mode == "static_usd":
                             # Reject missing/empty/oversized assets before releasing the current renderer.
                             with tempfile.TemporaryDirectory(prefix="check-", dir=directory) as check:
                                 prepare_static_stage(asset.preview_path, Path(check) / "background.usda")
@@ -149,7 +174,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
-                        candidate = RuntimeScene(requested, directory, runtime.pose["revision"] + 1, startup=loading)
+                        candidate = create_runtime(requested, directory, runtime.pose["revision"] + 1, startup=loading)
                     elif (requested.width, requested.height, requested.spp, requested.render_mode) != (
                         settings.width,
                         settings.height,
@@ -164,7 +189,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     # opening it before teardown fails on repeated 720p/1080p
                     # switches in the real GPU regression test.
                     with loading.phase("nvenc"):
-                        new_encoder = NvEncoder(
+                        new_encoder = _encoder_type(requested)(
                             requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
                         )
                     if candidate is not None:
@@ -174,6 +199,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     encoder = new_encoder
                     new_encoder = None
                     settings = requested
+                    encoder_type = _encoder_type(settings)
                     runtime.settings = requested
                 except Exception as exc:
                     loading.finish(error=True)
@@ -187,7 +213,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         runtime.close_renderer()
                         runtime.build_renderer(old_settings)
                     if encoder is None:
-                        encoder = NvEncoder(old_settings, resolution=runtime.frame_size(old_settings.camera_name))
+                        encoder = encoder_type(old_settings, resolution=runtime.frame_size(old_settings.camera_name))
                 revision = requested_revision
                 switch_ms = round((time.monotonic() - started) * 1000, 1)
                 published = 0
@@ -231,7 +257,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         or reset["config_revision"] != revision
                     ):
                         raise ValueError("复位请求所属世界已经变化。")
-                    reset_result.update(runtime.reset(phase=loading.phase, stopping=mailbox.stopping))
+                    runtime, result = reset_runtime(
+                        runtime, settings, directory, phase=loading.phase, stopping=mailbox.stopping
+                    )
+                    reset_result.update(result)
                     pick_result = capture_result = base_result = query_result = {}
                     published = 0
                     camera_dirty = True
@@ -244,7 +273,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             if command["stream_epoch"] != stream_epoch:
                 if stream_epoch >= 0:
                     encoder.close()
-                    encoder = NvEncoder(settings, resolution=runtime.frame_size(settings.camera_name))
+                    encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
                 stream_epoch = command["stream_epoch"]
                 published = 0
                 keyframe_request = -1
@@ -415,7 +444,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 started = time.monotonic()
                 with loading.phase("initial_render") if not loading.finished else nullcontext():
                     rgb = runtime.renderer.read_rgb(settings.camera_name)
-                    torch.cuda.current_stream().synchronize()
+                    if not macos and runtime.info.get("engine") != "MuJoCo":
+                        torch.cuda.current_stream().synchronize()
                 startup.mark_first_frame()
                 loading.mark_first_frame()
                 loading.finish()
@@ -486,13 +516,13 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "startup": startup_data,
                         "loading": loading.snapshot(),
                         "reset_result": reset_result,
-                        "message": f"Genesis / Nyx / NVENC 已就绪 · {settings.scene_id}"
+                        "message": f"{runtime.info.get('engine', 'Genesis')} / {runtime.info.get('renderer', renderer_name)} 已就绪 · {settings.scene_id}"
                         + (
                             "（静态场景，碰撞已加载）"
                             if runtime.info["mode"] == "static_background"
                             else "（固定姿态检视，无碰撞）"
                             if runtime.info["mode"] == "robot_preview"
-                            else "（轮速驱动、地面接触、上身锁定）"
+                            else runtime.info.get("control_description", "（轮速驱动、地面接触、上身锁定）")
                             if runtime.info["mode"] == "robot_mobile"
                             else ""
                         )
@@ -519,7 +549,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             for k, v in timings.items()
                             if v
                         },
-                        "encoder": "NVENC H264 / pinned RGBA / QP 20 / P4",
+                        "encoder": "libx264 / ultrafast / CRF 23"
+                        if settings.robot_mode in {"jumper", "microduck"}
+                        else encoder_name,
+                        "physics_backend": "MuJoCo CPU" if runtime.info.get("engine") == "MuJoCo" else physics_backend,
                         "raw_cpu_readback": True,
                         "raw_ipc": False,
                         "camera": runtime.pose,
@@ -550,7 +583,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
         mailbox.write_status(
             {
                 "state": "failed",
-                "message": f"Genesis / Nyx 启动或运行失败：{str(exc)[:3000]}",
+                "message": f"Genesis / {renderer_name} 启动或运行失败：{str(exc)[:3000]}",
                 "startup": startup.finish(error=True),
                 "loading": loading.finish(error=True),
             }
@@ -585,10 +618,20 @@ def main() -> None:
 
     # Linux parent-death signal also frees CUDA if the GUI crashes without shutdown hooks.
     expected_parent = int(sys.argv[2])
-    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM) != 0:
+    if sys.platform == "linux" and ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM) != 0:
         raise OSError(ctypes.get_errno(), "Cannot set worker parent-death signal")
     if os.getppid() != expected_parent:
         return
+    if sys.platform == "darwin":
+        import threading
+
+        def watch_parent() -> None:
+            # macOS has no prctl; terminate the worker if its owning GUI dies.
+            while os.getppid() == expected_parent:
+                time.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=watch_parent, daemon=True).start()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     path = Path(sys.argv[1])
     mailbox = Mailbox(path)

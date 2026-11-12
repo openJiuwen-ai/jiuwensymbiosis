@@ -17,6 +17,18 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
 
+def test_wheel_only_body_reports_empty_upper_body_hold(urdf):
+    from unittest.mock import Mock
+
+    entity = Mock()
+    reading = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.zeros(0)))
+    entity.get_dofs_position.return_value = [reading]
+    entity.get_dofs_velocity.return_value = [reading]
+    result = UpperBodyHold(entity, urdf, {}).snapshot()
+    assert result["joint_names"] == []
+    assert result["max_abs_error_rad"] == result["max_abs_velocity_rad_s"] == 0
+
+
 @pytest.fixture
 def urdf(tmp_path):
     root = ET.Element("robot", name="fixture")

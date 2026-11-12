@@ -322,6 +322,8 @@ class GenesisChat:
                 raise ChatError("模型未返回文本，请检查模型设置后重试。")
             return self._remember(query, text, spec)
         except TimeoutError:
+            if self._action_task is not None and not self._action_task.done():
+                raise ChatError("本轮 Agent 任务超时，已请求停止；后台任务尚未退出，请等待或重启工作台。") from None
             raise ChatError("模型响应超时，请检查服务后重试。") from None
         except (ChatError, asyncio.CancelledError):
             raise

@@ -40,7 +40,7 @@ class PreviewSettings:
             raise ValueError("机器人资产 ID 无效。")
         if self.robot_id and (self.scene_id == "demo" or self.robot_mode != "moz1_wheels"):
             raise ValueError("室内机器人需要 USD 场景和 MOZ1 底盘物理模式。")
-        if self.robot_mode not in {"inspection", "moz1_wheels"}:
+        if self.robot_mode not in {"inspection", "moz1_wheels", "jumper", "microduck"}:
             raise ValueError("机器人模式无效。")
 
 

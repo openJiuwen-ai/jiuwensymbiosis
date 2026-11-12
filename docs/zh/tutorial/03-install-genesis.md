@@ -5,7 +5,7 @@ Genesis 仿真作为可选插件安装，通过工作台的「仿真」页使用
 
 ## 环境要求
 
-使用 Linux x86_64、Conda 和支持 CUDA、OptiX、NVENC 的 NVIDIA GPU 与驱动。
+完整 Nyx 渲染使用 Linux x86_64、Conda 和支持 CUDA、OptiX、NVENC 的 NVIDIA GPU 与驱动。
 仓库配置采用 Python 3.12、PyTorch 2.11.0 + CUDA 13.0；当前运行环境为
 RTX 5090 D v2、驱动 595.91.07，其他设备需自行验证兼容性。
 
@@ -14,6 +14,35 @@ Genesis 运行时依赖及已验证的关键版本在 [`pyproject.toml`](../../.
 `dev`、`full`、`remote`、`vision-server` extras：它们要求 Pillow ≥12，当前仿真需要 Pillow <12。
 
 ## 安装
+
+### Apple Silicon Mac（最小环境）
+
+M 系列 Mac 使用独立的 `genesis-macos` extra，不安装 CUDA、Nyx、NVENC 或本地推理模型。
+需要原生 arm64 Python 3.12；使用 uv 时在仓库根目录执行：
+
+```bash
+uv venv --python 3.12 .venv-genesis
+uv pip install --python .venv-genesis/bin/python -e '.[gui,genesis-macos]'
+uv pip check --python .venv-genesis/bin/python
+source .venv-genesis/bin/activate
+python -m jiuwensymbiosis_gui --gui workbench
+```
+
+打开 <http://127.0.0.1:8770/> →「仿真」→「动态物理演示」→「启动仿真」→「连接视频」。
+首次启动会编译物理内核，需等待；M4 / 16 GB 建议从默认 540p、30 FPS 开始。
+默认使用 CPU 计算物理、Genesis 内置 OpenGL 光栅化和软件 H264 编码。
+本机单机器人实测 CPU 比 Metal 的逐步调度更快；求解器、步长和子步数保持一致。
+需要比较时，可在启动工作台前设置 `JIUWEN_GENESIS_MACOS_BACKEND=metal` 切回 Metal。
+帧率设置为上限，
+实际性能请看页面测量。相机环绕、平移、缩放、截图和视频重连复用原工作台。
+
+Mac Genesis 仅提供动态演示和观察视角；USD 场景、URDF 机器人及其标定机载相机请使用 Linux / NVIDIA。
+Jumper 和 Microduck 使用独立的原生 MuJoCo 模型与头部相机，不受此限制，见
+[Jumper 接入](../how-to/jumper-simulation.md)及 [Microduck 接入](../how-to/microduck-assets.md)。
+表面点选暂不支持。仿真无需 LLM；智能体对话另需配置支持图片和工具的模型服务。
+不要合装 `dev`、`remote`、`full` 等要求不同 Pillow/Torch 版本的 extras。
+
+### Linux / NVIDIA
 
 以下命令均在仓库根目录执行。已有同名环境时跳过创建，直接激活：
 

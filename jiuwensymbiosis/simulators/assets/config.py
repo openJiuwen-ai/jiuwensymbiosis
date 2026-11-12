@@ -46,7 +46,7 @@ class ContentFamily(StrictModel):
 class RootSpec(StrictModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     path: str = Field(min_length=1)
-    scanner: Literal["content_tree", "geniesim", "spiritai"]
+    scanner: Literal["content_tree", "geniesim", "spiritai", "jumper", "microduck"]
     content_path: str = "."
     exclude: list[str] = Field(default_factory=list)
     families: dict[str, ContentFamily] = Field(default_factory=dict)
