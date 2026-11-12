@@ -29,6 +29,7 @@ from __future__ import annotations
 CAPABILITY_ACTIONS: dict[str, list[str]] = {
     "motion.cartesian": ["goto_xyzr", "goto_pose", "move_direction", "get_pose", "get_home_pose"],
     "motion.joint": ["move_joint", "move_named_joint", "get_joint_positions"],
+    "motion.tool_pose": ["move_tool_poses"],
     "grasp.parallel": ["open_gripper", "close_gripper"],
     "grasp.suction": ["activate_suction", "deactivate_suction"],
     "vision.camera": ["get_image", "pixel_to_base_xyz"],

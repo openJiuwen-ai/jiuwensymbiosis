@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwensymbiosis.api.decorators import ToolMeta
-from jiuwensymbiosis.api.state import apply_effects
+from jiuwensymbiosis.api.state import PAYLOAD_TOKENS, apply_effects
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,8 @@ def payload_confirmation(result: Any) -> bool | None:
     so101's driver-level hook makes of its contact state.
     """
     if not isinstance(result, Mapping):
+        return None
+    if "holding_payload" in result and result["holding_payload"] is None:
         return None
     evidence = [result.get("grasp_confirmed"), result.get("holding_payload"), result.get("contact")]
     if any(value is False for value in evidence):
@@ -103,15 +105,18 @@ class ExecutionMemory:
     _order: list[str] = field(default_factory=list, repr=False)  # referents, oldest first
 
     # ------------------------------------------------------------------ update
-    def begin(self, meta: ToolMeta | None) -> None:
+    def begin(self, meta: ToolMeta | None, params: Mapping[str, Any] | None = None) -> None:
         """Invalidate knowledge before dispatch, including exceptions and cancellation."""
         if meta is None:
             return
         if meta.invalidates_locations:
             self.invalidate_locations(f"{meta.name} may move the body")
-        self.self_state = apply_effects(self.self_state, invalidates=meta.invalidates)
+        invalidates = set(meta.invalidates)
         if "payload.held" in meta.provides:
-            self.self_state -= {"payload.held", "payload.stowed", "payload.clear"}
+            invalidates |= PAYLOAD_TOKENS
+        self.self_state = apply_effects(
+            self.self_state, invalidates=invalidates, effector=(params or {}).get("effector")
+        )
 
     def observe(
         self,
@@ -122,7 +127,7 @@ class ExecutionMemory:
         grasp_confirmed: bool | None = None,
     ) -> None:
         """Record successful effects; a grasp requires affirmative physical evidence."""
-        self.begin(meta)
+        self.begin(meta, params)
         if meta is None or not action_succeeded(result):
             return
         if meta.produces_location and isinstance(result, Mapping):
@@ -136,7 +141,10 @@ class ExecutionMemory:
                 provides = tuple(t for t in provides if t not in {"payload.held", "payload.stowed"})
                 if confirmation is False:
                     provides += ("payload.clear",)
-        self.self_state = apply_effects(self.self_state, provides=provides)
+        if "payload.clear" in provides and isinstance(result, Mapping) and "holding_payload" in result:
+            if result["holding_payload"] is not False:
+                provides = tuple(t for t in provides if t != "payload.clear")
+        self.self_state = apply_effects(self.self_state, provides=provides, effector=params.get("effector"))
 
     def record_location(self, referent: str, op: str, result: dict[str, Any]) -> None:
         """Store (or refresh) the sensing for ``referent``."""

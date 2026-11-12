@@ -67,6 +67,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # so it lives beside motion.base / .lift / .waist and decides WHICH ACTION to call
         # (dual_arm_grasp / dual_arm_place). What the arms hold is the separate grasp.* axis.
         "motion.dual_arm",
+        "motion.tool_pose",  # named tool frames, coupled group planning in metres/wxyz
         "planning.reachability",  # URDF-based reachability / workspace prior for planning
     }
 )

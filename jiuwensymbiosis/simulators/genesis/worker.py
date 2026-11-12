@@ -107,6 +107,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 base_result = {}
                 if runtime.info["mode"] == "robot_mobile":
                     runtime.motion.cancel("configuration_changed")
+                    if getattr(runtime, "arm_motion", None) is not None:
+                        runtime.arm_motion.cancel("configuration_changed")
                     runtime.robot.stop()
                 started = time.monotonic()
                 requested = PreviewSettings(**command["settings"])
@@ -142,10 +144,11 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                 prepare_static_stage(asset.preview_path, Path(check) / "background.usda")
                     encoder.close()
                     encoder = None
-                    if (requested.scene_id, requested.robot_mode, requested.robot_id) != (
+                    if (requested.scene_id, requested.robot_mode, requested.robot_id, requested.planning_profile) != (
                         settings.scene_id,
                         settings.robot_mode,
                         settings.robot_id,
+                        settings.planning_profile,
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
@@ -258,9 +261,37 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             if command.get("config_revision", 0) != revision or command["stream_epoch"] != stream_epoch:
                 continue
             streaming = command["streaming"]
+            rejected_motion = {}
             if runtime.info["mode"] == "robot_mobile":
                 motion_request = command.get("base_motion")
-                motion = runtime.motion
+                arm_request = bool(motion_request and motion_request.get("kind") == "arm")
+                motion = getattr(runtime, "arm_motion", None) if arm_request else runtime.motion
+                if motion is None:
+                    rejected_motion = {
+                        "id": motion_request["id"],
+                        "status": "completed",
+                        "ok": False,
+                        "settled": False,
+                        "stop_confirmation": "unknown",
+                        "reason": "Arm planning not configured",
+                    }
+                    motion, motion_request = runtime.motion, None
+                if getattr(runtime, "arm_motion", None) is not None and not arm_request:
+                    runtime.arm_motion.accept_request(
+                        None,
+                        scene_id=runtime.info["instance_id"],
+                        revision=revision,
+                        now=time.monotonic(),
+                        step=runtime.steps,
+                    )
+                if arm_request:
+                    runtime.motion.accept_request(
+                        None,
+                        scene_id=runtime.info["instance_id"],
+                        revision=revision,
+                        now=time.monotonic(),
+                        step=runtime.steps,
+                    )
                 motion.accept_request(
                     motion_request,
                     scene_id=runtime.info["instance_id"],
@@ -276,9 +307,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     and base["config_revision"] == revision
                     and base["expires_at"] > time.monotonic()
                 )
-                if motion.active:
+                if motion.active or (getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active):
                     pass  # Motion owns wheel targets until measured completion, including braking.
-                elif not valid:
+                elif rejected_motion or not valid:
                     runtime.robot.stop()
                 elif base["id"] != base_result.get("id"):
                     base_result = {"id": base["id"], "applied": False}
@@ -344,7 +375,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         if capture.get("include_depth", False):
                             from rgbd import base_body_bounds, base_from_camera
 
-                            if runtime.motion is None or runtime.motion.active:
+                            arm_active = getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active
+                            if runtime.motion is None or runtime.motion.active or arm_active:
                                 raise ValueError("RGB-D requires a stationary supported mobile robot")
                             deadline = min(capture["expires_at"], captured_at + 2.0)
 
@@ -492,7 +524,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             if runtime.info["mode"] == "static_background"
                             else "（固定姿态检视，无碰撞）"
                             if runtime.info["mode"] == "robot_preview"
-                            else "（轮速驱动、地面接触、上身锁定）"
+                            else "（轮速驱动、地面接触、受限关节控制）"
                             if runtime.info["mode"] == "robot_mobile"
                             else ""
                         )
@@ -532,7 +564,18 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "capture_result": capture_result,
                         "scene_query_result": query_result,
                         "base_command_result": base_result,
-                        "base_motion": runtime.motion.result if runtime.motion is not None else {},
+                        "base_motion": rejected_motion
+                        or (
+                            runtime.arm_motion.snapshot()
+                            if getattr(runtime, "arm_motion", None) is not None
+                            and (command.get("base_motion") or {}).get("kind") == "arm"
+                            else runtime.motion.result
+                            if runtime.motion is not None
+                            else {}
+                        ),
+                        "effectors": runtime.arm_motion.effectors.report()
+                        if getattr(runtime, "arm_motion", None) is not None
+                        else {},
                         "base_observation": (measure(runtime.robot) if runtime.motion is not None else None),
                         "streaming": streaming,
                         "object_positions": [body.get_pos()[0].cpu().tolist() for body in runtime.bodies],

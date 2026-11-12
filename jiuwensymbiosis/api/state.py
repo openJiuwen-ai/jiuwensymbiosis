@@ -120,11 +120,19 @@ def validate_tokens(tokens: Iterable[str], *, field: str, owner: str) -> tuple[s
     return out
 
 
+def scoped_payload(tokens: Iterable[str], effector: str | None = None) -> tuple[str, ...]:
+    """Qualify only payload tokens; body state remains shared across effectors."""
+    if effector is not None and (not isinstance(effector, str) or not effector):
+        raise ValueError("effector must be a nonempty name")
+    return tuple(f"{t}:{effector}" if effector is not None and t in PAYLOAD_TOKENS else t for t in tokens)
+
+
 def apply_effects(
     state: Iterable[str],
     *,
     provides: Iterable[str] = (),
     invalidates: Iterable[str] = (),
+    effector: str | None = None,
 ) -> frozenset[str]:
     """Advance a self-state set by one action's effects.
 
@@ -132,17 +140,27 @@ def apply_effects(
     ``EXCLUDES`` clean-up), so an action that both invalidates and re-provides a
     token ends up with it held rather than dropped.
     """
-    result = set(state) - set(invalidates)
-    for token in provides:
-        result -= EXCLUDES.get(token, frozenset())
-        result.add(token)
+    provides, invalidates = tuple(provides), tuple(invalidates)
+    changing_payload = bool((set(provides) | set(invalidates)) & PAYLOAD_TOKENS)
+    result = set(state) - set(scoped_payload(invalidates, effector))
+    if changing_payload:
+        if effector is not None:
+            result -= PAYLOAD_TOKENS
+        else:
+            result = {t for t in result if not (t.startswith("payload.") and ":" in t)}
+    provides = scoped_payload(provides, effector)
+    result = (result - ruled_out_by(provides)) | set(provides)
+    if effector is not None and any(t.startswith("payload.held:") for t in result):
+        result.add("payload.held")
     return frozenset(result)
 
 
-def missing_requirements(state: Iterable[str], requires: Iterable[str]) -> tuple[str, ...]:
+def missing_requirements(
+    state: Iterable[str], requires: Iterable[str], *, effector: str | None = None
+) -> tuple[str, ...]:
     """Required tokens not present in ``state`` (empty tuple = satisfied)."""
     held = set(state)
-    return tuple(sorted(t for t in requires if t not in held))
+    return tuple(sorted(t for t in scoped_payload(requires, effector) if t not in held))
 
 
 def ruled_out_by(state: Iterable[str]) -> frozenset[str]:
@@ -152,10 +170,16 @@ def ruled_out_by(state: Iterable[str]) -> frozenset[str]:
     approximate it (matching on a ``payload.`` prefix drops siblings the evidence never
     touched — ``payload.stowed`` survives an observation that only says "still holding").
     """
-    return frozenset(t for token in set(state) for t in EXCLUDES.get(token, frozenset()))
+    result: set[str] = set()
+    for token in state:
+        root, separator, name = token.partition(":")
+        result.update(t + separator + name for t in EXCLUDES.get(root, ()))
+    return frozenset(result)
 
 
-def contradicted_requirements(state: Iterable[str], requires: Iterable[str]) -> tuple[str, ...]:
+def contradicted_requirements(
+    state: Iterable[str], requires: Iterable[str], *, effector: str | None = None
+) -> tuple[str, ...]:
     """Required tokens the state carries positive evidence *against*.
 
     The runtime counterpart of :func:`missing_requirements`, and deliberately
@@ -166,4 +190,4 @@ def contradicted_requirements(state: Iterable[str], requires: Iterable[str]) -> 
     forever. So only a token ruled out by something the state actually holds
     counts as a deviation.
     """
-    return tuple(sorted(set(requires) & ruled_out_by(state)))
+    return tuple(sorted(set(scoped_payload(requires, effector)) & ruled_out_by(state)))

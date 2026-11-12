@@ -145,3 +145,5 @@ The runtime supplies no package URI mapping: resolve resource paths before admis
 reports are in the state directory’s `robot-models/<robot_model_instance_id>/loaded-model.json`.
 [MOZ1 policies](collision/README.md) are examples, not GUI defaults. See the
 [admission guide](../../docs/en/how-to/audit-robot-models.md) for lifecycle and acceptance limits.
+
+Arm planning profiles and the Python-only preview entry point: [Genesis arm planning](../../docs/en/how-to/genesis-arm-planning.md).

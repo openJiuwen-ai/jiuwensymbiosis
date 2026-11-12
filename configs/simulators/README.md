@@ -213,3 +213,8 @@ CPU 几何准备使用 `.[simulator-collision]`（POSIX 锁，Linux x86_64）；
 不支持的资产会启动失败，报告位于状态目录 `robot-models/<robot_model_instance_id>/loaded-model.json`。
 MOZ1 示例策略在 [collision/](collision/README.md)，GUI 不自动加载。
 参数、生命周期和物理验收边界见[指南](../../docs/zh/how-to/audit-robot-models.md)。
+## 可选机械臂规划
+
+`planning/moz1.yaml` 与 `planning/panda.yaml` 是 cuRobo V2 的机器人语义模板。
+配置解析、公共动作、坐标约定、停止语义与适用范围见
+[Genesis 通用机械臂规划](../../docs/zh/how-to/genesis-arm-planning.md)。

@@ -40,7 +40,7 @@ from jiuwensymbiosis.errors import error_code
 logger = logging.getLogger(__name__)
 
 
-def begin_action(api: Any, method: Callable[..., Any]) -> None:
+def begin_action(api: Any, method: Callable[..., Any], params: dict[str, Any] | None = None) -> None:
     """Invalidate before calling a physical action; failure cannot restore old geometry.
 
     Actions that ``produces_location`` are exempt from the api-cache clear: they
@@ -51,7 +51,7 @@ def begin_action(api: Any, method: Callable[..., Any]) -> None:
     meta = getattr(method, "__tool_meta__", None)
     memory = getattr(api, "memory", None)
     if isinstance(memory, ExecutionMemory):
-        memory.begin(meta)
+        memory.begin(meta, params)
     if meta is not None and meta.invalidates_locations and not meta.produces_location:
         clear = getattr(api, "invalidate_sensing_cache", None)
         if callable(clear):
@@ -66,7 +66,7 @@ def action_scope(api: Any, method: Callable[..., Any], params: dict[str, Any]) -
     so the memory invalidates — the runner's step list deliberately records
     nothing for a cancelled step; the two records serve different consumers.
     """
-    begin_action(api, method)
+    begin_action(api, method, params)
     completed = False
     try:
         yield
@@ -85,6 +85,8 @@ def read_grasp_confirmation(api: Any, result: Any) -> bool | None:
     A body with no measured channel may declare ``trust_command_grasp``; then a
     successful close command itself counts, logged so the acceptance is auditable.
     """
+    if isinstance(result, dict) and "holding_payload" in result and result["holding_payload"] is None:
+        return None
     evidence = [payload_confirmation(result)]
     confirm = getattr(api, "is_grasp_confirmed", None)
     if callable(confirm):
