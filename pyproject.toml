@@ -77,6 +77,8 @@ dev = [
     "uvicorn>=0.46",
     "pillow>=12",
     "httpx>=0.28",
+    "trimesh>=4.8.2,<6",  # CPU robot-model admission tests; no Genesis runtime required.
+    "rtree>=1",  # Mesh spatial queries exercised by the core indoor tests.
 ]
 full = [
     # torch/torchvision 必须配合 --extra-index-url https://download.pytorch.org/whl/cu128 安装，
