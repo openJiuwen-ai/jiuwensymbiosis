@@ -36,7 +36,14 @@ class RunCancelled(Exception):
     few ``except Exception`` sites that must not swallow it guard with an
     explicit ``except RunCancelled: raise``. Modelling it on ``BaseException``
     would slip past those teardown/emit sites and leak resources.
+
+    ``skip_recovery`` is the same opt-out marker adapter errors use: a user
+    stop must not be followed by RecoveryRail's release/home. The fast runner
+    also refuses to retreat once its token is set, but the rail sees the
+    failure first and must not act on its own.
     """
+
+    skip_recovery = True
 
 
 class CancelToken:

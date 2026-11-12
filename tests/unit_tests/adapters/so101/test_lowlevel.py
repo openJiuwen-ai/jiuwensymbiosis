@@ -36,10 +36,11 @@ from jiuwensymbiosis.adapters.so101.lowlevel import (
     So101Driver,
     So101PoseConvergenceError,
     So101PreDispatchError,
+    So101TrackingViolation,
 )
 from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.protocol import HandGuidingDriver, HandGuidingRecoveryError
-from jiuwensymbiosis.errors import SAFETY_REJECTED, error_code
+from jiuwensymbiosis.errors import SAFETY_REJECTED, SafetyViolationError, error_code, find_skip_recovery_exception
 
 from .lowlevel_helpers import FakeFollower, FakeKinematics, fake_lerobot_import, make_calib_file
 
@@ -2208,6 +2209,29 @@ class TestPoseConvergence:
             driver._converge_to_pose(target, np.zeros(5), timeout_s=None)
         assert exc_info.value.residual_mm == pytest.approx(300.0)
 
+    def test_convergence_propagates_a_post_dispatch_tracking_violation(self, tmp_path):
+        """Wrapping it would mark the failure as already-safe and skip recovery."""
+        cfg = _make_cfg(
+            z_min_safe_mm=-10.0,
+            pose_convergence_max_iters=2,
+            pose_convergence_tolerance_mm=1.0,
+        )
+        driver, _, _ = _make_driver(cfg, tmp_path)
+        driver.connect()
+        target = So101Pose(0.0, 0.0, 300.0, 0, 0, 0)
+        driver.get_pose = lambda: So101Pose(0.0, 0.0, 0.0, 0, 0, 0)
+        driver.get_angles = lambda: [0.0] * 5
+
+        def tracking_violation(*args, **kwargs):
+            raise So101TrackingViolation("observed pose below driver z_min_safe")
+
+        driver.move_joint_blocking = tracking_violation
+
+        with pytest.raises(So101TrackingViolation, match="below driver z_min_safe") as exc_info:
+            driver._converge_to_pose(target, np.zeros(5), timeout_s=None)
+        assert not isinstance(exc_info.value, So101PoseConvergenceError)
+        assert find_skip_recovery_exception(exc_info.value) is None
+
 
 class TestHome:
     def test_home_uses_direct_fk_validated_joint_path(self, tmp_path):
@@ -2266,6 +2290,45 @@ class TestHome:
         with pytest.raises(ValueError, match="below driver z_min_safe"):
             driver.home()
         assert follower.sent_actions == []
+
+    def test_tracking_violation_keeps_recovery_enabled(self, tmp_path):
+        """A pose observed *after* dispatch must still trigger release/home."""
+
+        class DippingKinematics:
+            def forward_kinematics(self, q):
+                z = (float(np.asarray(q, dtype=float)[0]) - 5.0) ** 2
+                return pose_mm_deg_to_matrix_m(So101Pose(0.0, 0.0, z, 0.0, 0.0, 0.0))
+
+        driver, _, _ = _make_driver(_make_cfg(z_min_safe_mm=10.0), tmp_path)
+        driver.connect()
+        driver._kin = DippingKinematics()
+
+        with pytest.raises(So101TrackingViolation, match="below driver z_min_safe") as info:
+            driver._validate_tracking_waypoint(
+                np.array([5.0, 0.0, 0.0, 0.0, 0.0]),
+                label="waypoint tracking",
+            )
+
+        assert isinstance(info.value, SafetyViolationError)
+        assert info.value.skip_recovery is False
+        # A distinct code keeps diagnosis/GUI text from claiming the command was
+        # rejected before dispatch and the arm never moved.
+        assert info.value.code == "tracking_envelope_exceeded"
+        # The marked pre-dispatch cause must not win the chain, otherwise
+        # RobotControlTool would report dispatched=False and skip recovery.
+        assert find_skip_recovery_exception(info.value) is None
+
+    def test_non_finite_tracking_observation_still_keeps_recovery(self, tmp_path):
+        """Malformed observations are plain ``ValueError`` until this wrapper."""
+        driver, _, _ = _make_driver(_make_cfg(z_min_safe_mm=10.0), tmp_path)
+        driver.connect()
+        observed = np.array([5.0, 0.0, 0.0, 0.0, float("nan")])
+
+        with pytest.raises(So101TrackingViolation, match="must be finite") as info:
+            driver._validate_tracking_waypoint(observed, label="waypoint tracking")
+
+        assert info.value.skip_recovery is False
+        assert find_skip_recovery_exception(info.value) is None
 
     def test_payload_lowest_point_is_checked_against_table(self, tmp_path):
         cfg = _make_cfg(
