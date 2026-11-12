@@ -37,6 +37,7 @@ class SourceLighting:
     rectangles: tuple[RectangleEmitter, ...]
     exposure_ev: float
     emitter_gain: float = 1.0
+    environment_kind: str = "hdr_texture"
 
     def summary(self) -> dict:
         """Public scene state, without local asset paths or bulky vertex arrays."""
@@ -45,7 +46,8 @@ class SourceLighting:
             "rectangle_count": len(self.rectangles),
             "fitted_rectangle_count": sum(r.fixture_path is not None for r in self.rectangles),
             "emitter_gain": self.emitter_gain,
-            "source_hdr": True,
+            "source_hdr": self.environment_kind == "hdr_texture",
+            "environment_kind": self.environment_kind,
             "exposure_ev": self.exposure_ev,
             "native_area_supported": False,
             "inspection_light": False,
@@ -83,7 +85,7 @@ def load_source_lighting(source: Path, scene_id: str) -> SourceLighting | None:
     return rig
 
 
-def read_source_lighting(source: Path, *, exposure_ev: float) -> SourceLighting:
+def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | None = None) -> SourceLighting:
     """Read composed UsdLux values, including parent transforms and units."""
     from pxr import Gf, Usd, UsdGeom, UsdLux
 
@@ -102,6 +104,7 @@ def read_source_lighting(source: Path, *, exposure_ev: float) -> SourceLighting:
         return np.array((x, -z, y) if up == "Y" else (x, y, z))
 
     domes, rectangles = [], []
+    environment_kind = "hdr_texture"
     for prim in stage.Traverse():
         if not prim.HasAPI(UsdLux.LightAPI):
             continue
@@ -119,8 +122,21 @@ def read_source_lighting(source: Path, *, exposure_ev: float) -> SourceLighting:
         if prim.IsA(UsdLux.DomeLight):
             dome = UsdLux.DomeLight(prim)
             asset = dome.GetTextureFileAttr().Get()
-            if not asset or not asset.resolvedPath or not Path(asset.resolvedPath).is_file():
+            if not asset or not asset.path:
+                if directory is None:
+                    raise ValueError("Constant DomeLight requires a runtime output directory")
+                import cv2
+
+                environment_kind = "constant_color"
+                directory.mkdir(parents=True, exist_ok=True)
+                hdr = directory / "constant-environment.hdr"
+                if not cv2.imwrite(str(hdr), np.ones((8, 16, 3), dtype=np.float32)):
+                    raise RuntimeError("Cannot write constant environment HDR")
+                hdr_path = str(hdr.resolve())
+            elif not asset.resolvedPath or not Path(asset.resolvedPath).is_file():
                 raise ValueError(f"找不到源 HDR：{prim.GetPath()}")
+            else:
+                hdr_path = asset.resolvedPath
             if str(dome.GetTextureFormatAttr().Get()) not in {"latlong", "automatic"}:
                 raise ValueError("当前源照明仅支持经纬 HDR。")
             # Nyx exposes yaw only. Reject tilt instead of silently dropping it.
@@ -129,9 +145,12 @@ def read_source_lighting(source: Path, *, exposure_ev: float) -> SourceLighting:
             if not np.allclose(vertical / np.linalg.norm(vertical), (0, 0, 1), atol=1e-6):
                 raise ValueError("当前 Nyx HDR 接口不能保留倾斜的 DomeLight。")
             x_axis = world_zup(transform.TransformDir(Gf.Vec3d(1, 0, 0)))
-            domes.append((asset.resolvedPath, math.atan2(x_axis[1], x_axis[0]), power, tuple(color)))
+            domes.append((hdr_path, math.atan2(x_axis[1], x_axis[0]), power, tuple(color)))
         elif prim.IsA(UsdLux.RectLight):
             rect = UsdLux.RectLight(prim)
+            cone = UsdLux.ShapingAPI(prim).GetShapingConeAngleAttr()
+            if cone and cone.HasAuthoredValueOpinion() and float(cone.Get()) != 90:
+                raise ValueError("Nyx emissive rectangles require a 180-degree spread")
             if rect.GetTextureFileAttr().Get():
                 raise ValueError("当前矩形发光几何不支持灯光纹理。")
             w, h = float(rect.GetWidthAttr().Get()), float(rect.GetHeightAttr().Get())
@@ -153,7 +172,7 @@ def read_source_lighting(source: Path, *, exposure_ev: float) -> SourceLighting:
             raise ValueError(f"当前源照明未实现 {prim.GetTypeName()}，不能静默丢弃灯光。")
     if len(domes) != 1:
         raise ValueError("当前源照明要求恰好一个 DomeLight。")
-    return SourceLighting(*domes[0], tuple(rectangles), exposure_ev)
+    return SourceLighting(*domes[0], tuple(rectangles), exposure_ev, environment_kind=environment_kind)
 
 
 def make_environment(rig: SourceLighting):

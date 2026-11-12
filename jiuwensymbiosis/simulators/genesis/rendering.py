@@ -28,6 +28,7 @@ class SceneRenderer:
         light_pose: dict | None = None,
         visual_urdfs: dict[Path, Path] | None = None,
         source_lighting=None,
+        presentation=None,
         robot=None,
         cameras=None,
         startup=None,
@@ -45,7 +46,7 @@ class SceneRenderer:
 
         self._scene = scene
         self._renderer: Any = None
-        fov = 60 if source is not None else 42
+        fov = presentation["fov_y"] if presentation is not None else (60 if source is not None else 42)
         self.fov_y = fov
         self.width, self.height = settings.width, settings.height
         self.entity_pairs: list = []
@@ -76,6 +77,8 @@ class SceneRenderer:
             "denoise": True,
             "camera_profile": profile_path,
         }
+        if presentation is not None:
+            camera.update(near=presentation["near"], far=presentation["far"])
         camera_defs = [camera]
         for name, sensor in self.cameras.items():
             from importlib.metadata import version
@@ -155,6 +158,18 @@ class SceneRenderer:
             raise RuntimeError("Nyx exporter bridge unavailable; requires gs-nyx-plugin 0.1.10")
         self.entity_pairs = entity_pairs
         self.appearance = {"color_management": color_management}
+        if presentation is not None:
+            self.appearance["source_camera"] = {
+                "path": presentation["camera_path"],
+                "fov_y": fov,
+                "near": presentation["near"],
+                "far": presentation["far"],
+                "source_aspect": presentation["aspect"],
+                "resolution": [settings.width, settings.height],
+                "spp": settings.spp,
+                "denoise": True,
+                "quality_policy": presentation["quality_policy"],
+            }
         if source is not None:
             if TYPE_CHECKING or __package__:
                 from .material_repair import prepare_materials
@@ -162,6 +177,13 @@ class SceneRenderer:
                 from material_repair import prepare_materials
 
             source, repair = prepare_materials(source, directory / "materials", rules=material_rules)
+            if presentation is not None:
+                if TYPE_CHECKING or __package__:
+                    from .material_repair import require_supported_materials
+                else:
+                    from material_repair import require_supported_materials
+
+                self.appearance["material_validation"] = require_supported_materials(source, repair)
             # RuntimeScene.info crosses the worker IPC boundary. Keep per-prim
             # paths and bake manifests on disk instead of sending megabytes.
             self.appearance["material_repair"] = {

@@ -135,7 +135,7 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --outp
 也不要与要求 Pillow>=12 的 `dev`、`remote` 合装；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
 本批尚不提供 WebRTC 或工作台仿真界面。
 
-源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
+源材质及贴图通过 material_repair 的现有转换规则准备后交给 Nyx；未命中转换规则的材质由渲染器解释，不进行玻璃表面替换。
 曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
 灯光转换和拾取测试验证 USD 数值/几何，不代表画质、接触物理或机器人任务验收。
 
@@ -173,7 +173,7 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 ## 源材质渲染
 
-源材质及贴图直接交给渲染器解释，不进行材质转换、贴图烘焙或玻璃表面替换。
+源材质及贴图通过 material_repair 的现有转换规则准备后交给 Nyx；未命中转换规则的材质由渲染器解释，不进行玻璃表面替换。
 曝光和色彩映射只作用于相机显示；实际材质效果取决于渲染器支持，不保证与源制作软件一致。
 
 ## 可选机械臂规划
@@ -181,3 +181,15 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 `planning/moz1.json` 与 `planning/panda.json` 是 cuRobo V2 的机器人语义模板。
 配置解析、公共动作、坐标约定、停止语义与适用范围见
 [Genesis 通用机械臂规划](../../docs/zh/how-to/genesis-arm-planning.md)。
+
+## SceneGen 场景消费
+
+SceneGen USD 仍通过资产索引和 `library://` ID 加载。识别已有 package_camera、
+sceneGen 元数据或相邻发布 manifest 后，使用源相机位姿、垂直 FOV 和米制裁剪范围，
+并采用源 DomeLight 与 v5 矩形灯，不添加预览补光。纯色环境的 HDR 写入运行目录。
+交互分辨率和 1–64 spp 策略保持不变；宽高比变化会改变水平取景，不能替代发布图审核。
+
+加载前检查 USD 层和纹理依赖，要求均在配置的资产根目录内。SceneGen 消费路径对
+未知材质、损坏的直接绑定、缺失表面节点和已知不支持的光学元数据明确报错。
+玻璃透射尚未验收，不以不透明材质替换。诊断资产已验证加载、RGB/NVENC、相对依赖
+搬移与渲染器重建；正式生成包、Agent 会话及物理任务仍须各自验收。

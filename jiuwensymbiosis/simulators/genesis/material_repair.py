@@ -114,3 +114,41 @@ def prepare_materials(source: Path, directory: Path, *, rules: MaterialRules | N
         )
         return destination, report
     return source, report
+
+
+def require_supported_materials(source: Path, report: dict) -> dict:
+    """Fail closed for SceneGen consumption; never replace unsupported optics."""
+    from pxr import Usd, UsdShade
+
+    if report["remaining"]:
+        raise ValueError(f"Unsupported Nyx materials: {report['remaining']}")
+    stage = Usd.Stage.Open(str(source))
+    if stage is None:
+        raise ValueError(f"Cannot inspect material optics: {source}")
+    optical_count = 0
+    for prim in Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies()):
+        binding = prim.GetRelationship("material:binding")
+        if binding and binding.HasAuthoredTargets():
+            targets = binding.GetTargets()
+            if not targets or any(
+                not stage.GetPrimAtPath(path) or not stage.GetPrimAtPath(path).IsA(UsdShade.Material)
+                for path in targets
+            ):
+                raise ValueError(f"Invalid material binding at {prim.GetPath()}")
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+            if material:
+                shader, _, _ = material.ComputeSurfaceSource()
+                if not shader:
+                    shader, _, _ = material.ComputeSurfaceSource("mdl")
+                if not shader:
+                    raise ValueError(f"Missing material surface at {material.GetPath()}")
+        if not prim.IsA(UsdShade.Material):
+            continue
+        value = prim.GetCustomDataByKey("scene_gen:optics")
+        if not value:
+            continue
+        info = json.loads(value)
+        optical_count += 1
+        if info.get("transmission", 0) or info.get("diffuse_transmission", 0) or info.get("emission_scale", 1) > 1:
+            raise ValueError(f"Unsupported Nyx optical metadata at {prim.GetPath()}: {info}")
+    return {"status": "passed", "optical_materials": optical_count, "fallback": False}

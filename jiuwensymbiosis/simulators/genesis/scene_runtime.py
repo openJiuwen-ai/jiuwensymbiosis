@@ -60,6 +60,7 @@ class RuntimeScene:
         self._render_directory: tempfile.TemporaryDirectory | None = None
         self.source = None
         self.lighting = None
+        self.presentation = None
         self.selection: dict | None = None
         self.selected_entity = None
         self.pick_index: Any = None
@@ -84,6 +85,9 @@ class RuntimeScene:
                 camera = OrbitCamera(yaw=-0.7, pitch=0.15, distance=3.4, target=(0, 0, 0.95))
             elif settings.scene_id != "demo":
                 self.source = self.directory / "background.usda"
+                from source_presentation import read_presentation
+
+                self.presentation = read_presentation(self.asset.preview_path, root=self.asset.root)
                 with self._phase("static_stage_prepare"):
                     audit = prepare_static_stage(self.asset.preview_path, self.source)
                 self.info = {
@@ -100,10 +104,30 @@ class RuntimeScene:
                 camera = OrbitCamera()
             self.info["instance_id"] = uuid.uuid4().hex
             self.initial_pose = replace(camera, revision=revision).snapshot()
+            if self.presentation is not None:
+                p = self.presentation
+                direction = [a - b for a, b in zip(p["pos"], p["lookat"], strict=True)]
+                camera = replace(
+                    camera,
+                    yaw=math.atan2(direction[1], direction[0]),
+                    pitch=math.asin(max(-1.0, min(1.0, direction[2]))),
+                    distance=1.0,
+                    target=tuple(p["lookat"]),
+                )
+                self.initial_pose = replace(camera, revision=revision).snapshot()
+                self.initial_pose.update({key: p[key] for key in ("pos", "lookat", "up")})
+                self.info["source_presentation"] = p
             self.pose = self.initial_pose
             if self.source is not None:
                 with self._phase("source_lighting"):
-                    self.lighting = load_source_lighting(self.asset.preview_path, settings.scene_id)
+                    if self.presentation is not None:
+                        from source_lighting import read_source_lighting
+
+                        self.lighting = read_source_lighting(
+                            self.asset.preview_path, exposure_ev=0, directory=self.directory
+                        )
+                    else:
+                        self.lighting = load_source_lighting(self.asset.preview_path, settings.scene_id)
                 if self.lighting is not None:
                     self.info["lighting"] = self.lighting.summary()
                     self.info["preview_exposure_ev"] = self.lighting.exposure_ev
@@ -136,11 +160,12 @@ class RuntimeScene:
                 self.info["robot_bounds_m"] = self.robot.bounds
                 if self.source is None:
                     self.info["bounds_m"] = self.robot.bounds
-                camera = camera.focus(
-                    self.robot.bounds, fov_y=60 if self.source else 42, aspect=settings.width / settings.height
-                )
-                self.initial_pose = replace(camera, revision=revision).snapshot()
-                self.pose = self.initial_pose
+                if self.presentation is None:
+                    camera = camera.focus(
+                        self.robot.bounds, fov_y=60 if self.source else 42, aspect=settings.width / settings.height
+                    )
+                    self.initial_pose = replace(camera, revision=revision).snapshot()
+                    self.pose = self.initial_pose
             with self._phase("nyx_renderer"):
                 self.build_renderer(settings)
             self._startup = None  # Later renderer changes are not part of initial startup.
@@ -347,6 +372,7 @@ class RuntimeScene:
             light_pose=self.initial_pose,
             visual_urdfs={self.robot.path: self.robot.render_urdf} if self.robot and self.robot.render_urdf else None,
             source_lighting=self.lighting,
+            presentation=self.presentation,
             robot=self.robot.entity if self.robot is not None else None,
             cameras=self.cameras,
             startup=self._startup,
