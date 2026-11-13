@@ -25,6 +25,7 @@ class PreviewSettings:
     robot_id: str = ""
     render_mode: str = "reference"
     camera_name: str = "observer"
+    planning_profile: str = ""
 
     def __post_init__(self) -> None:
         validate_backend(self.backend, self.robot_mode)
@@ -48,6 +49,10 @@ class PreviewSettings:
             raise ValueError("室内机器人需要 USD 场景和 MOZ1 底盘物理模式。")
         if self.robot_mode not in MODES:
             raise ValueError("机器人模式无效。")
+        if not isinstance(self.planning_profile, str) or len(self.planning_profile) > 4096:
+            raise ValueError("Invalid planning profile path")
+        if self.planning_profile and (self.backend != "genesis" or self.robot_mode != "moz1_wheels"):
+            raise ValueError("Arm planning requires a Genesis physical robot controller")
 
 
 @dataclass(frozen=True)

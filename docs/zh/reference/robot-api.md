@@ -47,6 +47,7 @@ home() -> None
 
 - `motion.cartesian`
 - `motion.joint`
+- `motion.tool_pose`
 - `motion.servo`
 - `motion.base`
 - `motion.base_servo`

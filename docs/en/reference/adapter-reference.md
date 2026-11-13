@@ -42,6 +42,7 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 | `motion.cartesian` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` |
 | `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`, `move_named_joint`, `get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | (no standalone public action; fast-path `track_detect`/`track_grasp` ops drive `api.servo_to_tip`/`env.servo_to_flange`) |
 | `motion.base` | `navigate_relative`, `rotate_base`, `drive_arc` |
 | `motion.base_servo` | (continuous base-drive primitive) |
@@ -177,11 +178,11 @@ A successful `close_gripper` / `activate_suction` command is **not** the same as
 
 A body whose end effector has no measured channel declares `trust_command_grasp = True` on its Api class: a successful command is then accepted as evidence (logged as a warning at runtime, so the acceptance is auditable). This is an **explicit downgrade declaration** — the fail-closed default is unchanged; remove it and provide measured evidence once the driver gains a feedback channel. `env.holding_payload` takes no part in this decision; it remains the coarse RecoveryRail-only flag.
 
-`open_gripper(width_mm=..., side=...)` and `close_gripper(force_n=..., side=...)` accept an optional
-`side`, with choices declared by the body's `Literal` annotation. Omit it to use the default gripper.
-Piper and SO-101 accept only `"default"`; Jumper accepts `"left"` / `"right"`, defaulting to the left.
-Existing calls without `side` are unchanged. External adapters must add the optional parameter to both
-implementations to pass the shared contract's import-time validation.
+`open_gripper(width_mm=..., effector=...)` and `close_gripper(force_n=..., effector=...)`
+use the upstream optional `effector` selector. Jumper accepts `"left"` / `"right"` and defaults to
+the left claw. The upstream compatibility layer lets legacy single-gripper adapters omit the
+selector or use `effector=None`; explicit names are rejected. Existing direct Python `side`
+calls remain compatible, while Agent tools use `effector`.
 
 ## 6. Config and Session builder
 

@@ -274,3 +274,19 @@ class ResidentPreview:
         self, owner: str, dx: float, dy: float, dyaw: float, *, cancelled: threading.Event | None = None
     ) -> dict:
         return self._object("navigate_relative", owner=owner, dx=dx, dy=dy, dyaw=dyaw, timeout=110, cancelled=cancelled)
+
+    def move_arm(
+        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+    ) -> dict:
+        return self._object(
+            "move_arm",
+            owner=owner,
+            targets=targets,
+            poses=poses,
+            group=group,
+            speed=speed,
+            effector=effector,
+            opened=opened,
+            timeout=190,
+            cancelled=cancelled,
+        )

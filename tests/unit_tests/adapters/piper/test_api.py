@@ -263,8 +263,8 @@ class TestPiperApiDelegatesThroughEnv:
         api, env, _driver = self._build()
         env.set_end_effector = MagicMock()
         method = getattr(api, action)
-        schema = method.__tool_meta__.input_params["properties"]["side"]
-        assert schema["enum"] == ["default"] and schema["default"] == "default"
+        schema = method.__tool_meta__.input_params["properties"]["effector"]
+        assert schema["default"] is None
         if side == "default":
             assert method(side=side)["ok"]
             env.set_end_effector.assert_called_once_with(action == "close_gripper")

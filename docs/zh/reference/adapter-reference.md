@@ -42,6 +42,7 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | `motion.cartesian` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` |
 | `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`、`move_named_joint`、`get_joint_positions` |
+| `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | （无独立公共动作；由 fast path 实时伺服 op `track_detect`/`track_grasp` 经 `api.servo_to_tip`/`env.servo_to_flange` 驱动） |
 | `motion.base` | `navigate_relative`、`rotate_base`、`drive_arc` |
 | `motion.base_servo` | （连续底盘驱动原语） |
@@ -178,10 +179,10 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 
 末端没有实测通道的本体，在 Api 类上声明 `trust_command_grasp = True`：指令成功即被接受为证据（运行时打 warning 日志，可审计）。这是**显式降级声明**——默认 fail closed 不变；驱动获得反馈通道后删除该声明并改为提供实测证据。`env.holding_payload` 不参与该判定，它仍是 RecoveryRail 专用的粗粒度标志。
 
-`open_gripper(width_mm=..., side=...)` 和 `close_gripper(force_n=..., side=...)` 的 `side` 是可选参数，
-取值由本体签名的 `Literal` 决定；省略时使用默认夹爪。单夹爪（Piper、SO-101）仅接受
-`"default"`，Jumper 接受 `"left"` / `"right"`，默认左侧。已有无 `side` 调用保持不变；
-仓库外的自定义适配器需要在两个实现中补充可选 `side` 参数，否则共享契约的导入校验会拒绝加载。
+`open_gripper(width_mm=..., effector=...)` 和 `close_gripper(force_n=..., effector=...)`
+沿用主仓的可选 `effector` 选择器。命名夹爪按本体声明选择；Jumper 为 `"left"` / `"right"`，
+省略时默认左侧。旧单夹爪适配器由主仓兼容层接受省略或 `effector=None`，显式命名会报错。
+现有直接 Python 调用中的 `side` 保留兼容，但 Agent 工具统一使用 `effector`。
 
 ## 6. Config 与 Session Builder
 

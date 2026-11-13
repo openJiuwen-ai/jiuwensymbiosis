@@ -960,3 +960,17 @@ External robot assets (not redistributed by this repository):
   These noncommercial assets must not be included in a commercial product
   distribution without separate permission. Registration does not relicense them.
   Model/codec binaries and downloaded weights are excluded from source releases.
+Software: python-fcl 0.7.0.11 (declared ==0.7.0.11)
+Copyright notice:
+Copyright (c) 2017, Matthew Matl
+All rights reserved.
+
+License: BSD 3-Clause License
+Please see above
+Source: https://pypi.org/pypi/python-fcl/0.7.0.11/json
+
+Software: nvidia-curobo 0.8.0.post1.dev43 (optional, separately installed; not bundled)
+Copyright notice: Copyright 2023-2026 NVIDIA CORPORATION & AFFILIATES
+License: Apache License V2.0
+Please see above
+Source and license: https://github.com/NVlabs/curobo/blob/78fd485fa82d9b9a063fb4985e371814587e666a/LICENSE

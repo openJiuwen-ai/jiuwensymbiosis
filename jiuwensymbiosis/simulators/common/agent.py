@@ -27,6 +27,8 @@ from jiuwensymbiosis.api.actions import (
     CLOSE_GRIPPER,
     JUMP,
     LOCATE_TARGET,
+    MOVE_JOINT,
+    MOVE_TOOL_POSES,
     NAVIGATE_RELATIVE,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
@@ -39,7 +41,12 @@ from jiuwensymbiosis.api.actions import (
     implements,
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.contracts import NavigationResult, SimulationSnapshotResult
+from jiuwensymbiosis.contracts import (
+    CloseEffectorResult,
+    NavigationResult,
+    PlannedMotionResult,
+    SimulationSnapshotResult,
+)
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.perception.config import DetectorConfig
 from jiuwensymbiosis.perception.frame import CameraFrame
@@ -164,6 +171,28 @@ class SimulationDriver:
             else motion_feedback(result)
         )
 
+    def move_joints_blocking(self, targets: dict[str, float]) -> dict:
+        return self.move_arm(targets=targets)
+
+    def move_arm(self, **goal) -> dict:
+        self.require_motion()
+        owner = self.owner
+        if owner is None:
+            raise RuntimeError("Genesis session is not connected")
+        try:
+            result = self.preview.move_arm(owner, cancelled=self.cancelled, **goal)
+        except Exception:
+            self.fail_stop_confirmation()
+            raise
+        if result.get("stop_confirmation") != "measured" or not result.get("settled"):
+            self.fail_stop_confirmation()
+        self.results.append(result)
+        keys = (
+            "ok plan_success goal_reached settled stop_confirmation "
+            "reason holding_payload grasp_confirmed contact_confirmed placement_confirmed"
+        ).split()
+        return {key: result[key] for key in keys if key in result}
+
     def accept_camera_observation(self, camera_name: str, captured_at: float) -> None:
         """Unlock movement only after a post-stop head image reaches model context."""
         if (
@@ -232,6 +261,13 @@ class SimulationEnv(BaseRobotEnv):
             self.capabilities |= {"simulation.truth"}
             if driver.actions_enabled:
                 self.capabilities |= {"motion.goal"}
+                read_status = getattr(driver.preview, "status", None)
+                state = read_status() if read_status is not None else {}
+                if state.get("scene", {}).get("arm_planning_ready"):
+                    self.capabilities |= {"motion.joint", "motion.tool_pose"}
+                    self.joint_units = "rad"
+                    if state.get("scene", {}).get("effectors_ready"):
+                        self.capabilities |= {"grasp.parallel"}
 
     def connect(self) -> None:
         self.driver.connect()
@@ -276,6 +312,35 @@ class SimulationEnv(BaseRobotEnv):
                     "frame_id": frame.frame_id,
                 }
         return self.driver.navigate_relative(dx_m, dy_m, dyaw_rad)
+
+    def move_tool_poses(self, group: str, poses: dict[str, list[float]], speed: float = 1.0) -> dict:
+        return self.driver.move_arm(group=group, poses=poses, speed=speed)
+
+    @property
+    def effector_payloads(self) -> dict[str, bool | None] | None:
+        state = self.driver.preview.status()
+        if not state.get("scene", {}).get("arm_planning_ready"):
+            return None
+        fresh = state.get("state") == "ready" and time.monotonic() - state.get("measured_at", 0) <= 2
+        return {n: e.get("holding_payload") if fresh else None for n, e in state.get("effectors", {}).items()}
+
+    @property
+    def holding_payload(self) -> bool | None:
+        values = list((self.effector_payloads or {}).values())
+        return True if True in values else False if values and all(v is False for v in values) else None
+
+    def set_gripper(self, opened: bool, effector: str | None = None) -> dict:
+        state = self.driver.preview.status()
+        if state.get("state") != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
+            raise RuntimeError("Effector state unavailable or stale")
+        names = list(state.get("effectors", {}))
+        if effector is None:
+            if len(names) != 1:
+                raise ValueError("Specify a configured effector; automatic selection requires exactly one")
+            effector = names[0]
+        if effector not in names:
+            raise ValueError("Unknown effector")
+        return self.driver.move_arm(effector=effector, opened=opened)
 
     def get_observation(self) -> RobotObservation:
         # Preserve freshness/ownership validation without exposing simulator truth
@@ -358,7 +423,9 @@ class SimulationEnv(BaseRobotEnv):
         return self._last_frame
 
     def home(self) -> None:
-        # A stationary posture; never drive the robot back to its spawn point.
+        # Home is unavailable for configured arm planning until payload-aware recovery exists.
+        if "motion.joint" in self.capabilities:
+            raise RuntimeError("Automatic arm homing is not configured")
         result = self.navigate_relative(0.0)
         if not result["ok"]:
             raise RuntimeError("Cannot confirm stationary home posture")
@@ -496,7 +563,7 @@ class JumperEnv(SimulationEnv):
     def jump(self) -> dict:
         return self.driver.policy_action("jump")
 
-    def set_gripper(self, closed: bool, side: Literal["left", "right"] = "left") -> dict:
+    def set_policy_gripper(self, closed: bool, side: Literal["left", "right"] = "left") -> dict:
         if side not in {"left", "right"}:
             raise ValueError("Jumper gripper requires left/right side")
         return self.driver.policy_action("set_gripper", side=side, closed=closed)
@@ -512,16 +579,48 @@ class JumperApi(SimulationApi):
         return self.jumper_env.jump()
 
     @implements(OPEN_GRIPPER)
-    def open_gripper(self, width_mm: float = 80.0, *, side: Literal["left", "right"] = "left") -> dict:
+    def open_gripper(
+        self,
+        width_mm: float = 80.0,
+        *,
+        effector: Literal["left", "right"] | None = None,
+        side: Literal["left", "right"] = "left",
+    ) -> dict:
         del width_mm  # Official controller uses fixed open/closed targets.
-        result = self.jumper_env.set_gripper(False, side)
+        result = self.jumper_env.set_policy_gripper(False, effector if effector is not None else side)
         return {**result, "state": "open" if result.get("ok") else "unconfirmed"}
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None, *, side: Literal["left", "right"] = "left") -> dict:
+    def close_gripper(
+        self,
+        force_n: float | None = None,
+        *,
+        effector: Literal["left", "right"] | None = None,
+        side: Literal["left", "right"] = "left",
+    ) -> dict:
         del force_n  # Official controller does not expose force control.
-        result = self.jumper_env.set_gripper(True, side)
+        result = self.jumper_env.set_policy_gripper(True, effector if effector is not None else side)
         return {**result, "state": "closed" if result.get("ok") else "unconfirmed"}
+
+
+class SimulationArmMotionApi(SimulationTruthMotionApi):
+    @implements(MOVE_JOINT)
+    def move_joint(self, targets: dict[str, float]) -> PlannedMotionResult:
+        return cast(PlannedMotionResult, defaults.move_joint(self, targets))
+
+    @implements(MOVE_TOOL_POSES)
+    def move_tool_poses(self, group: str, poses: dict[str, list[float]], speed: float = 1.0) -> PlannedMotionResult:
+        return cast(PlannedMotionResult, self.env.move_tool_poses(group, poses, speed))
+
+
+class SimulationManipulationApi(SimulationArmMotionApi):
+    @implements(OPEN_GRIPPER)
+    def open_gripper(self, width_mm: float = 80.0, *, effector: str | None = None) -> CloseEffectorResult:
+        return cast(CloseEffectorResult, self.env.set_gripper(True, effector))
+
+    @implements(CLOSE_GRIPPER)
+    def close_gripper(self, force_n: float | None = None, *, effector: str | None = None) -> CloseEffectorResult:
+        return cast(CloseEffectorResult, self.env.set_gripper(False, effector))
 
 
 def make_session(
@@ -550,7 +649,12 @@ def make_session(
     starters = []
     detector_config = detector_config or DetectorConfig()
     if observation_mode == "ground_truth":
-        api = SimulationTruthMotionApi(env) if actions_enabled else SimulationTruthApi(env)
+        if actions_enabled and "motion.tool_pose" in env.capabilities:
+            api = (
+                SimulationManipulationApi(env) if "grasp.parallel" in env.capabilities else SimulationArmMotionApi(env)
+            )
+        else:
+            api = SimulationTruthMotionApi(env) if actions_enabled else SimulationTruthApi(env)
     elif observation_mode == "perception":
         if detector_config.mode == "disabled":
             raise ValueError("RGB-D perception requires an enabled detector")
@@ -666,6 +770,8 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             observation_mode,
             actions_enabled,
             detector_enabled=detector_config is not None and detector_config.mode != "disabled",
+            planning_enabled="motion.tool_pose" in session.env.capabilities,
+            grasp_enabled="grasp.parallel" in session.env.capabilities,
         )
         | (
             frozenset(

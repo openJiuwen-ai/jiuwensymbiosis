@@ -51,6 +51,7 @@
 - [Agent 全量配置参考](zh/reference/agent-config.md)
 - [机器人环境、能力与工具 API 参考](zh/reference/robot-api.md)
 - [执行轨迹参考](zh/reference/tracing.md)
+- [机械臂规划与夹持](zh/how-to/genesis-arm-planning.md)
 - [准备和审计机器人碰撞模型](zh/how-to/audit-robot-models.md)
 
 ### Explanation（解释）
@@ -86,6 +87,7 @@
 - [Complete Agent Configuration Reference](en/reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](en/reference/robot-api.md)
 - [Execution Tracing Reference](en/reference/tracing.md)
+- [Arm Planning and Grasp Evidence](en/how-to/genesis-arm-planning.md)
 - [Audit Robot Collision Models](en/how-to/audit-robot-models.md)
 
 ### Explanation

@@ -31,7 +31,7 @@ from jiuwensymbiosis.utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
 _CLIENT_ID = re.compile(r"[a-f0-9]{32}\Z")
-_CANCELLABLE = {"navigate_relative", "policy_action", "capture_image", "query_scene"}
+_CANCELLABLE = {"move_arm", "navigate_relative", "policy_action", "capture_image", "query_scene"}
 _METHODS = {
     "start",
     "configure",
@@ -47,6 +47,7 @@ _METHODS = {
     "motion_state",
     "navigate_relative",
     "policy_action",
+    "move_arm",
 }
 
 
@@ -175,7 +176,14 @@ class ResidentHost:
             )
             if requires_viewer and self.viewer != client_id:
                 raise RuntimeError("请连接当前 GUI 的视频后操作。")
-            if method in {"release_motion", "cancel_motion", "motion_state", "navigate_relative", "policy_action"}:
+            if method in {
+                "release_motion",
+                "cancel_motion",
+                "motion_state",
+                "navigate_relative",
+                "policy_action",
+                "move_arm",
+            }:
                 if client.owner is None or params.get("owner") != client.owner:
                     raise RuntimeError("该客户端没有此运动任务的控制权。")
             if method == "acquire_motion":

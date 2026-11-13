@@ -72,6 +72,7 @@ Capability axes are **orthogonal and freely combinable**: motion (cartesian/join
 | `motion.cartesian` | `CartesianDriver` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` | ✅ | ✅ | ✅ | — |
 | `motion.jump` | body-defined jump | `jump` | — | — | — | — |
 | `motion.joint` | `JointDriver`/`NamedJointDriver` | `move_joint`, `move_named_joint`, `get_joint_positions` | — | ✅ | ✅ | ✅ |
+| `motion.tool_pose` | Genesis planner | `move_tool_poses` | — | — | — | — |
 | `motion.servo` | `ServoDriver` + fast-controller hook | — (no standalone public action; driven by fast-path real-time servo ops) | ✅ | ✅ | ✅ | — |
 | `motion.base` | Env verbs `navigate_relative`/`navigate_arc` | `navigate_relative`, `rotate_base`, `drive_arc` | — | — | — | ✅ |
 | `motion.base_servo` | Env verbs `start_base_drive` etc. | — (continuous base-drive primitive) | — | — | — | ✅ |

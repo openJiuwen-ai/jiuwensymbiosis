@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -23,7 +24,7 @@ def world(monkeypatch):
     runtime.info = {"instance_id": "old"}
     runtime.scene, runtime.renderer, runtime.robot = Mock(), object(), Mock()
     runtime.motion = SimpleNamespace(active=False)
-    runtime.settings = SimpleNamespace(dt=0.01)
+    runtime.settings = SimpleNamespace(dt=0.01, planning_profile="")
     runtime._initial_state = object()
     runtime._initial_steps = 200
     runtime.steps, runtime.cycle = 300, 0
@@ -158,3 +159,32 @@ def test_physics_preserves_existing_robot_self_collision_policy(world, monkeypat
     with pytest.raises(RuntimeError, match="options captured"):
         runtime._build_physics()
     assert scene.call_args.kwargs["rigid_options"]["enable_self_collision"] is expected
+
+
+def test_reset_rebuilds_arm_evidence_but_never_bypasses_unknown_stop(world, monkeypatch):
+    runtime, _ = world
+    old = Mock(active=False, follower=SimpleNamespace(terminal=False))
+    old.effectors.evidence = {}
+    runtime.arm_motion = old
+    runtime._planning_profile = {}
+    runtime._evidence_directory = Path("/unused")
+    replacement = Mock()
+    factory = Mock(return_value=replacement)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.arm_motion.ArmMotion", factory)
+    factory.side_effect = ValueError("invalid model")
+    with pytest.raises(ValueError, match="invalid model"):
+        runtime.reset()
+    runtime.scene.reset.assert_not_called()
+    old.close.assert_not_called()
+    assert runtime.arm_motion is old and runtime.info["instance_id"] == "old"
+    factory.side_effect = None
+    runtime.reset()
+    old.close.assert_called_once()
+    assert runtime.arm_motion is replacement
+    assert runtime.info["instance_id"] in str(factory.call_args.args[2])
+    runtime.arm_motion = old
+    old.follower.terminal = True
+    runtime.scene.reset.reset_mock()
+    with pytest.raises(RuntimeError, match="stopping unconfirmed"):
+        runtime.reset()
+    runtime.scene.reset.assert_not_called()

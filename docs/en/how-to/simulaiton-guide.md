@@ -303,10 +303,10 @@ gripper, then close and open the right gripper, and stop.” The shared tools ar
 
 ```python
 jump()
-close_gripper(side="left")
-open_gripper(side="left")
-close_gripper(side="right")
-open_gripper(side="right")
+close_gripper(effector="left")
+open_gripper(effector="left")
+close_gripper(effector="right")
+open_gripper(effector="right")
 ```
 
 Jump follows the official fixed trajectory and succeeds only after observed takeoff, landing
@@ -587,3 +587,10 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 These checks cover dynamic video, cameras, reconnection, cleanup and encoding, not acceptance
 of indoor contacts, robot tasks or browser behavior.
+
+Agent tools use the upstream `effector` selector. Direct Jumper Python calls still accept legacy `side`; omitting a selector defaults to the left claw.
+
+
+### Genesis arm planning
+
+`planning_profile` is supported only for Genesis physical robot mode. Upstream cuRobo planning, named effectors and measured grasp evidence remain available; see [Genesis arm planning](genesis-arm-planning.md). Native MuJoCo policies do not enable these arm interfaces.

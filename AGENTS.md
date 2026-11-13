@@ -155,7 +155,7 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 **RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (Env + registered resources), `__exit__` calls `disconnect()`. Both are idempotent. The Session owns its HTTP clients and any explicitly enabled local subprocesses (sidecars); it never starts or stops externally managed inference servers, including manually started localhost services. The internal `sidecar_starters` name also covers client contexts and cleanup callbacks.
 
 **Known Capabilities** (defined in `env/base.py:KNOWN_CAPABILITIES`):
-- arm — `motion.cartesian`, `motion.joint`, `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
+- arm — `motion.cartesian`, `motion.joint`, `motion.tool_pose` (jointly planned tool poses), `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
 - mobile manipulator — `motion.base`, `motion.base_servo`, `motion.lift`, `motion.waist`, `motion.goal`
 - end effector — `grasp.suction`, `grasp.parallel`, `grasp.paddle` (two flat plates clamping a face on each side)
 - sensing / planning — `vision.camera`, `vision.depth`, `vision.detection`, `vision.eye_to_hand`, `vision.search`, `planning.reachability`

@@ -530,9 +530,11 @@ Jumper 支持共享跳跃动作，并复用主仓的夹爪动作：
 
 ```python
 jump()                                    # 一次官方固定轨迹跳跃，等待落地和停稳
-close_gripper(side="left")                 # 左夹爪闭合，右侧用 side="right"
-open_gripper(side="left")                  # 张开指定侧夹爪
+close_gripper(effector="left")                 # 左夹爪闭合，右侧用 effector="right"
+open_gripper(effector="left")                  # 张开指定侧夹爪
 ```
+
+Agent 工具沿用主仓的 `effector` 选择器；Jumper 的直接 Python 调用仍接受旧 `side` 参数，省略选择器时默认左侧。
 
 可直接对 Agent 说：「先看相机，原地跳一次，落地后左夹爪闭合再张开，
 然后右夹爪闭合再张开，最后前进 15 厘米并看相机。」
@@ -872,3 +874,7 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 ```
 
 这些检查覆盖动态图像、相机、重连、退出和编码，不代表室内接触物理、机器人任务或浏览器界面已验收。
+
+### Genesis 机械臂规划
+
+`planning_profile` 仅用于 Genesis 的物理机器人模式。主仓的 cuRobo 规划、命名夹爪与实测抓取证据继续可用；配置与操作见 [Genesis 机械臂规划](genesis-arm-planning.md)。MuJoCo 的机器人策略不会启用这些机械臂接口。

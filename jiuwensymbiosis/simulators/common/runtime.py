@@ -23,6 +23,7 @@ class SimulationRuntime(Protocol):
     robot: Any
     renderer: Any
     motion: Any
+    arm_motion: Any
     cameras: dict
     bodies: list
     indoor: Any

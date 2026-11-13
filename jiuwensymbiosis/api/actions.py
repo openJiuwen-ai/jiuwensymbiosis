@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Mapping
+from functools import wraps
 from typing import Any
 
 from jiuwensymbiosis.api.decorators import (
@@ -61,6 +62,7 @@ from jiuwensymbiosis.contracts import (
     JumpResult,
     NavigationResult,
     ObjectGeometryResult,
+    PlannedMotionResult,
     SceneScanResult,
     SearchResult,
     SensingFailure,
@@ -226,6 +228,33 @@ HOME = ActionSpec(
 # =============================================================================
 # Joint motion — motion.joint
 # =============================================================================
+MOVE_TOOL_POSES = ActionSpec(
+    name="move_tool_poses",
+    description=(
+        "Plan and execute one coupled motion for all named tools of a configured joint group. "
+        "poses maps each tool-frame name to [x,y,z,qw,qx,qy,qz], metres and unit quaternion, "
+        "relative to the body's configured planning base_link. Provide every tool in the group. "
+        "Non-group joints are held; the mobile base must be stopped. Read configured group, "
+        "tool and base-frame names from this body's state. speed is a positive timing multiplier; "
+        "velocity, acceleration and jerk limits take precedence. Planning success alone is not arrival."
+    ),
+    capability="motion.tool_pose",
+    params=("group", "poses", "speed"),
+    required_params=("group", "poses"),
+    param_schema={
+        "group": {"type": "string"},
+        "poses": {
+            "type": "object",
+            "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 7, "maxItems": 7},
+        },
+        "speed": {"type": "number", "exclusiveMinimum": 0},
+    },
+    result=PlannedMotionResult,
+    invalidates=("body.home",),
+    tags=("motion",),
+)
+
+
 MOVE_JOINT = ActionSpec(
     name="move_joint",
     description=(
@@ -294,10 +323,13 @@ JUMP = ActionSpec(
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
-    "with no width control accepts it and ignores it. side selects a gripper using this body's "
-    "advertised choices; omit it to use the default gripper.",
+    "with no width control accepts it and ignores it. effector selects a configured gripper; omit only "
+    "when unambiguous. Payload effects apply to that gripper. Held payloads require safe supported release.",
     capability="grasp.parallel",
-    params=("width_mm", "side"),
+    params=("width_mm", "effector"),
+    result=CloseEffectorResult,
+    param_schema={"effector": {"type": "string", "minLength": 1}},
+    invalidates=("payload.held", "payload.clear", "payload.stowed"),
     provides=("payload.clear",),
     tags=("grasp",),
 )
@@ -308,10 +340,11 @@ CLOSE_GRIPPER = ActionSpec(
     "pose. A successful close command alone does not establish payload.held: measured grasp confirmation "
     "(grasp_confirmed / contact in the result, or the body's is_grasp_confirmed hook) is required — a body "
     "with no measured channel must declare trust_command_grasp. force_n is a HINT: a gripper with no force "
-    "control accepts it and ignores it. side selects a gripper using this body's advertised choices; "
-    "omit it to use the default gripper.",
+    "control accepts it and ignores it. effector selects a configured gripper; omit only when unambiguous. "
+    "Payload preconditions and effects apply to that gripper; contact alone may remain unconfirmed.",
     capability="grasp.parallel",
-    params=("force_n", "side"),
+    params=("force_n", "effector"),
+    param_schema={"effector": {"type": "string", "minLength": 1}},
     result=CloseEffectorResult,
     requires=("payload.clear",),
     provides=("payload.held",),
@@ -763,6 +796,7 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     GET_HOME_POSE,
     HOME,
     MOVE_JOINT,
+    MOVE_TOOL_POSES,
     MOVE_NAMED_JOINT,
     GET_JOINT_POSITIONS,
     JUMP,
@@ -812,6 +846,32 @@ def _accepts(func: Callable[..., Any], params: Iterable[str]) -> list[str]:
     return [name for name in params if name not in sig.parameters]
 
 
+def _default_effector(func):
+    """Keep legacy single-gripper adapters callable; never ignore a named selector."""
+    signature = inspect.signature(func)
+    if "effector" in signature.parameters:
+        return func
+
+    @wraps(func)
+    def invoke(*args, effector=None, **kwargs):
+        if effector is not None:
+            raise ValueError("This adapter has no named effector; omit effector")
+        return func(*args, **kwargs)
+
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def adapted(*args, **kwargs):
+            return await invoke(*args, **kwargs)
+    else:
+        adapted = invoke
+    parameters = list(signature.parameters.values())
+    index = next((i for i, p in enumerate(parameters) if p.kind == p.VAR_KEYWORD), len(parameters))
+    parameters.insert(index, inspect.Parameter("effector", inspect.Parameter.KEYWORD_ONLY, default=None))
+    adapted.__signature__ = signature.replace(parameters=parameters)
+    return adapted
+
+
 def implements(spec: ActionSpec) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Bind a method as one body's implementation of ``spec``.
 
@@ -834,6 +894,8 @@ def implements(spec: ActionSpec) -> Callable[[Callable[..., Any]], Callable[...,
     """
 
     def _wrap(func: Callable[..., Any]) -> Callable[..., Any]:
+        if spec is OPEN_GRIPPER or spec is CLOSE_GRIPPER:
+            func = _default_effector(func)
         missing = _accepts(func, spec.params or ())
         if missing:
             raise ContractViolation(

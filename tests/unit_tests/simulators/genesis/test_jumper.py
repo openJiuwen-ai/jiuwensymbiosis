@@ -189,12 +189,12 @@ async def test_shared_gripper_dispatch_preserves_side_and_never_invents_payload(
     tool = RobotControlTool(api, env=env)
     assert "set_gripper" not in tool.available_actions
     meta = getattr(api, action).__tool_meta__
-    assert meta.input_params["properties"]["side"]["enum"] == ["left", "right"]
-    assert meta.input_params["properties"]["side"]["default"] == "left"
+    assert meta.input_params["properties"]["effector"]["enum"] == ["left", "right"]
+    assert meta.input_params["properties"]["effector"]["default"] is None
     # Width/force are accepted hints; no force/width controller is invented.
     params = {"width_mm": 42.0} if not closed else {"force_n": 5.0}
     if side is not None:
-        params["side"] = side
+        params["effector"] = side
     result = await tool.invoke({"action": action, "params": params})
     assert result.success
     returned = result.data["result"]
@@ -206,7 +206,7 @@ async def test_shared_gripper_dispatch_preserves_side_and_never_invents_payload(
         assert read_grasp_confirmation(api, returned) is None
         assert not api.trust_command_grasp
     elif ok:
-        assert "payload.clear" in api.memory.self_state
+        assert (f"payload.clear:{side}" if side is not None else "payload.clear") in api.memory.self_state
 
 
 @pytest.mark.parametrize("action", ["open_gripper", "close_gripper"])

@@ -37,6 +37,7 @@ class TestKnownCapabilities:
             # Topology axis: what the body can MOVE. Decides which action to call; what the
             # arms hold is the grasp.* axis above.
             "motion.dual_arm",
+            "motion.tool_pose",
             # Planning-time URDF reachability (2026-07-30)
             "planning.reachability",
             # The body can aim a camera by turning something (head / waist / base), so it

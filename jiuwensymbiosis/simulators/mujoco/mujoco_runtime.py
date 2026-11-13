@@ -29,6 +29,7 @@ class MujocoPolicyRuntime(ABC):
     def __init__(self, settings, directory):
         self.settings, self.directory = settings, Path(directory)
         self.renderer = self.indoor = self.selection = None
+        self.arm_motion = None
         self.bodies = []
         self.steps = self.cycle = self.physics_steps = 0
         self._accumulator = 0.0

@@ -51,6 +51,10 @@ _WORKER_ENV_KEYS = frozenset(
         "CUDA_DEVICE_ORDER",
         "CUDA_CACHE_PATH",
         "GS_CACHE_FILE_PATH",
+        "TORCH_EXTENSIONS_DIR",
+        "NUMBA_CACHE_DIR",
+        "MPLCONFIGDIR",
+        "PYTHONDONTWRITEBYTECODE",
         "NVIDIA_VISIBLE_DEVICES",
         "NVIDIA_DRIVER_CAPABILITIES",
         "VK_ICD_FILENAMES",
@@ -447,6 +451,7 @@ class SimulationPreview:
         robot_id: str = "",
         render_quality: str = "reference",
         camera_name: str = "observer",
+        planning_profile: str | None = None,
     ) -> dict:
         with self._lock:
             state = self.status()["state"]
@@ -479,6 +484,11 @@ class SimulationPreview:
                 robot_mode=robot_mode,
                 robot_id=robot_id,
                 camera_name=camera_name,
+                planning_profile=(
+                    self.settings.planning_profile
+                    if planning_profile is None and same_scene
+                    else planning_profile or ""
+                ),
             )
             if settings == self.settings:
                 return self.status()
@@ -672,6 +682,24 @@ class SimulationPreview:
                 raise ValueError("当前机器人未开放此策略动作。")
         return self._run_motion(owner, {"kind": kind, "side": side, "closed": closed}, cancelled=cancelled)
 
+    def move_arm(
+        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+    ) -> dict:
+        if not self.settings.planning_profile:
+            raise RuntimeError("No arm planning profile configured")
+        payload = {
+            "kind": "arm",
+            "targets": targets,
+            "poses": poses,
+            "group": group,
+            "speed": speed,
+            "effector": effector,
+            "opened": opened,
+        }
+        if len(json.dumps(payload, allow_nan=False).encode()) > 2048:
+            raise ValueError("Arm request too large")
+        return self._run_motion(owner, payload, cancelled=cancelled)
+
     def _run_motion(self, owner: str, params: dict, *, cancelled=None) -> dict:
         with self._lock:
             state = self.status()
@@ -686,7 +714,9 @@ class SimulationPreview:
                 raise RuntimeError("任务已取消。")
             previous = state.get("base_motion", {})
             if self._motion_request and (
-                previous.get("id") != self._motion_request["id"] or previous.get("status") != "completed"
+                previous.get("id") != self._motion_request["id"]
+                or previous.get("status") != "completed"
+                or not previous.get("settled")
             ):
                 raise RuntimeError("上一条底盘动作尚未完成。")
             request: dict[str, Any] = {
@@ -699,7 +729,7 @@ class SimulationPreview:
             }
             self._motion_request = request
             self._send_control()
-        deadline = time.monotonic() + 100
+        deadline = time.monotonic() + (180 if params.get("kind") == "arm" else 100)
         try:
             while time.monotonic() < deadline:
                 with self._lock:

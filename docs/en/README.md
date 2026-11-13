@@ -40,6 +40,7 @@ pages follow the same paths and user tasks.
 - [Complete Agent Configuration Reference](reference/agent-config.md)
 - [Robot Environment, Capability, and Tool API Reference](reference/robot-api.md)
 - [Execution Tracing Reference](reference/tracing.md)
+- [Arm Planning and Grasp Evidence](how-to/genesis-arm-planning.md)
 - [Audit Robot Collision Models](how-to/audit-robot-models.md)
 
 ## Explanation

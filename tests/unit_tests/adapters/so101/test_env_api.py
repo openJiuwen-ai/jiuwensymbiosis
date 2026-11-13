@@ -321,12 +321,12 @@ class TestSo101ApiStructure:
         # The shared action declares width_mm; this body accepts and ignores it. The CONTRACT
         # calls it a hint, so no per-body caveat is needed and one skill drives either gripper.
         meta = So101Api.open_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"width_mm", "side"}
+        assert set(meta.input_params["properties"]) == {"width_mm", "effector"}
         assert "HINT" in meta.description
 
     def test_close_gripper_advertises_the_shared_contract(self):
         meta = So101Api.close_gripper.__tool_meta__
-        assert set(meta.input_params["properties"]) == {"force_n", "side"}
+        assert set(meta.input_params["properties"]) == {"force_n", "effector"}
         assert "HINT" in meta.description
 
     def test_private_fast_tracking_hook_is_not_an_action(self):
@@ -397,8 +397,8 @@ class TestSo101ApiDelegates:
         api, env, _driver = _build_api()
         env.set_end_effector = MagicMock()
         method = getattr(api, action)
-        schema = method.__tool_meta__.input_params["properties"]["side"]
-        assert schema["enum"] == ["default"] and schema["default"] == "default"
+        schema = method.__tool_meta__.input_params["properties"]["effector"]
+        assert schema["default"] is None
         if side == "default":
             assert method(side=side)["ok"]
             env.set_end_effector.assert_called_once_with(action == "close_gripper")
