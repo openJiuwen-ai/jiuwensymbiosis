@@ -51,7 +51,7 @@ from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
-from jiuwensymbiosis.errors import SafetyViolationError
+from jiuwensymbiosis.errors import SAFETY_ERROR_CODE_KEY, SafetyViolationError
 from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,15 @@ class SafetyRail(AgentRail):
         unparseable / non-dict args fall back to ``{}`` (→ no motion params →
         no rejection, same as before, never a false positive).
         """
+        # ``ctx.extra`` persists for the whole invoke, so a code parked by an
+        # earlier rejection must not survive into this call: a later abort
+        # without its own code would otherwise be mislabelled as that
+        # rejection.
+        try:
+            ctx.extra.pop(SAFETY_ERROR_CODE_KEY, None)
+        except (AttributeError, TypeError):
+            pass
+
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
         args = coerce_tool_args(getattr(inputs, "tool_args", None))
@@ -177,6 +186,12 @@ class SafetyRail(AgentRail):
             # anyway. Wrap the typed violation as the abort cause so the tool
             # body is skipped and the caller/RecoveryRail still receives the
             # original SafetyViolationError.
+            # The aborted call produces no ToolOutput, so park the code on the
+            # context for the fast executor (same extra dict across tool ctx).
+            try:
+                ctx.extra[SAFETY_ERROR_CODE_KEY] = exc.code
+            except (AttributeError, TypeError):
+                pass
             raise AbortError(str(exc), cause=exc) from exc
 
     def validate_motion(self, tool_name: str, args: dict[str, Any]) -> None:

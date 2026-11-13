@@ -309,7 +309,7 @@ with session:
 
 ## 6. 配置软件与硬件安全边界
 
-SafetyRail 在下发前检查笛卡尔 Z、XY 工作空间和关节软限位，并自动解包 `RobotControlTool` 的 `action/params`。被拒绝的调用抛出带修正信息的 `ValueError`，且不得触发任何硬件命令。
+SafetyRail 在下发前检查笛卡尔 Z、XY 工作空间和关节软限位，并自动解包 `RobotControlTool` 的 `action/params`。被拒绝的调用以 `AbortError` 中止（cause 为 `SafetyViolationError`，仍是 `ValueError` 子类，消息含修正提示），预检拒绝不得触发任何硬件命令。若越界是在命令下发后才从观测中发现，适配器必须抛出显式声明 `skip_recovery = False` 的异常（例如 SO-101 的 `So101TrackingViolation`），让 RecoveryRail 仍执行释放/归位。
 
 ### 边界配置与责任分层
 

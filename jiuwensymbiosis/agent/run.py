@@ -101,12 +101,15 @@ def run_robot_task(
     (use ``with session:``).
 
     ``cancel_token`` (GUI-only ``CancelToken``) makes the fast path's compile LLM
-    call abandonable; ``run_sequence`` reads it off ``session.cancel_token``. The
-    slow agent path does not use it (its LLM calls live inside openjiuwen). ``None``
-    → unchanged behaviour for CLI / tests.
+    call abandonable; it is also exposed as ``session.cancel_token`` so rails
+    (e.g. RecoveryRail's cancelled-run gate) see the same run state. The slow
+    agent path does not poll it inside openjiuwen's LLM calls, but the rails can
+    still observe it. ``None`` → unchanged behaviour for CLI / tests.
     """
     config = config or RobotAgentConfig()
     config.validate(for_execution=True)
+    if cancel_token is not None:
+        session.cancel_token = cancel_token
     if config.execution.mode == "fastagent":
         conv_id = conversation_id or f"task-{uuid.uuid4().hex[:8]}"
         return run_fast_task(session, query, config, conversation_id=conv_id, cancel_token=cancel_token)

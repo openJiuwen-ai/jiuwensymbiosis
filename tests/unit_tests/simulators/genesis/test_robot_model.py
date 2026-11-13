@@ -85,7 +85,9 @@ def test_package_resolution_and_dependency_hash(tmp_path):
 
 
 def built_robot(model):
-    import trimesh
+    # ``trimesh`` is an optional simulation extra; keep the whole helper (and
+    # every test that builds a robot through it) skipped when it is absent.
+    trimesh = pytest.importorskip("trimesh")
 
     geoms = []
     for idx, collision in enumerate(model["links"][1]["collisions"]):
@@ -210,7 +212,7 @@ def test_empty_model_is_not_physical_admission(tmp_path):
 def test_processed_expectations_reparse_and_transform(monkeypatch):
     import sys
 
-    import trimesh
+    trimesh = pytest.importorskip("trimesh")
 
     from jiuwensymbiosis.simulators.genesis.collision_audit import _processed_expectations
 
