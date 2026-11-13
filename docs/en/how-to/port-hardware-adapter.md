@@ -61,9 +61,6 @@ class MyEnv(BaseRobotEnv):
 Api binds the actions the body supports from the shared vocabulary with `@implements(SPEC)`:
 
 ```python
-from typing import Literal
-
-
 class MyApi(BaseRobotApi):
     # Mandatory when the end effector has no measured channel: under fastagent a
     # successful command does not establish payload.held and unknown evidence fails
@@ -78,8 +75,8 @@ class MyApi(BaseRobotApi):
         return defaults.goto_xyzr(self, x, y, z, r)
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
-        return defaults.close_gripper(self, force_n, side=side)
+    def close_gripper(self, force_n: float | None = None) -> dict:
+        return defaults.close_gripper(self, force_n)
 ```
 
 Tools are generated for `api.capabilities ∩ env.capabilities`. Inspect the result after assembly:

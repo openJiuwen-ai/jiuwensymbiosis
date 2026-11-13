@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from jiuwensymbiosis.api.actions import (
     ANALYZE_SCENE,
@@ -96,17 +96,13 @@ class MockApi(BaseRobotApi):
         return {"ok": True, "state": "off"}
 
     @implements(CLOSE_GRIPPER)
-    def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
-        if side != "default":
-            raise ValueError("Single gripper only supports side=default")
+    def close_gripper(self, force_n: float | None = None) -> dict:
         self._call_log.append("close_gripper")
         self.env.set_suction(True)
         return {"ok": True, "state": "closed"}
 
     @implements(OPEN_GRIPPER)
-    def open_gripper(self, width_mm: float = 70.0, *, side: Literal["default"] = "default") -> dict:
-        if side != "default":
-            raise ValueError("Single gripper only supports side=default")
+    def open_gripper(self, width_mm: float = 70.0) -> dict:
         self._call_log.append("open_gripper")
         self.env.set_suction(False)
         return {"ok": True, "state": "open"}

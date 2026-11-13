@@ -84,12 +84,8 @@ _GENERIC_FORWARDERS: dict[str, tuple[str, str, str]] = {
     "move_joint": ("targets: dict[str, float]", "targets", "Any"),
     "activate_suction": ("", "", "dict"),
     "deactivate_suction": ("", "", "dict"),
-    "open_gripper": ('width_mm: float = 80.0, *, side: Literal["default"] = "default"', "width_mm, side=side", "dict"),
-    "close_gripper": (
-        'force_n: Optional[float] = None, *, side: Literal["default"] = "default"',
-        "force_n, side=side",
-        "dict",
-    ),
+    "open_gripper": ("width_mm: float = 80.0", "width_mm", "dict"),
+    "close_gripper": ("force_n: Optional[float] = None", "force_n", "dict"),
     "get_image": ("", "", "Any"),
 }
 
@@ -1933,12 +1929,12 @@ def _api_gripper_joint_ik(spec: Spec) -> str:
         # which is honest for a position-only effector. The CONTRACT already calls both a hint,
         # so this needs no per-body caveat.
         @implements(OPEN_GRIPPER)
-        def open_gripper(self, width_mm: float = 80.0, *, side: Literal["default"] = "default") -> dict:
-            return defaults.open_gripper(self, width_mm, side=side)
+        def open_gripper(self, width_mm: float = 80.0) -> dict:
+            return defaults.open_gripper(self, width_mm)
 
         @implements(CLOSE_GRIPPER)
-        def close_gripper(self, force_n: Optional[float] = None, *, side: Literal["default"] = "default") -> dict:
-            return defaults.close_gripper(self, force_n, side=side)
+        def close_gripper(self, force_n: Optional[float] = None) -> dict:
+            return defaults.close_gripper(self, force_n)
         """,
         4,
     )

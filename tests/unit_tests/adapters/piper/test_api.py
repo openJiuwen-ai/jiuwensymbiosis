@@ -256,21 +256,22 @@ class TestPiperApiDelegatesThroughEnv:
         assert any(c[0] == "move" for c in driver.log)
 
     @pytest.mark.parametrize("action", ["open_gripper", "close_gripper"])
-    @pytest.mark.parametrize("side", ["default", "left", "right", None])
-    def test_single_gripper_side_is_validated_before_hardware(self, action, side):
+    @pytest.mark.parametrize("effector", [None, "default", "left", "right"])
+    def test_single_gripper_uses_upstream_effector_selector(self, action, effector):
         from unittest.mock import MagicMock
 
         api, env, _driver = self._build()
         env.set_end_effector = MagicMock()
         method = getattr(api, action)
-        schema = method.__tool_meta__.input_params["properties"]["effector"]
-        assert schema["default"] is None
-        if side == "default":
-            assert method(side=side)["ok"]
+        properties = method.__tool_meta__.input_params["properties"]
+        assert "side" not in properties
+        assert properties["effector"]["default"] is None
+        if effector is None:
+            assert method(effector=effector)["ok"]
             env.set_end_effector.assert_called_once_with(action == "close_gripper")
         else:
-            with pytest.raises(ValueError, match="side=default"):
-                method(side=side)
+            with pytest.raises(ValueError, match="no named effector"):
+                method(effector=effector)
             env.set_end_effector.assert_not_called()
 
     def test_close_gripper_calls_env_set_end_effector(self):

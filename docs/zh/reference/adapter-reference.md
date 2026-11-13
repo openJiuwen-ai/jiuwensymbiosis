@@ -182,7 +182,7 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 `open_gripper(width_mm=..., effector=...)` 和 `close_gripper(force_n=..., effector=...)`
 沿用主仓的可选 `effector` 选择器。命名夹爪按本体声明选择；Jumper 为 `"left"` / `"right"`，
 省略时默认左侧。旧单夹爪适配器由主仓兼容层接受省略或 `effector=None`，显式命名会报错。
-现有直接 Python 调用中的 `side` 保留兼容，但 Agent 工具统一使用 `effector`。
+仅 Jumper 保留旧直接 Python 调用的 `side` 别名；单夹爪适配器直接沿用主仓接口，Agent 工具统一使用 `effector`。
 
 ## 6. Config 与 Session Builder
 
@@ -372,7 +372,7 @@ Piper 的 30° 倾斜工具、历史嵌套 YAML 和临时 Z 校正都属于机�
 
 ### 多夹爪与恢复
 
-`side` 选择执行器，`payload.*` 仍表示整机载荷；若另一夹爪可能仍持物，适配器不得报告
+Jumper 用 `effector` 选择夹爪，`payload.*` 仍表示整机载荷；若另一夹爪可能仍持物，不得报告
 `open_gripper` 成功并建立全局空载事实。Jumper 仅支持一个活动夹爪，当前爪闭合时拒绝切换侧别。
 闭合或未知时 `holding_payload=None`，已确认张开时为 `False`，闭爪不建立 `payload.held`。
 Jumper 设置 `allow_automatic_effector_release=False` 阻止自动松爪，未知载荷时也拒绝自动回位。

@@ -181,8 +181,9 @@ A body whose end effector has no measured channel declares `trust_command_grasp 
 `open_gripper(width_mm=..., effector=...)` and `close_gripper(force_n=..., effector=...)`
 use the upstream optional `effector` selector. Jumper accepts `"left"` / `"right"` and defaults to
 the left claw. The upstream compatibility layer lets legacy single-gripper adapters omit the
-selector or use `effector=None`; explicit names are rejected. Existing direct Python `side`
-calls remain compatible, while Agent tools use `effector`.
+selector or use `effector=None`; explicit names are rejected. Only Jumper retains its legacy
+direct Python `side` alias; single-gripper adapters use the unchanged upstream interface.
+Agent tools use `effector`.
 
 ## 6. Config and Session builder
 
@@ -381,8 +382,8 @@ Piper's 30° tilted tool, historical nested YAML, and temporary Z correction are
 
 ### Multi-gripper release and recovery
 
-`side` selects an actuator; the shared `payload.*` state remains body-wide. An adapter must not
-report `open_gripper` success while another gripper may still hold the body's payload.
+Jumper uses `effector` to select a claw while retaining body-wide `payload.*` state. It must not
+report `open_gripper` success while another claw may still hold the body's payload.
 Jumper supports one active claw at a time and rejects switching sides until that claw is explicitly opened.
 It reports `holding_payload=None` for closed/unknown claws and `False` for a known open claw;
 closure never establishes `payload.held`. It sets `allow_automatic_effector_release=False` to prevent automatic release.
