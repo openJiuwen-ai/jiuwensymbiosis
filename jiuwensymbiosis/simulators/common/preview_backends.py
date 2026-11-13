@@ -60,7 +60,8 @@ def validate_backend(backend: str, mode: str) -> None:
     """Validate the explicitly selected engine and controller combination."""
     if backend not in {"genesis", "mujoco"} or mode not in MODES:
         raise ValueError("Unsupported simulation backend or robot mode")
-    if (backend == "genesis" and mode in POLICY_MODES) or (backend == "mujoco" and mode == "moz1_wheels"):
+    unsupported = POLICY_MODES if backend == "genesis" else ("moz1_wheels",)
+    if mode in unsupported:
         raise ValueError(f"{mode} is not supported by {backend}")
 
 

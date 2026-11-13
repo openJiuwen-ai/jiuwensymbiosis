@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,9 @@ def fetch_assets(body: str, destination: Path) -> None:
         raise FileExistsError(f"Asset directory already exists; use --source without --fetch: {destination}")
     if body not in REVISIONS:
         raise AssetError(f"Unsupported policy robot: {body}")
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise AssetError("Git executable is required to fetch robot assets")
     url, revision = REVISIONS[body]
     destination.parent.mkdir(parents=True, exist_ok=True)
     patterns = (
@@ -54,14 +58,14 @@ def fetch_assets(body: str, destination: Path) -> None:
     with tempfile.TemporaryDirectory(prefix=".robot-assets-", dir=destination.parent) as temporary:
         checkout = Path(temporary) / "checkout"
         for command in (
-            ["git", "init", str(checkout)],
-            ["git", "-C", str(checkout), "remote", "add", "origin", url],
-            ["git", "-C", str(checkout), "sparse-checkout", "set", "--no-cone", *patterns],
-            ["git", "-C", str(checkout), "fetch", "--filter=blob:none", "--depth=1", "origin", revision],
-            ["git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+            [git_executable, "init", str(checkout)],
+            [git_executable, "-C", str(checkout), "remote", "add", "origin", url],
+            [git_executable, "-C", str(checkout), "sparse-checkout", "set", "--no-cone", *patterns],
+            [git_executable, "-C", str(checkout), "fetch", "--filter=blob:none", "--depth=1", "origin", revision],
+            [git_executable, "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
         ):
             subprocess.run(command, check=True, stdout=sys.stderr)
-        actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        actual = subprocess.check_output([git_executable, "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
         if actual != revision:
             raise AssetError("Unexpected upstream revision")
         if body == "microduck":

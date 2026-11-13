@@ -713,11 +713,12 @@ class SimulationPreview:
             if self._motion_cancelled or (cancelled is not None and cancelled.is_set()):
                 raise RuntimeError("任务已取消。")
             previous = state.get("base_motion", {})
-            if self._motion_request and (
-                previous.get("id") != self._motion_request["id"]
+            incomplete = (
+                previous.get("id") != (self._motion_request or {}).get("id")
                 or previous.get("status") != "completed"
                 or not previous.get("settled")
-            ):
+            )
+            if self._motion_request and incomplete:
                 raise RuntimeError("上一条底盘动作尚未完成。")
             request: dict[str, Any] = {
                 "id": uuid.uuid4().hex,

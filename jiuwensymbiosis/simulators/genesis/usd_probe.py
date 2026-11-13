@@ -17,15 +17,21 @@ from typing import Any
 if not __package__:
     import importlib.util
 
-    package = "_jiuwensymbiosis_simulators"
-    entry = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(package, entry, submodule_search_locations=[str(entry.parent)])
-    if spec is None or spec.loader is None:
+    _PACKAGE_NAME = "_jiuwensymbiosis_simulators"
+    _PACKAGE_ENTRY = Path(__file__).resolve().parents[1] / "__init__.py"
+    _PACKAGE_SPEC = importlib.util.spec_from_file_location(
+        _PACKAGE_NAME, _PACKAGE_ENTRY, submodule_search_locations=[str(_PACKAGE_ENTRY.parent)]
+    )
+    if _PACKAGE_SPEC is None or _PACKAGE_SPEC.loader is None:
         raise ImportError("Cannot load the simulator package")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[package] = module
-    spec.loader.exec_module(module)
-    __package__ = package + ".genesis"
+    _PACKAGE_MODULE = importlib.util.module_from_spec(_PACKAGE_SPEC)
+    sys.modules[_PACKAGE_NAME] = _PACKAGE_MODULE
+    _PACKAGE_SPEC.loader.exec_module(_PACKAGE_MODULE)
+    _ENTRY_SPEC = importlib.util.spec_from_file_location(_PACKAGE_NAME + ".genesis.usd_probe", __file__)
+    if _ENTRY_SPEC is None:
+        raise ImportError("Cannot identify the standalone simulator module")
+    # Seed the file entry's import context from its loader, without core import hooks.
+    globals().update({"__package__": _ENTRY_SPEC.parent, "__spec__": _ENTRY_SPEC})
 
 from ..common.camera import OrbitCamera, PreviewSettings
 from ..common.scene_catalog import resolve_scene, scene_catalog

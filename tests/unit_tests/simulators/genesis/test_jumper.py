@@ -103,6 +103,48 @@ def test_asset_cli_never_overwrites_an_existing_fetch_destination(tmp_path, caps
     assert not home.exists()
 
 
+def test_fetch_requires_git_before_creating_directories(tmp_path, monkeypatch):
+    from jiuwensymbiosis.simulators.assets import robot_assets
+
+    monkeypatch.setattr(robot_assets.shutil, "which", lambda name: None)
+    destination = tmp_path / "missing-parent" / "robot"
+    with pytest.raises(AssetError, match="Git executable"):
+        robot_assets.fetch_assets("jumper", destination)
+    assert not destination.parent.exists()
+
+
+def test_fetch_uses_resolved_git_and_verifies_downloaded_bundle(tmp_path, monkeypatch):
+    from jiuwensymbiosis.simulators.assets import robot_assets
+
+    executable = str(tmp_path / "bin" / "git")
+    revision = robot_assets.REVISIONS["jumper"][1]
+    model = b"downloaded-model"
+    manifest = json.dumps({"files": {"model.onnx": {"sha256": hashlib.sha256(model).hexdigest()}}}).encode()
+    commands = []
+
+    def run(command, **kwargs):
+        assert command[0] == executable
+        commands.append(command)
+        if command[1] == "init":
+            bundle = Path(command[2]) / "out" / "bundle_example" / "jumper"
+            bundle.mkdir(parents=True)
+            (bundle / "bundle.json").write_bytes(manifest)
+            (bundle / "model.onnx").write_bytes(model)
+
+    def head(command, **kwargs):
+        assert command[0] == executable and command[-2:] == ["rev-parse", "HEAD"]
+        return revision + "\n"
+
+    monkeypatch.setattr(robot_assets.shutil, "which", lambda name: executable)
+    monkeypatch.setattr(robot_assets.subprocess, "run", run)
+    monkeypatch.setattr(robot_assets.subprocess, "check_output", head)
+    monkeypatch.setattr(robot_assets, "JUMPER_MANIFEST", hashlib.sha256(manifest).hexdigest())
+    destination = tmp_path / "robot"
+    robot_assets.fetch_assets("jumper", destination)
+    assert len(commands) == 5 and commands[3][-1] == revision
+    assert (destination / "out" / "bundle_example" / "jumper" / "model.onnx").read_bytes() == model
+
+
 def test_bundle_file_digest_and_path_boundary(tmp_path):
     policy = object.__new__(JumperPolicy)
     policy.root = tmp_path

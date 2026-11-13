@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict
 from hashlib import sha256
 from html import escape
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from fastapi import HTTPException, Query
@@ -224,11 +224,11 @@ def install_simulation_routes(app: Any, service: PreviewStream | None = None) ->
     @router.get("/viewer")
     def viewer():
         html = (_ASSETS / "viewer.html").read_text(encoding="utf-8")
-        options = "".join(
-            f'<option data-engines="{"mujoco" if mode in POLICY_MODES else "genesis" if mode == "moz1_wheels" else "genesis,mujoco"}" value="{escape(mode)}">{escape(spec.label)}</option>'
-            for mode, spec in MODES.items()
-        )
-        html = html.replace("{{ROBOT_MODE_OPTIONS}}", options)
+        options = []
+        for mode, spec in MODES.items():
+            engines = "mujoco" if mode in POLICY_MODES else "genesis" if mode == "moz1_wheels" else "genesis,mujoco"
+            options.append(f'<option data-engines="{engines}" value="{escape(mode)}">{escape(spec.label)}</option>')
+        html = html.replace("{{ROBOT_MODE_OPTIONS}}", "".join(options))
         for name in ("viewer.js", "viewer.css"):
             version = sha256((_ASSETS / name).read_bytes()).hexdigest()[:16]
             html = html.replace(f'/simulation/assets/{name}"', f'/simulation/assets/{name}?v={version}"')
@@ -260,5 +260,7 @@ def install_simulation_routes(app: Any, service: PreviewStream | None = None) ->
 
     for prefix in ("/simulation", "/genesis"):
         app.include_router(router, prefix=prefix)
-        app.mount(prefix + "/assets", RevalidatedAssets(directory=_ASSETS), name=prefix[1:] + "-assets")
+        app.mount(
+            str(PurePosixPath(prefix) / "assets"), RevalidatedAssets(directory=_ASSETS), name=prefix[1:] + "-assets"
+        )
     return service
