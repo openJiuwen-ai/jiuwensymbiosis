@@ -131,8 +131,11 @@ class PreviewStream:
 
     async def stop(self) -> dict[str, Any]:
         async with self._lock:
-            await self._close_peer()
-            return await asyncio.to_thread(self.preview.stop)
+            try:
+                await self._close_peer()
+            finally:
+                result = await asyncio.to_thread(self.preview.stop)
+            return result
 
     async def close(self) -> None:
         """GUI shutdown releases this viewer and client lease; the resident world remains."""

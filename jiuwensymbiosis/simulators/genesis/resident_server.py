@@ -55,6 +55,7 @@ class ClientLease:
     owner: str | None = None
     closed: bool = False
     cleanup_error: str | None = None
+    cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     requests: dict[str, threading.Event] = field(default_factory=dict)
 
 
@@ -106,6 +107,8 @@ class ResidentHost:
             raise ValueError("Invalid resident parameters")
         if method == "ping":
             return {"protocol": PROTOCOL, "pid": os.getpid(), "fingerprint": self.fingerprint}
+        if method == "detach":
+            return self.detach(client_id)
         with self.lock:
             if self.closing:
                 raise RuntimeError("Genesis 后台正在释放资源。")
@@ -125,8 +128,6 @@ class ResidentHost:
                 if event is not None:
                     event.set()
                 return {"cancelled": event is not None}
-        if method == "detach":
-            return self.detach(client_id)
         if method == "status":
             return self.status(client_id)
         if method == "poll":
@@ -200,7 +201,7 @@ class ResidentHost:
                 client.requests.pop(request_id, None)
 
     def detach(self, client_id: str) -> dict:
-        """Cancel this client's work; keep unknown stop ownership for explicit recovery."""
+        """Revoke work and retry only resources this client still owns."""
         with self.lock:
             client = self.clients.get(client_id)
             if client is None:
@@ -208,29 +209,46 @@ class ResidentHost:
             client.closed = True
             for event in client.requests.values():
                 event.set()
-            if self.viewer == client_id:
-                self.preview.set_streaming(False)
-                self.viewer = None
-            owner = client.owner
+        # Explicit detach and the lease watcher may race; never release twice.
+        if not client.cleanup_lock.acquire(blocking=False):
+            return {"detached": False, "error": "Client cleanup is already in progress"}
         try:
-            if owner is not None:
-                self.preview.release_motion(owner)
-        except Exception as exc:
-            logger.exception("Disconnected Genesis client could not confirm stopping")
+            errors = []
             with self.lock:
-                client.cleanup_error = str(exc)
-            return {"detached": False, "error": str(exc)}
-        with self.lock:
-            client.owner = None
-            self.clients.pop(client_id, None)
-        return {"detached": True}
+                if self.viewer == client_id:
+                    try:
+                        self.preview.set_streaming(False)
+                    except Exception as exc:
+                        logger.exception("Disconnected Genesis client could not disable streaming")
+                        errors.append(str(exc))
+                    else:
+                        self.viewer = None
+                owner = client.owner
+            if owner is not None:
+                try:
+                    self.preview.release_motion(owner)
+                except Exception as exc:
+                    logger.exception("Disconnected Genesis client could not confirm stopping")
+                    errors.append(str(exc))
+                else:
+                    with self.lock:
+                        if client.owner == owner:
+                            client.owner = None
+            with self.lock:
+                client.cleanup_error = "; ".join(errors) if errors else None
+                if errors:
+                    return {"detached": False, "error": client.cleanup_error}
+                self.clients.pop(client_id, None)
+            return {"detached": True}
+        finally:
+            client.cleanup_lock.release()
 
     def expire_clients(self) -> None:
         with self.lock:
             expired = [
                 key
                 for key, client in self.clients.items()
-                if not client.closed and self.clock() - client.last_seen > self.lease_s
+                if client.closed or self.clock() - client.last_seen > self.lease_s
             ]
             # Revoke every expired client before waiting for any physical stop.
             for key in expired:
@@ -238,7 +256,21 @@ class ResidentHost:
                 for event in self.clients[key].requests.values():
                     event.set()
         for key in expired:
-            self.detach(key)
+            try:
+                self.detach(key)
+            except Exception as exc:
+                logger.exception("Genesis client lease cleanup failed")
+                with self.lock:
+                    if key in self.clients:
+                        self.clients[key].cleanup_error = str(exc)
+
+    def watch_clients(self, finished: threading.Event) -> None:
+        """Keep lease monitoring alive after an unexpected cleanup failure."""
+        while not finished.wait(1):
+            try:
+                self.expire_clients()
+            except Exception:
+                logger.exception("Genesis client lease monitoring failed")
 
 
 class ResidentServer(socketserver.ThreadingUnixStreamServer):
@@ -293,16 +325,12 @@ def main() -> None:
         server = ResidentServer(path, host)
         finished = threading.Event()
 
-        def watch() -> None:
-            while not finished.wait(1):
-                host.expire_clients()
-
         def shutdown(signum, frame) -> None:
             threading.Thread(target=server.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGTERM, shutdown)
         signal.signal(signal.SIGINT, shutdown)
-        threading.Thread(target=watch, daemon=True).start()
+        threading.Thread(target=host.watch_clients, args=(finished,), daemon=True).start()
         try:
             server.serve_forever(poll_interval=0.2)
         finally:

@@ -261,3 +261,152 @@ def test_slow_lifecycle_call_does_not_block_heartbeat(service, operation):
         finally:
             release.set()
             pending.result(timeout=1)
+
+
+@pytest.mark.parametrize("motion_fails", [False, True])
+def test_detach_retries_only_pending_cleanup(service, motion_fails):
+    host = service.host
+    client = uuid.uuid4().hex
+    dispatch(host, client, "attach")
+    dispatch(host, client, "acquire_motion")
+    dispatch(host, client, "set_streaming", enabled=True)
+    cancelled = threading.Event()
+    host.clients[client].requests["inflight"] = cancelled
+    service.preview.set_streaming.side_effect = RuntimeError("stream failed")
+    if motion_fails:
+        service.preview.release_motion.side_effect = RuntimeError("stop unknown")
+    result = dispatch(host, client, "detach")
+    assert not result["detached"] and "stream failed" in result["error"]
+    assert cancelled.is_set()
+    service.preview.release_motion.assert_called_once_with("owner")
+    assert host.clients[client].owner == ("owner" if motion_fails else None)
+    assert host.viewer == client
+    assert host.status(client)["resident"]["cleanup_errors"] == [result["error"]]
+    if motion_fails:
+        assert "stop unknown" in result["error"]
+    with pytest.raises(RuntimeError, match="失效"):
+        dispatch(host, client, "heartbeat")
+    replacement = None
+    if not motion_fails:
+        replacement = uuid.uuid4().hex
+        dispatch(host, replacement, "attach")
+        service.preview.acquire_motion.return_value = "replacement-owner"
+        dispatch(host, replacement, "acquire_motion")
+    service.preview.set_streaming.side_effect = None
+    service.preview.release_motion.side_effect = None
+    host.expire_clients()
+    assert client not in host.clients and host.viewer is None
+    if replacement is not None:
+        assert host.clients[replacement].owner == "replacement-owner"
+    assert service.preview.release_motion.call_count == (2 if motion_fails else 1)
+    assert host.status(client)["resident"]["cleanup_errors"] == []
+    assert dispatch(host, client, "detach") == {"detached": True}
+
+
+def test_old_detach_retry_preserves_reconnected_viewer(service):
+    host = service.host
+    old, new = uuid.uuid4().hex, uuid.uuid4().hex
+    dispatch(host, old, "attach")
+    dispatch(host, old, "acquire_motion")
+    dispatch(host, old, "set_streaming", enabled=True)
+    service.preview.release_motion.side_effect = RuntimeError("stop unknown")
+    assert not dispatch(host, old, "detach")["detached"]
+    dispatch(host, new, "attach")
+    dispatch(host, new, "set_streaming", enabled=True)
+    service.preview.set_streaming.reset_mock()
+    service.preview.release_motion.side_effect = None
+    assert dispatch(host, old, "detach") == {"detached": True}
+    assert host.viewer == new
+    service.preview.set_streaming.assert_not_called()
+
+
+def test_expiration_failure_does_not_skip_other_clients(service, monkeypatch):
+    host = service.host
+    clients = [uuid.uuid4().hex for _ in range(2)]
+    for client in clients:
+        dispatch(host, client, "attach")
+        host.clients[client].last_seen -= 10
+    original = host.detach
+
+    def detach(client):
+        if client == clients[0]:
+            raise RuntimeError("unexpected cleanup failure")
+        return original(client)
+
+    monkeypatch.setattr(host, "detach", detach)
+    host.expire_clients()
+    assert clients[1] not in host.clients
+    assert host.clients[clients[0]].closed
+    assert "unexpected cleanup failure" in host.status(clients[0])["resident"]["cleanup_errors"][0]
+    monkeypatch.setattr(host, "detach", original)
+    host.expire_clients()
+    assert not host.clients
+
+
+@pytest.mark.parametrize("joint_goal", [None, {"arm_joint": 0.3}])
+def test_pick_lift_roundtrip_preserves_payload(service, joint_goal):
+    client = ResidentPreview(state_dir=service.root)
+    client.connect()
+    trial = {"lift_m": 0.1, "hold_s": 0.2}
+    if joint_goal is not None:
+        trial["joint_goal"] = joint_goal
+    service.preview.move_arm.return_value = {"settled": True}
+    try:
+        owner = client.acquire_motion()
+        assert client.move_arm(owner, group="left", pick_lift=trial) == {"settled": True}
+        values = service.preview.move_arm.call_args.kwargs
+        assert values["pick_lift"] == trial
+        assert values["owner"] == owner and values["group"] == "left"
+        assert isinstance(values["cancelled"], threading.Event)
+    finally:
+        client.close()
+
+
+def test_lease_watch_recovers_after_unexpected_failure(service, monkeypatch, caplog):
+    host = service.host
+    client = uuid.uuid4().hex
+    dispatch(host, client, "attach")
+    host.clients[client].last_seen -= 10
+    expire = host.expire_clients
+    calls = []
+
+    def tick():
+        calls.append(True)
+        if len(calls) == 1:
+            raise RuntimeError("watch failed")
+        expire()
+
+    monkeypatch.setattr(host, "expire_clients", tick)
+    finished = Mock()
+    finished.wait.side_effect = [False, False, True]
+    with caplog.at_level("ERROR", logger="jiuwensymbiosis"):
+        host.watch_clients(finished)
+    assert len(calls) == 2 and client not in host.clients
+    assert "watch failed" in caplog.text
+
+
+def test_concurrent_detach_does_not_repeat_pending_release(service):
+    from concurrent.futures import ThreadPoolExecutor
+
+    host = service.host
+    client = uuid.uuid4().hex
+    dispatch(host, client, "attach")
+    dispatch(host, client, "acquire_motion")
+    entered, finish = threading.Event(), threading.Event()
+
+    def release(owner):
+        entered.set()
+        assert finish.wait(3)
+
+    service.preview.release_motion.side_effect = release
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(dispatch, host, client, "detach")
+        try:
+            assert entered.wait(1)
+            assert not dispatch(host, client, "detach")["detached"]
+            host.expire_clients()
+            service.preview.release_motion.assert_called_once_with("owner")
+        finally:
+            finish.set()
+        assert pending.result(timeout=1) == {"detached": True}
+    assert client not in host.clients

@@ -278,7 +278,17 @@ class ResidentPreview:
         return self._object("navigate_relative", owner=owner, dx=dx, dy=dy, dyaw=dyaw, timeout=110, cancelled=cancelled)
 
     def move_arm(
-        self, owner: str, *, targets=None, poses=None, group=None, speed=1.0, effector=None, opened=None, cancelled=None
+        self,
+        owner: str,
+        *,
+        targets=None,
+        poses=None,
+        group=None,
+        speed=1.0,
+        effector=None,
+        opened=None,
+        pick_lift=None,
+        cancelled=None,
     ) -> dict:
         return self._object(
             "move_arm",
@@ -289,6 +299,7 @@ class ResidentPreview:
             speed=speed,
             effector=effector,
             opened=opened,
+            pick_lift=pick_lift,
             timeout=190,
             cancelled=cancelled,
         )

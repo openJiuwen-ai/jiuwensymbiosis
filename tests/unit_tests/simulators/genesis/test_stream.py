@@ -331,6 +331,7 @@ async def test_disconnected_backend_does_not_skip_local_media_cleanup():
     with pytest.raises(RuntimeError, match="backend lost"):
         await service.stop()
     assert watcher.cancelled()
+    assert preview.stops == 1
     track.stop.assert_called_once()
     peer.close.assert_awaited_once()
 
@@ -387,3 +388,19 @@ async def test_reset_between_frame_and_status_discards_old_world_packet():
         assert preview.acknowledge_frame.call_count == 2
     finally:
         track.stop()
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+async def test_peer_failure_still_stops_backend_and_preserves_errors(stop_fails):
+    from unittest.mock import AsyncMock, Mock
+
+    preview = CpuPreview()
+    preview.stop = Mock(side_effect=RuntimeError("stop failed") if stop_fails else None)
+    service = PreviewStream(preview)
+    service._peer = AsyncMock()
+    service._peer.close.side_effect = RuntimeError("peer failed")
+    with pytest.raises(RuntimeError, match="stop failed" if stop_fails else "peer failed") as caught:
+        await service.stop()
+    preview.stop.assert_called_once()
+    if stop_fails:
+        assert "peer failed" in str(caught.value.__context__)
