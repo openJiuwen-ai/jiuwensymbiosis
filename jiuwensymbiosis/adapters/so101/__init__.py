@@ -29,6 +29,7 @@ from jiuwensymbiosis.adapters.so101.lowlevel import (
     So101HardwareSendMismatch,
     So101PoseConvergenceError,
     So101PreDispatchError,
+    So101TrackingViolation,
 )
 from jiuwensymbiosis.adapters.so101.session import build_so101_session
 
@@ -41,6 +42,7 @@ __all__ = [
     "So101HardwareSendMismatch",
     "So101PreDispatchError",
     "So101PoseConvergenceError",
+    "So101TrackingViolation",
     "build_so101_session",
     "load_calibration_artifact",
 ]

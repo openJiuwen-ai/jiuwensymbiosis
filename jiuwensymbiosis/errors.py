@@ -35,10 +35,16 @@ __all__ = [
     "INFERENCE_ERROR_CODES",
     "InferenceServiceError",
     "error_code",
+    "find_skip_recovery_exception",
     "is_inference_service_failure",
+    "SAFETY_ERROR_CODE_KEY",
 ]
 
 SAFETY_REJECTED = "safety_rejected"
+# Set on the callback context when SafetyRail rejects a call, so the fast
+# executor can still report the machine code for an aborted call (the framework
+# discards the ToolOutput, and with it ``data["error_code"]``).
+SAFETY_ERROR_CODE_KEY = "jiuwensymbiosis.safety_error_code"
 GRASP_NOT_CONFIRMED = "grasp_not_confirmed"
 DETECTOR_START_TIMEOUT = "detector_start_timeout"
 
@@ -76,10 +82,13 @@ class SafetyViolationError(JiuwenSymbiosisError, ValueError):
     Stays a ``ValueError``: the LLM self-correction contract and every existing
     ``except ValueError`` call site in motion code depend on that type.
 
-    ``skip_recovery`` is the same opt-out marker adapter errors use: a violation
-    is detected before dispatch, so nothing moved and homing/releasing over it
-    would be an unnecessary motion. ``RecoveryRail`` honours it through the
-    ``AbortError(cause=...)`` wrapper the callback framework re-raises.
+    ``skip_recovery`` is the same opt-out marker adapter errors use. The marker
+    says the *raiser* judged recovery unnecessary — typically a pre-dispatch
+    envelope check where nothing moved — not that the arm provably never moved.
+    Adapters that detect a violation after commands were sent must clear it
+    (see SO-101's tracking violation) so ``RecoveryRail`` still releases/homes.
+    The rail honours it through the ``AbortError(cause=...)`` wrapper the
+    callback framework re-raises.
     """
 
     code = SAFETY_REJECTED
@@ -140,3 +149,61 @@ def is_inference_service_failure(result: Any) -> bool:
             or str(result.get("error_code", "")).startswith("inference_")
         )
     )
+
+
+def find_skip_recovery_exception(exception: Any) -> BaseException | None:
+    """Find a ``skip_recovery`` opt-out marker through exception wrappers.
+
+    OpenJiuwen wraps tool failures in ``AbilityExecutionError``; adapters wrap
+    driver errors again. The marker therefore has to be searched through the
+    explicit cause chain (``__cause__`` / ``cause`` / …), never through
+    ``__context__``: an error raised while *handling* a marked error is a real
+    failure and must keep its recovery.
+
+    Returns an exception that explicitly declares the marker, or ``None``.
+    The rule is monotonic and fail-safe in the recovery direction: any explicit
+    ``skip_recovery = False`` in the chain wins over a ``True`` declared
+    elsewhere, so a wrapper can clear an opt-out inherited from its cause with
+    the usual ``raise X(...) from exc``. Unmarked wrappers are transparent.
+    Inspection is fail-safe: a wrapper property that raises is treated like a
+    missing attribute.
+    """
+    if not isinstance(exception, BaseException):
+        return None
+    pending: list[BaseException] = [exception]
+    visited: set[int] = set()
+    marked_candidate: BaseException | None = None
+    wrapper_attrs = (
+        "__cause__",
+        "cause",
+        "exception",
+        "original_exception",
+        "original_error",
+    )
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        try:
+            marker = current.skip_recovery
+        except AttributeError:
+            marker = None
+        except Exception:  # noqa: BLE001 - marker lookup must be fail-safe
+            marker = None
+        if marker is not None:
+            if not marker:
+                # Post-dispatch failures declare False; recovery must win even
+                # when an outer wrapper declares True.
+                return None
+            if marked_candidate is None:
+                marked_candidate = current
+        for attr in wrapper_attrs:
+            try:
+                nested = getattr(current, attr, None)
+            except Exception:  # noqa: BLE001 - wrapper inspection must be fail-safe
+                continue
+            if isinstance(nested, BaseException) and id(nested) not in visited:
+                pending.append(nested)
+    return marked_candidate

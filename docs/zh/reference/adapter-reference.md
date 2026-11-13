@@ -96,6 +96,7 @@ Protocol 定义在 `jiuwensymbiosis/env/protocol.py`，**按能力切片**——
 - 底盘动词用**米**（检测用毫米），返回 `{ok, reason, ...}`；
 - `grab_frames()` 返回对齐的 `(rgb_uint8, depth_m_float32)` 或 `None`；
 - `close()` 必须幂等。
+- 失败分类：预检拒绝抛 `SafetyViolationError`（默认 `skip_recovery=True`，RecoveryRail 不释放/归位）；命令已下发后才检测到的越界（如观测 tracking）必须抛显式声明 `skip_recovery = False` 的异常，让 RecoveryRail 仍释放/归位。
 
 当前具名的 `VisionDriver` Protocol 只覆盖 eye-in-hand 标定。SO-101 等 eye-to-hand 适配器以机型专属的结构化接口暴露 `tf_base_cam` 和 `calibration`，并声明 `vision.eye_to_hand` 标记能力；目前还没有独立命名的 eye-to-hand Protocol。
 
@@ -139,7 +140,7 @@ Env 属性：
 | `lift_limits` | `None` | SafetyRail，`set_lifter` 的软限位 |
 | `waist_step_limit_rad` | `None` | SafetyRail，`turn_waist` 单命令上限 |
 | `cameras` | `(None,)` | 可感知相机列表（最佳优先）；`grab_calibrated_frame(camera)` |
-| `holding_payload` | 无 | RecoveryRail 归位前查它——还抱着东西的本体不能盲目归位 |
+| `holding_payload` | 无 | 运动/抓取失败时，持物只抑制释放，归位仍执行（优先 `recovery_home`） |
 | `urdf_path`/`arm_chains`/`arm_joints` | `None` | 派生 `planning.reachability`；双臂各自驱动的关节 |
 
 已有默认委托：

@@ -146,3 +146,51 @@ class TestRobotControlTool:
 
         assert result.success is True
         assert api.called is True
+
+    @pytest.mark.asyncio
+    async def test_predispatch_marker_on_cause_is_honoured(self):
+        """A wrapper without its own marker still reports ``dispatched=False``."""
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+        from jiuwensymbiosis.errors import SafetyViolationError
+
+        class _WrappedFailure(RuntimeError):
+            pass
+
+        class _WrappingApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                try:
+                    raise SafetyViolationError("outside the envelope")
+                except SafetyViolationError as exc:
+                    raise _WrappedFailure("driver wrapper") from exc
+
+        result = await RobotControlTool(_WrappingApi()).invoke(
+            {"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}}
+        )
+
+        assert result.success is False
+        assert result.data["dispatched"] is False
+        assert result.data["skip_recovery"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_cancelled_reports_no_dispatch_and_no_recovery(self):
+        """A user stop is an opt-out; it must not look like a mid-motion failure."""
+        from jiuwensymbiosis.agent.cancel import RunCancelled
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+
+        class _CancelledApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                raise RunCancelled("user cancelled")
+
+        result = await RobotControlTool(_CancelledApi()).invoke(
+            {"action": "goto_xyzr", "params": {"x": 0, "y": 0, "z": 10}}
+        )
+
+        assert result.success is False
+        assert result.data["dispatched"] is False
+        assert result.data["skip_recovery"] is True
