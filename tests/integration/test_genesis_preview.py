@@ -25,12 +25,12 @@ async def test_real_nyx_motion_camera_reconnect_and_cleanup(tmp_path):
     from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
     from PIL import Image
 
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     evidence = Path(os.environ.get("JIUWEN_GENESIS_EVIDENCE", tmp_path / "evidence"))
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
-    preview = GenesisPreview(state_dir=tmp_path / "runtime")
+    preview = SimulationPreview(state_dir=tmp_path / "runtime")
     service = PreviewStream(preview)
     clients = []
     report = {}
@@ -144,8 +144,8 @@ def test_real_nvenc_quality_and_forced_idr():
     import numpy as np
     import torch
 
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-    from jiuwensymbiosis.simulators.genesis.encoding import NvEncoder
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.encoding import NvEncoder
 
     settings = PreviewSettings()
     yy, xx = np.mgrid[: settings.height, : settings.width]
@@ -173,12 +173,12 @@ async def test_real_hot_switch_keeps_worker_peer_and_physics(tmp_path):
     from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
     from PIL import Image
 
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     evidence = Path(os.environ.get("JIUWEN_GENESIS_EVIDENCE", tmp_path / "hot-evidence"))
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
-    preview = GenesisPreview(state_dir=tmp_path / "hot-runtime")
+    preview = SimulationPreview(state_dir=tmp_path / "hot-runtime")
     service = PreviewStream(preview)
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     incoming = asyncio.Queue()
@@ -313,8 +313,8 @@ async def test_real_asset_library_sources_render_and_switch(tmp_path):
     from PIL import Image
 
     from jiuwensymbiosis.simulators.assets import AssetLibrary
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     library = AssetLibrary()
     identifiers = [
@@ -332,7 +332,7 @@ async def test_real_asset_library_sources_render_and_switch(tmp_path):
         library.resolve(identifier)
     evidence = Path(os.environ.get("JIUWEN_GENESIS_EVIDENCE", tmp_path / "evidence"))
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
-    preview = GenesisPreview(state_dir=tmp_path / "library-runtime")
+    preview = SimulationPreview(state_dir=tmp_path / "library-runtime")
     service = PreviewStream(preview)
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     incoming = asyncio.Queue()

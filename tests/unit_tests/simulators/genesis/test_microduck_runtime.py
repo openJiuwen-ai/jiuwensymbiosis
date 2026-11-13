@@ -3,7 +3,6 @@
 import importlib.util
 import math
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,11 +12,7 @@ import pytest
 
 @pytest.fixture
 def robot(monkeypatch):
-    directory = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis"
-    monkeypatch.syspath_prepend(str(directory))
-    spec = importlib.util.spec_from_file_location("microduck_under_test", directory / "microduck_runtime.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("jiuwensymbiosis.simulators.mujoco.microduck_runtime")
     monkeypatch.setitem(sys.modules, "mujoco", SimpleNamespace(mj_step=lambda *_: None))
     runtime = module.MicroduckRuntime.__new__(module.MicroduckRuntime)
     runtime.model = object()
@@ -86,10 +81,7 @@ def test_normalized_boundary_command_tolerates_roundoff_only(robot):
 @pytest.mark.parametrize("tampered", ["script", "policy"])
 def test_reference_digest_failure_precedes_module_execution(robot, tmp_path, monkeypatch, tampered):
     # The fixture loads by file location; load a separate worker module for its public loader.
-    directory = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis"
-    spec = importlib.util.spec_from_file_location("reference_under_test", directory / "microduck_runtime.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("jiuwensymbiosis.simulators.mujoco.microduck_runtime")
     script, policy = tmp_path / "infer_policy.py", tmp_path / "policy.onnx"
     script.write_text("raise AssertionError('must not execute')")
     policy.write_bytes(b"policy")
@@ -106,7 +98,7 @@ def test_reference_digest_failure_precedes_module_execution(robot, tmp_path, mon
 
 
 def test_native_runtime_reports_unsupported_interfaces_explicitly(robot):
-    from mujoco_rendering import MujocoRenderer
+    from jiuwensymbiosis.simulators.mujoco.mujoco_rendering import MujocoRenderer
 
     with pytest.raises(ValueError, match="真值"):
         robot.query_truth("robot_state", {})
@@ -117,8 +109,8 @@ def test_native_runtime_reports_unsupported_interfaces_explicitly(robot):
 def test_renderer_evicts_old_sizes_and_closes_remaining_resources(monkeypatch):
     from types import ModuleType
 
-    from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
-    from jiuwensymbiosis.simulators.genesis.mujoco_rendering import MujocoRenderer
+    from jiuwensymbiosis.simulators.common.camera import OrbitCamera
+    from jiuwensymbiosis.simulators.mujoco.mujoco_rendering import MujocoRenderer
 
     created = []
 

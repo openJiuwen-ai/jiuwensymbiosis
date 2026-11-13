@@ -5,7 +5,7 @@ from itertools import product
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.01, 1.01, True, "1"])
@@ -98,7 +98,7 @@ def test_orbit_eye_outside_flight_bounds_can_return_without_snapping():
     ],
 )
 def test_preview_settings_reject_invalid_budgets(values):
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
 
     with pytest.raises(ValueError):
         PreviewSettings(**values)

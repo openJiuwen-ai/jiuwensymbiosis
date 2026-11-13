@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from jiuwensymbiosis.perception.frame import CameraFrame
-from jiuwensymbiosis.simulators.genesis.agent import GenesisEnv
+from jiuwensymbiosis.simulators.common.agent import SimulationEnv
 
 
 def fixture():
@@ -39,7 +39,7 @@ def fixture():
         captured_monotonic_s=time.monotonic(),
         metadata={"scene_instance_id": "a", "config_revision": 1, "motion_id": "stopped-1", "base_sample": base},
     )
-    return GenesisEnv(driver), frame, state
+    return SimulationEnv(driver), frame, state
 
 
 def test_unchanged_stationary_frame_is_usable():
@@ -81,7 +81,7 @@ def test_pure_rotation_cannot_bypass_the_shared_target_guard():
 
 @pytest.mark.parametrize("action", ["rotate", "relative_turn", "turn_and_translate", "forward", "backward", "lateral"])
 def test_agent_motion_tools_cannot_bypass_unobserved_turn(action):
-    from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionMotionApi
+    from jiuwensymbiosis.simulators.common.agent import SimulationPerceptionMotionApi
 
     env, frame, _ = fixture()
     frame.metadata["body_bounds_m"] = [[-0.4, -0.3, -0.24], [0.4, 0.3, 1.9]]
@@ -93,7 +93,7 @@ def test_agent_motion_tools_cannot_bypass_unobserved_turn(action):
 
     env.driver.navigate_relative = navigate
     env.grab_calibrated_frame = lambda: frame
-    api = GenesisPerceptionMotionApi(env, lambda *a, **kw: [])
+    api = SimulationPerceptionMotionApi(env, lambda *a, **kw: [])
     if action == "rotate":
         result = api.rotate_base(0.2)
     elif action in {"forward", "backward", "lateral"}:

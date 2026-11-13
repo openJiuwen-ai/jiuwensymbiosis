@@ -35,22 +35,19 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
     from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
     from PIL import Image
 
-    if body == "microduck":
-        from examples.microduck_sim import register
-    else:
-        from examples.jumper_sim import register
     from jiuwensymbiosis.agent.config import ModelSpec
-    from jiuwensymbiosis.simulators.genesis.agent import make_session, run_agent_query
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.assets.robot_assets import register_robot
+    from jiuwensymbiosis.simulators.common.agent import make_session, run_agent_query
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.resident import ResidentPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     source = await asyncio.to_thread(Path(os.environ[prefix + "_SOURCE"]).resolve)
-    entry = await asyncio.to_thread(register, source, tmp_path)
+    entry = await asyncio.to_thread(register_robot, body, source, tmp_path)
     monkeypatch.setenv("JIUWENSYMBIOSIS_SIMULATOR_HOME", str(tmp_path))
     evidence = Path(os.environ.get(prefix + "_EVIDENCE", tmp_path / "evidence"))
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
-    preview_type = ResidentPreview if os.environ.get("JIUWEN_SIM_RESIDENT_INTEGRATION") == "1" else GenesisPreview
+    preview_type = ResidentPreview if os.environ.get("JIUWEN_SIM_RESIDENT_INTEGRATION") == "1" else SimulationPreview
     runtime_directory = tempfile.TemporaryDirectory(prefix="sym-policy-", dir="/tmp")
     preview = preview_type(state_dir=Path(runtime_directory.name))
     service = PreviewStream(preview)
@@ -130,7 +127,7 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
             self.wfile.write(payload)
 
     try:
-        preview.configure(width=960, height=540, fps=30, scene_id=entry["scene_id"], robot_mode=body)
+        preview.configure(width=960, height=540, fps=30, scene_id=entry["scene_id"], backend="mujoco", robot_mode=body)
         await asyncio.to_thread(preview.start)
         await wait(lambda: preview.status()["state"] == "ready")
         initial = preview.status()
@@ -210,7 +207,13 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
 
         # Receive the robot camera through the same H264/WebRTC endpoint as the UI.
         configured = preview.configure(
-            width=960, height=540, fps=30, scene_id=entry["scene_id"], robot_mode=body, camera_name="head_cam"
+            width=960,
+            height=540,
+            fps=30,
+            scene_id=entry["scene_id"],
+            backend="mujoco",
+            robot_mode=body,
+            camera_name="head_cam",
         )
         await wait(lambda: preview.status().get("config_revision") == configured["requested_config_revision"])
         incoming = asyncio.Queue()
@@ -248,7 +251,9 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         # Resizing does not replace the world or teleport the robot.
         before = preview.status()["base_observation"]["position_m"]
         instance = preview.status()["scene"]["instance_id"]
-        configured = preview.configure(width=1280, height=720, fps=30, scene_id=entry["scene_id"], robot_mode=body)
+        configured = preview.configure(
+            width=1280, height=720, fps=30, scene_id=entry["scene_id"], backend="mujoco", robot_mode=body
+        )
         await wait(lambda: preview.status().get("config_revision") == configured["requested_config_revision"])
         assert preview.status()["scene"]["instance_id"] == instance
         after = preview.status()["base_observation"]["position_m"]

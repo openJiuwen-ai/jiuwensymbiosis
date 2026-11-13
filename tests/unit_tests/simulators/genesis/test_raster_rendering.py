@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera, PreviewSettings
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera, PreviewSettings
 from jiuwensymbiosis.simulators.genesis.rendering import RasterRenderer
 
 

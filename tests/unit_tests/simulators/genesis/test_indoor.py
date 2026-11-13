@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
+from jiuwensymbiosis.simulators.common.camera import PreviewSettings
 from jiuwensymbiosis.simulators.genesis.indoor import RoomMesh, read_room_meshes, supported_spawn
 
 

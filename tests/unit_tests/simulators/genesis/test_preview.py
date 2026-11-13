@@ -10,8 +10,8 @@ from dataclasses import replace
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis import preview
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
+from jiuwensymbiosis.simulators.common import preview
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera
 
 
 def wait_for(predicate, seconds=10):
@@ -49,15 +49,15 @@ def manager(tmp_path, monkeypatch):
             object() if name in {"genesis", "gs_nyx_plugin", "aiortc", "av", "PyNvVideoCodec"} else original(name)
         ),
     )
-    instance = preview.GenesisPreview(state_dir=tmp_path / "state")
+    instance = preview.SimulationPreview(state_dir=tmp_path / "state")
     yield instance
     instance.stop()
 
 
 def test_import_and_status_do_not_load_optional_sdks(tmp_path):
-    code = "import sys; from jiuwensymbiosis.simulators.genesis.stream import PreviewStream; s=PreviewStream(); assert s.status()['state']=='stopped'; assert not ({'genesis','gs_nyx','gs_nyx_plugin','aiortc','av','PyNvVideoCodec','nicegui','jiuwensymbiosis_gui'} & sys.modules.keys())"
+    code = "import sys; from jiuwensymbiosis.simulators.common.stream import PreviewStream; s=PreviewStream(); assert s.status()['state']=='stopped'; assert not ({'genesis','gs_nyx','gs_nyx_plugin','aiortc','av','PyNvVideoCodec','nicegui','jiuwensymbiosis_gui'} & sys.modules.keys())"
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, timeout=30)
-    instance = preview.GenesisPreview(state_dir=tmp_path / "unused")
+    instance = preview.SimulationPreview(state_dir=tmp_path / "unused")
     assert instance.status()["state"] == "stopped"
     assert not instance.state_dir.exists()
 
@@ -99,11 +99,39 @@ def test_concurrent_start_disconnect_and_stop_own_exactly_one_child(manager):
 def test_child_crash_is_reported_and_can_restart(manager):
     manager.start()
     wait_for(lambda: manager.status()["state"] == "ready")
+
     manager._process.terminate()
     manager._process.wait(timeout=5)
     assert manager.status()["state"] == "failed"
     assert manager.start()["state"] == "starting"
     wait_for(lambda: manager.status()["state"] == "ready")
+
+
+def test_backend_switch_exits_old_worker_and_revokes_control(manager, monkeypatch):
+    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: object())
+    manager.start()
+    wait_for(lambda: manager.status()["state"] == "ready")
+    old = manager._process
+    manager._motion_owner = "old-owner"
+    manager._motion_binding = ("old-scene", 0)
+    manager.configure(backend="mujoco", width=960, height=540, fps=30)
+    wait_for(lambda: manager.status()["state"] == "ready")
+    assert old.poll() is not None and manager.status()["pid"] != old.pid
+    assert manager.status()["backend"] == "mujoco"
+    with pytest.raises(RuntimeError, match="会话已失效"):
+        manager.motion_state("old-owner")
+
+
+def test_missing_target_dependency_preserves_running_engine(manager, monkeypatch):
+    manager.start()
+    wait_for(lambda: manager.status()["state"] == "ready")
+    old = manager._process
+    original = preview.importlib.util.find_spec
+    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda name: None if name == "mujoco" else original(name))
+    with pytest.raises(RuntimeError, match="缺少 mujoco"):
+        manager.configure(backend="mujoco", width=960, height=540, fps=30)
+    assert manager._process is old and old.poll() is None
+    assert manager.status()["backend"] == "genesis"
 
 
 def test_missing_dependency_never_spawns(manager, monkeypatch):
@@ -132,7 +160,7 @@ def test_macos_starts_without_nyx_and_keeps_its_process_contract(manager, monkey
 def test_macos_defaults_and_missing_dependency_guidance(tmp_path, monkeypatch):
     monkeypatch.setattr(preview.sys, "platform", "darwin")
     monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: None)
-    instance = preview.GenesisPreview(state_dir=tmp_path / "macos")
+    instance = preview.SimulationPreview(state_dir=tmp_path / "macos")
     assert (instance.settings.width, instance.settings.height, instance.settings.fps) == (960, 540, 30)
     state = instance.start()
     assert state["state"] == "failed"
@@ -237,7 +265,7 @@ def test_stop_while_starting_leaves_no_process_or_shared_buffer(manager):
 
 
 def test_packet_mailbox_has_variable_payload_and_explicit_ack(tmp_path):
-    from jiuwensymbiosis.simulators.genesis.ipc import Mailbox
+    from jiuwensymbiosis.simulators.common.ipc import Mailbox
 
     path = tmp_path / "packets.mmap"
     path.touch()
@@ -330,7 +358,7 @@ def test_reference_quality_switch_preserves_worker_and_physics_budget(manager):
     ],
 )
 def test_preview_settings_reject_invalid_budgets(values):
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
 
     with pytest.raises(ValueError):
         PreviewSettings(**values)
@@ -338,10 +366,10 @@ def test_preview_settings_reject_invalid_budgets(values):
 
 @pytest.mark.parametrize("world_changed", [False, True])
 def test_camera_catalog_validation_uses_the_requested_world(tmp_path, monkeypatch, world_changed):
-    manager = preview.GenesisPreview(state_dir=tmp_path)
+    manager = preview.SimulationPreview(state_dir=tmp_path)
     manager.settings = replace(manager.settings, scene_id="room")
     manager._state = {"state": "ready", "cameras": []}
-    monkeypatch.setattr(preview, "scene_path", lambda _: tmp_path)
+    monkeypatch.setattr(preview, "scene_path", lambda _, backend=None: tmp_path)
     options = {"width": 1280, "height": 720, "fps": 30, "scene_id": "room", "camera_name": "head_cam"}
     if world_changed:
         result = manager.configure(**options, robot_id="moz1", robot_mode="moz1_wheels")
@@ -386,7 +414,7 @@ def test_worker_environment_keeps_gpu_paths_without_host_credentials(manager, mo
 def test_stop_retains_unconfirmed_process_and_can_retry(tmp_path):
     from unittest.mock import Mock
 
-    manager = preview.GenesisPreview(state_dir=tmp_path)
+    manager = preview.SimulationPreview(state_dir=tmp_path)
     process = Mock()
     process.wait.side_effect = [subprocess.TimeoutExpired("worker", 1)] * 3 + [0]
     mailbox = Mock()
@@ -401,7 +429,7 @@ def test_stop_retains_unconfirmed_process_and_can_retry(tmp_path):
 
 
 def test_oversized_status_preserves_previous_snapshot_and_allows_failure_report(tmp_path):
-    from jiuwensymbiosis.simulators.genesis.ipc import Mailbox
+    from jiuwensymbiosis.simulators.common.ipc import Mailbox
 
     path = tmp_path / "status.mmap"
     path.touch()

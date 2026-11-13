@@ -158,13 +158,20 @@ genesis = [
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
 ]
+mujoco = [
+    # Classic OpenGL/WebRTC, independent of Genesis, Torch and MuJoCo Studio.
+    "mujoco-core[rendering]==4.0.1",
+    "aiortc==1.15.0",
+    "av==17.1.0",
+    "pillow>=11.3",
+]
 jumper = [
     # Official native controller + CPU ONNX; use with the simulation workbench.
-    "mujoco==3.17.0",
+    "mujoco-core[rendering]==4.0.1",
     "onnxruntime==1.31.1",
 ]
 microduck = [
-    "mujoco==3.17.0",
+    "mujoco-core[rendering]==4.0.1",
     "onnxruntime==1.31.1",
     "better-actuator-models==1.0.3",
 ]
@@ -224,7 +231,7 @@ jiuwensymbiosis = [
     "adapters/so101/description/**/*.md",
     "simulators/assets/data/*.yaml",
     "simulators/genesis/data/*.yaml",
-    "simulators/genesis/web/assets/*",
+    "simulators/common/web/assets/*",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

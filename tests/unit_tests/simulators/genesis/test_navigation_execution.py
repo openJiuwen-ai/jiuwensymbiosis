@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.agent import make_session
+from jiuwensymbiosis.simulators.common.agent import make_session
 from jiuwensymbiosis.simulators.genesis.navigation import NavigationMap
 
 

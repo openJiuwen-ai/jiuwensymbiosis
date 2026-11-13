@@ -82,7 +82,8 @@ class SceneRenderer:
             from importlib.metadata import version
 
             import torch
-            from rgbd import effective_focal, rectified_grid
+
+            from .rgbd import effective_focal, rectified_grid
 
             size, sensor_fov, grid = sensor.render_map()
             nyx_version, plugin_version = version("gs-nyx"), version("gs-nyx-plugin")
@@ -282,7 +283,8 @@ class SceneRenderer:
     def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None):
         """One state, one calibrated rectified RGB image and optical-Z depth map."""
         import numpy as np
-        from rgbd import sample_depth
+
+        from .rgbd import sample_depth
 
         if camera_name not in self.cameras:
             raise ValueError("RGB-D requires a calibrated robot camera")
@@ -315,7 +317,7 @@ class RasterRenderer:
 
     def __init__(self, scene, pose: dict, *, fov_y: float = 42):
         if TYPE_CHECKING or __package__:
-            from .camera import PREVIEW_RESOLUTIONS
+            from ..common.camera import PREVIEW_RESOLUTIONS
         else:
             from camera import PREVIEW_RESOLUTIONS
 

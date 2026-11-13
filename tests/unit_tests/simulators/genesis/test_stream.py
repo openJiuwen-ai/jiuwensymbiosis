@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
-from jiuwensymbiosis.simulators.genesis.stream import PreviewStream, StreamError
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera
+from jiuwensymbiosis.simulators.common.stream import PreviewStream, StreamError
 
 pytest.importorskip("aiortc", reason="Install the simulator-media extra for WebRTC tests")
 pytest.importorskip("av", reason="Install the simulator-media extra for H264 tests")
@@ -232,7 +232,7 @@ async def test_watchdog_allows_frame_gap_only_during_bounded_switch(monkeypatch,
         if iterations == 2:
             raise asyncio.CancelledError
 
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.stream.asyncio.sleep", next_tick)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.stream.asyncio.sleep", next_tick)
     if closed:
         await service._watch("viewer")
         peer.close.assert_awaited_once()
@@ -250,7 +250,7 @@ async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
 
     main_thread = threading.get_ident()
 
-    from jiuwensymbiosis.simulators.genesis.stream import make_video_track
+    from jiuwensymbiosis.simulators.common.stream import make_video_track
 
     class StalledPreview:
         def __init__(self):
@@ -298,7 +298,7 @@ async def test_partial_stream_options_default_to_reference(action):
 
 
 async def test_media_track_waits_through_reconfiguration():
-    from jiuwensymbiosis.simulators.genesis.stream import make_video_track
+    from jiuwensymbiosis.simulators.common.stream import make_video_track
 
     backend = CpuPreview()
     backend.start()
@@ -346,7 +346,7 @@ async def test_shutdown_detaches_without_stopping_resident_backend():
 async def test_reset_between_frame_and_status_discards_old_world_packet():
     from unittest.mock import Mock
 
-    from jiuwensymbiosis.simulators.genesis.stream import make_video_track
+    from jiuwensymbiosis.simulators.common.stream import make_video_track
 
     preview = CpuPreview()
     now = time.monotonic()

@@ -195,3 +195,4 @@ When maintaining this matrix, check these sources of truth together:
 
 Both expose the host's RGB head-camera tool. RGB-D perception and truth navigation are not supported.
 These entries describe simulation, not physical-device adapters.
+See the [Simulation Guide](../how-to/simulaiton-guide.md) for external assets, backend selection and operation.

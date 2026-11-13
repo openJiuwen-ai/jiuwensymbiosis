@@ -7,14 +7,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.agent import make_session
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.agent import make_session
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
 
 @pytest.fixture
 def preview(monkeypatch, tmp_path):
-    p = GenesisPreview(state_dir=tmp_path)
+    p = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),

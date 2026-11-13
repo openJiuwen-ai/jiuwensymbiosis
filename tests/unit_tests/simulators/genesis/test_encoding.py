@@ -5,15 +5,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-from jiuwensymbiosis.simulators.genesis.encoding import SoftwareEncoder
+from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+from jiuwensymbiosis.simulators.common.encoding import SoftwareEncoder
 
 
-def test_software_h264_decodes_and_forced_keyframe_recovers_a_new_decoder():
+@pytest.mark.parametrize("tensor", [False, True])
+def test_software_h264_decodes_and_forced_keyframe_recovers_a_new_decoder(tensor):
     av = pytest.importorskip("av")
     pixels = np.zeros((64, 96, 3), dtype=np.uint8)
     pixels[..., 0] = 220
-    rgb = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: pixels))
+    rgb = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: pixels)) if tensor else pixels
     encoder = SoftwareEncoder(PreviewSettings(fps=30), resolution=(96, 64))
     try:
         decoder = av.CodecContext.create("h264", "r")

@@ -86,7 +86,7 @@ python -m pip install -e ".[calib]"
 
 可选依赖可以组合安装，例如 `.[full,piper]` 或 `.[full,so101]` 或 `.[full,cruzr]`；凡是包含 `[full]` 的命令，仍需使用上方 PyTorch CUDA 12.8 附加源。
 
-Genesis 仿真插件按需使用独立环境，安装步骤见 [Genesis 安装教程](03-install-genesis.md)。
+Genesis / MuJoCo 仿真按需使用独立环境，安装、资产接入与运行见 [仿真指南](../how-to/simulaiton-guide.md)。
 
 ## 6. 安装固定版本的运行依赖
 

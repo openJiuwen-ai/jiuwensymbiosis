@@ -4,7 +4,7 @@ from itertools import pairwise
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.scheduling import PhysicsClock
+from jiuwensymbiosis.simulators.common.scheduling import PhysicsClock
 
 
 class FakeTime:

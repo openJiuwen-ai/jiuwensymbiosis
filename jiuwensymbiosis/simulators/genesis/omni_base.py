@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from ..common.base_motion import validate_twist
+
 WHEEL_NAMES = tuple(f"wheel{i:02}_joint" for i in range(1, 5))
 
 
@@ -106,15 +108,6 @@ class OmniWheelLayout:
         """Validate conservative experiment limits, not hardware operating limits."""
         validate_twist(vx, vy, wz)
         return np.asarray(self.rows) @ (vx, vy, wz)
-
-
-def validate_twist(vx: float, vy: float, wz: float, *, max_linear: float = 0.3, max_angular: float = 0.6) -> None:
-    for value in (vx, vy, wz):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError("Base velocity must contain finite numbers")
-    # Normalizing a vector at the limit can add a few floating-point ULPs.
-    if math.hypot(vx, vy) > max_linear + 1e-12 or abs(wz) > max_angular + 1e-12:
-        raise ValueError(f"Experimental base limits: translation <= {max_linear} m/s, yaw <= {max_angular} rad/s")
 
 
 def mobile_home_targets(source: Path, layout: OmniWheelLayout) -> dict[str, float]:

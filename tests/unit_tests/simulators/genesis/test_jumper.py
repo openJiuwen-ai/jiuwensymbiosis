@@ -1,16 +1,19 @@
 """Jumper asset registration, bundle boundaries and shared motion capability."""
 
 import hashlib
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from examples.jumper_sim import register
 from jiuwensymbiosis.simulators.assets import AssetError, AssetLibrary, load_config
 from jiuwensymbiosis.simulators.assets.config import RootSpec
+from jiuwensymbiosis.simulators.assets.robot_assets import register_robot
 from jiuwensymbiosis.simulators.assets.scanners import scan_root
-from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-from jiuwensymbiosis.simulators.genesis.jumper_policy import JumperPolicy
+from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+from jiuwensymbiosis.simulators.mujoco.jumper_policy import JumperPolicy
 
 
 def checkout(root):
@@ -28,17 +31,17 @@ def checkout(root):
 def test_registration_is_idempotent_and_resolves_original_files(tmp_path):
     source = checkout(tmp_path / "upstream")
     home = tmp_path / "home"
-    result = register(source, home)
-    assert register(source, home) == result
+    result = register_robot("jumper", source, home)
+    assert register_robot("jumper", source, home) == result
     config = load_config(Path(result["config"]))
     assert len(config.spec.roots) == 1
     resolved = AssetLibrary(config.index).resolve(result["scene_id"])
     assert resolved.asset.preview_mode == "jumper"
     assert resolved.preview_path == source / "assets/jumper/jumper.xml"
     assert resolved.paths["policy_bundle"] == source / "out/bundle_example/jumper/bundle.json"
-    assert PreviewSettings(scene_id=result["scene_id"], robot_mode="jumper").robot_id == ""
+    assert PreviewSettings(scene_id=result["scene_id"], backend="mujoco", robot_mode="jumper").robot_id == ""
     with pytest.raises(ValueError, match="elsewhere"):
-        register(checkout(tmp_path / "other"), home)
+        register_robot("jumper", checkout(tmp_path / "other"), home)
     assert load_config(Path(result["config"])).roots["jumper"] == source
 
 
@@ -52,6 +55,52 @@ def test_scan_refuses_missing_and_escaping_assets(tmp_path):
     model.symlink_to(Path(__file__).resolve())
     with pytest.raises(AssetError, match="离开根目录"):
         scan_root(spec, source)
+
+
+def test_asset_cli_registers_without_examples_or_optional_sdks(tmp_path):
+    source = checkout(tmp_path / "upstream")
+    home = tmp_path / "home"
+    directory = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/assets"
+    result = subprocess.run(
+        [sys.executable, str(directory), "register-robot", "jumper", "--source", str(source), "--home", str(home)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    entry = json.loads(result.stdout)
+    assert entry["backend"] == "mujoco" and entry["robot_mode"] == "jumper"
+    config = load_config(entry["config"])
+    assert AssetLibrary(config.index).resolve(entry["scene_id"]).preview_path == source / "assets/jumper/jumper.xml"
+
+
+def test_asset_cli_fetch_flag_downloads_before_registration(tmp_path, monkeypatch, capsys):
+    from jiuwensymbiosis.simulators.assets import __main__ as cli
+
+    source = tmp_path / "download"
+    calls = []
+
+    def fetch(body, destination):
+        calls.append((body, destination))
+        checkout(destination)
+
+    monkeypatch.setattr(cli, "fetch_assets", fetch)
+    assert (
+        cli.main(["register-robot", "jumper", "--fetch", "--source", str(source), "--home", str(tmp_path / "home")])
+        == 0
+    )
+    assert calls == [("jumper", source)]
+    assert json.loads(capsys.readouterr().out)["robot_mode"] == "jumper"
+
+
+def test_asset_cli_never_overwrites_an_existing_fetch_destination(tmp_path, capsys):
+    from jiuwensymbiosis.simulators.assets import __main__ as cli
+
+    source = checkout(tmp_path / "existing")
+    home = tmp_path / "home"
+    assert cli.main(["register-robot", "jumper", "--fetch", "--source", str(source), "--home", str(home)]) == 1
+    assert "already exists" in json.loads(capsys.readouterr().err)["error"]
+    assert (source / "out/bundle_example/jumper/bundle.json").read_text() == "fixture"
+    assert not home.exists()
 
 
 def test_bundle_file_digest_and_path_boundary(tmp_path):
@@ -71,11 +120,11 @@ def test_bundle_file_digest_and_path_boundary(tmp_path):
 def test_shared_agent_accepts_policy_locomotion_without_video(tmp_path, monkeypatch):
     import time
 
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+    from jiuwensymbiosis.simulators.common.agent import make_session
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
     from jiuwensymbiosis.tools.builder import list_tool_meta
 
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),
@@ -99,11 +148,11 @@ def test_policy_actions_are_capability_gated_and_do_not_claim_payload(tmp_path, 
     import time
 
     from jiuwensymbiosis.api.actions import ACTIONS
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+    from jiuwensymbiosis.simulators.common.agent import make_session
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
     from jiuwensymbiosis.tools.builder import list_tool_meta
 
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),
@@ -127,7 +176,7 @@ async def test_shared_gripper_dispatch_preserves_side_and_never_invents_payload(
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from jiuwensymbiosis.simulators.genesis.agent import JumperApi, JumperEnv
+    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv
     from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool, read_grasp_confirmation
 
     driver = SimpleNamespace(
@@ -166,7 +215,7 @@ def test_jumper_gripper_rejects_invalid_side_before_dispatch(action, side):
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from jiuwensymbiosis.simulators.genesis.agent import JumperApi, JumperEnv
+    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv
 
     driver = SimpleNamespace(actions_enabled=True, observation_mode="visual", policy_action=Mock())
     api = JumperApi(JumperEnv(driver))
@@ -184,10 +233,10 @@ def test_jumper_gripper_rejects_invalid_side_before_dispatch(action, side):
     ],
 )
 def test_unimplemented_observation_backends_fail_before_exposing_tools(tmp_path, monkeypatch, mode, state):
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+    from jiuwensymbiosis.simulators.common.agent import make_session
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     monkeypatch.setattr(preview, "status", lambda: {"state": "ready", **state})
     with pytest.raises(ValueError, match="尚未接入"):
         make_session(preview, observation_mode=mode)
@@ -203,8 +252,8 @@ def policy_motion(monkeypatch):
 
     import numpy as np
 
-    from jiuwensymbiosis.simulators.genesis import base_motion
-    from jiuwensymbiosis.simulators.genesis.jumper_motion import JumperMotion
+    from jiuwensymbiosis.simulators.common import base_motion
+    from jiuwensymbiosis.simulators.mujoco.jumper_motion import JumperMotion
 
     monkeypatch.setitem(sys.modules, "base_motion", base_motion)
 
@@ -332,7 +381,7 @@ def test_closed_claw_blocks_jump_without_releasing_it(policy_motion):
 
 
 def test_policy_feedback_keeps_physical_measurements_private():
-    from jiuwensymbiosis.simulators.genesis.visual_policy import policy_feedback
+    from jiuwensymbiosis.simulators.common.visual_policy import policy_feedback
 
     result = policy_feedback(
         {
@@ -362,7 +411,7 @@ def test_session_never_silently_drops_unconfirmed_policy_tools(state):
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
+    from jiuwensymbiosis.simulators.common.agent import make_session
 
     preview = SimpleNamespace(status=lambda: state, acquire_motion=Mock())
     with pytest.raises(ValueError, match="后台"):
@@ -436,7 +485,7 @@ async def test_jumper_recovery_never_opens_or_homes_a_closed_or_unknown_claw(sid
     from unittest.mock import Mock
 
     from jiuwensymbiosis.rails.recovery import RecoveryRail, recover_session
-    from jiuwensymbiosis.simulators.genesis.agent import JumperApi, JumperEnv
+    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv
     from tests.helpers import FakeCtx
 
     gripper = {} if side is None else {"side": side, "closed_command": True}
@@ -489,7 +538,7 @@ def test_other_claw_cannot_clear_global_payload_while_one_claw_is_closed(policy_
 
 def test_jump_plan_requires_release_and_exposes_measured_result():
     from jiuwensymbiosis.agent.fast.sequence import SequenceError, parse_sequence
-    from jiuwensymbiosis.simulators.genesis.agent import JumperApi
+    from jiuwensymbiosis.simulators.common.agent import JumperApi
 
     actions = {name: getattr(JumperApi, name) for name in ("jump", "open_gripper", "close_gripper")}
     with pytest.raises(SequenceError, match="payload.clear"):

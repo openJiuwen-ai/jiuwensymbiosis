@@ -26,7 +26,8 @@ def load_genesis_module(name: str) -> ModuleType:
         except BaseException:
             del sys.modules[_PACKAGE]
             raise
-    return importlib.import_module(f"{_PACKAGE}.genesis.{name}")
+    family = "common" if name in {"camera", "scene_catalog"} else "genesis"
+    return importlib.import_module(f"{_PACKAGE}.{family}.{name}")
 
 
 def configure_script_logging(logger: logging.Logger) -> None:

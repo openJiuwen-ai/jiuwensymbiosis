@@ -171,7 +171,7 @@ M0 重新验证正常结束、首 token 前取消、流中取消、异常和工�
 | scene.context / tools | SceneContext 与可选只读工具；场景提示规则、指代、事实和图片选择 |
 | runtime.chat | ChatService；会话、历史、句柄、事件、幂等和恢复 |
 | runtime.task_executor / scene_binding | 执行委托及历史对象到实时目标的可选转换；复用现有绑定与资源准入 |
-| simulators.genesis.chat / agent / integration | 现有相机工具、观测 Rail 和执行配置；补公共 Chat 及 Runtime 的受控接入 |
+| simulators.common.chat / agent / integration | 现有相机工具、观测 Rail 和执行配置；补公共 Chat 及 Runtime 的受控接入 |
 | 现有 Runtime / Agent / API / Env | 资源准入、Session、动作规划、能力交集、Rails、执行、结果和清理 |
 | GUI / CLI 主机 | 调用公共配置 loader，注入可选 SceneContext，按需接入既有执行；GUI 额外负责 HTTP/SSE、三维展示和交互 |
 
@@ -830,7 +830,7 @@ API 只认识任务内目标合同，不反向导入 Scene。启用的代码执�
 
 ### 10.4 Genesis 的具体接入
 
-保留 preview、GenesisDriver/Env/Api、CameraObservation 和 visual_policy 中已实现的领域行为，迁移 GenesisChat 自有的历史、轮次、模型配置与忙/取消管理到公共 Chat。
+保留 preview、SimulationDriver/Env/Api、CameraObservation 和 visual_policy 中已实现的领域行为，迁移 SimulationChat 自有的历史、轮次、模型配置与忙/取消管理到公共 Chat。
 
 只读模式沿用已有 capture_camera、CameraObservation 和工具白名单。当前有 preview 时的只读聊天也可走已有 Agent/Session；不为统一 Chat 强制重写这条观察路径。需要补的是公共消息、证据、事件与停止的适配；仍校验实例、配置变化和相机时效。只有纯场景聊天必须完全不依赖 RobotSession。
 
@@ -972,8 +972,8 @@ M2a 准备两个不同路径的场景，主场景含两个房间、三把椅子�
 | PAI 检索与缓存 | [retriever.py](../../PAI/3d_chat/backend_real/app/rag_workflow/core/retriever.py)、[vector_store.py](../../PAI/3d_chat/backend_real/app/rag_workflow/interfaces/vector_store.py)、[构建脚本](../../PAI/3d_chat/backend_real/script/scripts_build_scene_index.py) |
 | PAI 聊天与模型 | [retriever_adapter.py](../../PAI/3d_chat/backend_real/app/chat/infrastructure/retriever_adapter.py)、[chat_turn.py](../../PAI/3d_chat/backend_real/app/chat/application/chat_turn.py)、[ports.py](../../PAI/3d_chat/backend_real/app/chat/domain/ports.py)、[llm_protocols.py](../../PAI/3d_chat/backend_real/app/chat/infrastructure/llm_protocols.py) |
 | PAI 三维视图 | [SceneViewer.tsx](../../PAI/3d_chat/frontend/src/components/SceneViewer/SceneViewer.tsx)、[scene.ts](../../PAI/3d_chat/frontend/src/types/scene.ts) |
-| Genesis 聊天与执行 | [chat.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/genesis/chat.py)、[agent.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/genesis/agent.py) |
-| Genesis 相机与控制 | [agent_camera.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/genesis/agent_camera.py)、[visual_policy.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/genesis/visual_policy.py)、[preview.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/genesis/preview.py) |
+| Genesis 聊天与执行 | [chat.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/common/chat.py)、[agent.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/common/agent.py) |
+| Genesis 相机与控制 | [agent_camera.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/common/agent_camera.py)、[visual_policy.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/common/visual_policy.py)、[preview.py](../../jiuwensymbiosis_zhixin/jiuwensymbiosis/jiuwensymbiosis/simulators/common/preview.py) |
 
 当前主仓库尚未实现 Scene、公共 Chat/配置解析入口、SceneContext 注入、Chat 到 Runtime 的统一适配和场景 GUI；Genesis checkout 的局部实现不等于这些模块已合入。相邻仓库链接用于本地源码核对，不是运行时依赖。
 

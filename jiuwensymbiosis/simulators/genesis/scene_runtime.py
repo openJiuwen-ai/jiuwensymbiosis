@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import math
 import sys
 import tempfile
@@ -15,72 +14,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from jiuwensymbiosis.simulators.common.startup_diagnostics import StartupDiagnostics
     from jiuwensymbiosis.simulators.genesis.robot_cameras import RobotCamera
-    from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
     from jiuwensymbiosis.simulators.genesis.truth import EntityRegistry
 
-from camera import OrbitCamera, PreviewSettings
-from mujoco_runtime import SimulationRuntime
-from preview_backends import MODES, POLICY_MODES
-from rendering import SceneRenderer
-from scene_catalog import material_rules_for_asset, resolve_scene, validate_material_bundle
-from selection import UsdPickIndex
-from source_lighting import load_source_lighting, make_environment
-from usd_scene import initial_camera, prepare_static_stage
-
-
-def create_runtime(settings, directory, revision=0, *, startup=None) -> SimulationRuntime:
-    spec = MODES[settings.robot_mode]
-    if settings.robot_mode in POLICY_MODES:
-        runtime = getattr(importlib.import_module(spec.module), spec.runtime)
-        return runtime(settings, directory, revision, startup=startup)
-    if sys.platform == "darwin" and settings.scene_id != "demo":
-        raise ValueError("Mac Genesis 仅支持动态演示；USD 场景和 URDF 机器人请使用 Linux / NVIDIA。")
-    return RuntimeScene(settings, directory, revision, startup=startup)
-
-
-def reset_runtime(runtime, settings, directory, *, phase=nullcontext, stopping=lambda: False, startup=None):
-    """Use the scene's checkpoint, or rebuild a native policy world after measured stopping."""
-    if settings.robot_mode not in POLICY_MODES:
-        return runtime, runtime.reset(phase=phase, stopping=stopping)
-    if runtime.motion.active:
-        raise RuntimeError("运动任务仍在执行，不能复位。")
-    from base_motion import measure
-
-    tuning = getattr(runtime.motion, "base", runtime.motion).tuning
-    with phase("reset_stop"):
-        runtime.stop()
-        stable = 0.0
-        for _ in range(round(5 / settings.dt)):
-            if stopping():
-                raise RuntimeError("复位已取消，保留当前世界。")
-            runtime.step()
-            sample = measure(runtime.robot)
-            stopped = (
-                math.dist(sample["linear_velocity_m_s"], (0, 0, 0)) < tuning.linear_still
-                and math.dist(sample["angular_velocity_rad_s"], (0, 0, 0)) < tuning.angular_still
-            )
-            stable = stable + settings.dt if stopped else 0.0
-            if stable >= tuning.settle_s:
-                break
-        else:
-            raise RuntimeError("复位前未确认停车，保留当前世界。")
-    with phase("reset_restore"):
-        replacement = create_runtime(settings, directory, runtime.pose["revision"] + 1, startup=startup)
-        previous = runtime.info["instance_id"]
-        replacement.cycle = runtime.cycle + 1
-        replacement.info["reset_generation"] = replacement.cycle
-        try:
-            runtime.close()
-        except BaseException:
-            replacement.close()
-            raise
-    return replacement, {
-        "previous_instance_id": previous,
-        "scene_instance_id": replacement.info["instance_id"],
-        "reset_generation": replacement.cycle,
-        "stop_confirmation": "measured",
-    }
+from ..common.camera import OrbitCamera, PreviewSettings
+from ..common.scene_catalog import resolve_scene, validate_material_bundle
+from .rendering import SceneRenderer
+from .scene_catalog import material_rules_for_asset
+from .selection import UsdPickIndex
+from .source_lighting import load_source_lighting, make_environment
+from .usd_scene import initial_camera, prepare_static_stage
 
 
 class RuntimeScene:
@@ -127,7 +71,7 @@ class RuntimeScene:
             with self._phase("asset_resolve"):
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
                 self.robot_asset = resolve_scene(settings.robot_id) if settings.robot_id else self.asset
-            if self.asset and self.asset.asset.preview_mode in POLICY_MODES:
+            if self.asset and self.asset.asset.preview_mode not in {"urdf", "static_usd"}:
                 raise ValueError("策略机器人需要选择对应的步态物理模式。")
             mobile = settings.robot_mode == "moz1_wheels"
             if settings.robot_id and (self.asset is None or self.asset.asset.preview_mode != "static_usd"):
@@ -170,7 +114,7 @@ class RuntimeScene:
             with self._phase("physics_build"):
                 self._build_physics()
             if self.robot is not None:
-                from robot_cameras import load_robot_cameras
+                from .robot_cameras import load_robot_cameras
 
                 with self._phase("robot_cameras"):
                     self.cameras = load_robot_cameras(
@@ -178,7 +122,7 @@ class RuntimeScene:
                     )
             self.frame_size(settings.camera_name)
             if mobile:
-                from base_motion import RelativeMotion
+                from ..common.base_motion import RelativeMotion
 
                 self.motion = RelativeMotion(self.robot)
             if self.robot is not None:
@@ -205,7 +149,7 @@ class RuntimeScene:
         import numpy as np
 
         room_physics = self.source is not None or self.info["mode"] == "robot_mobile"
-        options = {
+        options: dict[str, Any] = {
             "sim": {
                 "dt": self.settings.dt,
                 "substeps": 4 if room_physics else 1,
@@ -216,7 +160,7 @@ class RuntimeScene:
             "rigid": {"enable_self_collision": self.info["mode"] != "robot_mobile"},
         }
         if self.source is not None:
-            from scene_cache import RoomSceneCache
+            from .scene_cache import RoomSceneCache
 
             prepared = RoomSceneCache().prepare(
                 self.asset.preview_path,
@@ -238,11 +182,11 @@ class RuntimeScene:
                 show_viewer=False,
             )
         if self.info["mode"] == "robot_mobile":
-            from omni_base import Moz1Base
+            from .omni_base import Moz1Base
 
             spawn = (0.0, 0.0, 0.0)
             if self.source is not None:
-                from indoor import supported_spawn
+                from .indoor import supported_spawn
 
                 with self._phase("spawn_select"):
                     spawn = supported_spawn(self.indoor.meshes)
@@ -272,7 +216,7 @@ class RuntimeScene:
                     model_directory=self._model_directory,
                 )
         elif self.info["mode"] == "robot_preview":
-            from robot_preview import RobotPreview
+            from .robot_preview import RobotPreview
 
             self.scene.add_entity(morph=gs.morphs.Plane(), surface=gs.surfaces.Rough(color=(0.32, 0.36, 0.4)))
             with self._phase("robot_entity"):
@@ -302,7 +246,7 @@ class RuntimeScene:
                 ),
             ]
         if sys.platform == "darwin":
-            from rendering import RasterRenderer
+            from .rendering import RasterRenderer
 
             self.raster_renderer = RasterRenderer(self.scene, self.pose)
         with self._phase("scene_build"):
@@ -321,7 +265,7 @@ class RuntimeScene:
                         self.scene.step()
                         self.steps += 1
                 if self.indoor is not None:
-                    from base_motion import measure
+                    from ..common.base_motion import measure
 
                     observed = measure(self.robot)
                     expected = np.asarray(self.info["spawn_ground_m"]) + [0, 0, self.robot.layout.radius_m]
@@ -441,7 +385,7 @@ class RuntimeScene:
 
     def query_truth(self, operation: str, params: dict) -> dict:
         if self.truth is None:
-            from truth import EntityRegistry
+            from .truth import EntityRegistry
 
             self.truth = EntityRegistry(self)
         return self.truth.query(operation, params)
@@ -480,7 +424,7 @@ class RuntimeScene:
         stopping: Callable[[], bool] = lambda: False,
     ) -> dict:
         """Restore the settled checkpoint while keeping physics kernels and Nyx alive."""
-        from base_motion import RelativeMotion, measure
+        from ..common.base_motion import RelativeMotion, measure
 
         before = self.info["instance_id"]
         if self.motion is not None and self.motion.active:

@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from examples.microduck_sim import register
 from jiuwensymbiosis.simulators.assets import AssetError, AssetLibrary, build_index, load_config
 from jiuwensymbiosis.simulators.assets.config import RootSpec
+from jiuwensymbiosis.simulators.assets.robot_assets import register_robot
 from jiuwensymbiosis.simulators.assets.scanners import scan_root
 
 MODEL_DIR = "src/mjlab_microduck/robot/microduck"
@@ -60,18 +60,18 @@ def test_microduck_policy_registration_admits_only_complete_bundle(tmp_path):
     root = checkout(tmp_path / "upstream")
     home = tmp_path / "home"
     with pytest.raises(ValueError, match="下载官方"):
-        register(root, home)
+        register_robot("microduck", root, home)
     weight = root / "policies/velstand.onnx"
     weight.parent.mkdir()
     weight.write_text("fixture")
     with pytest.raises(AssetError, match="配套文件缺失"):
-        register(root, home)
+        register_robot("microduck", root, home)
     for name in ("policies/manifest.json", "scripts/infer_policy.py", f"{MODEL_DIR}/scene.xml"):
         path = root / name
         path.parent.mkdir(exist_ok=True)
         path.write_text("fixture")
-    result = register(root, home)
-    assert register(root, home) == result
+    result = register_robot("microduck", root, home)
+    assert register_robot("microduck", root, home) == result
     config = load_config(result["config"])
     library = AssetLibrary(config.index)
     resolved = library.resolve(result["scene_id"])

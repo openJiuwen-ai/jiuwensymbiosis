@@ -68,10 +68,8 @@ python -m pip install -e ".[full]" \
 
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
 
-可选仿真依赖组：`genesis-macos`（Apple Silicon 基础演示）、`jumper`（官方原生控制器）、
-`microduck`（官方策略/BAM）。机器人依赖组与 `gui`、对应平台的 Genesis 依赖组合安装。
-
-Genesis 仿真插件可按需安装，环境配置与启动步骤见 [Genesis 安装教程](docs/zh/tutorial/03-install-genesis.md)。
+工作台支持选择 Genesis 或 MuJoCo 仿真后端。后端安装、Jumper/Microduck 外部资产接入、
+手动与 Agent 控制、启动与关闭统一见 [仿真指南](docs/zh/how-to/simulaiton-guide.md)。
 
 统一启动器通过 GUI 插件 key 选择界面；本仓库当前提供 `workbench`：
 

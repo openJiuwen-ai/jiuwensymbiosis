@@ -9,9 +9,9 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
-from jiuwensymbiosis.simulators.genesis.resident_server import ResidentHost, ResidentServer
-from jiuwensymbiosis.simulators.genesis.resident_transport import MAX_RESPONSE, receive_message, send_message
+from jiuwensymbiosis.simulators.common.resident import ResidentPreview
+from jiuwensymbiosis.simulators.common.resident_server import ResidentHost, ResidentServer
+from jiuwensymbiosis.simulators.common.resident_transport import MAX_RESPONSE, receive_message, send_message
 
 
 @pytest.fixture

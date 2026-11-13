@@ -189,3 +189,4 @@ Agent 主机的本体接入方式不变。SO-101 的 LeRobot 仍可能引入 Tor
 | `grasp.parallel` | 左右侧仅一个活动爪 | — |
 
 两者通过宿主提供 RGB 头部相机工具，尚无 RGB-D 感知与真值导航。以上描述仿真能力，不表示实机适配器支持。
+外置资产接入、后端选择和使用步骤见 [仿真指南](../how-to/simulaiton-guide.md)。

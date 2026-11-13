@@ -12,18 +12,26 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING or __package__:
-    from .camera import OrbitCamera, PreviewSettings
-    from .rendering import SceneRenderer
-    from .scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
-    from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
-else:
-    from camera import OrbitCamera, PreviewSettings
-    from rendering import SceneRenderer
-    from scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
-    from usd_scene import initial_camera, inspect_stage, prepare_static_stage
+if not __package__:
+    import importlib.util
+
+    package = "_jiuwensymbiosis_simulators"
+    entry = Path(__file__).resolve().parents[1] / "__init__.py"
+    spec = importlib.util.spec_from_file_location(package, entry, submodule_search_locations=[str(entry.parent)])
+    if spec is None or spec.loader is None:
+        raise ImportError("Cannot load the simulator package")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package] = module
+    spec.loader.exec_module(module)
+    __package__ = package + ".genesis"
+
+from ..common.camera import OrbitCamera, PreviewSettings
+from ..common.scene_catalog import resolve_scene, scene_catalog
+from .rendering import SceneRenderer
+from .scene_catalog import material_rules_for_asset
+from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
 def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:

@@ -7,7 +7,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.simulators.genesis.rgbd import base_body_bounds, base_from_camera, effective_focal, rectified_grid
 
 
@@ -123,6 +123,6 @@ def test_body_envelope_is_robot_geometry_in_base_metres():
     "camera,stride", [("observer", 8), ("head_cam", True), ("head_cam", 3), ("head_cam", 33), ("head_cam", 8.0)]
 )
 def test_invalid_rgbd_request_is_rejected_before_worker_access(tmp_path, camera, stride):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     with pytest.raises(ValueError, match="robot camera and sampling stride"):
         preview.capture_image(camera, include_depth=True, depth_stride=stride)

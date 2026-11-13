@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat
+from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat
 from tests.unit_tests.simulators.genesis.test_chat import ready
 
 
@@ -17,10 +17,10 @@ def mobile_ready():
 
 async def test_action_mode_uses_shared_runner_and_selected_model(monkeypatch):
     runner = Mock(return_value={"reply": "已停稳", "actions": [{"ok": True, "settled": True}]})
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
     preview = object()
     direct_model = Mock(side_effect=AssertionError("must use shared agent"))
-    chat = GenesisChat(mobile_ready, preview=preview, model_factory=direct_model)
+    chat = SimulationChat(mobile_ready, preview=preview, model_factory=direct_model)
     chat.actions_enabled = True
     model = ModelSpec(model_name="selected-model")
     assert await chat.send("左移 20 厘米", model) == "已停稳"
@@ -39,8 +39,8 @@ async def test_cancel_does_not_forget_running_thread_or_allow_second_turn(monkey
         assert release.wait(5)
         return {"reply": "已取消", "actions": []}
 
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", run)
-    chat = GenesisChat(mobile_ready, preview=object())
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", run)
+    chat = SimulationChat(mobile_ready, preview=object())
     chat.actions_enabled = True
     task = asyncio.create_task(chat.send("前进", ModelSpec()))
     try:
@@ -63,8 +63,8 @@ async def test_cancel_does_not_forget_running_thread_or_allow_second_turn(monkey
 
 async def test_inspection_mode_gives_actionable_error_without_calling_model(monkeypatch):
     runner = Mock()
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
-    chat = GenesisChat(ready, preview=object())
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
+    chat = SimulationChat(ready, preview=object())
     chat.actions_enabled = True
     with pytest.raises(ChatError, match="MOZ1 底盘物理"):
         await chat.send("前进", ModelSpec())
@@ -72,7 +72,7 @@ async def test_inspection_mode_gives_actionable_error_without_calling_model(monk
 
 
 def test_control_cannot_be_enabled_without_preview():
-    chat = GenesisChat(ready)
+    chat = SimulationChat(ready)
     with pytest.raises(ChatError, match="控制接口"):
         chat.actions_enabled = True
     assert not chat.actions_enabled

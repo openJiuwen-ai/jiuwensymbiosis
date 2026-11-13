@@ -239,12 +239,12 @@ def test_invalid_goal_rejected_before_any_command(distance):
 
 
 def test_genesis_binding_uses_the_rgbd_geometry():
-    from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionApi
+    from jiuwensymbiosis.simulators.common.agent import SimulationPerceptionApi
 
     env = Scene(bearing=0.0)
     api = BaseRobotApi(env)
     api._seg_fn = env.segment
-    genesis = GenesisPerceptionApi(env, env.segment)
+    genesis = SimulationPerceptionApi(env, env.segment)
     first = locate_target(api, "box")
     second = genesis.locate_target("box")
     for key in ("point_base_mm", "distance_m", "bearing_rad", "near_surface_x_m", "n_points"):
@@ -253,11 +253,11 @@ def test_genesis_binding_uses_the_rgbd_geometry():
 
 def test_target_tools_are_exposed_for_genesis_but_not_cruzr():
     from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
-    from jiuwensymbiosis.simulators.genesis.agent import GenesisPerceptionMotionApi
+    from jiuwensymbiosis.simulators.common.agent import SimulationPerceptionMotionApi
     from jiuwensymbiosis.tools.builder import build_robot_tools
 
     env = Scene(bearing=0.0)
-    genesis = GenesisPerceptionMotionApi(env, env.segment)
+    genesis = SimulationPerceptionMotionApi(env, env.segment)
     cruzr = CruzrApi(env, detector_client=env.segment)
     target_tools = {"locate_target", "approach_target"}
     assert target_tools <= {tool.card.name for tool in build_robot_tools(genesis, env=env)}

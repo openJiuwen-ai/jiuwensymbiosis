@@ -23,12 +23,12 @@ async def test_macos_demo_video_camera_resize_reconnect_and_cleanup(tmp_path):
     from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
     from PIL import Image
 
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     evidence = Path(os.environ.get("JIUWEN_GENESIS_EVIDENCE", tmp_path / "evidence"))
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
-    preview = GenesisPreview(state_dir=tmp_path / "runtime")
+    preview = SimulationPreview(state_dir=tmp_path / "runtime")
     service = PreviewStream(preview)
     clients = []
     report = {}

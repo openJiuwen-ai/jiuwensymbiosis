@@ -4,15 +4,14 @@ import copy
 import importlib.util
 import sys
 from dataclasses import asdict
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-from jiuwensymbiosis.simulators.genesis.scheduling import PhysicsClock
-from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
+from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+from jiuwensymbiosis.simulators.common.scheduling import PhysicsClock
+from jiuwensymbiosis.simulators.common.startup_diagnostics import StartupDiagnostics
 
 
 @pytest.fixture
@@ -128,10 +127,16 @@ def worker_loop(monkeypatch, tmp_path):
     sdk = module("gs_nyx.nyx_py_sdk", startup=lambda: None, shutdown=lambda: None)
     module("gs_nyx", nyx_py_sdk=sdk)
     module("torch", cuda=SimpleNamespace(current_stream=lambda: SimpleNamespace(synchronize=lambda: None)))
-    path = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis/worker.py"
-    spec = importlib.util.spec_from_file_location("worker_scheduling_under_test", path)
-    worker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(worker)
+    worker = importlib.import_module("jiuwensymbiosis.simulators.common.worker")
+    monkeypatch.setattr(worker, "measure", lambda robot: {})
+    from jiuwensymbiosis.simulators.common import encoding
+
+    monkeypatch.setattr(encoding, "SoftwareEncoder", encoder)
+    monkeypatch.setattr(worker, "NvEncoder", encoder)
+    monkeypatch.setattr(worker, "create_runtime", lambda *a, **kw: runtime)
+    monkeypatch.setattr(worker, "reset_runtime", lambda *a, **kw: (runtime, {}))
+    monkeypatch.setattr(worker, "PhysicsClock", lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
+    monkeypatch.setattr(worker, "StartupDiagnostics", lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
     monkeypatch.setattr(worker.sys, "platform", "linux")
     monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: state.now, sleep=advance))
     state.run = lambda: worker.run_preview(mailbox, tmp_path)

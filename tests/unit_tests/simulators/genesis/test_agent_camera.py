@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis.agent import make_session, run_agent_query
-from jiuwensymbiosis.simulators.genesis.agent_camera import CameraObservation
-from jiuwensymbiosis.simulators.genesis.chat import GenesisChat
+from jiuwensymbiosis.simulators.common.agent import make_session, run_agent_query
+from jiuwensymbiosis.simulators.common.agent_camera import CameraObservation
+from jiuwensymbiosis.simulators.common.chat import SimulationChat
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
 
@@ -201,8 +201,8 @@ async def test_readonly_chat_reuses_agent_and_discards_late_ui_callback(monkeypa
         kwargs["on_frame"]({"id": "first"})
         return {"reply": "看到了图片", "frames": [{"id": "first"}]}
 
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", run)
-    chat = GenesisChat(preview.status, preview=preview)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", run)
+    chat = SimulationChat(preview.status, preview=preview)
     assert await chat.send("看看头部画面", ModelSpec(), on_frame=shown) == "看到了图片"
     assert captured["actions_enabled"] is False
     shown.assert_called_once_with({"id": "first"})

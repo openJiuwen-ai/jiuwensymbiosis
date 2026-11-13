@@ -2,27 +2,23 @@
 
 import importlib.util
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 
 
 @pytest.fixture
 def world(monkeypatch):
-    directory = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis"
-    monkeypatch.syspath_prepend(str(directory))
-    spec = importlib.util.spec_from_file_location("runtime_reset_under_test", directory / "scene_runtime.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("jiuwensymbiosis.simulators.genesis.scene_runtime")
     sample = {"linear_velocity_m_s": [0, 0, 0], "angular_velocity_rad_s": [0, 0, 0]}
     motion = SimpleNamespace(active=False)
-    monkeypatch.setitem(
-        sys.modules, "base_motion", SimpleNamespace(measure=lambda _: sample, RelativeMotion=lambda _: motion)
-    )
+    from jiuwensymbiosis.simulators.common import base_motion
+
+    monkeypatch.setattr(base_motion, "measure", lambda _: sample)
+    monkeypatch.setattr(base_motion, "RelativeMotion", lambda _: motion)
     runtime = module.RuntimeScene.__new__(module.RuntimeScene)
     runtime.info = {"instance_id": "old"}
     runtime.scene, runtime.renderer, runtime.robot = Mock(), object(), Mock()
@@ -74,7 +70,7 @@ def test_shutdown_during_stopping_never_restores_checkpoint(world):
 
 @pytest.mark.parametrize("busy", ["_motion_owner", "_capture_request", "_scene_query"])
 def test_host_rejects_reset_while_work_is_owned(tmp_path, busy, monkeypatch):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     monkeypatch.setattr(preview, "status", lambda: {"state": "ready"})
     setattr(preview, busy, "active")
     with pytest.raises(RuntimeError, match="当前有任务"):
@@ -84,7 +80,7 @@ def test_host_rejects_reset_while_work_is_owned(tmp_path, busy, monkeypatch):
 
 @pytest.fixture
 def host(tmp_path):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     observed = {"state": "ready", "scene": {"instance_id": "old"}, "config_revision": 0}
     preview._mailbox = SimpleNamespace(read_status=lambda: observed.copy(), write_control=Mock())
     return preview, observed
@@ -114,7 +110,7 @@ def test_host_releases_completed_reset_and_preserves_result(host, error):
 
 
 def test_reset_timeout_stays_isolated_until_matching_completion(host, monkeypatch):
-    from jiuwensymbiosis.simulators.genesis import preview as module
+    from jiuwensymbiosis.simulators.common import preview as module
 
     preview, observed = host
     clock = [100.0]

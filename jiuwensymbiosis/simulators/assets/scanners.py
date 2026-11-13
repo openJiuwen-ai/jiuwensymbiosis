@@ -107,6 +107,23 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
     content = local_file(root, spec.content_path)
     if not content.is_dir():
         raise AssetError(f"资产根目录不存在：{spec.id}: {content}")
+    if spec.scanner == "mjcf":
+        from .mjcf import mjcf_files
+
+        return ScanResult(
+            assets=[
+                Asset(
+                    id=asset_id(spec.id, entry),
+                    root_id=spec.id,
+                    name=Path(entry).stem,
+                    kind="environment",
+                    category="mjcf",
+                    preview_mode="mjcf",
+                    representations=mjcf_files(root, entry),
+                )
+                for entry in spec.entries
+            ]
+        )
     if spec.scanner == "microduck":
         # Official microduck_rl layout. Indexing MJCF does not grant control capabilities.
         model_dir = "src/mjlab_microduck/robot/microduck"
@@ -127,10 +144,10 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
         }
         runnable = local_file(root, policy_paths["walking_policy"]).is_file()
         if runnable:
-            for role, relative in policy_paths.items():
-                if not local_file(root, relative).is_file():
-                    raise AssetError(f"Microduck 策略配套文件缺失：{relative}")
-                microduck_paths[role] = relative
+            for role, policy_relative in policy_paths.items():
+                if not local_file(root, policy_relative).is_file():
+                    raise AssetError(f"Microduck 策略配套文件缺失：{policy_relative}")
+                microduck_paths[role] = policy_relative
         return ScanResult(
             assets=[
                 Asset(

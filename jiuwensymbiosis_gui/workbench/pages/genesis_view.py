@@ -13,7 +13,7 @@ from nicegui import ui
 
 from jiuwensymbiosis.agent.config import ModelSpec
 from jiuwensymbiosis.perception.config import DetectorConfig, LocalDetectorConfig
-from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat, state_snapshot
+from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat, state_snapshot
 from jiuwensymbiosis.utils.service_http import HttpEndpointConfig
 
 __all__ = ["GenesisView"]
@@ -32,22 +32,22 @@ class GenesisView:
     ) -> None:
         self._status = status
         self._model = model
-        self._chat = GenesisChat(status, preview=preview)
+        self._chat = SimulationChat(status, preview=preview)
         self._request: asyncio.Task | None = None
         self._frame_id = "genesis-" + uuid.uuid4().hex
         self._focused = False
         self._chat_collapsed = False
         self._image_cards: list = []
-        css = files("jiuwensymbiosis.simulators.genesis.web").joinpath("assets/workbench.css").read_bytes()
+        css = files("jiuwensymbiosis.simulators.common.web").joinpath("assets/workbench.css").read_bytes()
         version = sha256(css).hexdigest()[:16]
-        ui.add_head_html(f'<link rel="stylesheet" href="/genesis/assets/workbench.css?v={version}">')
+        ui.add_head_html(f'<link rel="stylesheet" href="/simulation/assets/workbench.css?v={version}">')
         with ui.element("section").classes("genesis-workspace") as self._workspace:
             with ui.row().classes("genesis-heading"):
                 with ui.row().classes("items-center gap-3"):
                     ui.icon("view_in_ar").classes("genesis-mark")
                     with ui.column().classes("gap-0"):
                         ui.label("仿真工作台").classes("genesis-title")
-                        ui.label("GENESIS / NYX").classes("genesis-eyebrow")
+                        ui.label("GENESIS / MUJOCO").classes("genesis-eyebrow")
                 with ui.row().classes("items-center gap-2"):
                     self._backend_badge = ui.badge("正在检查后台…").props("outline").classes("genesis-badge")
                     self._robot_stop = (
@@ -72,7 +72,7 @@ class GenesisView:
             ):
                 with splitter.before:
                     ui.element("iframe").props(
-                        f'id={self._frame_id} src=/genesis/viewer title="Genesis Nyx 实时画面" allow="autoplay; fullscreen"'
+                        f'id={self._frame_id} src=/simulation/viewer title="仿真实时画面" allow="autoplay; fullscreen"'
                     ).classes("genesis-player")
                 with splitter.after:
                     self._build_chat(open_models)

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.simulators.genesis.omni_base import (
     WHEEL_NAMES,
     Moz1Base,
@@ -14,7 +15,6 @@ from jiuwensymbiosis.simulators.genesis.omni_base import (
     UpperBodyHold,
     mobile_home_targets,
 )
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 
 
 def test_wheel_only_body_reports_empty_upper_body_hold(urdf):
@@ -360,7 +360,7 @@ def test_incomplete_wheel_geometry_raises_explicit_error(urdf, fault):
 
 
 def test_preview_binds_pulse_to_live_scene_and_clears_on_disconnect(tmp_path):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     scene_id = "a" * 32
     preview._state = {
         "state": "ready",
@@ -377,3 +377,26 @@ def test_preview_binds_pulse_to_live_scene_and_clears_on_disconnect(tmp_path):
     assert preview._base_request["id"] == first["queued_id"]
     preview.set_streaming(False)
     assert preview._base_request is None
+
+
+@pytest.mark.parametrize("limits", [None, {"linear_m_s": 0.4, "angular_rad_s": 1.5}])
+def test_manual_pulse_enforces_current_robot_envelope(tmp_path, limits):
+    preview = SimulationPreview(state_dir=tmp_path)
+    scene_id = "a" * 32
+    preview._state = {
+        "state": "ready",
+        "scene": {"instance_id": scene_id},
+        "robot": {"control_mode": "policy_locomotion", "command_limits": limits},
+    }
+    preview.set_streaming(True)
+    linear = limits["linear_m_s"] if limits else 0.3
+    angular = limits["angular_rad_s"] if limits else 0.6
+    binding = {"scene_instance_id": scene_id, "config_revision": 0}
+    for command in ((linear, 0, 0), (0, -linear, 0), (0, 0, angular), (0, 0, 0)):
+        accepted = preview.base_command(vx=command[0], vy=command[1], wz=command[2], **binding)
+        assert accepted["max_duration_s"] == 1
+    last = preview._base_request.copy()
+    for command in ((linear + 0.001, 0, 0), (linear, linear, 0), (0, 0, angular + 0.001), (True, 0, 0)):
+        with pytest.raises(ValueError):
+            preview.base_command(vx=command[0], vy=command[1], wz=command[2], **binding)
+        assert preview._base_request == last
