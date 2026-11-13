@@ -93,6 +93,24 @@ def make_video_track(preview: GenesisPreview | ResidentPreview) -> Any:
     return PreviewTrack()
 
 
+def _preview_resolution(options: dict) -> tuple[int, int]:
+    width, height = map(int, options["resolution"].split("x"))
+    return width, height
+
+
+def _preview_configuration(options: dict, width: int, height: int) -> dict[str, Any]:
+    return {
+        "width": width,
+        "height": height,
+        "fps": options["fps"],
+        "scene_id": options.get("scene_id", "demo"),
+        "robot_mode": options.get("robot_mode", "inspection"),
+        "robot_id": options.get("robot_id", ""),
+        "render_quality": options.get("render_quality", "reference"),
+        "camera_name": options.get("camera_name", "observer"),
+    }
+
+
 class PreviewStream:
     """Own signaling, a single viewer and cleanup, independently of the scene lifetime."""
 
@@ -115,17 +133,10 @@ class PreviewStream:
     async def start(self, options: dict | None = None) -> dict[str, Any]:
         async with self._lock:
             if options is not None:
-                width, height = map(int, options["resolution"].split("x"))
+                width, height = _preview_resolution(options)
                 await asyncio.to_thread(
                     self.preview.configure,
-                    width=width,
-                    height=height,
-                    fps=options["fps"],
-                    scene_id=options.get("scene_id", "demo"),
-                    robot_mode=options.get("robot_mode", "inspection"),
-                    robot_id=options.get("robot_id", ""),
-                    render_quality=options.get("render_quality", "reference"),
-                    camera_name=options.get("camera_name", "observer"),
+                    **_preview_configuration(options, width, height),
                 )
             return await asyncio.to_thread(self.preview.start)
 
@@ -155,18 +166,11 @@ class PreviewStream:
     async def configure(self, options: dict) -> dict[str, Any]:
         """Keep the peer and RTP clock; the worker resumes with a new IDR/SPS."""
         async with self._lock:
-            width, height = map(int, options["resolution"].split("x"))
+            width, height = _preview_resolution(options)
             try:
                 return await asyncio.to_thread(
                     self.preview.configure,
-                    width=width,
-                    height=height,
-                    fps=options["fps"],
-                    scene_id=options.get("scene_id", "demo"),
-                    robot_mode=options.get("robot_mode", "inspection"),
-                    robot_id=options.get("robot_id", ""),
-                    render_quality=options.get("render_quality", "reference"),
-                    camera_name=options.get("camera_name", "observer"),
+                    **_preview_configuration(options, width, height),
                 )
             except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 409) from exc

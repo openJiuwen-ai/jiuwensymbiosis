@@ -290,11 +290,150 @@ async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
 
 
 @pytest.mark.parametrize("action", ["start", "configure"])
-async def test_partial_stream_options_default_to_reference(action):
+@pytest.mark.parametrize(
+    "options,expected",
+    [
+        (
+            {"resolution": "1280x720", "fps": 30},
+            {
+                "width": 1280,
+                "height": 720,
+                "fps": 30,
+                "scene_id": "demo",
+                "robot_mode": "inspection",
+                "robot_id": "",
+                "render_quality": "reference",
+                "camera_name": "observer",
+            },
+        ),
+        (
+            {
+                "resolution": " 01920x+1080 ",
+                "fps": 60,
+                "scene_id": "room",
+                "robot_mode": "robot",
+                "robot_id": "test-robot",
+                "render_quality": "fast",
+                "camera_name": "head",
+                "ignored": "unused",
+            },
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "scene_id": "room",
+                "robot_mode": "robot",
+                "robot_id": "test-robot",
+                "render_quality": "fast",
+                "camera_name": "head",
+            },
+        ),
+        (
+            {
+                "resolution": "64x32",
+                "fps": None,
+                "scene_id": "",
+                "robot_mode": None,
+                "robot_id": None,
+                "render_quality": "",
+                "camera_name": None,
+            },
+            {
+                "width": 64,
+                "height": 32,
+                "fps": None,
+                "scene_id": "",
+                "robot_mode": None,
+                "robot_id": None,
+                "render_quality": "",
+                "camera_name": None,
+            },
+        ),
+    ],
+    ids=["defaults", "explicit", "falsey-values"],
+)
+async def test_stream_options_reach_preview_before_start(monkeypatch, action, options, expected):
     backend = CpuPreview()
     service = PreviewStream(backend)
-    await getattr(service, action)({"resolution": "1280x720", "fps": 30})
-    assert backend.configuration["render_quality"] == "reference"
+    original_options = options.copy()
+    main_thread = threading.get_ident()
+    events = []
+    configure = backend.configure
+    start = backend.start
+
+    def record_configuration(**values):
+        assert threading.get_ident() != main_thread
+        events.append("configure")
+        return configure(**values)
+
+    def record_start():
+        assert threading.get_ident() != main_thread
+        assert backend.configuration == expected
+        events.append("start")
+        return start()
+
+    monkeypatch.setattr(backend, "configure", record_configuration)
+    monkeypatch.setattr(backend, "start", record_start)
+    result = await getattr(service, action)(options)
+    assert backend.configuration == expected
+    assert options == original_options
+    assert events == (["configure", "start"] if action == "start" else ["configure"])
+    assert result == {"state": "ready" if action == "start" else "stopped"}
+
+
+async def test_start_without_options_keeps_existing_configuration(monkeypatch):
+    from unittest.mock import Mock
+
+    backend = CpuPreview()
+    backend.configuration = {"width": 640, "height": 480, "fps": 24}
+    configure = Mock(side_effect=AssertionError("unexpected reconfiguration"))
+    monkeypatch.setattr(backend, "configure", configure)
+    assert await PreviewStream(backend).start() == {"state": "ready"}
+    configure.assert_not_called()
+    assert backend.configuration == {"width": 640, "height": 480, "fps": 24}
+    assert backend.starts == 1
+
+
+@pytest.mark.parametrize("action", ["start", "configure"])
+@pytest.mark.parametrize(
+    "options,error",
+    [
+        ({"resolution": "bad", "fps": 30}, ValueError),
+        ({"resolution": "640x480x32", "fps": 30}, ValueError),
+        ({"fps": 30}, KeyError),
+        ({"resolution": "640x480"}, KeyError),
+    ],
+)
+async def test_invalid_stream_options_fail_before_preview(monkeypatch, action, options, error):
+    from unittest.mock import Mock
+
+    backend = CpuPreview()
+    configure = Mock()
+    monkeypatch.setattr(backend, "configure", configure)
+    with pytest.raises(error):
+        await getattr(PreviewStream(backend), action)(options)
+    configure.assert_not_called()
+    assert backend.starts == 0
+
+
+@pytest.mark.parametrize("action", ["start", "configure"])
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError, TimeoutError])
+async def test_preview_configuration_failure_preserves_entry_point_boundary(monkeypatch, action, error_type):
+    from unittest.mock import Mock
+
+    backend = CpuPreview()
+    error = error_type("configuration failed")
+    configure = Mock(side_effect=error)
+    monkeypatch.setattr(backend, "configure", configure)
+    with pytest.raises(StreamError if action == "configure" else error_type) as caught:
+        await getattr(PreviewStream(backend), action)({"resolution": "640x480", "fps": 30})
+    if action == "configure":
+        assert caught.value.status_code == 409
+        assert isinstance(caught.value.__cause__, error_type)
+        assert str(caught.value.__cause__) == "configuration failed"
+    assert str(caught.value) == "configuration failed"
+    configure.assert_called_once()
+    assert backend.starts == 0
 
 
 async def test_media_track_waits_through_reconfiguration():
