@@ -38,9 +38,9 @@ async def benchmark(args: argparse.Namespace) -> None:
     from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
     from PIL import Image
 
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
-    from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream
 
     width, height = (1920, 1080) if args.resolution == "1080p" else (1280, 720)
     settings = PreviewSettings(
@@ -55,7 +55,7 @@ async def benchmark(args: argparse.Namespace) -> None:
     )
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    preview = GenesisPreview(state_dir=output / "runtime", settings=settings)
+    preview = SimulationPreview(state_dir=output / "runtime", settings=settings)
     service = PreviewStream(preview)
     client = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     incoming: asyncio.Queue = asyncio.Queue()

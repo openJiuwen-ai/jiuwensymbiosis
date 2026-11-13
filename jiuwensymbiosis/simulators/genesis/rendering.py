@@ -82,7 +82,8 @@ class SceneRenderer:
             from importlib.metadata import version
 
             import torch
-            from rgbd import effective_focal, rectified_grid
+
+            from .rgbd import effective_focal, rectified_grid
 
             size, sensor_fov, grid = sensor.render_map()
             nyx_version, plugin_version = version("gs-nyx"), version("gs-nyx-plugin")
@@ -282,7 +283,8 @@ class SceneRenderer:
     def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None):
         """One state, one calibrated rectified RGB image and optical-Z depth map."""
         import numpy as np
-        from rgbd import sample_depth
+
+        from .rgbd import sample_depth
 
         if camera_name not in self.cameras:
             raise ValueError("RGB-D requires a calibrated robot camera")
@@ -308,3 +310,52 @@ class SceneRenderer:
             self._renderer = None
         self._grids.clear()
         self._rectified_grids.clear()
+
+
+class RasterRenderer:
+    """Observer-only OpenGL rendering for the portable Genesis demo."""
+
+    def __init__(self, scene, pose: dict, *, fov_y: float = 42):
+        if TYPE_CHECKING or __package__:
+            from ..common.camera import PREVIEW_RESOLUTIONS
+        else:
+            from camera import PREVIEW_RESOLUTIONS
+
+        self.fov_y = fov_y
+        self.appearance = {"renderer": "Genesis Rasterizer", "source_material_fidelity": False}
+        self._observers = {
+            size: scene.add_camera(
+                res=size, fov=fov_y, GUI=False, **{key: pose[key] for key in ("pos", "lookat", "up")}
+            )
+            for size in PREVIEW_RESOLUTIONS
+        }
+        self._camera = self._observers[(960, 540)]
+        self.render_counts = {"observer": 0}
+        self.last_camera: dict = {}
+
+    def configure(self, settings, pose: dict) -> None:
+        camera = self._observers.get((settings.width, settings.height))
+        if camera is None:
+            raise ValueError("预览支持 540p、720p、1080p。")
+        self._camera = camera
+        self.update_camera_pose(pos=pose["pos"], lookat=pose["lookat"], up=pose["up"])
+
+    def update_camera_pose(self, *, pos, lookat, up):
+        self._camera.set_pose(pos=pos, lookat=lookat, up=up)
+
+    def read_rgb(self, camera_name: str = "observer"):
+        import torch
+
+        if camera_name != "observer":
+            raise ValueError("Mac Genesis 演示仅提供 observer 观察视角。")
+        rgb, *_ = self._camera.render(rgb=True)
+        self.render_counts[camera_name] += 1
+        return torch.from_numpy(rgb.copy())
+
+    @staticmethod
+    def pick(u: float, v: float):
+        raise ValueError("macOS 最小预览暂不支持表面点选；可使用相机环绕、平移和缩放。")
+
+    def close(self):
+        # Cameras belong to the scene and remain available across resizing.
+        pass

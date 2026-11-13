@@ -7,7 +7,7 @@ import yaml
 
 from jiuwensymbiosis.simulators.assets import build_index, load_config
 from jiuwensymbiosis.simulators.assets import index as asset_index
-from jiuwensymbiosis.simulators.genesis.scene_catalog import scene_catalog, scene_path
+from jiuwensymbiosis.simulators.common.scene_catalog import scene_catalog, scene_path
 from jiuwensymbiosis.simulators.genesis.usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
@@ -31,8 +31,14 @@ def test_catalog_only_resolves_local_entries(tmp_path, monkeypatch):
     identifier = "library://geniesim/background/kitchen/kitchen_1/background"
     assert scene_path(identifier) == source
     assert scene_catalog() == [
-        {"id": "demo", "label": "动态物理演示"},
-        {"id": identifier, "label": "geniesim · kitchen/kitchen_1", "preview_mode": "static_usd"},
+        {"id": "demo", "label": "动态物理演示", "backends": ["genesis", "mujoco"]},
+        {
+            "id": identifier,
+            "label": "geniesim · kitchen/kitchen_1",
+            "preview_mode": "static_usd",
+            "backends": ["genesis"],
+            "robot_mode": "inspection",
+        },
     ]
     for invalid in ("../../secret", "/tmp/file", "http://host/scene", "kitchen/missing"):
         with pytest.raises(ValueError):
@@ -121,7 +127,7 @@ def test_oversized_background_rejected_before_export(usd, tmp_path, monkeypatch)
 
 
 def test_room_camera_stays_in_scene_bounds_after_pan():
-    from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
+    from jiuwensymbiosis.simulators.common.camera import OrbitCamera
 
     camera = OrbitCamera(**initial_camera("home/test", [[10, -20, -2], [20, -10, 2]]))
     assert camera.target[0] > 10

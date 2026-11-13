@@ -6,14 +6,19 @@ import os
 import shutil
 import subprocess
 import sys
+from email.parser import BytesParser
 from pathlib import Path
+from zipfile import ZipFile
+
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
 
 
 def test_installed_wheel_entries_and_workbench_resources(tmp_path):
     repo = Path(__file__).resolve().parents[3]
     source = tmp_path / "source"
     source.mkdir()
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
+    for name in ("pyproject.toml", "README.md", "LICENSE", "Open_Source_Software_Notice.txt"):
         shutil.copy2(repo / name, source / name)
     for name in ("jiuwensymbiosis", "jiuwensymbiosis_gui", "examples", "scripts"):
         shutil.copytree(repo / name, source / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -41,6 +46,37 @@ def test_installed_wheel_entries_and_workbench_resources(tmp_path):
         ]
     )
     (wheel,) = (tmp_path / "dist").glob("*.whl")
+    with ZipFile(wheel) as distribution:
+        metadata_name = next(name for name in distribution.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = BytesParser().parsebytes(distribution.read(metadata_name))
+        extras = metadata.get_all("Provides-Extra", [])
+        assert "genesis" in extras and "genesis-macos" not in extras
+        requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
+        for platform, system, machine in (("darwin", "Darwin", "arm64"), ("linux", "Linux", "x86_64")):
+            environment = {
+                **default_environment(),
+                "sys_platform": platform,
+                "platform_system": system,
+                "platform_machine": machine,
+                "extra": "genesis",
+            }
+            selected = [req for req in requirements if req.marker is None or req.marker.evaluate(environment)]
+            (torch,) = [req for req in selected if req.name == "torch"]
+            (sdk,) = [req for req in selected if req.name == "genesis-world"]
+            if platform == "linux":
+                assert "2.11.0+cu130" in torch.specifier
+                assert "2.11.0+cpu" not in torch.specifier and "2.11.0" not in torch.specifier
+                assert sdk.extras == {"render", "usd"}
+                assert {"gs-nyx", "gs-nyx-plugin"} <= {req.name for req in selected}
+            else:
+                assert "2.11.0" in torch.specifier and not sdk.extras
+                assert {"gs-nyx", "gs-nyx-plugin"}.isdisjoint(req.name for req in selected)
+        assert "jiuwensymbiosis/simulators/assets/robot_assets.py" in distribution.namelist()
+        for removed in ("jumper_sim.py", "microduck_sim.py", "_robot_assets.py"):
+            assert "examples/" + removed not in distribution.namelist()
+        for name in distribution.namelist():
+            assert not name.endswith((".onnx", ".rknn", ".so", ".pyd", ".stl", ".STL")), name
+            assert "/outputs/vendor/" not in name, name
     installed = tmp_path / "installed"
     run(
         [
@@ -139,7 +175,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from jiuwensymbiosis.simulators.genesis import OrbitCamera, PreviewSettings
-from jiuwensymbiosis.simulators.genesis import base_motion, omni_base
+from jiuwensymbiosis.simulators.genesis import omni_base
+from jiuwensymbiosis.simulators.common import base_motion
 root = Path(sys.argv[1])
 assert Path(base_motion.__file__).is_relative_to(root)
 assert Path(omni_base.__file__).is_relative_to(root)
@@ -189,8 +226,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 root = Path(sys.argv[1])
-from jiuwensymbiosis.simulators.genesis import preview, stream
-from jiuwensymbiosis.simulators.genesis import robot_cameras, robot_materials, startup_diagnostics
+from jiuwensymbiosis.simulators.common import preview
+from jiuwensymbiosis.simulators.common import stream
+from jiuwensymbiosis.simulators.genesis import robot_cameras, robot_materials
+from jiuwensymbiosis.simulators.common import startup_diagnostics
 for module in (preview, stream, robot_cameras, robot_materials, startup_diagnostics):
     assert Path(module.__file__).is_relative_to(root)
 assert preview._WORKER.is_relative_to(root) and preview._WORKER.is_file()
@@ -209,12 +248,13 @@ sys.path.insert(0, sys.argv[1])
 root = Path(sys.argv[1])
 user_dir = root.parent / "simulator-user"
 Path.home = classmethod(lambda cls: user_dir)
-from jiuwensymbiosis.simulators.genesis import agent, vision
+from jiuwensymbiosis.simulators.common import agent
+from jiuwensymbiosis.simulators.common import vision
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis.web.routes import install_genesis_routes
+from jiuwensymbiosis.simulators.common.web.routes import install_simulation_routes
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-assets = root / "jiuwensymbiosis/simulators/genesis/web/assets"
+assets = root / "jiuwensymbiosis/simulators/common/web/assets"
 for filename in ("viewer.html", "viewer.css", "viewer.js", "navigation.mjs", "selection.mjs", "workbench.css"):
     assert (assets / filename).stat().st_size > 0, filename
 result = vision.save_result({"jpeg": b"filesystem-probe"}, "probe", model="stub", duration_s=0)
@@ -226,7 +266,7 @@ with patch.object(agent, "build_model", return_value=object()), patch.object(age
 output = user_dir / ".jiuwensymbiosis/simulators/outputs/genesis-agent"
 assert (output / (result["id"] + ".json")).is_file()
 app = FastAPI()
-install_genesis_routes(app)
+install_simulation_routes(app)
 with TestClient(app) as client:
     assert client.get("/genesis/viewer").status_code == 200
     assert client.get("/genesis/assets/viewer.js").status_code == 200
@@ -240,4 +280,4 @@ sys.path.insert(0, sys.argv[1])
 import worker
 assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "gs_nyx", "av"} & sys.modules.keys()
 """
-    run([sys.executable, "-I", "-c", worker_probe, str(installed / "jiuwensymbiosis/simulators/genesis")])
+    run([sys.executable, "-I", "-c", worker_probe, str(installed / "jiuwensymbiosis/simulators/common")])

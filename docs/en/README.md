@@ -17,14 +17,13 @@ pages follow the same paths and user tasks.
 
 - [Installation and Quick Start](tutorial/01-quick-start.md)
 - [Build Your First Robot Adapter](tutorial/02-build-first-adapter.md)
-- [Install Genesis (Chinese)](../zh/tutorial/03-install-genesis.md)
 
 ## How-to Guides
 
 - [Calibrate Hand-Eye Geometry](how-to/calibrate-hand-eye.md)
 - [Calibrate an SO-101 with a Fixed Camera](how-to/calibrate-so101-eye-to-hand.md)
 - [Configure the GUI](how-to/configure-gui.md)
-- [Use the GUI Simulator (Chinese)](../zh/how-to/gui-simulator.md)
+- [Simulation Guide: Assets and Running Simulations](how-to/simulaiton-guide.md)
 - [Use Remote HTTP Vision and Speech](how-to/remote-inference.md)
 - [Add a GUI Plugin](how-to/add-gui.md)
 - [Configure and Use Logging](how-to/configure-logging.md)
@@ -43,7 +42,6 @@ pages follow the same paths and user tasks.
 - [Execution Tracing Reference](reference/tracing.md)
 - [Arm Planning and Grasp Evidence](how-to/genesis-arm-planning.md)
 - [Audit Robot Collision Models](how-to/audit-robot-models.md)
-- [Genesis Physical Scene Backend](reference/genesis-physical-scene.md)
 
 ## Explanation
 

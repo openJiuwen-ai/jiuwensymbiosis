@@ -5,7 +5,7 @@ cuRobo V2 规划；现有 Genesis 场景独占电机、物理时钟和实测停�
 ## 安装和入口
 
 专用环境执行 `pip install -e '.[genesis,genesis-planning]' --extra-index-url https://download.pytorch.org/whl/cu130`。另行安装 [cuRobo V2](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a)：检出该 commit，按上游 CUDA 安装说明构建（验证版本 `0.8.0.post1.dev43`）；使用 `MotionPlanner`/`MotionPlannerCfg`，不兼容旧 `MotionGen`。源码许可证为 Apache-2.0；本仓库/wheel 不分发它。core 不加载 CUDA 依赖，dev 包含 CPU python-fcl 碰撞测试。
-设置 `MOZ1_XRDF` 指向与实际 URDF 匹配的外部 XRDF；`CUROBO_FRANKA_CONFIG` 指向该 cuRobo checkout 的 Franka 配置。配置字段见[后端参考](../reference/genesis-physical-scene.md)。外部机器人资产需自行取得并验收，不随本仓库分发。加载器记录来源 SHA-256/忽略理由，支持 JSON/YAML、相对路径和环境变量。
+设置 `MOZ1_XRDF` 指向与实际 URDF 匹配的外部 XRDF；`CUROBO_FRANKA_CONFIG` 指向该 cuRobo checkout 的 Franka 配置。配置字段见[后端参考](simulaiton-guide.md)。外部机器人资产需自行取得并验收，不随本仓库分发。加载器记录来源 SHA-256/忽略理由，支持 JSON/YAML、相对路径和环境变量。
 ```python
 import json
 from pathlib import Path

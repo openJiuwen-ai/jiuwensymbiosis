@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadingView} from '../../../../jiuwensymbiosis/simulators/genesis/web/assets/loading.mjs';
+import {loadingView} from '../../../../jiuwensymbiosis/simulators/common/web/assets/loading.mjs';
 
 test('opaque kernel build shows its phase and elapsed time without an invented percentage', () => {
   const view = loadingView({state: 'running', current_phase: 'scene_build', total_ms: 12400});

@@ -79,6 +79,7 @@ dev = [
     "uvicorn>=0.46",
     "pillow>=12",
     "httpx>=0.28",
+    "rtree>=1",  # Mesh spatial queries exercised by the core indoor tests.
 ]
 full = [
     # torch/torchvision 必须配合 --extra-index-url https://download.pytorch.org/whl/cu128 安装，
@@ -144,20 +145,40 @@ simulator-media = [
     "av==17.1.0",
 ]
 genesis = [
-    # Dedicated simulation environment; see configs/simulators/README.md.
-    "scipy>=1.14,<2",
-    "usd-core==25.11",
-    "trimesh>=4.8.2,<6",
-    "rtree>=1",
-    "torch==2.11.0+cu130",
+    # One extra for Mac and Linux/NVIDIA; pip selects the platform requirements.
+    # Linux retains the explicit CUDA build and requires the cu130 package index.
+    "scipy>=1.14,<2; sys_platform == 'linux'",
+    "usd-core==25.11; sys_platform == 'linux'",
+    "trimesh>=4.8.2,<6; sys_platform == 'linux'",
+    "rtree>=1; sys_platform == 'linux'",
+    "torch==2.11.0+cu130; sys_platform == 'linux'",
+    "torch==2.11.0; sys_platform == 'darwin'",
     "numpy==2.3.5",
-    "genesis-world[render,usd]==1.4.4",
-    "gs-nyx-plugin==0.1.9",
-    "gs-nyx==0.1.7",
+    "genesis-world[render,usd]==1.4.4; sys_platform == 'linux'",
+    "genesis-world==1.4.4; sys_platform == 'darwin'",
+    "gs-nyx-plugin==0.1.9; sys_platform == 'linux'",
+    "gs-nyx==0.1.7; sys_platform == 'linux'",
     "aiortc==1.15.0",
     "av==17.1.0",
     "pillow==11.3.0",
     "opencv-python>=4.8,<5",
+]
+mujoco = [
+    # Classic OpenGL/WebRTC, independent of Genesis, Torch and MuJoCo Studio.
+    "mujoco-core[rendering]==4.0.1",
+    "aiortc==1.15.0",
+    "av==17.1.0",
+    "pillow>=11.3",
+]
+jumper = [
+    # Official native controller + CPU ONNX; use with the simulation workbench.
+    "mujoco-core[rendering]==4.0.1",
+    "onnxruntime==1.31.1",
+]
+microduck = [
+    "mujoco-core[rendering]==4.0.1",
+    "onnxruntime==1.31.1",
+    "better-actuator-models==1.0.3",
 ]
 genesis-planning = [
     # cuRobo 78fd485 is installed separately. Use with the genesis extra.
@@ -187,6 +208,9 @@ jiuwensymbiosis-actions = "jiuwensymbiosis.cli:actions_main"
 jiuwensymbiosis-skills = "jiuwensymbiosis.cli:skills_main"
 jiuwensymbiosis-state = "jiuwensymbiosis.cli:state_main"
 
+[tool.setuptools]
+license-files = ["LICENSE", "Open_Source_Software_Notice.txt"]
+
 [tool.setuptools.packages.find]
 include = [
     "jiuwensymbiosis",
@@ -206,7 +230,7 @@ jiuwensymbiosis = [
     "adapters/so101/description/**/*.md",
     "simulators/assets/data/*.yaml",
     "simulators/genesis/data/*.yaml",
-    "simulators/genesis/web/assets/*",
+    "simulators/common/web/assets/*",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

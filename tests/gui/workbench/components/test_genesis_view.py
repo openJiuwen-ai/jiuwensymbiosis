@@ -55,7 +55,7 @@ async def test_diagnostic_snapshot_stays_out_of_model_and_clear_resets_context(p
 
 async def test_action_switch_uses_selected_model_and_shared_execution(monkeypatch, page_slot):
     runner = Mock(return_value={"reply": "左移完成并停稳", "actions": [{"ok": True, "settled": True}]})
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
     preview = object()
     model = ModelSpec(model_name="shared-model")
     with page_slot:
@@ -71,7 +71,7 @@ async def test_action_switch_uses_selected_model_and_shared_execution(monkeypatc
 
 async def test_observation_mode_is_independent_and_resets_model_context(monkeypatch, page_slot):
     runner = Mock(return_value={"reply": "已查询场景", "actions": []})
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
     preview = Mock()
     with page_slot:
         view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=preview)
@@ -93,7 +93,7 @@ async def test_observation_mode_is_independent_and_resets_model_context(monkeypa
 
 async def test_perception_configuration_is_explicit_session_scoped_and_forwarded(monkeypatch, page_slot):
     runner = Mock(return_value={"reply": "目标位于前方", "actions": []})
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
     preview = Mock()
     with page_slot:
         view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=preview)
@@ -147,7 +147,7 @@ async def test_switch_off_revokes_running_agent_and_returns_to_read_only(monkeyp
         return {"reply": "已取消"}
 
     runner = Mock(side_effect=run)
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
     with page_slot:
         view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=object())
     invoke = AsyncMock(return_value=SimpleNamespace(content="只读，未执行移动", tool_calls=[]))

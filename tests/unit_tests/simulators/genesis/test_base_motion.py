@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis import base_motion as bm
+from jiuwensymbiosis.simulators.common import base_motion as bm
 
 
 @pytest.fixture

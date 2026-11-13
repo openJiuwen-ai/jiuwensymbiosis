@@ -7,9 +7,9 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis import base_motion
-from jiuwensymbiosis.simulators.genesis.agent import GenesisDriver, make_session
-from jiuwensymbiosis.simulators.genesis.observation_policy import allowed_tools, history_for, policy_id
+from jiuwensymbiosis.simulators.common import base_motion
+from jiuwensymbiosis.simulators.common.agent import SimulationDriver, make_session
+from jiuwensymbiosis.simulators.common.observation_policy import allowed_tools, history_for, policy_id
 from jiuwensymbiosis.simulators.genesis.truth import EntityRegistry
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
@@ -97,6 +97,7 @@ def test_reset_expiry_and_registry_rebuild(registry, monkeypatch):
 
 def test_readonly_truth_never_acquires_motion_and_visual_cannot_query():
     preview = SimpleNamespace(
+        status=lambda: {"state": "ready"},
         acquire_motion=Mock(),
         query_scene=Mock(
             return_value={"source": "simulation_ground_truth", "scene_instance_id": "a", "reset_generation": 0}
@@ -111,7 +112,7 @@ def test_readonly_truth_never_acquires_motion_and_visual_cannot_query():
     assert {"sim_list_entities", "sim_get_robot_state", "sim_get_entity_state"} <= names
     assert "navigate_to_entity" not in names
     with pytest.raises(RuntimeError, match="disabled"):
-        GenesisDriver(preview).query_truth("list_entities", {})
+        SimulationDriver(preview).query_truth("list_entities", {})
     assert "sim_list_entities" not in allowed_tools("visual", True)
     assert not history_for(
         "visual", [{"role": "assistant", "content": "secret position", "observation_policy": policy_id("ground_truth")}]
@@ -124,7 +125,7 @@ def test_truth_timeout_requires_fresh_measurement(registry):
         query_scene=lambda op, params, **kw: registry.query(op, params),
         navigate_relative=Mock(return_value={"ok": False, "settled": True, "reason": "motion_timeout"}),
     )
-    driver = GenesisDriver(preview, observation_mode="ground_truth")
+    driver = SimulationDriver(preview, observation_mode="ground_truth")
     driver.connect()
     old = driver.query_truth("robot_state", {})
     driver.navigate_relative(0.1)
@@ -137,7 +138,7 @@ def test_truth_timeout_requires_fresh_measurement(registry):
 
 
 def test_scene_change_during_agent_turn_is_terminal(registry):
-    driver = GenesisDriver(
+    driver = SimulationDriver(
         SimpleNamespace(query_scene=lambda op, params, **kw: registry.query(op, params)),
         actions_enabled=False,
         observation_mode="ground_truth",
@@ -189,13 +190,13 @@ def test_authored_units_axis_duplicate_names_and_stable_ids(tmp_path):
 
 async def test_chat_switch_resets_history_without_changing_physics(monkeypatch):
     from jiuwensymbiosis.agent.config import ModelSpec
-    from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat
+    from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat
     from tests.unit_tests.simulators.genesis.test_agent_chat import mobile_ready
 
     preview = Mock()
     runner = Mock(return_value={"reply": "truth", "actions": []})
-    monkeypatch.setattr("jiuwensymbiosis.simulators.genesis.agent.run_agent_query", runner)
-    chat = GenesisChat(mobile_ready, preview=preview)
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
+    chat = SimulationChat(mobile_ready, preview=preview)
     chat.observation_mode = "ground_truth"
     await chat.send("查询", ModelSpec())
     assert runner.call_args.kwargs["observation_mode"] == "ground_truth"

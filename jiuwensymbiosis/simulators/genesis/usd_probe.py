@@ -12,18 +12,32 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING or __package__:
-    from .camera import OrbitCamera, PreviewSettings
-    from .rendering import SceneRenderer
-    from .scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
-    from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
-else:
-    from camera import OrbitCamera, PreviewSettings
-    from rendering import SceneRenderer
-    from scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
-    from usd_scene import initial_camera, inspect_stage, prepare_static_stage
+if not __package__:
+    import importlib.util
+
+    _PACKAGE_NAME = "_jiuwensymbiosis_simulators"
+    _PACKAGE_ENTRY = Path(__file__).resolve().parents[1] / "__init__.py"
+    _PACKAGE_SPEC = importlib.util.spec_from_file_location(
+        _PACKAGE_NAME, _PACKAGE_ENTRY, submodule_search_locations=[str(_PACKAGE_ENTRY.parent)]
+    )
+    if _PACKAGE_SPEC is None or _PACKAGE_SPEC.loader is None:
+        raise ImportError("Cannot load the simulator package")
+    _PACKAGE_MODULE = importlib.util.module_from_spec(_PACKAGE_SPEC)
+    sys.modules[_PACKAGE_NAME] = _PACKAGE_MODULE
+    _PACKAGE_SPEC.loader.exec_module(_PACKAGE_MODULE)
+    _ENTRY_SPEC = importlib.util.spec_from_file_location(_PACKAGE_NAME + ".genesis.usd_probe", __file__)
+    if _ENTRY_SPEC is None:
+        raise ImportError("Cannot identify the standalone simulator module")
+    # Seed the file entry's import context from its loader, without core import hooks.
+    globals().update({"__package__": _ENTRY_SPEC.parent, "__spec__": _ENTRY_SPEC})
+
+from ..common.camera import OrbitCamera, PreviewSettings
+from ..common.scene_catalog import resolve_scene, scene_catalog
+from .rendering import SceneRenderer
+from .scene_catalog import material_rules_for_asset
+from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
 def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:

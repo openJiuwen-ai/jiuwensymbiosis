@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from ..common.base_motion import validate_twist
+
 WHEEL_NAMES = tuple(f"wheel{i:02}_joint" for i in range(1, 5))
 
 
@@ -106,14 +108,6 @@ class OmniWheelLayout:
         """Validate conservative experiment limits, not hardware operating limits."""
         validate_twist(vx, vy, wz)
         return np.asarray(self.rows) @ (vx, vy, wz)
-
-
-def validate_twist(vx: float, vy: float, wz: float) -> None:
-    for value in (vx, vy, wz):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError("Base velocity must contain finite numbers")
-    if math.hypot(vx, vy) > 0.3 or abs(wz) > 0.6:
-        raise ValueError("Experimental base limits: translation <= 0.3 m/s, yaw <= 0.6 rad/s")
 
 
 def mobile_home_targets(source: Path, layout: OmniWheelLayout) -> dict[str, float]:
@@ -222,8 +216,8 @@ class UpperBodyHold:
             "position_rad": position.tolist(),
             "error_rad": error.tolist(),
             "velocity_rad_s": velocity.tolist(),
-            "max_abs_error_rad": float(np.max(np.abs(error))),
-            "max_abs_velocity_rad_s": float(np.max(np.abs(velocity))),
+            "max_abs_error_rad": float(np.max(np.abs(error), initial=0.0)),
+            "max_abs_velocity_rad_s": float(np.max(np.abs(velocity), initial=0.0)),
             "motor_joint_names": [self.names[i] for i in self.driven],
             "kp_nm_rad": self.kp,
             "kv_nm_s_rad": self.kv,

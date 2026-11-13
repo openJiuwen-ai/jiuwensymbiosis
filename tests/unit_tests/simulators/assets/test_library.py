@@ -255,7 +255,7 @@ def test_content_tree_uses_configured_folders_and_depths(asset_fixture):
 
 def test_queries_and_loading_use_sqlite_after_all_build_inputs_are_removed(asset_fixture, tmp_path, monkeypatch):
     from jiuwensymbiosis.simulators.assets import index as asset_index
-    from jiuwensymbiosis.simulators.genesis.scene_catalog import resolve_scene, scene_catalog
+    from jiuwensymbiosis.simulators.common.scene_catalog import resolve_scene, scene_catalog
 
     library, config, roots, _, _ = asset_fixture
     config.source.unlink()

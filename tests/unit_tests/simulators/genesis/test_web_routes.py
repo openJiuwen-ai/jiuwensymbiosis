@@ -6,9 +6,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
-from jiuwensymbiosis.simulators.genesis.stream import PreviewStream
-from jiuwensymbiosis.simulators.genesis.web.routes import install_genesis_routes
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera
+from jiuwensymbiosis.simulators.common.stream import PreviewStream
+from jiuwensymbiosis.simulators.common.web.routes import install_simulation_routes
 
 
 class CpuPreview:
@@ -92,7 +92,7 @@ class CpuPreview:
 def client():
     app = FastAPI()
     backend = CpuPreview()
-    service = install_genesis_routes(app, PreviewStream(backend))
+    service = install_simulation_routes(app, PreviewStream(backend))
     with TestClient(app, base_url="http://127.0.0.1:8770", client=("127.0.0.1", 12345)) as client:
         yield client, backend, service
 
@@ -101,11 +101,28 @@ def headers(action):
     return {"Origin": "http://127.0.0.1:8770", "X-Genesis-Action": action}
 
 
+def test_canonical_routes_accept_the_player_header_and_preserve_engine(client):
+    http, backend, _ = client
+    response = http.post(
+        "/simulation/backend/start",
+        headers={"Origin": "http://127.0.0.1:8770", "X-Simulation-Action": "start"},
+        json={"backend": "mujoco"},
+    )
+    assert response.status_code == 200
+    assert backend.configuration["backend"] == "mujoco"
+    source = http.get("/simulation/assets/viewer.js").text
+    assert "'X-Simulation-Action': action" in source
+    assert http.get("/simulation/backend").json() == http.get("/genesis/backend").json()
+
+
 def test_library_routes_use_independent_index_and_accept_asset_ids(client, tmp_path, monkeypatch):
     import yaml
 
     from jiuwensymbiosis.simulators.assets import build_index, load_config
     from jiuwensymbiosis.simulators.assets import index as asset_index
+    from jiuwensymbiosis.simulators.common.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
 
     http, backend, _ = client
     source = tmp_path / "assets/background/room/one/background.usda"
@@ -130,6 +147,19 @@ def test_library_routes_use_independent_index_and_accept_asset_ids(client, tmp_p
     assert response.status_code == 200
     assert backend.configuration["scene_id"] == identifier
     assert http.get("/genesis/library?limit=1001").status_code == 422
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_scene_selector_keeps_native_robots_and_hides_unsupported_mac_assets(client, monkeypatch, platform):
+    from jiuwensymbiosis.simulators.common.web import routes
+
+    entries = [{"id": "demo"}] + [
+        {"id": mode, "preview_mode": mode} for mode in ("urdf", "static_usd", "jumper", "microduck")
+    ]
+    monkeypatch.setattr(routes, "scene_catalog", lambda: entries)
+    monkeypatch.setattr(routes.sys, "platform", platform)
+    expected = ["demo", "jumper", "microduck"] if platform == "darwin" else [entry["id"] for entry in entries]
+    assert [entry["id"] for entry in client[0].get("/genesis/scenes").json()] == expected
 
 
 @pytest.mark.parametrize(
@@ -173,7 +203,7 @@ def test_cross_origin_actions_are_rejected_before_side_effects(client, path, act
 def test_rebinding_or_remote_peer_cannot_start(host, peer):
     app = FastAPI()
     backend = CpuPreview()
-    install_genesis_routes(app, PreviewStream(backend))
+    install_simulation_routes(app, PreviewStream(backend))
     http = TestClient(app, base_url=f"http://{host}", client=(peer, 12345))
     assert (
         http.post(
@@ -255,6 +285,7 @@ def test_running_configuration_route_preserves_backend(client):
     )
     assert response.status_code == 200
     assert backend.configuration == {
+        "backend": "genesis",
         "width": 1920,
         "height": 1080,
         "fps": 30,
@@ -281,12 +312,15 @@ def test_base_route_requires_local_origin_live_session_and_finite_values(client)
     service._session = body["session_id"]
     service._peer = SimpleNamespace(connectionState="connected")
     try:
-        for invalid in (True, "nan", 0.31):
+        for invalid in (True, "nan", None):
             assert http.post("/genesis/base", headers=headers("base"), json={**body, "vx": invalid}).status_code == 422
         assert calls == []
         response = http.post("/genesis/base", headers=headers("base"), json=body)
         assert response.status_code == 200
         assert calls == [{"vx": 0.15, "vy": 0, "wz": 0, "scene_instance_id": "b" * 32, "config_revision": 0}]
+        response = http.post("/genesis/base", headers=headers("base"), json={**body, "vx": 0.4, "wz": 1.5})
+        assert response.status_code == 200
+        assert calls[-1]["vx"] == 0.4 and calls[-1]["wz"] == 1.5
         service._peer.connectionState = "disconnected"
         assert http.post("/genesis/base", headers=headers("base"), json=body).status_code == 409
     finally:
@@ -331,14 +365,14 @@ def test_local_assets_revalidate_including_not_modified_responses(client, name):
 def test_viewer_entrypoints_use_current_content_fingerprints(client):
     from hashlib import sha256
 
-    from jiuwensymbiosis.simulators.genesis.web.routes import _ASSETS
+    from jiuwensymbiosis.simulators.common.web.routes import _ASSETS
 
     http, _, _ = client
     response = http.get("/genesis/viewer")
     assert response.headers["cache-control"] == "no-store"
     for name in ("viewer.js", "viewer.css"):
         version = sha256((_ASSETS / name).read_bytes()).hexdigest()[:16]
-        assert f'/genesis/assets/{name}?v={version}"' in response.text
+        assert f'/simulation/assets/{name}?v={version}"' in response.text
 
 
 def test_named_camera_capture_returns_pixels_and_calibration_without_video(client, monkeypatch):

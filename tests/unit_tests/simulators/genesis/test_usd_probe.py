@@ -11,7 +11,7 @@ from jiuwensymbiosis.simulators.genesis import usd_probe
 
 
 def test_standalone_catalog_ignores_unrelated_assets_package(tmp_path):
-    directory = Path(usd_probe.__file__).parent
+    directory = Path(usd_probe.__file__).parent.parent / "common"
     script = """
 import sys
 from types import ModuleType

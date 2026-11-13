@@ -91,7 +91,7 @@ def test_robot_catalog_requires_exported_asset(tmp_path, monkeypatch):
 
     from jiuwensymbiosis.simulators.assets import build_index, load_config
     from jiuwensymbiosis.simulators.assets import index as asset_index
-    from jiuwensymbiosis.simulators.genesis.scene_catalog import scene_catalog, scene_path
+    from jiuwensymbiosis.simulators.common.scene_catalog import scene_catalog, scene_path
 
     directory = tmp_path / "another"
     directory.mkdir()
@@ -110,12 +110,18 @@ def test_robot_catalog_requires_exported_asset(tmp_path, monkeypatch):
     path = directory / "model.urdf"
     build_index(load_config(config))
     assert len(scene_catalog()) == 1
-    with pytest.raises(ValueError, match="URDF"):
+    with pytest.raises(ValueError, match="后端"):
         scene_path(identifier)
     path.touch()
     build_index(load_config(config))
     assert scene_path(identifier) == path
-    assert scene_catalog()[1] == {"id": identifier, "label": "spiritai · another · URDF 检视", "preview_mode": "urdf"}
+    assert scene_catalog()[1] == {
+        "id": identifier,
+        "label": "spiritai · another · URDF 检视",
+        "preview_mode": "urdf",
+        "backends": ["genesis"],
+        "robot_mode": "inspection",
+    }
 
 
 def test_physx_mimic_sign_units_and_source_integrity():

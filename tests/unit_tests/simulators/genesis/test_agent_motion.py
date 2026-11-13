@@ -7,14 +7,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.agent import make_session
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.agent import make_session
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
 
 @pytest.fixture
 def preview(monkeypatch, tmp_path):
-    p = GenesisPreview(state_dir=tmp_path)
+    p = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),
@@ -109,7 +109,9 @@ def test_manual_stop_revokes_owner_between_actions_until_release(preview, monkey
 
 
 def test_shared_tool_metadata_and_body_commands_include_lateral():
-    preview = SimpleNamespace(navigate_relative=Mock(return_value={"ok": True, "settled": True}))
+    preview = SimpleNamespace(
+        status=lambda: {"state": "ready"}, navigate_relative=Mock(return_value={"ok": True, "settled": True})
+    )
     session = make_session(preview)
     session.env.low_level.owner = "owner"
     meta = {m["name"]: m for m in list_tool_meta(session.api, env=session.env)}
