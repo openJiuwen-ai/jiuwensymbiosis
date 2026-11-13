@@ -59,7 +59,6 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         "sorting.command",  # opaque sorting protocol (no Cartesian motion)
         "speech.tts",  # text-to-speech available
         "motion.base",  # planar relative motion; lateral support is a per-body constraint
-        "motion.jump",  # one body-defined jump, including measured landing and settling
         "motion.base_servo",  # non-blocking streaming base drive (steer-while-moving)
         "motion.lift",  # vertical torso/lifter position control
         "motion.waist",  # torso yaw (waist) rotation
@@ -112,8 +111,6 @@ class BaseRobotEnv(ABC):
 
     capabilities: frozenset[str] = frozenset()
     name: str = "robot"
-    # Bodies carrying unverified objects may require an explicit user release.
-    allow_automatic_effector_release: bool = True
     supports_lateral: bool | None = None  # None means the body has not specified this constraint.
 
     # --- class hooks ---

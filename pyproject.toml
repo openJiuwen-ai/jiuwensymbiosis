@@ -145,16 +145,19 @@ simulator-media = [
     "av==17.1.0",
 ]
 genesis = [
-    # Dedicated simulation environment; see configs/simulators/README.md.
-    "scipy>=1.14,<2",
-    "usd-core==25.11",
-    "trimesh>=4.8.2,<6",
-    "rtree>=1",
-    "torch==2.11.0+cu130",
+    # One extra for Mac and Linux/NVIDIA; pip selects the platform requirements.
+    # Linux retains the explicit CUDA build and requires the cu130 package index.
+    "scipy>=1.14,<2; sys_platform == 'linux'",
+    "usd-core==25.11; sys_platform == 'linux'",
+    "trimesh>=4.8.2,<6; sys_platform == 'linux'",
+    "rtree>=1; sys_platform == 'linux'",
+    "torch==2.11.0+cu130; sys_platform == 'linux'",
+    "torch==2.11.0; sys_platform == 'darwin'",
     "numpy==2.3.5",
-    "genesis-world[render,usd]==1.4.4",
-    "gs-nyx-plugin==0.1.9",
-    "gs-nyx==0.1.7",
+    "genesis-world[render,usd]==1.4.4; sys_platform == 'linux'",
+    "genesis-world==1.4.4; sys_platform == 'darwin'",
+    "gs-nyx-plugin==0.1.9; sys_platform == 'linux'",
+    "gs-nyx==0.1.7; sys_platform == 'linux'",
     "aiortc==1.15.0",
     "av==17.1.0",
     "pillow==11.3.0",
@@ -176,16 +179,6 @@ microduck = [
     "mujoco-core[rendering]==4.0.1",
     "onnxruntime==1.31.1",
     "better-actuator-models==1.0.3",
-]
-genesis-macos = [
-    # Apple Silicon: CPU/Metal physics + OpenGL, no CUDA/Nyx/NVENC.
-    "torch==2.11.0; sys_platform == 'darwin'",
-    "numpy==2.3.5; sys_platform == 'darwin'",
-    "genesis-world==1.4.4; sys_platform == 'darwin'",
-    "aiortc==1.15.0; sys_platform == 'darwin'",
-    "av==17.1.0; sys_platform == 'darwin'",
-    "pillow==11.3.0; sys_platform == 'darwin'",
-    "opencv-python>=4.8,<5; sys_platform == 'darwin'",
 ]
 genesis-planning = [
     # cuRobo 78fd485 is installed separately. Use with the genesis extra.

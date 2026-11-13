@@ -85,7 +85,6 @@ capabilities = frozenset({
 | 能力字符串 | 含义 |
 |---|---|
 | `motion.cartesian` | 基座坐标系下的末端位姿运动 |
-| `motion.jump` | `jump` |
 | `motion.joint` | 关节空间运动 |
 | `motion.tool_pose` | 组内多工具联合位姿规划 |
 | `motion.servo` | 非阻塞伺服位姿命令 |

@@ -25,6 +25,7 @@ Create a fresh Python 3.12 environment for the minimal MuJoCo workbench:
 
 ```bash
 python3.12 -m venv .venv-sim4
+.venv-sim4/bin/python -m pip install --upgrade pip
 .venv-sim4/bin/python -m pip install -e '.[gui,mujoco]'
 ```
 
@@ -35,12 +36,18 @@ It does not require Genesis, Torch, CUDA or MuJoCo Studio. To enable both robot 
 .venv-sim4/bin/python -m pip install -e '.[gui,mujoco,jumper,microduck]'
 ```
 
-For both backends on Apple Silicon, install
-`.[gui,genesis-macos,mujoco,jumper,microduck]` instead. Genesis brings its own SDK dependencies.
+For Genesis alone on Apple Silicon, install `.[gui,genesis]`. For both backends, install
+`.[gui,genesis,mujoco,jumper,microduck]` instead. Genesis brings its own SDK dependencies.
 Keep core `.[dev]` tests in a separate environment because their Pillow requirement conflicts
-with Genesis's pinned version. Linux Genesis retains its documented NVIDIA installation.
+with Genesis's pinned version. The single `genesis` extra uses standard platform markers supported by pip. Mac selects regular
+Torch and the Rasterizer; Linux retains `torch==2.11.0+cu130` and Nyx. Markers do not detect GPU
+hardware or drivers. Linux still requires the CUDA package index below; unavailable CUDA wheels
+cause installation failure rather than CPU fallback.
 Use a new environment for MuJoCo 4: its distribution split can cause file conflicts when
 upgrading an existing 3.x installation in place.
+
+If an existing uv environment reports `No module named pip`, use its Python to run
+`python -m ensurepip --upgrade`, or create a fresh venv as above.
 
 ### Linux / NVIDIA Genesis
 
@@ -299,7 +306,8 @@ without a training stack. Body +X is forward, +Y left and positive yaw turns lef
 relative command turns before translating. The model's onboard camera is 640×480 with 95.7° vertical FOV.
 
 Ask: “Look through the head camera, move forward 15 cm, jump once, close and open the left
-gripper, then close and open the right gripper, and stop.” The shared tools are:
+gripper, then close and open the right gripper, and stop.” Locomotion and grippers reuse the
+shared actions; `jump` uses the existing Agent `extra_tools` extension point:
 
 ```python
 jump()
@@ -309,12 +317,17 @@ close_gripper(effector="right")
 open_gripper(effector="right")
 ```
 
+`jump` is registered only for an enabled Jumper simulation Agent. It is absent from the global
+action and capability vocabularies; generic `robot_control(action="jump")` and fastagent do not
+provide it.
+
 Jump follows the official fixed trajectory and succeeds only after observed takeoff, landing
 and settling. Cancelling an already triggered jump waits for landing and starts no further jump.
 Only one claw is active at a time. Explicitly open the current claw before switching sides,
 walking or jumping; closing remains in effect across task exit and stop. Completion does not
-prove a grasp or establish payload.held. Recovery does not automatically open a closed/unknown
-claw or blindly home the robot. Multi-payload state, object carrying and dance remain outside
+prove a grasp or establish payload.held. The simulation host uses the existing configuration to
+disable automatic recovery. Failed policy dispatch revokes further actuation, and closed/unknown
+claws block homing. These guards live under `simulators/`; hardware recovery is unchanged. Multi-payload state, object carrying and dance remain outside
 this integration. Policies retain the official gains, torque/speed and thermal limits.
 
 The official checkout is pinned to 198686eac0d188815d0943e9fee50de415edc80a. The loader verifies

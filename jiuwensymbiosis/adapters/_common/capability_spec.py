@@ -27,7 +27,6 @@ from __future__ import annotations
 # neighbours. The validator therefore asks only that a declared capability has SOME
 # action behind it, never all.
 CAPABILITY_ACTIONS: dict[str, list[str]] = {
-    "motion.jump": ["jump"],
     "motion.cartesian": ["goto_xyzr", "goto_pose", "move_direction", "get_pose", "get_home_pose"],
     "motion.joint": ["move_joint", "move_named_joint", "get_joint_positions"],
     "motion.tool_pose": ["move_tool_poses"],

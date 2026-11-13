@@ -6,8 +6,12 @@ import os
 import shutil
 import subprocess
 import sys
+from email.parser import BytesParser
 from pathlib import Path
 from zipfile import ZipFile
+
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
 
 
 def test_installed_wheel_entries_and_workbench_resources(tmp_path):
@@ -43,6 +47,30 @@ def test_installed_wheel_entries_and_workbench_resources(tmp_path):
     )
     (wheel,) = (tmp_path / "dist").glob("*.whl")
     with ZipFile(wheel) as distribution:
+        metadata_name = next(name for name in distribution.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = BytesParser().parsebytes(distribution.read(metadata_name))
+        extras = metadata.get_all("Provides-Extra", [])
+        assert "genesis" in extras and "genesis-macos" not in extras
+        requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
+        for platform, system, machine in (("darwin", "Darwin", "arm64"), ("linux", "Linux", "x86_64")):
+            environment = {
+                **default_environment(),
+                "sys_platform": platform,
+                "platform_system": system,
+                "platform_machine": machine,
+                "extra": "genesis",
+            }
+            selected = [req for req in requirements if req.marker is None or req.marker.evaluate(environment)]
+            (torch,) = [req for req in selected if req.name == "torch"]
+            (sdk,) = [req for req in selected if req.name == "genesis-world"]
+            if platform == "linux":
+                assert "2.11.0+cu130" in torch.specifier
+                assert "2.11.0+cpu" not in torch.specifier and "2.11.0" not in torch.specifier
+                assert sdk.extras == {"render", "usd"}
+                assert {"gs-nyx", "gs-nyx-plugin"} <= {req.name for req in selected}
+            else:
+                assert "2.11.0" in torch.specifier and not sdk.extras
+                assert {"gs-nyx", "gs-nyx-plugin"}.isdisjoint(req.name for req in selected)
         assert "jiuwensymbiosis/simulators/assets/robot_assets.py" in distribution.namelist()
         for removed in ("jumper_sim.py", "microduck_sim.py", "_robot_assets.py"):
             assert "examples/" + removed not in distribution.namelist()

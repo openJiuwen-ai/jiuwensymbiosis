@@ -190,9 +190,10 @@ def test_policy_actions_are_capability_gated_and_do_not_claim_payload(tmp_path, 
     import time
 
     from jiuwensymbiosis.api.actions import ACTIONS
-    from jiuwensymbiosis.simulators.common.agent import make_session
+    from jiuwensymbiosis.simulators.common.agent import make_session, simulation_tools
     from jiuwensymbiosis.simulators.common.preview import SimulationPreview
     from jiuwensymbiosis.tools.builder import list_tool_meta
+    from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
 
     preview = SimulationPreview(state_dir=tmp_path)
     state = {
@@ -204,11 +205,12 @@ def test_policy_actions_are_capability_gated_and_do_not_claim_payload(tmp_path, 
     monkeypatch.setattr(preview, "status", lambda: state)
     with make_session(preview, actions_enabled=enabled) as session:
         names = {tool["name"] for tool in list_tool_meta(session.api, env=session.env)}
-        assert ({"jump", "open_gripper", "close_gripper"} <= names) is enabled
-        assert "set_gripper" not in names
-        assert ("motion.jump" in session.env.capabilities) is enabled
-    assert "set_gripper" not in ACTIONS
-    assert ACTIONS["jump"].invalidates_locations
+        extra_names = {tool.card.name for tool in simulation_tools(session.api)}
+        assert ({"open_gripper", "close_gripper"} <= names) is enabled
+        assert ("jump" in extra_names) is enabled
+        assert {"jump", "set_gripper"}.isdisjoint(names)
+        assert "jump" not in RobotControlTool(session.api, env=session.env).available_actions
+    assert {"jump", "set_gripper"}.isdisjoint(ACTIONS)
 
 
 @pytest.mark.parametrize(("action", "closed"), [("open_gripper", False), ("close_gripper", True)])
@@ -522,17 +524,23 @@ def test_native_handoff_error_finishes_task_without_escaping_tick(policy_motion,
 
 @pytest.mark.parametrize("side", ["left", "right", None])
 @pytest.mark.parametrize("failure", ["close_gripper", "navigate_relative"])
-async def test_jumper_recovery_never_opens_or_homes_a_closed_or_unknown_claw(side, failure):
+async def test_jumper_failure_blocks_shared_recovery_before_any_release(side, failure):
     from types import SimpleNamespace
     from unittest.mock import Mock
 
     from jiuwensymbiosis.rails.recovery import RecoveryRail, recover_session
-    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv
+    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv, SimulationDriver
     from tests.helpers import FakeCtx
 
     gripper = {} if side is None else {"side": side, "closed_command": True}
-    preview = SimpleNamespace(status=lambda: {"state": "ready", "robot": {"gripper": gripper}})
-    driver = SimpleNamespace(preview=preview, observation_mode="visual", actions_enabled=True, policy_action=Mock())
+    failed = {"ok": False, "settled": True, "reason": "gripper_requires_open"}
+    preview = SimpleNamespace(
+        status=lambda: {"state": "ready", "robot": {"gripper": gripper}},
+        policy_action=Mock(return_value=failed),
+        navigate_relative=Mock(return_value=failed),
+    )
+    driver = SimulationDriver(preview)
+    driver.owner = "test-owner"
     env = JumperEnv(driver)
     api = JumperApi(env)
     session = SimpleNamespace(api=api, env=env)
@@ -540,10 +548,17 @@ async def test_jumper_recovery_never_opens_or_homes_a_closed_or_unknown_claw(sid
     from jiuwensymbiosis.api.world_state import current_tokens
 
     assert "payload.held" not in current_tokens(session)
+    if failure == "close_gripper":
+        assert not api.close_gripper(effector=side or "left")["ok"]
+    else:
+        assert not api.navigate_relative(0.1)["ok"]
+    assert driver.cancelled.is_set()
+    preview.policy_action.reset_mock()
+    preview.navigate_relative.reset_mock()
     assert recover_session(session, release=True, home=True, log_prefix="test") == (False, False)
-    rail = RecoveryRail(session)
-    await rail.on_tool_exception(FakeCtx(tool_name=failure, tool_args={}))
-    driver.policy_action.assert_not_called()
+    await RecoveryRail(session).on_tool_exception(FakeCtx(tool_name=failure, tool_args={}))
+    preview.policy_action.assert_not_called()
+    preview.navigate_relative.assert_not_called()
 
 
 @pytest.mark.parametrize("closed", [False, True])
@@ -578,13 +593,47 @@ def test_other_claw_cannot_clear_global_payload_while_one_claw_is_closed(policy_
     assert motion.claw_closed and motion.claw_side == side
 
 
-def test_jump_plan_requires_release_and_exposes_measured_result():
-    from jiuwensymbiosis.agent.fast.sequence import SequenceError, parse_sequence
-    from jiuwensymbiosis.simulators.common.agent import JumperApi
+@pytest.mark.parametrize("closed", [None, True, False])
+async def test_simulation_jump_tool_requires_open_claw_and_invalidates_sensing(closed):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
 
-    actions = {name: getattr(JumperApi, name) for name in ("jump", "open_gripper", "close_gripper")}
-    with pytest.raises(SequenceError, match="payload.clear"):
-        parse_sequence([{"op": "close_gripper"}, {"op": "jump"}], allowed_ops=actions, initial_state={"payload.clear"})
-    steps = parse_sequence([{"op": "open_gripper"}, {"op": "jump"}], allowed_ops=actions, initial_state=set())
-    assert [step.op for step in steps] == ["open_gripper", "jump"]
-    assert {"ok", "settled", "airborne", "reason"} <= actions["jump"].__tool_meta__.returns["properties"].keys()
+    from jiuwensymbiosis.api.actions import ACTIONS
+    from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES
+    from jiuwensymbiosis.simulators.common.agent import JumperApi, JumperEnv, SimulationDriver, simulation_tools
+
+    gripper = {} if closed is None else {"closed_command": closed}
+    result = {"ok": True, "settled": True, "kind": "jump", "flight_s": 0.12, "reason": "reached"}
+    preview = SimpleNamespace(
+        status=lambda: {"state": "ready", "robot": {"gripper": gripper}},
+        policy_action=Mock(return_value=result),
+    )
+    driver = SimulationDriver(preview)
+    driver.owner = "test-owner"
+    api = JumperApi(JumperEnv(driver))
+    api.memory.record_location("box", "locate_target", {"ok": True})
+    api.memory.self_state = frozenset({"body.home", "payload.clear"})
+    api.last_detection = {"label": "box"}
+    (tool,) = simulation_tools(api)
+    assert tool.card.name == "jump" and "jump" not in ACTIONS
+    assert "motion.jump" not in KNOWN_CAPABILITIES
+    if closed is False:
+        feedback = await tool.invoke({})
+        assert feedback["ok"] and feedback["settled"] and feedback["airborne"]
+        assert "flight_s" not in feedback
+        assert not api.memory.locations and api.last_detection is None
+        assert "body.home" not in api.memory.self_state
+        assert "payload.held" not in api.memory.self_state
+        preview.policy_action.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError, match="夹爪闭合或状态未知"):
+            await tool.invoke({})
+        preview.policy_action.assert_not_called()
+    driver.cancelled.set()
+    with pytest.raises(RuntimeError, match="任务已取消"):
+        await tool.invoke({})
+    driver.cancelled.clear()
+    driver.actions_enabled = False
+    assert not simulation_tools(api)
+    with pytest.raises(RuntimeError, match="仿真控制已关闭"):
+        await tool.invoke({})

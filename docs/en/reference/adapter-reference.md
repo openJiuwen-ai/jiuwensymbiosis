@@ -40,7 +40,6 @@ The `ActionSpec` contract class is defined in `api/decorators.py`, while shared 
 | Capability | Actions (`ActionSpec`) |
 |---|---|
 | `motion.cartesian` | `goto_xyzr`, `goto_pose`, `move_direction`, `get_pose`, `get_home_pose` |
-| `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`, `move_named_joint`, `get_joint_positions` |
 | `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | (no standalone public action; fast-path `track_detect`/`track_grasp` ops drive `api.servo_to_tip`/`env.servo_to_flange`) |
@@ -177,13 +176,6 @@ A successful `close_gripper` / `activate_suction` command is **not** the same as
 2. The optional Api hook `is_grasp_confirmed(result) -> bool` (so101-style: the driver's conservative contact judgement).
 
 A body whose end effector has no measured channel declares `trust_command_grasp = True` on its Api class: a successful command is then accepted as evidence (logged as a warning at runtime, so the acceptance is auditable). This is an **explicit downgrade declaration** — the fail-closed default is unchanged; remove it and provide measured evidence once the driver gains a feedback channel. `env.holding_payload` takes no part in this decision; it remains the coarse RecoveryRail-only flag.
-
-`open_gripper(width_mm=..., effector=...)` and `close_gripper(force_n=..., effector=...)`
-use the upstream optional `effector` selector. Jumper accepts `"left"` / `"right"` and defaults to
-the left claw. The upstream compatibility layer lets legacy single-gripper adapters omit the
-selector or use `effector=None`; explicit names are rejected. Only Jumper retains its legacy
-direct Python `side` alias; single-gripper adapters use the unchanged upstream interface.
-Agent tools use `effector`.
 
 ## 6. Config and Session builder
 
@@ -378,13 +370,3 @@ Common validation outcomes (the validator prints numbered Chinese messages; thes
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
 Piper's 30° tilted tool, historical nested YAML, and temporary Z correction are body-specific; a new adapter should reuse them only when the hardware genuinely has the same constraint. See [Piper Coordinates and Migration](piper-coordinates.md) for the tool-offset fix's coordinate contract, bounds, and upgrade impact. Cruzr's dual-arm + lift reachability (`Reachability` override), head/waist dual cameras, and ROS 2 driver are also body-specific — the generic mechanisms (`scene3d`/`approach`/`dual_arm` shared implementations) must not be copied elsewhere.
-
-
-### Multi-gripper release and recovery
-
-Jumper uses `effector` to select a claw while retaining body-wide `payload.*` state. It must not
-report `open_gripper` success while another claw may still hold the body's payload.
-Jumper supports one active claw at a time and rejects switching sides until that claw is explicitly opened.
-It reports `holding_payload=None` for closed/unknown claws and `False` for a known open claw;
-closure never establishes `payload.held`. It sets `allow_automatic_effector_release=False` to prevent automatic release.
-Other adapters retain the default automatic-release behavior. `home()` must refuse an unverified carried object.

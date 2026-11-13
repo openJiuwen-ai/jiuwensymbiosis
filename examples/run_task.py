@@ -30,7 +30,7 @@ import sys
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import yaml
 
@@ -120,18 +120,14 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
                 self.env.move(x, y, z, r)
 
             @implements(CLOSE_GRIPPER)
-            def close_gripper(self, force_n: float | None = None, *, side: Literal["default"] = "default") -> dict:
+            def close_gripper(self, force_n: float | None = None) -> dict:
                 """关闭夹爪（模拟吸合）。"""
-                if side != "default":
-                    raise ValueError("Single gripper only supports side=default")
                 self.env.set_suction(True)
                 return {"ok": True, "state": "closed"}
 
             @implements(OPEN_GRIPPER)
-            def open_gripper(self, width_mm: float = 70.0, *, side: Literal["default"] = "default") -> dict:
+            def open_gripper(self, width_mm: float = 70.0) -> dict:
                 """打开夹爪（模拟释放）。"""
-                if side != "default":
-                    raise ValueError("Single gripper only supports side=default")
                 self.env.set_suction(False)
                 return {"ok": True, "state": "open"}
 

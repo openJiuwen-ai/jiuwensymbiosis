@@ -59,7 +59,6 @@ from jiuwensymbiosis.contracts import (
     CloseEffectorResult,
     GraspFailure,
     GraspResult,
-    JumpResult,
     NavigationResult,
     ObjectGeometryResult,
     PlannedMotionResult,
@@ -304,22 +303,6 @@ GET_JOINT_POSITIONS = ActionSpec(
 # =============================================================================
 # End effector — grasp.parallel / grasp.suction
 # =============================================================================
-JUMP = ActionSpec(
-    name="jump",
-    description="Execute one body-defined jump from a stationary supported stance, then wait "
-    "for measured landing and settling. The body chooses its validated trajectory; no arbitrary "
-    "height or distance is requested. Success requires observed flight and a stable landing. "
-    "Release the grippers first. Cancellation prevents another jump and waits for the current "
-    "flight to land; it cannot stop a robot in midair.",
-    capability="motion.jump",
-    params=(),
-    requires=("payload.clear",),
-    result=JumpResult,
-    invalidates=("body.home",),
-    invalidates_locations=True,
-    tags=("motion",),
-)
-
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
@@ -799,7 +782,6 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     MOVE_TOOL_POSES,
     MOVE_NAMED_JOINT,
     GET_JOINT_POSITIONS,
-    JUMP,
     OPEN_GRIPPER,
     CLOSE_GRIPPER,
     ACTIVATE_SUCTION,

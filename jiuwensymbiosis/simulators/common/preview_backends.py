@@ -86,4 +86,4 @@ def installation_extra(backend: str, mode: str, platform: str | None = None) -> 
     validate_backend(backend, mode)
     if backend == "mujoco":
         return ",".join(filter(None, ("mujoco", MODES[mode].extra)))
-    return "genesis-macos" if (platform or sys.platform) == "darwin" else "genesis"
+    return "genesis"

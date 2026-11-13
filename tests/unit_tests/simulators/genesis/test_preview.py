@@ -164,7 +164,7 @@ def test_macos_defaults_and_missing_dependency_guidance(tmp_path, monkeypatch):
     assert (instance.settings.width, instance.settings.height, instance.settings.fps) == (960, 540, 30)
     state = instance.start()
     assert state["state"] == "failed"
-    assert ".[genesis-macos]" in state["message"]
+    assert ".[genesis]" in state["message"]
     assert "gs_nyx" not in state["message"]
     assert not instance.state_dir.exists()
 

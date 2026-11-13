@@ -25,7 +25,12 @@ M4 / 16 GB 建议从 540p / 30 FPS 开始，FPS 设置只是上限。
 
 ```bash
 python3.12 -m venv .venv-sim4
+.venv-sim4/bin/python -m pip install --upgrade pip
 ```
+
+`genesis` 统一作为 Mac 与 Linux 的安装项，通过标准平台条件选择依赖，支持 pip。
+Mac 使用普通 Torch 与 Rasterizer；Linux 保留 `torch==2.11.0+cu130` 与 Nyx。
+平台条件不检测 GPU 或驱动，Linux 仍须使用下方 CUDA 下载源；缺少 CUDA 包时安装失败，不会回退到 CPU 版。
 
 按需要选择安装组合：
 
@@ -33,13 +38,13 @@ python3.12 -m venv .venv-sim4
 |---|---|
 | MuJoCo 最小工作台与 MJCF 检视 | `.[gui,mujoco]` |
 | MuJoCo + Jumper / Microduck 控制 | `.[gui,mujoco,jumper,microduck]`（机器人 extra 可按需保留） |
-| Mac Genesis 演示 | `.[gui,genesis-macos]` |
-| Mac 两套后端与两款机器人 | `.[gui,genesis-macos,mujoco,jumper,microduck]` |
+| Mac Genesis 演示 | `.[gui,genesis]` |
+| Mac 两套后端与两款机器人 | `.[gui,genesis,mujoco,jumper,microduck]` |
 
-例如，在 M 系列 Mac 同时使用两套后端：
+Mac 仅使用 Genesis 时安装 `.[gui,genesis]`；例如，同时使用两套后端及机器人控制：
 
 ```bash
-.venv-sim4/bin/python -m pip install -e '.[gui,genesis-macos,mujoco,jumper,microduck]'
+.venv-sim4/bin/python -m pip install -e '.[gui,genesis,mujoco,jumper,microduck]'
 .venv-sim4/bin/python -m pip check
 ```
 
@@ -67,7 +72,8 @@ python -c 'import torch; print(torch.__version__); assert torch.cuda.is_availabl
 
 Genesis 的已验证依赖以 [`pyproject.toml`](../../../pyproject.toml) 为准；安装成功后仍需验收画面。
 仿真环境不要混装 `dev`、`remote`、`full`、`vision-server` 等 Pillow/Torch 约束不同的组合。
-核心 UT 与推理服务使用各自环境。软件 H264 的第三方二进制许可见
+核心 UT 与推理服务使用各自环境。若已有 uv 环境执行 `python -m pip` 提示 `No module named pip`，
+可用该环境的 `python -m ensurepip --upgrade` 补装 pip，或按上文重新创建独立 venv。软件 H264 的第三方二进制许可见
 [`Open_Source_Software_Notice.txt`](../../../Open_Source_Software_Notice.txt)。
 
 ## 添加资产
@@ -526,7 +532,7 @@ Agent 不需要连接视频才能取图或执行动作；手动按钮需要视�
 
 ### 跳跃和夹爪
 
-Jumper 支持共享跳跃动作，并复用主仓的夹爪动作：
+Jumper 通过主仓现有 `extra_tools` 扩展入口提供仿真专用 `jump` 工具，行走与夹爪复用主仓动作：
 
 ```python
 jump()                                    # 一次官方固定轨迹跳跃，等待落地和停稳
@@ -534,7 +540,9 @@ close_gripper(effector="left")                 # 左夹爪闭合，右侧用 eff
 open_gripper(effector="left")                  # 张开指定侧夹爪
 ```
 
-Agent 工具沿用主仓的 `effector` 选择器；Jumper 的直接 Python 调用仍接受旧 `side` 参数，省略选择器时默认左侧。
+跳跃仅在启用控制的 Jumper 仿真 Agent 中注册，不加入共享动作词表或全局能力表；
+通用 `robot_control(action="jump")` 和 fastagent 不支持跳跃。
+夹爪沿用主仓的 `effector` 选择器；Jumper 的直接 Python 调用仍接受旧 `side` 参数，省略选择器时默认左侧。
 
 可直接对 Agent 说：「先看相机，原地跳一次，落地后左夹爪闭合再张开，
 然后右夹爪闭合再张开，最后前进 15 厘米并看相机。」
@@ -571,7 +579,8 @@ Genesis，也没有把它放入 USD 房间；这是保留原步态物理的原�
 
 
 Jumper 只允许一个活动夹爪。共享 `payload.*` 是整机单载荷语义，`side` 不表示同时夹持两个载荷。
-恢复不会自动松爪；闭合或未知状态会阻止自动回位，须由用户显式操作当前侧。
+仿真宿主复用主仓配置关闭自动恢复；策略失败后撤销后续动作，闭合或未知状态阻止回位。
+显式松爪、取消、停车和状态确认均在 `simulators/` 内处理，不修改真机恢复逻辑。
 
 ## Microduck 控制
 

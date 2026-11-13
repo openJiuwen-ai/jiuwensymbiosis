@@ -53,3 +53,8 @@ def test_platform_changes_genesis_renderer_without_changing_robot_identity():
     assert linux.id == "genesis_nyx" and linux.depth and linux.truth and linux.pick
     with pytest.raises(ValueError):
         preview_backend("not-a-mode")
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_genesis_install_hint_uses_the_shared_extra(platform):
+    assert installation_extra("genesis", "inspection", platform) == "genesis"

@@ -6,6 +6,7 @@ only their own control; they never start/stop an externally managed worker.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, cast
 
+from jiuwensymbiosis.agent.abstractions import LocalFunction, ToolCard
 from jiuwensymbiosis.agent.config import ModelSpec, RobotAgentConfig, build_model
 from jiuwensymbiosis.agent.run import run_robot_task
 from jiuwensymbiosis.agent.session import RobotSession
@@ -25,7 +27,6 @@ from jiuwensymbiosis.api.actions import (
     ACTIONS,
     APPROACH_TARGET,
     CLOSE_GRIPPER,
-    JUMP,
     LOCATE_TARGET,
     MOVE_JOINT,
     MOVE_TOOL_POSES,
@@ -41,6 +42,7 @@ from jiuwensymbiosis.api.actions import (
     implements,
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
+from jiuwensymbiosis.api.state import apply_effects
 from jiuwensymbiosis.contracts import (
     CloseEffectorResult,
     NavigationResult,
@@ -102,6 +104,8 @@ class SimulationDriver:
             self.owner = None
 
     def require_motion(self) -> None:
+        if not self.actions_enabled:
+            raise RuntimeError("Agent 仿真控制已关闭。")
         if self.cancelled.is_set():
             raise RuntimeError("任务已取消。")
         if self.owner is None:
@@ -203,12 +207,11 @@ class SimulationDriver:
             self._recovery_observation_after = None
 
     def policy_action(self, kind: str, *, side="left", closed=False) -> dict:
-        if self.cancelled.is_set():
-            raise RuntimeError("任务已取消。")
-        if self.owner is None:
-            raise RuntimeError("Simulation session is not connected")
+        self.require_motion()
         try:
-            result = self.preview.policy_action(self.owner, kind, side=side, closed=closed, cancelled=self.cancelled)
+            result = self.preview.policy_action(
+                cast(str, self.owner), kind, side=side, closed=closed, cancelled=self.cancelled
+            )
         except Exception as exc:
             self.cancelled.set()
             report_failure("jumper.policy_action.failed", exc)
@@ -542,13 +545,12 @@ class SimulationTruthMotionApi(SimulationTruthApi):
 
 
 class JumperEnv(SimulationEnv):
-    allow_automatic_effector_release = False
-    capabilities = frozenset({"motion.base", "motion.jump", "grasp.parallel"})
+    capabilities = frozenset({"motion.base", "grasp.parallel"})
 
     @property
     def holding_payload(self) -> bool | None:
         # Closed fingers are not grasp evidence. Unknown cannot authorize home;
-        # the explicit-release policy separately prevents automatic opening.
+        # the simulation host disables automatic recovery and faults revoke control.
         state = self.driver.preview.status()
         gripper = (state.get("robot") or {}).get("gripper") or {}
         if state.get("state") != "ready" or "closed_command" not in gripper:
@@ -568,14 +570,23 @@ class JumperEnv(SimulationEnv):
             raise ValueError("Jumper gripper requires left/right side")
         return self.driver.policy_action("set_gripper", side=side, closed=closed)
 
+    def set_end_effector(self, engaged: bool) -> None:
+        raise RuntimeError("Jumper 夹爪须通过 open_gripper/close_gripper 显式控制。")
+
 
 class JumperApi(SimulationApi):
     def __init__(self, env: JumperEnv):
         super().__init__(env)
         self.jumper_env = env
 
-    @implements(JUMP)
     def jump(self) -> dict:
+        """Simulation-only extension; never registered as a shared robot action."""
+        self.jumper_env.driver.require_motion()
+        if self.jumper_env.holding_payload is not False:
+            raise RuntimeError("Jumper 夹爪闭合或状态未知，跳跃前请先显式张开当前夹爪。")
+        self.memory.invalidate_locations("simulation jump may move the body")
+        self.memory.self_state = apply_effects(self.memory.self_state, invalidates=("body.home",))
+        self.invalidate_sensing_cache()
         return self.jumper_env.jump()
 
     @implements(OPEN_GRIPPER)
@@ -601,6 +612,30 @@ class JumperApi(SimulationApi):
         del force_n  # Official controller does not expose force control.
         result = self.jumper_env.set_policy_gripper(True, effector if effector is not None else side)
         return {**result, "state": "closed" if result.get("ok") else "unconfirmed"}
+
+
+def simulation_tools(api: BaseRobotApi) -> list[LocalFunction]:
+    """Use the existing Agent extension point for simulator-only operations."""
+    if not isinstance(api, JumperApi) or not api.jumper_env.driver.actions_enabled:
+        return []
+
+    async def jump() -> dict:
+        return await asyncio.to_thread(api.jump)
+
+    return [
+        LocalFunction(
+            card=ToolCard(
+                name="jump",
+                description=(
+                    "仅在 Jumper 仿真中执行一次官方固定轨迹跳跃，等待实测离地、落地和停稳。"
+                    "先看头部相机、停车并显式张开当前夹爪；不接受高度或距离参数。"
+                    "取消会等待当前腾空落地，不启动下一次跳跃。结果包含 ok、settled、airborne 和 reason。"
+                ),
+                input_params={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            func=jump,
+        )
+    ]
 
 
 class SimulationArmMotionApi(SimulationTruthMotionApi):
@@ -739,7 +774,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
 每条平移最多 1 米，旋转最多 pi 弧度；应根据视野选择保守步长并在移动后重新看图。
 只执行用户要求的动作，不增加 home 或收尾运动；只可使用实际列出的工具，没有自动避障工具。
 若提供 jump，可执行一次官方固定轨迹跳跃；必须先观察、停车并确认夹爪已张开，不能指定高度或连续连跳。
-若提供 open_gripper(side) / close_gripper(side)，可张开/闭合指定侧夹爪；side 为 left/right，默认 left。
+若提供 open_gripper(effector) / close_gripper(effector)，可张开/闭合指定侧夹爪；effector 为 left/right，默认 left。
 一次只抬起一侧夹爪，由官方五足支撑策略保持平衡。闭合夹爪不表示抓住物体，不得声称抓取成功。
 切换夹爪侧别、移动或跳跃前，先张开当前夹爪；移动会先收回已张开的机械臂。不要在未获授权时释放夹爪。
 取消跳跃会等待当前腾空落地后停稳；闭合命令完成后会保留夹爪状态，停止不会自动松爪。
@@ -753,6 +788,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
         prompt = TRUTH_PROMPT
     elif observation_mode == "perception":
         prompt = PERCEPTION_PROMPT
+    extra_tools = [camera.tool(), *simulation_tools(session.api)]
     config = RobotAgentConfig(
         model_spec=spec,
         # run_robot_task owns a short-lived event loop in this worker thread.
@@ -763,7 +799,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
         # Conversation history is supplied explicitly by the host below.
         workspace=str(output_dir / "workspace" / run_id),
         strict_capabilities=True,
-        extra_tools=[camera.tool()],
+        extra_tools=extra_tools,
         extra_rails=[camera],
         # BaseRobotApi also owns home(); a read-only conversation must not expose it.
         tool_allowlist=allowed_tools(
@@ -773,6 +809,7 @@ navigate_relative 先旋转，再在旋转后的机身坐标系平移；单位�
             planning_enabled="motion.tool_pose" in session.env.capabilities,
             grasp_enabled="grasp.parallel" in session.env.capabilities,
         )
+        | frozenset(tool.card.name for tool in extra_tools)
         | (
             frozenset(
                 item["name"]

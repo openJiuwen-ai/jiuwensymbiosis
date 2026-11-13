@@ -4,7 +4,6 @@ import pytest
 
 from jiuwensymbiosis.api.actions import (
     APPROACH_TARGET,
-    JUMP,
     LOCATE_TARGET,
     NAVIGATE_TO_ENTITY,
     NAVIGATE_TO_POSE,
@@ -19,7 +18,6 @@ from scripts.validate_adapter import _check_capability_actions
 @pytest.mark.parametrize(
     "spec",
     [
-        JUMP,
         LOCATE_TARGET,
         APPROACH_TARGET,
         NAVIGATE_TO_POSE,

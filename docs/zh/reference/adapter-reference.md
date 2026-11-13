@@ -40,7 +40,6 @@ jiuwensymbiosis/calibration/adapters/<name>.py
 | Capability | 动作（`ActionSpec`） |
 |---|---|
 | `motion.cartesian` | `goto_xyzr`、`goto_pose`、`move_direction`、`get_pose`、`get_home_pose` |
-| `motion.jump` | `jump` |
 | `motion.joint` | `move_joint`、`move_named_joint`、`get_joint_positions` |
 | `motion.tool_pose` | `move_tool_poses` |
 | `motion.servo` | （无独立公共动作；由 fast path 实时伺服 op `track_detect`/`track_grasp` 经 `api.servo_to_tip`/`env.servo_to_flange` 驱动） |
@@ -178,11 +177,6 @@ Api 子类化 `BaseRobotApi`，用 `@implements(SPEC)` 绑定每条动作。内�
 2. Api 上的可选钩子 `is_grasp_confirmed(result) -> bool`（so101 风格：由驱动给出保守的接触判定）。
 
 末端没有实测通道的本体，在 Api 类上声明 `trust_command_grasp = True`：指令成功即被接受为证据（运行时打 warning 日志，可审计）。这是**显式降级声明**——默认 fail closed 不变；驱动获得反馈通道后删除该声明并改为提供实测证据。`env.holding_payload` 不参与该判定，它仍是 RecoveryRail 专用的粗粒度标志。
-
-`open_gripper(width_mm=..., effector=...)` 和 `close_gripper(force_n=..., effector=...)`
-沿用主仓的可选 `effector` 选择器。命名夹爪按本体声明选择；Jumper 为 `"left"` / `"right"`，
-省略时默认左侧。旧单夹爪适配器由主仓兼容层接受省略或 `effector=None`，显式命名会报错。
-仅 Jumper 保留旧直接 Python 调用的 `side` 别名；单夹爪适配器直接沿用主仓接口，Agent 工具统一使用 `effector`。
 
 ## 6. Config 与 Session Builder
 
@@ -368,12 +362,3 @@ xyz_final, description = apply_xy_correction(
 | Session | `adapters/piper/session.py` | `adapters/so101/session.py` | `adapters/cruzr/session.py` |
 
 Piper 的 30° 倾斜工具、历史嵌套 YAML 和临时 Z 校正都属于机型特例；新适配器只在硬件确有相同约束时复用。工具偏移修复的坐标契约、边界和升级影响见 [Piper 坐标与迁移说明](piper-coordinates.md)。Cruzr 的双臂 + 升降可达性（`Reachability` 覆写）、头/腰双路相机、ROS 2 驱动也属于机型特例，通用机制（`scene3d`/`approach`/`dual_arm` 共享实现）不要复制到别处。
-
-
-### 多夹爪与恢复
-
-Jumper 用 `effector` 选择夹爪，`payload.*` 仍表示整机载荷；若另一夹爪可能仍持物，不得报告
-`open_gripper` 成功并建立全局空载事实。Jumper 仅支持一个活动夹爪，当前爪闭合时拒绝切换侧别。
-闭合或未知时 `holding_payload=None`，已确认张开时为 `False`，闭爪不建立 `payload.held`。
-Jumper 设置 `allow_automatic_effector_release=False` 阻止自动松爪，未知载荷时也拒绝自动回位。
-其他适配器保持默认自动释放行为。
