@@ -11,8 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis import startup_diagnostics as diagnostics
-from jiuwensymbiosis.simulators.genesis.preview import _WORKER
+from jiuwensymbiosis.simulators.common import startup_diagnostics as diagnostics
+from jiuwensymbiosis.simulators.common.preview import _WORKER
 
 
 @pytest.fixture
@@ -62,6 +62,9 @@ def test_package_versions_reports_missing_distribution_without_importing_it(monk
         "gs-nyx": "test-version",
         "gs-nyx-plugin": "test-version",
         "torch": "test-version",
+        "mujoco-core": "test-version",
+        "onnxruntime": "test-version",
+        "better-actuator-models": "test-version",
     }
 
 
@@ -104,7 +107,7 @@ def test_worker_startup_logs_survive_genesis_sdk_warning_level(monkeypatch, capl
     startup = worker.StartupDiagnostics(logger=worker.logger)
     startup.finish()
     assert any(
-        record.name == "jiuwensymbiosis.simulators.genesis.worker" and "Genesis startup summary" in record.message
+        record.name == "jiuwensymbiosis.simulators.common.worker" and "Simulation startup summary" in record.message
         for record in caplog.records
     )
 
@@ -139,7 +142,7 @@ def test_phases_publish_progress_preserve_nested_timings_and_freeze_at_completio
     assert startup.snapshot()["phases_ms"]["scene_build"] == 2000.0
     versions.assert_called_once()
     sdk.lang.impl.current_cfg.assert_called_once()
-    assert "Genesis startup phase scene_build: 2000.000 ms" in caplog.text
+    assert "Simulation startup phase scene_build: 2000.000 ms" in caplog.text
     json.dumps(startup.snapshot(), allow_nan=False)
 
 
@@ -209,7 +212,9 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         from pathlib import Path
         from types import ModuleType, SimpleNamespace as NS
         import worker
-        from camera import OrbitCamera, PreviewSettings
+        worker.sys.platform = 'linux'
+        PreviewSettings = worker.PreviewSettings
+        OrbitCamera = sys.modules[worker.__package__ + ".camera"].OrbitCamera
         logging.basicConfig(level=logging.INFO)
 
         cfg = NS(offline_cache=True, offline_cache_file_path='/actual/cache',
@@ -281,7 +286,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
                     return False
                 return super().render_ready()
 
-        worker.RuntimeScene = Runtime
+        worker.create_runtime = Runtime
         worker.NvEncoder = lambda *a, **kw: NS(close=lambda: calls.append('encoder_close'))
         worker.PhysicsClock = Clock
         mailbox = Mailbox()
@@ -311,7 +316,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True, check=True, timeout=30
     )
     state = json.loads(result.stdout)
-    assert "jiuwensymbiosis.simulators.genesis.worker:Genesis startup summary" in result.stderr
+    assert "jiuwensymbiosis.simulators.common.worker:Simulation startup summary" in result.stderr
     failed = mode in {"build_failure", "unscoped_before_ready", "unscoped_after_ready"}
     assert state["state"] == ("failed" if failed else "ready")
     startup = state["startup"]

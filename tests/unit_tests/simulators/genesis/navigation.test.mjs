@@ -1,7 +1,7 @@
 // Run with node --test tests/unit_tests/simulators/genesis/navigation.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ViewportNavigation} from '../../../../jiuwensymbiosis/simulators/genesis/web/assets/navigation.mjs';
+import {ViewportNavigation} from '../../../../jiuwensymbiosis/simulators/common/web/assets/navigation.mjs';
 
 function harness() {
   const win = new EventTarget(), doc = new EventTarget(), video = new EventTarget();

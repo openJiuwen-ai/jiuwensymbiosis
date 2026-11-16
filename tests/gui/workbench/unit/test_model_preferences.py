@@ -162,15 +162,17 @@ def test_kwallet_open_path_requires_explicit_interaction(monkeypatch, chained, b
         # connection is made by this test; False represents cancelling its prompt.
         connected = Mock(return_value=False)
         monkeypatch.setattr(backend, "connected", connected)
-        monkeypatch.setattr(ChainerBackend, "backends", [backend])
-        monkeypatch.setattr(keyring, "get_keyring", lambda: ChainerBackend() if chained else backend)
-        store = preferences.ModelPreferences()
-        with pytest.raises(preferences.ModelPreferenceError, match="KWallet"):
-            store.load(ModelSpec())
-        connected.assert_not_called()
-        with pytest.raises(preferences.ModelPreferenceError, match="无法读取"):
-            store.load(ModelSpec(), allow_interaction=True)
-        connected.assert_called_once()
+        # Patch the descriptor directly: reading it enumerates real OS keyrings,
+        # which requires Linux D-Bus even though this test uses a stub backend.
+        with patch.object(ChainerBackend, "backends", [backend]):
+            monkeypatch.setattr(keyring, "get_keyring", lambda: ChainerBackend() if chained else backend)
+            store = preferences.ModelPreferences()
+            with pytest.raises(preferences.ModelPreferenceError, match="KWallet"):
+                store.load(ModelSpec())
+            connected.assert_not_called()
+            with pytest.raises(preferences.ModelPreferenceError, match="无法读取"):
+                store.load(ModelSpec(), allow_interaction=True)
+            connected.assert_called_once()
 
 
 def test_named_providers_can_be_saved_before_selecting_a_model_and_edited_without_changing_it(backend, model):

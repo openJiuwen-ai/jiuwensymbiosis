@@ -5,8 +5,8 @@ from itertools import product
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import OrbitCamera
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.camera import OrbitCamera
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.simulators.genesis.selection import UsdPickIndex
 
 
@@ -79,7 +79,7 @@ def test_small_focused_object_can_zoom_closer_without_jumping_back():
 
 def test_pick_rejects_stale_scene_or_camera_before_sending_to_worker(tmp_path, monkeypatch):
 
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     monkeypatch.setattr(preview, "status", lambda: {"state": "ready", "scene": {"instance_id": "a" * 32}})
     values = {
         "action": "pick",
