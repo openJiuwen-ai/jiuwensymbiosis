@@ -6,12 +6,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 
 
 @pytest.fixture
 def transport(tmp_path, monkeypatch):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     state = {"state": "ready", "measured_at": time.monotonic(), "scene": {"instance_id": "scene"}}
     monkeypatch.setattr(preview, "status", lambda: state)
     return preview, state

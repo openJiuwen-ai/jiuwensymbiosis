@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
 import time
 import uuid
@@ -13,16 +14,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from jiuwensymbiosis.simulators.common.startup_diagnostics import StartupDiagnostics
     from jiuwensymbiosis.simulators.genesis.robot_cameras import RobotCamera
-    from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
     from jiuwensymbiosis.simulators.genesis.truth import EntityRegistry
 
-from camera import OrbitCamera, PreviewSettings
-from rendering import SceneRenderer
-from scene_catalog import material_rules_for_asset, resolve_scene, validate_material_bundle
-from selection import UsdPickIndex
-from source_lighting import load_source_lighting, make_environment
-from usd_scene import initial_camera, prepare_static_stage
+from ..common.camera import OrbitCamera, PreviewSettings
+from ..common.scene_catalog import resolve_scene, validate_material_bundle
+from .rendering import SceneRenderer
+from .scene_catalog import material_rules_for_asset
+from .selection import UsdPickIndex
+from .source_lighting import load_source_lighting, make_environment
+from .usd_scene import initial_camera, prepare_static_stage
 
 
 class RuntimeScene:
@@ -40,13 +42,14 @@ class RuntimeScene:
         self._model_directory: Path | None = None
         self._planning_profile = {}
         if settings.planning_profile:
-            from planning_profile import load_profile
+            from .planning_profile import load_profile
 
             self._planning_profile = load_profile(Path(settings.planning_profile))
         self._evidence_directory = Path(directory)
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
+        self.raster_renderer: Any = None
         self.bodies: list[Any] = []
         self.robot: Any = None
         self.robot_asset: Any = None
@@ -74,6 +77,8 @@ class RuntimeScene:
             with self._phase("asset_resolve"):
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
                 self.robot_asset = resolve_scene(settings.robot_id) if settings.robot_id else self.asset
+            if self.asset and self.asset.asset.preview_mode not in {"urdf", "static_usd"}:
+                raise ValueError("策略机器人需要选择对应的步态物理模式。")
             mobile = settings.robot_mode == "moz1_wheels"
             if settings.robot_id and (self.asset is None or self.asset.asset.preview_mode != "static_usd"):
                 raise ValueError("组合场景需要 USD 背景资产。")
@@ -115,7 +120,7 @@ class RuntimeScene:
             with self._phase("physics_build"):
                 self._build_physics()
             if self.robot is not None:
-                from robot_cameras import load_robot_cameras
+                from .robot_cameras import load_robot_cameras
 
                 with self._phase("robot_cameras"):
                     self.cameras = load_robot_cameras(
@@ -123,7 +128,7 @@ class RuntimeScene:
                     )
             self.frame_size(settings.camera_name)
             if mobile:
-                from base_motion import RelativeMotion
+                from ..common.base_motion import RelativeMotion
 
                 self.motion = RelativeMotion(self.robot)
                 if settings.planning_profile:
@@ -145,7 +150,7 @@ class RuntimeScene:
             raise
 
     def _new_arm(self, instance_id):
-        from arm_motion import ArmMotion
+        from .arm_motion import ArmMotion
 
         return ArmMotion(self, self._planning_profile, self._evidence_directory / "arm-plans" / instance_id)
 
@@ -157,13 +162,11 @@ class RuntimeScene:
         return self._startup.phase(name) if self._startup is not None and not self._startup.finished else nullcontext()
 
     def _build_physics(self) -> None:
-        import cv2
         import genesis as gs
-        import gs_nyx.nyx_py_sdk as nps
         import numpy as np
 
         room_physics = self.source is not None or self.info["mode"] == "robot_mobile"
-        options = {
+        options: dict[str, Any] = {
             "sim": {
                 "dt": self.settings.dt,
                 "substeps": 4 if room_physics else 1,
@@ -179,7 +182,7 @@ class RuntimeScene:
                 raise ValueError("unsupported manipulation contact solver setting")
             options["rigid"].update(contact_solver)
         if self.source is not None:
-            from scene_cache import RoomSceneCache
+            from .scene_cache import RoomSceneCache
 
             prepared = RoomSceneCache().prepare(
                 self.asset.preview_path,
@@ -201,11 +204,11 @@ class RuntimeScene:
                 show_viewer=False,
             )
         if self.info["mode"] == "robot_mobile":
-            from omni_base import Moz1Base
+            from .omni_base import Moz1Base
 
             spawn = (0.0, 0.0, 0.0)
             if self.source is not None:
-                from indoor import supported_spawn
+                from .indoor import supported_spawn
 
                 with self._phase("spawn_select"):
                     spawn = supported_spawn(self.indoor.meshes)
@@ -235,7 +238,7 @@ class RuntimeScene:
                     model_directory=self._model_directory,
                 )
         elif self.info["mode"] == "robot_preview":
-            from robot_preview import RobotPreview
+            from .robot_preview import RobotPreview
 
             self.scene.add_entity(morph=gs.morphs.Plane(), surface=gs.surfaces.Rough(color=(0.32, 0.36, 0.4)))
             with self._phase("robot_entity"):
@@ -264,6 +267,10 @@ class RuntimeScene:
                     morph=gs.morphs.Sphere(radius=0.11, pos=(0.34, 0.05, 1.8)), surface=gs.surfaces.Copper()
                 ),
             ]
+        if sys.platform == "darwin":
+            from .rendering import RasterRenderer
+
+            self.raster_renderer = RasterRenderer(self.scene, self.pose)
         with self._phase("scene_build"):
             self.scene.build(n_envs=1)
         if self.robot is not None:
@@ -280,7 +287,7 @@ class RuntimeScene:
                         self.scene.step()
                         self.steps += 1
                 if self.indoor is not None:
-                    from base_motion import measure
+                    from ..common.base_motion import measure
 
                     observed = measure(self.robot)
                     expected = np.asarray(self.info["spawn_ground_m"]) + [0, 0, self.robot.layout.radius_m]
@@ -294,6 +301,11 @@ class RuntimeScene:
                     self.info["spawn_support_verified"] = True
         self._initial_state = self.scene.get_state()
         self._initial_steps = self.steps
+        if sys.platform == "darwin":
+            return
+        import cv2
+        import gs_nyx.nyx_py_sdk as nps
+
         if self.lighting is not None:
             self.env = make_environment(self.lighting)
             return
@@ -309,6 +321,12 @@ class RuntimeScene:
 
     def build_renderer(self, settings: PreviewSettings) -> None:
         """Re-export the current world, retaining its physical and camera state."""
+        if sys.platform == "darwin":
+            self.renderer = self.raster_renderer
+            self.renderer.configure(settings, self.pose)
+            self.info["appearance"] = self.renderer.appearance
+            self.settings = settings
+            return
         import torch
 
         # Physics construction leaves cached Torch scratch buffers. Nyx allocates
@@ -389,7 +407,7 @@ class RuntimeScene:
 
     def query_truth(self, operation: str, params: dict) -> dict:
         if self.truth is None:
-            from truth import EntityRegistry
+            from .truth import EntityRegistry
 
             self.truth = EntityRegistry(self)
         return self.truth.query(operation, params)
@@ -436,7 +454,7 @@ class RuntimeScene:
         stopping: Callable[[], bool] = lambda: False,
     ) -> dict:
         """Restore the settled checkpoint while keeping physics kernels and Nyx alive."""
-        from base_motion import RelativeMotion, measure
+        from ..common.base_motion import RelativeMotion, measure
 
         before = self.info["instance_id"]
         if self.motion is not None and self.motion.active:

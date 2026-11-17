@@ -21,7 +21,7 @@ import jiuwensymbiosis_gui.workbench
 import jiuwensymbiosis_gui.workbench.pages.tools_view
 import jiuwensymbiosis_gui.workbench.pages.calibration_view
 import jiuwensymbiosis_gui.workbench.pages.genesis_view
-import jiuwensymbiosis.simulators.genesis.web.routes
+import jiuwensymbiosis.simulators.common.web.routes
 offenders = sorted(name for name in sys.modules if name == 'jiuwensymbiosis.calibration' or name.startswith('jiuwensymbiosis.calibration.'))
 assert not offenders, offenders
 assert 'cv2' not in sys.modules, 'importing the workbench must not pull in OpenCV'

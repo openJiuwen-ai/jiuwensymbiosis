@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {contentRect, pickCoordinates, boxPath} from '../../../../jiuwensymbiosis/simulators/genesis/web/assets/selection.mjs';
+import {contentRect, pickCoordinates, boxPath} from '../../../../jiuwensymbiosis/simulators/common/web/assets/selection.mjs';
 
 test('object-fit contain mapping rejects black bars and preserves framebuffer coordinates', () => {
   const rect = {left: 30, top: 200, width: 900, height: 300};

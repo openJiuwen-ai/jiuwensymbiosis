@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat, state_snapshot
+from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat, state_snapshot
 from tests.helpers import genesis_ready_state as ready
 
 
@@ -59,7 +59,7 @@ def test_old_or_unavailable_measurements_are_not_presented_as_current(state, age
 async def test_operator_snapshot_is_current_but_model_only_receives_visual_history():
     raw = ready()
     invoke = AsyncMock(return_value=SimpleNamespace(content="收到", tool_calls=[]))
-    chat = GenesisChat(lambda: raw, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(lambda: raw, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     spec = ModelSpec()
     await chat.send("第一问", spec)
     raw["steps"] = 24
@@ -78,7 +78,7 @@ async def test_operator_snapshot_is_current_but_model_only_receives_visual_histo
 
 async def test_failure_is_safe_and_not_committed_to_history(caplog):
     invoke = AsyncMock(side_effect=RuntimeError("provider echoed private-key"))
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     with pytest.raises(ChatError) as exc:
         await chat.send("失败的消息", ModelSpec(api_key="private-key"))
     assert "private-key" not in str(exc.value) + caplog.text
@@ -97,7 +97,7 @@ async def test_cancel_excludes_concurrent_send_and_keeps_chat_reusable():
         await asyncio.Event().wait()
 
     invoke = AsyncMock(side_effect=slow)
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     task = asyncio.create_task(chat.send("慢请求", ModelSpec()))
     await entered.wait()
     with pytest.raises(ChatError, match="正在生成"):
@@ -122,7 +122,7 @@ async def test_reset_rejects_late_reply_even_if_transport_swallows_cancellation(
         except asyncio.CancelledError:
             return SimpleNamespace(content="迟到回复", tool_calls=[])
 
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=slow))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=slow))
     task = asyncio.create_task(chat.send("旧消息", ModelSpec()))
     await entered.wait()
     chat.reset()
@@ -135,19 +135,19 @@ async def test_timeout_and_tool_request_fail_without_actions():
     async def slow(*args, **kwargs):
         await asyncio.Event().wait()
 
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=slow), timeout=0.01)
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=slow), timeout=0.01)
     with pytest.raises(ChatError, match="超时"):
         await chat.send("问题", ModelSpec())
     assert not chat.busy
     invoke = AsyncMock(return_value=SimpleNamespace(content="", tool_calls=[{"name": "move"}]))
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     with pytest.raises(ChatError, match="未开放"):
         await chat.send("执行动作", ModelSpec())
 
 
 async def test_history_is_bounded_and_reply_redacts_key():
     invoke = AsyncMock(return_value=SimpleNamespace(content="private-key " + "字" * 16000, tool_calls=[]))
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     for _ in range(10):
         reply = await chat.send("问题", ModelSpec(api_key="private-key"))
     assert len(reply) == 16000 and "private-key" not in reply
@@ -159,7 +159,7 @@ async def test_history_is_bounded_and_reply_redacts_key():
 @pytest.mark.parametrize("changes", [{"api_base": "file:///tmp/private"}, {"model_name": ""}, {"api_key": ""}])
 def test_incomplete_model_cannot_start(changes):
     with pytest.raises(ChatError):
-        GenesisChat(ready).configure(replace(ModelSpec(), **changes))
+        SimulationChat(ready).configure(replace(ModelSpec(), **changes))
 
 
 @pytest.mark.parametrize("with_image", [False, True])
@@ -203,11 +203,11 @@ async def test_real_sdk_serializes_state_to_local_openai_compatible_endpoint(wit
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            from jiuwensymbiosis.simulators.genesis import vision
+            from jiuwensymbiosis.simulators.common import vision
 
             monkeypatch.setattr(vision, "OUTPUT_DIR", tmp_path)
             preview = SimpleNamespace(capture_image=lambda: {"jpeg": b"exact-image-bytes"})
-            chat = GenesisChat(ready, timeout=10, preview=preview if with_image else None)
+            chat = SimulationChat(ready, timeout=10, preview=preview if with_image else None)
             spec = ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="test-model")
             if with_image:
                 assert (await chat.recognize(spec))["reply"] == "状态读取链路正常"
@@ -254,7 +254,7 @@ def test_indoor_contact_evidence_is_fresh_and_does_not_enable_readonly_actions()
 
 async def test_legacy_state_grounded_history_is_not_replayed():
     invoke = AsyncMock(return_value=SimpleNamespace(content="收到", tool_calls=[]))
-    chat = GenesisChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
+    chat = SimulationChat(ready, model_factory=lambda _: SimpleNamespace(invoke=invoke))
     spec = ModelSpec()
     chat.configure(spec)
     chat._history = [{"role": "assistant", "content": "LEGACY_WORLD_POSE"}]

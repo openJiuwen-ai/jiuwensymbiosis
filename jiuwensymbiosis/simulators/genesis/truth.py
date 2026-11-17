@@ -177,7 +177,7 @@ class EntityRegistry:
         robot = None
         if runtime.motion is not None:
             if __package__:
-                from .base_motion import measure
+                from ..common.base_motion import measure
 
                 robot = measure(runtime.robot)
             else:

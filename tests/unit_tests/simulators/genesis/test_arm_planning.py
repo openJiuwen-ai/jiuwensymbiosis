@@ -11,13 +11,13 @@ import numpy as np
 import pytest
 
 from jiuwensymbiosis.api.actions import OPEN_GRIPPER
-from jiuwensymbiosis.simulators.genesis.agent import GenesisManipulationApi, make_session
+from jiuwensymbiosis.simulators.common.agent import SimulationManipulationApi, make_session
+from jiuwensymbiosis.simulators.common.observation_policy import TRUTH_PROMPT, allowed_tools, history_for
 from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate, link_pose, snapshot, world_unchanged
 from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
 from jiuwensymbiosis.simulators.genesis.arm_planning import CuroboPlanner, forward_kinematics
 from jiuwensymbiosis.simulators.genesis.arm_trajectory import Trajectory, TrajectoryFollower
 from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-from jiuwensymbiosis.simulators.genesis.observation_policy import TRUTH_PROMPT, allowed_tools, history_for
 from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
 from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
 from jiuwensymbiosis.simulators.genesis.robot_model import prepare_robot_model
@@ -264,7 +264,7 @@ def transport(monkeypatch, tmp_path):
 
 
 def test_named_gripper_uses_shared_session_transport(transport):
-    meta = GenesisManipulationApi.open_gripper.__tool_meta__
+    meta = SimulationManipulationApi.open_gripper.__tool_meta__
     assert not meta.input_params.get("required")
     assert OPEN_GRIPPER.param_schema["effector"]["type"] == "string"
     session, requests, state = transport()

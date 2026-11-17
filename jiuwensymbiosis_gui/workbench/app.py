@@ -226,13 +226,13 @@ def run(
     from nicegui import app as _ng_app
     from nicegui import ui
 
-    from jiuwensymbiosis.simulators.genesis.web.routes import install_genesis_routes
+    from jiuwensymbiosis.simulators.common.web.routes import install_simulation_routes
     from jiuwensymbiosis_gui.workbench.app_host import AppHost
     from jiuwensymbiosis_gui.workbench.app_state import AppState
     from jiuwensymbiosis_gui.workbench.layout import build_layout
 
     application = AppHost()
-    genesis_stream = install_genesis_routes(_ng_app)
+    genesis_stream = install_simulation_routes(_ng_app)
 
     async def connect_genesis():
         try:

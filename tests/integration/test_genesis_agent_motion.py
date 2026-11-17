@@ -27,16 +27,18 @@ def wait_for(check, timeout=30):
 
 def test_cancel_lease_and_scene_replacement(tmp_path):
     from jiuwensymbiosis.simulators.assets import AssetLibrary
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
-    from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-    from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+    from jiuwensymbiosis.simulators.common.agent import make_session
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 
     robot = next(
         a
         for a in AssetLibrary().search(kind="robot", query="moz1").items
         if a.root_id == "spiritai" and a.preview_mode == "urdf"
     )
-    preview = GenesisPreview(state_dir=tmp_path, settings=PreviewSettings(scene_id=robot.id, robot_mode="moz1_wheels"))
+    preview = SimulationPreview(
+        state_dir=tmp_path, settings=PreviewSettings(scene_id=robot.id, robot_mode="moz1_wheels")
+    )
     evidence = {}
     try:
         preview.start()

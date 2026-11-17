@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis import base_motion
-from jiuwensymbiosis.simulators.genesis.agent import GenesisDriver, run_agent_query
-from jiuwensymbiosis.simulators.genesis.agent_camera import CameraObservation
-from jiuwensymbiosis.simulators.genesis.visual_policy import OBSERVATION_POLICY
+from jiuwensymbiosis.simulators.common import base_motion
+from jiuwensymbiosis.simulators.common.agent import SimulationDriver, run_agent_query
+from jiuwensymbiosis.simulators.common.agent_camera import CameraObservation
+from jiuwensymbiosis.simulators.common.visual_policy import OBSERVATION_POLICY
 
 
 def test_timeout_reports_recoverable_stop_only_after_measured_stability(monkeypatch):
@@ -55,7 +55,7 @@ def make_driver(result):
             "cameras": [{"name": "head_cam"}],
         },
     )
-    driver = GenesisDriver(preview)
+    driver = SimulationDriver(preview)
     driver.connect()
     return driver, preview
 
