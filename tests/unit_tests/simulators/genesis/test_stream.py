@@ -55,7 +55,7 @@ class CpuPreview:
         self.camera = self.camera.command(action, **values)
         return {"accepted_revision": self.camera.revision}
 
-    def acknowledge_frame(self, sequence):
+    def acknowledge_frame(self, sequence, *, stream_epoch=None):
         pass
 
     def request_keyframe(self):
@@ -270,7 +270,7 @@ async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
         def status(self):
             return {"state": "ready"}
 
-        def acknowledge_frame(self, sequence):
+        def acknowledge_frame(self, sequence, *, stream_epoch=None):
             self.acked.append(sequence)
 
         def request_keyframe(self):

@@ -56,7 +56,7 @@ class CpuPreview:
         self.camera = self.camera.command(action, **values)
         return {"accepted_revision": self.camera.revision}
 
-    def acknowledge_frame(self, sequence):
+    def acknowledge_frame(self, sequence, *, stream_epoch=None):
         pass
 
     def request_keyframe(self):
@@ -160,6 +160,28 @@ def test_scene_selector_keeps_native_robots_and_hides_unsupported_mac_assets(cli
     monkeypatch.setattr(routes.sys, "platform", platform)
     expected = ["demo", "jumper", "microduck"] if platform == "darwin" else [entry["id"] for entry in entries]
     assert [entry["id"] for entry in client[0].get("/genesis/scenes").json()] == expected
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_viewer_and_preview_settings_agree_on_platform_modes(client, monkeypatch, platform):
+    from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+    from jiuwensymbiosis.simulators.common.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", platform)
+    html = client[0].get("/simulation/viewer").text
+
+    assert '<option data-engines="genesis,mujoco" value="inspection">' in html
+    for mode in ("jumper", "microduck"):
+        assert f'<option data-engines="mujoco" value="{mode}">' in html
+    for mode in ("moz1_wheels", "virtual_camera"):
+        option = f'<option data-engines="genesis" value="{mode}">'
+        if platform == "darwin":
+            assert option not in html
+            with pytest.raises(ValueError, match="not supported"):
+                PreviewSettings(robot_mode=mode)
+        else:
+            assert option in html
+            assert PreviewSettings(robot_mode=mode).robot_mode == mode
 
 
 @pytest.mark.parametrize(

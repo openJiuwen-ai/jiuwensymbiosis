@@ -109,12 +109,22 @@ def recover_session(
 ) -> tuple[bool, bool]:
     """Run the shared best-effort release/home actions."""
     api = session.api
+    token = getattr(session, "cancel_token", None)
+
+    def cancelled() -> bool:
+        if token is None or not token.is_set():
+            return False
+        logger.warning("%s: run cancelled; skipping remaining recovery", log_prefix)
+        return True
+
     released_ok = False
     if release:
         for stop_method in ("deactivate_suction", "open_gripper", "release_effector"):
             fn = getattr(api, stop_method, None)
             if not callable(fn):
                 continue
+            if cancelled():
+                return False, False
             try:
                 result = fn()
                 if isinstance(result, dict) and result.get("ok") is False:
@@ -129,6 +139,8 @@ def recover_session(
             env = getattr(session, "env", None)
             set_end_effector = getattr(env, "set_end_effector", None)
             if callable(set_end_effector):
+                if cancelled():
+                    return False, False
                 try:
                     result = set_end_effector(False)
                     if isinstance(result, dict) and result.get("ok") is False:
@@ -143,7 +155,7 @@ def recover_session(
         home_fn = getattr(api, "recovery_home", None)
         if not callable(home_fn):
             home_fn = getattr(api, "home", None)
-        if callable(home_fn):
+        if callable(home_fn) and not cancelled():
             try:
                 result = home_fn()
                 if isinstance(result, dict) and result.get("ok") is False:
@@ -251,6 +263,8 @@ class RecoveryRail(AgentRail):
             home=not skip_home,
             log_prefix="RecoveryRail",
         )
+        if not (released_ok or home_ok) and token is not None and token.is_set():
+            return
         self._notify_recover(
             tool_name,
             home_ok=home_ok,

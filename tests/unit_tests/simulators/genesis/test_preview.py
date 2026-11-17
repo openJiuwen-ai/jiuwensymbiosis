@@ -1,5 +1,6 @@
 """Camera boundaries and real process ownership, using a CPU-only child."""
 
+import asyncio
 import importlib.util
 import math
 import subprocess
@@ -118,8 +119,55 @@ def test_backend_switch_exits_old_worker_and_revokes_control(manager, monkeypatc
     wait_for(lambda: manager.status()["state"] == "ready")
     assert old.poll() is not None and manager.status()["pid"] != old.pid
     assert manager.status()["backend"] == "mujoco"
+    assert manager.status()["streaming"] is False
     with pytest.raises(RuntimeError, match="会话已失效"):
         manager.motion_state("old-owner")
+
+
+async def test_backend_switch_delivers_first_new_frame_on_the_same_track(manager, monkeypatch):
+    pytest.importorskip("aiortc")
+    from jiuwensymbiosis.simulators.common.stream import PreviewStream, make_video_track
+
+    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: object())
+    manager.start()
+    await asyncio.to_thread(wait_for, lambda: manager.status()["state"] == "ready")
+    manager.set_streaming(True)
+    old_epoch = manager.status()["stream_epoch"]
+    service = PreviewStream(manager)
+    track = make_video_track(manager)
+
+    def publish(epoch, payload):
+        manager._mailbox.write_frame(
+            {
+                "sequence": 1,
+                "captured_at": time.monotonic(),
+                "stream_epoch": epoch,
+                "config_revision": 0,
+                "keyframe": True,
+            },
+            payload,
+        )
+
+    try:
+        publish(old_epoch, b"old")
+        first = await asyncio.wait_for(track.recv(), 1)
+        assert bytes(first) == b"old"
+
+        await service.configure({"backend": "mujoco", "resolution": "960x540", "fps": 30})
+        await asyncio.to_thread(wait_for, lambda: manager.status()["state"] == "ready")
+        status = manager.status()
+        assert status["streaming"] is True
+        assert status["stream_epoch"] > old_epoch
+        manager.acknowledge_frame(1, stream_epoch=old_epoch)
+        assert manager._mailbox.acknowledged() == 0
+
+        publish(status["stream_epoch"], b"new")
+        second = await asyncio.wait_for(track.recv(), 1)
+        assert bytes(second) == b"new"
+        assert second.pts > first.pts
+        assert manager._mailbox.acknowledged() == 1
+    finally:
+        track.stop()
 
 
 def test_missing_target_dependency_preserves_running_engine(manager, monkeypatch):

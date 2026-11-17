@@ -57,12 +57,23 @@ RASTER = PreviewBackend("genesis_raster", "Genesis Rasterizer", True, False, Fal
 NYX = PreviewBackend("genesis_nyx", "Nyx", False, True, True, True)
 
 
-def validate_backend(backend: str, mode: str) -> None:
+def supported_modes(backend: str, platform: str | None = None) -> tuple[str, ...]:
+    """Return the robot modes the engine can start on this platform."""
+    if backend == "genesis":
+        if (platform or sys.platform) == "darwin":
+            return ("inspection",)
+        return tuple(mode for mode in MODES if mode not in POLICY_MODES)
+    if backend == "mujoco":
+        return ("inspection", *POLICY_MODES)
+    return ()
+
+
+def validate_backend(backend: str, mode: str, platform: str | None = None) -> None:
     """Validate the explicitly selected engine and controller combination."""
-    if backend not in {"genesis", "mujoco"} or mode not in MODES:
+    modes = supported_modes(backend, platform)
+    if not modes or mode not in MODES:
         raise ValueError("Unsupported simulation backend or robot mode")
-    unsupported = POLICY_MODES if backend == "genesis" else ("moz1_wheels", "virtual_camera")
-    if mode in unsupported:
+    if mode not in modes:
         raise ValueError(f"{mode} is not supported by {backend}")
 
 
@@ -75,7 +86,7 @@ def preview_backend(backend: str, platform: str | None = None) -> PreviewBackend
 
 
 def required_modules(backend: str, mode: str, platform: str | None = None) -> tuple[str, ...]:
-    validate_backend(backend, mode)
+    validate_backend(backend, mode, platform)
     media = ("aiortc", "av", "PIL")
     if backend == "mujoco":
         return ("mujoco", *media, *tuple(n for n in MODES[mode].modules if n != "mujoco"))
@@ -84,7 +95,7 @@ def required_modules(backend: str, mode: str, platform: str | None = None) -> tu
 
 
 def installation_extra(backend: str, mode: str, platform: str | None = None) -> str:
-    validate_backend(backend, mode)
+    validate_backend(backend, mode, platform)
     if backend == "mujoco":
         return ",".join(filter(None, ("mujoco", MODES[mode].extra)))
     return "genesis"

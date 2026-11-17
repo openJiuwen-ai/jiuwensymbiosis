@@ -16,7 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 
 from jiuwensymbiosis.simulators.assets import AssetError, AssetLibrary
-from jiuwensymbiosis.simulators.common.preview_backends import MODES, POLICY_MODES, PhysicsBackend, RobotMode
+from jiuwensymbiosis.simulators.common.preview_backends import (
+    MODES,
+    POLICY_MODES,
+    PhysicsBackend,
+    RobotMode,
+    supported_modes,
+)
 from jiuwensymbiosis.simulators.common.scene_catalog import scene_catalog
 from jiuwensymbiosis.simulators.common.stream import PreviewStream, StreamError
 from jiuwensymbiosis.simulators.common.web.local_request import require_local_action
@@ -231,16 +237,12 @@ def install_simulation_routes(app: Any, service: PreviewStream | None = None) ->
     @router.get("/viewer")
     def viewer():
         html = (_ASSETS / "viewer.html").read_text(encoding="utf-8")
+        modes_by_engine = {engine: supported_modes(engine) for engine in ("genesis", "mujoco")}
         options = []
         for mode, spec in MODES.items():
-            engines = (
-                "mujoco"
-                if mode in POLICY_MODES
-                else "genesis"
-                if mode in ("moz1_wheels", "virtual_camera")
-                else "genesis,mujoco"
-            )
-            options.append(f'<option data-engines="{engines}" value="{escape(mode)}">{escape(spec.label)}</option>')
+            engines = ",".join(engine for engine, modes in modes_by_engine.items() if mode in modes)
+            if engines:
+                options.append(f'<option data-engines="{engines}" value="{escape(mode)}">{escape(spec.label)}</option>')
         html = html.replace("{{ROBOT_MODE_OPTIONS}}", "".join(options))
         for name in ("viewer.js", "viewer.css"):
             version = sha256((_ASSETS / name).read_bytes()).hexdigest()[:16]

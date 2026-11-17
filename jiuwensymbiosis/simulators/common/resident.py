@@ -219,8 +219,8 @@ class ResidentPreview:
             raise RuntimeError("仿真后台返回了无效的视频响应。")
         return frame
 
-    def acknowledge_frame(self, sequence: int) -> None:
-        self._rpc("acknowledge_frame", sequence=sequence)
+    def acknowledge_frame(self, sequence: int, *, stream_epoch: int | None = None) -> None:
+        self._rpc("acknowledge_frame", sequence=sequence, stream_epoch=stream_epoch)
 
     def request_keyframe(self) -> None:
         self._rpc("request_keyframe")

@@ -318,6 +318,43 @@ class TestCancelledRunSkipsRecovery:
         assert mock_session.api._call_log == []
 
     @pytest.mark.asyncio
+    async def test_cancellation_during_payload_read_skips_recovery(self, mock_session, monkeypatch):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = mock_session.cancel_token = CancelToken()
+
+        def read_payload(_):
+            token.set()
+            return False
+
+        monkeypatch.setattr(type(mock_session.env), "holding_payload", property(read_payload), raising=False)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await RecoveryRail(mock_session).on_tool_exception(ctx)
+
+        assert not mock_session.api._call_log
+        assert RECOVERY_PERFORMED_KEY not in ctx.extra
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("release_ok", [True, False])
+    async def test_cancellation_during_release_skips_remaining_commands(self, mock_session, monkeypatch, release_ok):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = mock_session.cancel_token = CancelToken()
+
+        def release():
+            mock_session.api._call_log.append("deactivate_suction")
+            token.set()
+            return {"ok": release_ok}
+
+        monkeypatch.setattr(mock_session.api, "deactivate_suction", release)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await RecoveryRail(mock_session).on_tool_exception(ctx)
+
+        assert mock_session.api._call_log == ["deactivate_suction"]
+
+    @pytest.mark.asyncio
     async def test_uncancelled_run_still_recovers(self, mock_session):
         from jiuwensymbiosis.agent.cancel import CancelToken
 

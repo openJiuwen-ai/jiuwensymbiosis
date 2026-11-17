@@ -34,7 +34,7 @@ def make_video_track(preview: SimulationPreview | ResidentPreview) -> Any:
     class PreviewTrack(VideoStreamTrack):
         def __init__(self) -> None:
             super().__init__()
-            self.sequence = -1
+            self._last_frame_id: tuple[int | None, int] | None = None
             self.epoch: float | None = None
             self.keyframes = 0
             self.waiting_keyframe = False
@@ -57,8 +57,15 @@ def make_video_track(preview: SimulationPreview | ResidentPreview) -> Any:
                     continue
                 if state != "ready":
                     raise MediaStreamError
-                if sample is not None and sample["sequence"] != self.sequence:
-                    self.sequence = sample["sequence"]
+                frame_id = (sample.get("stream_epoch"), sample["sequence"]) if sample is not None else None
+                if sample is not None and frame_id != self._last_frame_id:
+                    self._last_frame_id = frame_id
+                    acknowledge = partial(
+                        asyncio.to_thread,
+                        preview.acknowledge_frame,
+                        sample["sequence"],
+                        stream_epoch=sample.get("stream_epoch"),
+                    )
                     identity = status.get("scene", {}).get("instance_id")
                     mismatched = (
                         sample.get("scene_instance_id") != identity
@@ -66,7 +73,7 @@ def make_video_track(preview: SimulationPreview | ResidentPreview) -> Any:
                         or sample.get("stream_epoch") != status.get("stream_epoch")
                     )
                     if identity and mismatched:
-                        await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
+                        await acknowledge()
                         await asyncio.to_thread(preview.request_keyframe)
                         self.waiting_keyframe = True
                         continue
@@ -75,7 +82,7 @@ def make_video_track(preview: SimulationPreview | ResidentPreview) -> Any:
                         self.waiting_keyframe = True
                     if self.waiting_keyframe:
                         if not sample.get("keyframe") or time.monotonic() - sample["captured_at"] >= 2:
-                            await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
+                            await acknowledge()
                             await asyncio.sleep(0)
                             continue
                         self.waiting_keyframe = False
@@ -83,7 +90,7 @@ def make_video_track(preview: SimulationPreview | ResidentPreview) -> Any:
                         self.epoch = sample["captured_at"]
                     frame = Packet(sample["h264"])
                     self.keyframes += bool(sample.get("keyframe"))
-                    await asyncio.to_thread(preview.acknowledge_frame, self.sequence)
+                    await acknowledge()
                     frame.pts = round((sample["captured_at"] - self.epoch) * 90000)
                     frame.time_base = Fraction(1, 90000)
                     return frame

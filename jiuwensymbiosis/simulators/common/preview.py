@@ -273,9 +273,9 @@ class SimulationPreview:
                     self._frame = sample
             return self._frame
 
-    def acknowledge_frame(self, sequence: int) -> None:
+    def acknowledge_frame(self, sequence: int, *, stream_epoch: int | None = None) -> None:
         with self._lock:
-            if self._mailbox is not None:
+            if self._mailbox is not None and (stream_epoch is None or stream_epoch == self._stream_epoch):
                 self._mailbox.acknowledge(sequence)
 
     def capture_image(
@@ -516,9 +516,17 @@ class SimulationPreview:
                 ]
                 if missing:
                     raise RuntimeError(f"缺少 {', '.join(missing)}；安装 .[{installation_extra(backend, robot_mode)}]")
+                switch_started = time.monotonic()
+                resume_streaming = self._streaming
                 self.stop()
                 self.settings = self._requested_settings = settings
-                return self.start()
+                started = self.start()
+                if started["state"] == "failed":
+                    return started
+                self._switch_started = switch_started
+                if resume_streaming:
+                    self.set_streaming(True)
+                return self.status()
             if self._motion_owner is not None:
                 raise RuntimeError("运动任务持有控制权，请先结束任务再切换配置。")
             self._base_request = None
