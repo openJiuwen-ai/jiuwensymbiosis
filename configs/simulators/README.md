@@ -217,7 +217,7 @@ MOZ1 示例策略在 [collision/](collision/README.md)，GUI 不自动加载。
 
 `planning/moz1.yaml` 与 `planning/panda.yaml` 是 cuRobo V2 的机器人语义模板。
 配置解析、公共动作、坐标约定、停止语义与适用范围见
-[Genesis 通用机械臂规划](../../docs/zh/how-to/genesis-arm-planning.md)。
+[仿真器](../../docs/zh/how-to/simulator.md)。
 
 ## SceneGen 场景消费
 
