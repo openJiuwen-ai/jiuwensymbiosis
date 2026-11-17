@@ -139,6 +139,7 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
             category=category,
             representations={"source": relative},
             preview_mode="static_usd" if kind == "environment" else None,
+            material_rules=spec.material_rules,
         )
 
     if spec.scanner == "content_tree":

@@ -49,6 +49,7 @@ class Asset:
     options: dict[str, Any] = field(default_factory=dict)
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
     material_bundle: dict[str, Any] = field(default_factory=dict)
+    material_rules: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

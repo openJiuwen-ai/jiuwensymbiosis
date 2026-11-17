@@ -433,3 +433,35 @@ def test_case_variants_keep_canonical_wrapper_and_lowercase_preference(asset_fix
     (directory / "Aligned.usda").write_text('#usda 1.0\n(upAxis = "Y")\n')
     build_index(config)
     assert library.search(query="cup").items[0].representations["source"].endswith("Aligned.USD")
+
+
+def test_declared_material_rules_survive_scan_index_resolution(asset_fixture):
+    from jiuwensymbiosis.simulators.genesis.material_rules.interioragent import RULES
+    from jiuwensymbiosis.simulators.genesis.scene_catalog import material_rules_for_asset
+
+    library, config, _, data, _ = asset_fixture
+    # An arbitrary root name must use the declaration, never a name heuristic.
+    data["roots"][0]["material_rules"] = "interioragent"
+    config.source.write_text(yaml.safe_dump(data))
+    build_index(load_config(config.source))
+    identifier = "library://catalog/Environments/Room/room"
+    assert library.get(identifier).material_rules == "interioragent"
+    assert library.search(root_id="catalog").items[0].material_rules == "interioragent"
+    assert material_rules_for_asset(library.resolve(identifier)) is RULES
+    assert library.get("library://geniesim/background/kitchen/kitchen_1/background").material_rules is None
+    # Reads use one published index snapshot, not newly edited live YAML.
+    data["roots"][0].pop("material_rules")
+    config.source.write_text(yaml.safe_dump(data))
+    assert material_rules_for_asset(library.resolve(identifier)) is RULES
+    build_index(load_config(config.source))
+    assert material_rules_for_asset(library.resolve(identifier)) is None
+
+
+def test_old_index_without_material_rules_requires_rebuild(asset_fixture):
+    library, config, *_ = asset_fixture
+    with sqlite3.connect(config.index) as db:
+        manifest = json.loads(db.execute("SELECT value FROM metadata WHERE key='manifest'").fetchone()[0])
+        manifest["schema_version"] = 2
+        db.execute("UPDATE metadata SET value=? WHERE key='manifest'", (json.dumps(manifest),))
+    with pytest.raises(AssetError, match="build"):
+        library.search()

@@ -17,8 +17,8 @@ from .config import AssetConfig, load_config, simulator_root
 from .models import Asset, AssetError, AssetPage, ResolvedAsset, local_file
 from .scanners import scan_root
 
-SCHEMA_VERSION = 2
-SCANNER_VERSION = 2
+SCHEMA_VERSION = 3
+SCANNER_VERSION = 3
 DEFAULT_INDEX_PATH = simulator_root() / "outputs/simulator-assets/index.sqlite"
 
 

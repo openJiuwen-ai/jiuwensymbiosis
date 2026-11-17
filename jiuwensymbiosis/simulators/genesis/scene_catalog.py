@@ -87,7 +87,7 @@ def material_rules_for_asset(asset: ResolvedAsset | None) -> MaterialRules | Non
     """Select recipes from the root's declared ``material_rules`` key, never paths or shader names."""
     if asset is None:
         return None
-    key = getattr(asset.asset, "material_rules", None)
+    key = asset.asset.material_rules
     if not key:
         return None
     if TYPE_CHECKING or __package__:
