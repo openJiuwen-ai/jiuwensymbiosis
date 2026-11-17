@@ -60,3 +60,9 @@ def test_composite_requires_background_and_mobile_mode():
     assert PreviewSettings(
         scene_id="library://rooms/home", robot_id="library://robots/moz1", robot_mode="moz1_wheels"
     ).robot_id
+
+
+def test_foundation_underside_does_not_hide_the_walkable_top():
+    foundation = box((4, 4, 0.7), (0, 0, -0.35), "foundation")
+    floor = box((4, 4, 0.002), (0, 0, 0.001), "finish")
+    assert supported_spawn([foundation, floor])[2] == pytest.approx(0.002)

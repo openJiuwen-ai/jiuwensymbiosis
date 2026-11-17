@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-PROFILE_PATH = Path(__file__).with_name("data") / "genesis_lighting.yaml"
+DEFAULT_EXPOSURE_EV = -8.0
 
 
 @dataclass(frozen=True)
@@ -38,12 +38,20 @@ class SourceLighting:
     exposure_ev: float
     emitter_gain: float = 1.0
     environment_kind: str = "hdr_texture"
+    fitting_decisions: tuple[dict, ...] = ()
+    native_lights: tuple[dict, ...] = ()
+    approximations: tuple[dict, ...] = ()
 
     def summary(self) -> dict:
         """Public scene state, without local asset paths or bulky vertex arrays."""
         return {
             "mode": "usd_hdr_and_emissive_rectangles",
+            "selection": "asset_features",
+            "fitting_preserved_count": sum(d["action"] == "preserve_source" for d in self.fitting_decisions),
             "rectangle_count": len(self.rectangles),
+            "point_count": sum(e["type"] == "point" for e in self.native_lights),
+            "directional_count": sum(e["type"] == "directional" for e in self.native_lights),
+            "approximation_count": len(self.approximations),
             "fitted_rectangle_count": sum(r.fixture_path is not None for r in self.rectangles),
             "emitter_gain": self.emitter_gain,
             "source_hdr": self.environment_kind == "hdr_texture",
@@ -61,28 +69,14 @@ class SourceLighting:
         }
 
 
-def load_source_lighting(source: Path, scene_id: str) -> SourceLighting | None:
-    """Opt in only scenes whose lighting has been calibrated and tested."""
-    import yaml
-
-    with PROFILE_PATH.open() as stream:
-        profiles = yaml.safe_load(stream)
-    profile = profiles.get("scenes", {}).get(scene_id)
-    if profile is None:
-        return None
-    if set(profile) != {"exposure_ev", "mode"} or profile["mode"] not in {
-        "usd_emissive_rectangles",
-        "usd_fitted_emitters",
-    }:
-        raise ValueError("不支持的源场景照明配置。")
-    rig = read_source_lighting(source, exposure_ev=float(profile["exposure_ev"]))
-    if profile["mode"] == "usd_fitted_emitters":
-        if TYPE_CHECKING or __package__:
-            from .fixture_lighting import fit_rectangles, read_diffusers
-        else:
-            from fixture_lighting import fit_rectangles, read_diffusers
-        rig = fit_rectangles(rig, read_diffusers(source))
-    return rig
+def load_source_lighting(source: Path, *, directory: Path, exposure_ev: float = DEFAULT_EXPOSURE_EV) -> SourceLighting:
+    """Apply the same source-light and material-driven fitting policy to every USD."""
+    if TYPE_CHECKING or __package__:
+        from .fixture_lighting import auto_fit_rectangles, read_diffusers
+    else:
+        from fixture_lighting import auto_fit_rectangles, read_diffusers
+    rig = read_source_lighting(source, exposure_ev=exposure_ev, directory=directory)
+    return auto_fit_rectangles(rig, read_diffusers(source)) if rig.rectangles else rig
 
 
 def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | None = None) -> SourceLighting:
@@ -103,9 +97,9 @@ def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | 
         x, y, z = map(float, v)
         return np.array((x, -z, y) if up == "Y" else (x, y, z))
 
-    domes, rectangles = [], []
+    domes, rectangles, native_lights, approximations = [], [], [], []
     environment_kind = "hdr_texture"
-    for prim in stage.Traverse():
+    for prim in Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies()):
         if not prim.HasAPI(UsdLux.LightAPI):
             continue
         if UsdGeom.Imageable(prim).ComputeVisibility() == "invisible":
@@ -119,6 +113,11 @@ def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | 
         if invalid_color or not math.isfinite(power) or power < 0:
             raise ValueError(f"灯光数值无效：{prim.GetPath()}")
         transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        if float(light.GetSpecularAttr().Get()) != 1 or float(light.GetDiffuseAttr().Get()) != 1:
+            approximations.append(
+                {"path": str(prim.GetPath()), "reason": "Nyx cannot preserve separate diffuse/specular multipliers"}
+            )
+
         if prim.IsA(UsdLux.DomeLight):
             dome = UsdLux.DomeLight(prim)
             asset = dome.GetTextureFileAttr().Get()
@@ -146,11 +145,87 @@ def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | 
                 raise ValueError("当前 Nyx HDR 接口不能保留倾斜的 DomeLight。")
             x_axis = world_zup(transform.TransformDir(Gf.Vec3d(1, 0, 0)))
             domes.append((hdr_path, math.atan2(x_axis[1], x_axis[0]), power, tuple(color)))
+        elif prim.IsA(UsdLux.SphereLight) or prim.IsA(UsdLux.DistantLight):
+            shaping = UsdLux.ShapingAPI(prim)
+            if prim.HasAPI(UsdLux.ShapingAPI):
+                # The native point/directional adapter cannot preserve angular shaping.
+                for attr in (shaping.GetShapingFocusAttr(), shaping.GetShapingConeSoftnessAttr()):
+                    if attr and attr.Get() not in (None, 0):
+                        raise ValueError(f"Unsupported native-light shaping: {prim.GetPath()}")
+                cone = shaping.GetShapingConeAngleAttr().Get()
+                if cone is not None and cone < 180 or shaping.GetShapingIesFileAttr().Get():
+                    raise ValueError(f"Unsupported native-light cone/IES: {prim.GetPath()}")
+            entry = {"path": str(prim.GetPath()), "color": color.tolist()}
+            if prim.IsA(UsdLux.SphereLight):
+                sphere = UsdLux.SphereLight(prim)
+                axes = np.array([world_zup(transform.TransformDir(Gf.Vec3d(*v))) for v in np.eye(3)])
+                lengths = np.linalg.norm(axes, axis=1) * scale
+                authored_radius = float(sphere.GetRadiusAttr().Get())
+                radius = authored_radius * float(lengths.mean())
+                if not math.isfinite(radius) or radius < 0 or np.any(lengths <= 0):
+                    raise ValueError(f"Invalid sphere scale: {prim.GetPath()}")
+                area = 4 * math.pi * radius**2
+                nonuniform = not np.allclose(lengths, lengths[0], rtol=1e-4)
+                if nonuniform:
+                    import trimesh
+
+                    mesh = trimesh.creation.icosphere(subdivisions=3, radius=authored_radius)
+                    mesh.vertices = mesh.vertices @ axes * scale
+                    area = float(mesh.area)
+                    approximations.append(
+                        {
+                            "path": str(prim.GetPath()),
+                            "reason": "nonuniform sphere area estimated from subdivided mesh; directional distribution averaged",
+                        }
+                    )
+                # Cauchy mean projected area = surface area/4 for a convex emitter.
+                point = bool(sphere.GetTreatAsPointAttr().Get())
+                intensity = power / 4 if light.GetNormalizeAttr().Get() or point else power * area / 4
+                entry.update(
+                    type="point",
+                    pos=(world_zup(transform.ExtractTranslation()) * scale).tolist(),
+                    intensity=intensity,
+                    radius_m=radius,
+                    source_area_m2=area,
+                )
+                reason = "finite sphere approximated by point; no finite-size soft shadows"
+            else:
+                angle = float(UsdLux.DistantLight(prim).GetAngleAttr().Get())
+                if not math.isfinite(angle) or not 0 <= angle <= 180:
+                    raise ValueError(f"Invalid distant angular diameter: {prim.GetPath()}")
+                direction = world_zup(transform.TransformDir(Gf.Vec3d(0, 0, -1)))
+                direction /= np.linalg.norm(direction)
+                factor = math.pi * math.sin(math.radians(angle) / 2) ** 2 if angle else 1
+                entry.update(
+                    type="directional",
+                    direction=direction.tolist(),
+                    intensity=power if light.GetNormalizeAttr().Get() else power * factor,
+                    angle_deg=angle,
+                )
+                reason = "finite angular disk approximated by directional ray; soft shadows not retained"
+            native_lights.append(entry)
+            approximations.append({"path": str(prim.GetPath()), "reason": reason})
         elif prim.IsA(UsdLux.RectLight):
             rect = UsdLux.RectLight(prim)
-            cone = UsdLux.ShapingAPI(prim).GetShapingConeAngleAttr()
-            if cone and cone.HasAuthoredValueOpinion() and float(cone.Get()) != 90:
-                raise ValueError("Nyx emissive rectangles require a 180-degree spread")
+            shaping = UsdLux.ShapingAPI(prim)
+            cone_value = shaping.GetShapingConeAngleAttr().Get()
+            softness_value = shaping.GetShapingConeSoftnessAttr().Get()
+            focus_value = shaping.GetShapingFocusAttr().Get()
+            cone = 90.0 if cone_value is None else float(cone_value)
+            softness = 0.0 if softness_value is None else float(softness_value)
+            focus = 0.0 if focus_value is None else float(focus_value)
+            # USD RectLight emits on its front hemisphere only. A neutral
+            # cutoff anywhere from 90 to 180 degrees clips none of that light.
+            # Softened/focused/IES emission requires an angular shader, which
+            # plain emissive geometry cannot preserve.
+            if (
+                not all(math.isfinite(value) for value in (cone, softness, focus))
+                or not 90 <= cone <= 180
+                or softness != 0
+                or focus != 0
+                or shaping.GetShapingIesFileAttr().Get()
+            ):
+                raise ValueError("Nyx emissive rectangles require unshaped hemispherical emission")
             if rect.GetTextureFileAttr().Get():
                 raise ValueError("当前矩形发光几何不支持灯光纹理。")
             w, h = float(rect.GetWidthAttr().Get()), float(rect.GetHeightAttr().Get())
@@ -170,9 +245,28 @@ def read_source_lighting(source: Path, *, exposure_ev: float, directory: Path | 
             )
         else:
             raise ValueError(f"当前源照明未实现 {prim.GetTypeName()}，不能静默丢弃灯光。")
-    if len(domes) != 1:
-        raise ValueError("当前源照明要求恰好一个 DomeLight。")
-    return SourceLighting(*domes[0], tuple(rectangles), exposure_ev, environment_kind=environment_kind)
+    if len(domes) > 1:
+        raise ValueError("Multiple DomeLights require environment compositing; not supported")
+    if not domes:
+        if directory is None:
+            raise ValueError("A scene without DomeLight requires a runtime output directory")
+        import cv2
+
+        directory.mkdir(parents=True, exist_ok=True)
+        hdr = directory / "no-environment.hdr"
+        if not cv2.imwrite(str(hdr), np.zeros((8, 16, 3), dtype=np.float32)):
+            raise RuntimeError("Cannot write zero environment HDR")
+        domes.append((str(hdr.resolve()), 0.0, 0.0, (1.0, 1.0, 1.0)))
+        environment_kind = "none"
+
+    return SourceLighting(
+        *domes[0],
+        tuple(rectangles),
+        exposure_ev,
+        environment_kind=environment_kind,
+        native_lights=tuple(native_lights),
+        approximations=tuple(approximations),
+    )
 
 
 def make_environment(rig: SourceLighting):
@@ -219,5 +313,22 @@ def append_emitters(scene_path: Path, directory: Path, rig: SourceLighting) -> N
         )
         instance.matOverride = material
         asset.set_instance(start + index, instance)
+    start_light = asset.light_size()
+    asset.light_resize(start_light + len(rig.native_lights))
+    for index, entry in enumerate(rig.native_lights):
+        light = nps.LightAsset()
+        light.color = nps.float3(*entry["color"])
+        light.intensity = entry["intensity"]
+        light.shadow = True
+        if entry["type"] == "point":
+            light.type = nps.ELightType.Point
+            light.unit = nps.ELightUnit.Candela
+            light.point_position = nps.float3_z_up_to_y_up_a(nps.float3(*entry["pos"]))
+            light.point_range = 100
+        else:
+            light.type = nps.ELightType.Directional
+            light.unit = nps.ELightUnit.Lux
+            light.directional_direction = nps.float3_z_up_to_y_up_a(nps.float3(*entry["direction"]))
+        asset.set_light(start_light + index, light)
     nps.export_scene_file(str(scene_path), asset)
     (directory / "lighting-audit.json").write_text(json.dumps(rig.audit(), indent=2))

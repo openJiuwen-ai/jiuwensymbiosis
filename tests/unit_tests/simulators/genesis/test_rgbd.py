@@ -142,5 +142,5 @@ def test_depth_region_samples_only_rectified_requested_pixels(ray_sdk):
 )
 def test_invalid_rgbd_request_is_rejected_before_worker_access(tmp_path, camera, stride):
     preview = GenesisPreview(state_dir=tmp_path)
-    with pytest.raises(ValueError, match="robot camera and sampling stride"):
+    with pytest.raises(ValueError, match="calibrated camera and sampling stride"):
         preview.capture_image(camera, include_depth=True, depth_stride=stride)

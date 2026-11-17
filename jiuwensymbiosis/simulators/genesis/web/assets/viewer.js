@@ -4,6 +4,7 @@ import {CounterRate, BackendMetrics} from './metrics.mjs';
 import {loadingView} from './loading.mjs';
 const byId = (id) => document.getElementById(id);
 const video = byId('video');
+const movableCamera = () => observing() || viewState?.settings?.robot_mode === 'virtual_camera';
 const observing = () => (viewState?.settings?.camera_name || 'observer') === 'observer';
 let peer = null, session = null, generation = 0, connecting = false, busy = false;
 let backendState = 'unknown', pendingCamera = null, sendingCamera = false;
@@ -43,8 +44,8 @@ function buttons() {
   const controlsUnavailable = busy || backendState !== 'ready' || !session || peer?.connectionState !== 'connected';
   byId('camera-source').disabled = busy || backendState !== 'ready';
   byId('resolution').disabled ||= !observing();
-  byId('reset').disabled = controlsUnavailable || selecting || !observing();
-  byId('navigation-hint').hidden = !observing();
+  byId('reset').disabled = controlsUnavailable || selecting || !movableCamera();
+  byId('navigation-hint').hidden = !movableCamera();
   byId('focus').disabled = byId('reset').disabled;
   byId('clear-selection').disabled = byId('reset').disabled;
   for (const button of document.querySelectorAll('[data-camera]')) button.disabled = byId('reset').disabled;
@@ -154,7 +155,7 @@ async function backendAction(action) {
 const clamp = (v) => Math.max(-1, Math.min(1, v));
 let cameraTimer = null;
 function camera(action, dx = 0, dy = 0, delta = 0, forward = 0, strafe = 0, lift = 0) {
-  if (!observing() || busy || selecting || backendState !== 'ready' || !session || peer?.connectionState !== 'connected') return;
+  if (!movableCamera() || busy || selecting || backendState !== 'ready' || !session || peer?.connectionState !== 'connected') return;
   if (pendingCamera?.action !== action) pendingCamera = {action};
   for (const [key, value] of Object.entries({dx, dy, delta, forward, strafe, lift})) {
     pendingCamera[key] = clamp((pendingCamera[key] || 0) + value);
@@ -179,7 +180,7 @@ async function flushCamera() {
   finally { sendingCamera = false; if (pendingCamera) scheduleCamera(); }
 }
 const navigation = new ViewportNavigation(video, {
-  ready: () => observing() && !busy && !selecting && backendState === 'ready' && !!session && peer?.connectionState === 'connected',
+  ready: () => movableCamera() && !busy && !selecting && backendState === 'ready' && !!session && peer?.connectionState === 'connected',
   send: ({action, dx, dy, delta, forward, strafe, lift}) => camera(action, dx, dy, delta, forward, strafe, lift),
   cancel: () => { pendingCamera = null; clearTimeout(cameraTimer); cameraTimer = null; },
   onSpeed: speed => {
@@ -252,7 +253,7 @@ for (const id of ['scene', 'resolution', 'fps', 'robot-mode', 'robot', 'render-q
   }
   if (id === 'scene' && mode === 'static_usd' && !byId('robot').value) byId('robot-mode').value = 'inspection';
   if (id === 'robot') byId('robot-mode').value = byId('robot').value ? 'moz1_wheels' : 'inspection';
-  if (id === 'robot-mode' && byId('robot-mode').value === 'inspection') byId('robot').value = '';
+  if (id === 'robot-mode' && byId('robot-mode').value !== 'moz1_wheels') byId('robot').value = '';
   showQuality();
   if (backendState === 'ready') backendAction('configure');
 };
@@ -340,7 +341,7 @@ async function poll() {
       if (state.cameras) {
         const names = ['observer', ...state.cameras.map(camera => camera.name)];
         if (JSON.stringify([...cameraSelect.options].map(option => option.value)) !== JSON.stringify(names)) {
-          const labels = {observer: '观察视角', head_cam: '头部相机', left_gripper_cam: '左手相机', right_gripper_cam: '右手相机'};
+          const labels = {observer: '观察视角', scan_cam: '虚拟相机', head_cam: '头部相机', left_gripper_cam: '左手相机', right_gripper_cam: '右手相机'};
           cameraSelect.replaceChildren(...names.map(name => new Option(labels[name] || name, name)));
         }
       }

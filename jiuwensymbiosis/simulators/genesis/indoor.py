@@ -1,12 +1,7 @@
-"""Static indoor collision geometry and conservative supported robot placement.
-
-Visuals stay in the original USD. Collision meshes bake USD world transforms,
-units and up-axis before convex decomposition, so rooms are never one hull.
-"""
+"""Read-only room geometry for floor selection and logical navigation admission."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -82,10 +77,12 @@ def _inside_xy(points, triangles):
     )
 
 
-def supported_spawn(meshes: list[RoomMesh], *, radius: float = 0.42, height: float = 1.95) -> tuple:
+def supported_spawn(
+    meshes: list[RoomMesh], *, radius: float = 0.42, height: float = 1.95, floor_z: float | None = None
+) -> tuple:
     """Choose a flat supported footprint with cylindrical whole-body clearance.
 
-    Conservative circle enclosing the MOZ1 inspection pose, not a navigation map.
+    The caller supplies its conservative body footprint; this is not a navigation map.
     The bounded search fails closed when it cannot establish a supported location.
     """
     low = np.min([item.mesh.bounds[0] for item in meshes], axis=0)
@@ -94,11 +91,19 @@ def supported_spawn(meshes: list[RoomMesh], *, radius: float = 0.42, height: flo
     for item in meshes:
         tri = item.mesh.triangles
         flat = np.ptp(tri[:, :, 2], axis=1) < 1e-5
-        near_floor = tri[:, :, 2].mean(axis=1) < low[2] + 0.5
-        floor_faces.extend(tri[flat & near_floor])
+        levels = tri[:, :, 2].mean(axis=1)
+        if item.mesh.is_watertight:
+            flat &= item.mesh.face_normals[:, 2] > 0.5
+        if floor_z is not None:
+            flat &= np.abs(levels - floor_z) <= 0.005
+        floor_faces.extend(tri[flat])
     floors = np.asarray(floor_faces)
     if floors.size == 0:
         raise ValueError("未找到可确认的水平室内地面。")
+    if floor_z is None:
+        # Anchor the ground band to upward support, not the underside of a foundation.
+        levels = floors[:, :, 2].mean(axis=1)
+        floors = floors[levels <= levels.min() + 0.5 + 1e-6]
     angles = np.arange(16) * (2 * np.pi / 16)
     offsets = np.vstack(([0, 0], np.column_stack((np.cos(angles), np.sin(angles))) * radius))
     center = (low[:2] + high[:2]) / 2
@@ -153,84 +158,4 @@ def supported_spawn(meshes: list[RoomMesh], *, radius: float = 0.42, height: flo
                 break
         if clear:
             return float(xy[0]), float(xy[1]), z
-    raise ValueError("未找到满足 MOZ1 全身间距和地面支撑的出生位置。")
-
-
-class IndoorCollision:
-    """Own fixed collision-only entities plus source-prim contact attribution."""
-
-    def __init__(
-        self, scene, meshes: list[RoomMesh], directory: Path, *, progress: Callable[[int, int], None] | None = None
-    ):
-        import genesis as gs
-
-        self.meshes = meshes
-        self.entities = []
-        self.paths = {}
-        floor_limit = min(item.mesh.bounds[0, 2] for item in meshes) + 0.5
-        for index, item in enumerate(meshes):
-            # Remeshing expands thin slabs by centimetres. Decompose their
-            # original surface directly to retain the actual support height.
-            thin_floor = item.mesh.bounds[1, 2] < floor_limit and item.mesh.extents[2] < 0.2
-            path = directory / f"room-collision-{index}.obj"
-            item.mesh.export(path)
-            entity = scene.add_entity(
-                morph=gs.morphs.Mesh(
-                    file=str(path),
-                    fixed=True,
-                    visualization=False,
-                    collision=True,
-                    file_meshes_are_zup=True,
-                    convexify=True,
-                    decimate=True,
-                    decompose_object_error_threshold=0.01,
-                    coacd_options=gs.options.CoacdOptions(
-                        threshold=0.03, preprocess_mode="off" if thin_floor else "on", preprocess_resolution=60
-                    ),
-                ),
-                material=gs.materials.Rigid(friction=0.8, sdf_min_res=16, sdf_max_res=32),
-            )
-            self.entities.append(entity)
-            self.paths[entity] = item.path
-            if progress is not None:
-                progress(index + 1, len(meshes))
-
-    @classmethod
-    def from_prepared(cls, scene, meshes: list[RoomMesh]) -> IndoorCollision:
-        """Bind a room-only, unbuilt .gscene to the cached source meshes."""
-        if scene.is_built or not meshes or len(scene.entities) != len(meshes):
-            raise ValueError("Prepared room must contain exactly its unbuilt collision entities")
-        room = cls.__new__(cls)
-        room.meshes = meshes
-        room.entities = list(scene.entities)
-        room.paths = {entity: mesh.path for entity, mesh in zip(room.entities, meshes, strict=True)}
-        return room
-
-    def contacts(self, robot) -> dict:
-        contacts = robot.entity.get_contacts(exclude_self_contact=True)
-        valid = contacts.get("valid_mask")
-        a, b = contacts["geom_a"], contacts["geom_b"]
-        if valid is not None:
-            a, b = a[valid], b[valid]
-            forces, positions = contacts["force_a"][valid], contacts["position"][valid]
-        else:
-            forces, positions = contacts["force_a"], contacts["position"]
-        a, b = a.cpu().numpy().ravel(), b.cpu().numpy().ravel()
-        forces, positions = forces.cpu().numpy().reshape(-1, 3), positions.cpu().numpy().reshape(-1, 3)
-        result = []
-        for entity in self.entities:
-            mask = ((a >= entity.geom_start) & (a < entity.geom_end)) | (
-                (b >= entity.geom_start) & (b < entity.geom_end)
-            )
-            if mask.any():
-                result.append(
-                    {
-                        "path": self.paths[entity],
-                        "count": int(mask.sum()),
-                        "force_n": float(np.linalg.norm(forces[mask], axis=1).sum()),
-                        "horizontal_force_n": float(np.linalg.norm(forces[mask, :2], axis=1).sum()),
-                        "force_xyz_n": forces[mask].sum(axis=0).tolist(),
-                        "position_m": positions[mask].mean(axis=0).tolist(),
-                    }
-                )
-        return {"count": int(len(a)), "surfaces": result[:12]}
+    raise ValueError("未找到满足全身间距和地面支撑的出生位置。")

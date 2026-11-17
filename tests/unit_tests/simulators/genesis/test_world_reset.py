@@ -27,7 +27,7 @@ def world(monkeypatch):
     runtime.info = {"instance_id": "old"}
     runtime.scene, runtime.renderer, runtime.robot = Mock(), object(), Mock()
     runtime.motion = SimpleNamespace(active=False)
-    runtime.settings = SimpleNamespace(dt=0.01, planning_profile="")
+    runtime.settings = SimpleNamespace(dt=0.01, planning_profile="", robot_mode="moz1_wheels")
     runtime._planning_profile = {}
     runtime._initial_state = object()
     runtime._initial_steps = 200

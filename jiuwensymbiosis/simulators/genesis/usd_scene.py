@@ -134,3 +134,19 @@ def initial_camera(scene_id: str, bounds: list[list[float]]) -> dict[str, Any]:
         "center": (center[0], center[1], low[2]),
         "scene_scale": max(1.01, max(span) / 3),
     }
+
+
+def publish_stage_audit(audit: dict, destination: Path) -> dict:
+    """Retain complete diagnostics on disk; bound asset paths sent over worker IPC."""
+    import json
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(audit, ensure_ascii=False, indent=2))
+    missing = audit.get("missing_assets", [])
+    return {
+        **audit,
+        "missing_assets": [path[:512] for path in missing[:8]],
+        "missing_assets_count": len(missing),
+        "missing_assets_truncated": len(missing) > 8,
+        "asset_audit_path": str(destination),
+    }

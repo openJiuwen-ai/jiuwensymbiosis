@@ -16,11 +16,12 @@ def test_renderer_exports_effective_color_without_changing_lights(
     monkeypatch, tmp_path, tone_mapper, expected, source_exposure, with_source
 ):
     config = tmp_path / "appearance.yaml"
-    config.write_text(
-        f"scenes:\n  indoor:\n    color_management:\n      tone_mapper: {tone_mapper}\n      exposure_adjust_ev: 0.5\n"
-    )
+    config.write_text(f"color_management:\n  tone_mapper: {tone_mapper}\n  exposure_adjust_ev: 0.5\n")
     monkeypatch.setattr(appearance, "PROFILE_PATH", config)
     monkeypatch.setattr(source_lighting, "append_emitters", lambda *args: None)
+    monkeypatch.setattr(SceneRenderer, "_repair_materials", lambda self, source, *a, **kw: source)
+    monkeypatch.setattr(source_lighting, "load_source_lighting", lambda *a, **kw: SimpleNamespace(exposure_ev=-3.0))
+    monkeypatch.setattr(source_lighting, "make_environment", lambda rig: object())
     captured = {}
 
     class SceneAsset:
@@ -101,7 +102,7 @@ def test_renderer_exports_effective_color_without_changing_lights(
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     settings = SimpleNamespace(width=1280, height=720, spp=8, scene_id="indoor", render_mode="fast")
-    # No material rules: default preview must work without the optional USD SDK.
+    # Material inspection is stubbed separately from the native renderer SDK.
     monkeypatch.setitem(sys.modules, "pxr", None)
     source = None
     if with_source:
@@ -138,8 +139,7 @@ def test_renderer_exports_effective_color_without_changing_lights(
         "exposure_adjust_ev": 0.5,
         "effective_exposure_ev": base + 0.5,
     }
-    assert captured["exporter"]["lights"] == ([captured["fill"]] if with_source and source_exposure is None else [])
-    assert captured["fill"].intensity == 240.0
+    assert captured["exporter"]["lights"] == []
     assert captured["renderer"]["camera_defs"][0]["denoise"] is True
     if with_source:
         instance = captured["background"].instances[0]

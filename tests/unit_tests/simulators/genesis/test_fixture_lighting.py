@@ -97,6 +97,7 @@ def test_diffuser_reads_composed_units_and_ignores_nonemissive_meshes(tmp_path):
     parent.AddTranslateOp().Set((0, 0, 250))
     material = UsdShade.Material.Define(s, "/Material")
     shader = UsdShade.Shader.Define(s, "/Material/Shader")
+    shader.CreateIdAttr("OmniPBR")
     shader.CreateInput("enable_emission", Sdf.ValueTypeNames.Bool).Set(True)
     shader.CreateOutput("out", Sdf.ValueTypeNames.Token)
     material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
@@ -112,3 +113,36 @@ def test_diffuser_reads_composed_units_and_ignores_nonemissive_meshes(tmp_path):
     assert len(ds) == 1
     assert ds[0].vertices.min(axis=0) == pytest.approx([-0.2, -0.3, 2.5])
     assert ds[0].vertices.max(axis=0) == pytest.approx([0.2, 0.3, 2.5])
+
+
+def test_auto_fit_preserves_unmatched_and_ambiguous_source_shapes():
+    from dataclasses import replace
+
+    from jiuwensymbiosis.simulators.genesis.fixture_lighting import auto_fit_rectangles
+
+    rig, diffuser = sample()
+    unmatched = replace(
+        rig.rectangles[0],
+        path="/Other",
+        corners_m=tuple(tuple(np.array(corner) + [3, 0, 0]) for corner in rig.rectangles[0].corners_m),
+    )
+    result = auto_fit_rectangles(replace(rig, rectangles=(*rig.rectangles, unmatched)), [diffuser])
+    assert result.rectangles[0].fixture_path == diffuser.path
+    assert result.rectangles[1] == unmatched
+    assert result.fitting_decisions[1]["action"] == "preserve_source"
+    shared = auto_fit_rectangles(replace(rig, rectangles=rig.rectangles * 2), [diffuser])
+    assert shared.rectangles == rig.rectangles * 2
+    assert all(d["reason"] == "shared_fixture" for d in shared.fitting_decisions)
+
+
+def test_auto_fit_caps_all_emitters_with_one_audited_gain():
+    from dataclasses import replace
+
+    from jiuwensymbiosis.simulators.genesis.fixture_lighting import auto_fit_rectangles
+
+    rig, _ = sample()
+    original = replace(rig.rectangles[0], radiance=(120000, 30000, 10000))
+    result = auto_fit_rectangles(replace(rig, rectangles=(original,)), [])
+    assert result.emitter_gain == 0.5
+    assert result.rectangles[0].radiance == (60000, 15000, 5000)
+    assert result.multiplier == rig.multiplier

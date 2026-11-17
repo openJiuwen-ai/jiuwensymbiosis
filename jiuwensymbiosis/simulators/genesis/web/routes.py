@@ -64,7 +64,8 @@ class StartOptions(BaseModel):
     resolution: Literal["1280x720", "1920x1080"] = "1280x720"
     fps: Literal[30, 60] = 60
     render_quality: Literal["reference"] = "reference"
-    robot_mode: Literal["inspection", "moz1_wheels"] = "inspection"
+    robot_mode: Literal["inspection", "moz1_wheels", "virtual_camera"] = "inspection"
+    floor_height_m: float | None = Field(default=None, allow_inf_nan=False, strict=True)
     robot_id: str = Field(default="", max_length=1024, pattern=r"^(|library://[a-zA-Z0-9_-]+/[a-zA-Z0-9_./%~-]+)$")
     camera_name: str = Field(default="observer", max_length=64, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     scene_id: str = Field(
@@ -73,6 +74,12 @@ class StartOptions(BaseModel):
         max_length=1024,
         pattern=r"^(demo|[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|library://[a-zA-Z0-9_-]+/[a-zA-Z0-9_./%~-]+)$",
     )
+
+    def preview_options(self) -> dict:
+        options = self.model_dump()
+        if "floor_height_m" not in self.model_fields_set:
+            options.pop("floor_height_m")
+        return options
 
 
 class CaptureOptions(BaseModel):
@@ -142,7 +149,7 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
     async def start(request: Request, body: StartOptions | None = None):
         guard(request, "start")
         try:
-            return await service.start(body.model_dump() if body is not None else None)
+            return await service.start(body.preview_options() if body is not None else None)
         except (ValueError, RuntimeError, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
 
@@ -166,7 +173,7 @@ def install_genesis_routes(app: Any, service: PreviewStream | None = None) -> Pr
     async def configure(request: Request, body: StartOptions):
         guard(request, "configure")
         try:
-            return await service.configure(body.model_dump())
+            return await service.configure(body.preview_options())
         except StreamError as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
 

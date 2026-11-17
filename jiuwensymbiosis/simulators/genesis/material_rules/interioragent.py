@@ -143,7 +143,8 @@ def _legacy(stage, preview, shader, family, report):
         # declares BaseColor_Color/Metallic_Color/...): an absent input is the
         # normal default-equals case in these assets, not a naming mismatch.
         value = _value(shader, prefix + "_Color", default)
-        gain = float(_value(shader, "EmissiveIntensity", 0)) if prefix == "Emissive" else 1.0
+        # Shipped OmniUe4Base.mdl converts UE4 emissive units to radiance by 20 * 128.
+        gain = float(_value(shader, "EmissiveIntensity", 0)) * 2560.0 if prefix == "Emissive" else 1.0
         vector = target in {"diffuseColor", "emissiveColor"}
         value = tuple(v * gain for v in _rgb(value)) if vector else float(value[0])
         if prefix == "Gloss":

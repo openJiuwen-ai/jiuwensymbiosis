@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from contextlib import nullcontext
@@ -31,6 +32,7 @@ class SceneRenderer:
         presentation=None,
         robot=None,
         cameras=None,
+        camera_pose_provider=None,
         startup=None,
         material_rules: MaterialRules | None = None,
         material_directory: Path | None = None,
@@ -40,11 +42,16 @@ class SceneRenderer:
 
         if TYPE_CHECKING or __package__:
             from .appearance import TONE_MAPPERS, load_appearance_profile
+            from .source_lighting import load_source_lighting, make_environment
         else:
             from appearance import TONE_MAPPERS, load_appearance_profile
+            from source_lighting import load_source_lighting, make_environment
         from gs_nyx_plugin.nyx_renderer import NyxPyRenderer
         from gs_nyx_plugin.nyx_scene_exporter import NyxSceneExporter
 
+        if source is not None and source_lighting is None:
+            source_lighting = load_source_lighting(source, directory=directory)
+            env = make_environment(source_lighting)
         self._scene = scene
         self._renderer: Any = None
         fov = presentation["fov_y"] if presentation is not None else (60 if source is not None else 42)
@@ -52,14 +59,19 @@ class SceneRenderer:
         self.width, self.height = settings.width, settings.height
         self.entity_pairs: list = []
         self.cameras = cameras or {}
-        self._links = {name: robot.get_link(camera.link_name) for name, camera in self.cameras.items()}
+        self._camera_pose_provider = camera_pose_provider
+        self._links = (
+            {}
+            if camera_pose_provider
+            else {name: robot.get_link(camera.link_name) for name, camera in self.cameras.items()}
+        )
         self._grids = {}
         self._rectified_grids = {}
         self._projection = {}
         self._camera_indices = {"observer": 0}
         self.last_camera: dict = {}
         self.render_counts = dict.fromkeys(("observer", *self.cameras), 0)
-        appearance_profile = load_appearance_profile(settings.scene_id)
+        appearance_profile = load_appearance_profile()
         base_exposure_ev = source_lighting.exposure_ev if source_lighting else exposure
         color_management = appearance_profile.color_management.effective_parameters(base_exposure_ev)
         profile = nps.CameraProfileAsset()
@@ -101,7 +113,7 @@ class SceneRenderer:
                 "native_focal_px": actual_focal,
                 "projection_correction": "validated_fov_radians_float16",
             }
-            sensor_pose = sensor.pose(self._links[name])
+            sensor_pose = self._sensor_pose(name)
             profile.set_fov_y(math.radians(sensor_fov))
             sensor_profile = str(directory / f"camera-{len(camera_defs)}.json")
             nps.export_camera_profile_file(sensor_profile, profile)
@@ -119,23 +131,12 @@ class SceneRenderer:
                 }
             )
         path = str(directory / "usd-scene.json")
-        # USD mesh import does not translate every UsdLux light. An explicitly
-        # reported inspection light makes enclosed, non-emissive rooms visible.
-        # It is a fixed preview light, not a claim to reproduce the source rig.
-        fill = nps.LightAsset()
-        fill.type = nps.ELightType.Point
-        fill.point_position = nps.float3_z_up_to_y_up_a(nps.float3(*(light_pose or pose)["pos"]))
-        fill.point_range = 100.0
-        fill.unit = nps.ELightUnit.Lumen
-        fill.color = nps.float3(1, 1, 1)
-        fill.intensity = 30.0 * 2 ** (-exposure)
-        fill.shadow = True
         exporter = NyxSceneExporter(
             scene,
             str(directory),
             cameras=camera_defs,
             env_maps=[env],
-            lights=[fill] if source is not None and source_lighting is None else [],
+            lights=[],
         )
         with startup.phase("nyx_scene_export") if startup and not startup.finished else nullcontext():
             exporter.export_to_file(path)
@@ -172,10 +173,7 @@ class SceneRenderer:
                 "quality_policy": presentation["quality_policy"],
             }
         if source is not None:
-            # Without rules prepare_materials converts nothing and returns the
-            # source unchanged, so skip it: the default preview path must not
-            # require pxr just to report what it would leave untouched.
-            if material_rules or presentation is not None:
+            with startup.phase("material_prepare") if startup and not startup.finished else nullcontext():
                 source = self._repair_materials(
                     source, directory, material_rules, material_directory, validate=presentation is not None
                 )
@@ -243,6 +241,8 @@ class SceneRenderer:
         # instead of re-baking a full texture session on every resolution change.
         materials_dir = Path(material_directory) if material_directory is not None else directory / "materials"
         repaired, repair = prepare_materials(source, materials_dir, rules=rules)
+        materials_dir.mkdir(parents=True, exist_ok=True)
+        (materials_dir / "material-repair.json").write_text(json.dumps(repair, ensure_ascii=False, indent=2))
         if validate:
             if TYPE_CHECKING or __package__:
                 from .material_repair import require_supported_materials
@@ -257,7 +257,7 @@ class SceneRenderer:
             "remaining": len(repair["remaining"]),
             "issues": dict(Counter(item["kind"] for item in repair["issues"])),
             "baked_textures": len(repair["baked_textures"]),
-            "report_path": str(materials_dir / "material-repair.json") if repair["converted"] else None,
+            "report_path": str(materials_dir / "material-repair.json"),
         }
         return repaired
 
@@ -273,9 +273,14 @@ class SceneRenderer:
         entity, node, point = hit
         return entity, node, [float(point.x), float(point.y), float(point.z)]
 
+    def _sensor_pose(self, name):
+        if self._camera_pose_provider is not None:
+            return self._camera_pose_provider(name)
+        return self.cameras[name].pose(self._links[name])
+
     def _update_sensor(self, name: str) -> None:
         sensor = self.cameras[name]
-        pose = sensor.pose(self._links[name])
+        pose = self._sensor_pose(name)
         self._renderer.update_camera_tensor(self._camera_indices[name], pose["pos"], pose["lookat"], pose["up"])
         self.last_camera = {**sensor.metadata(), **pose}
 

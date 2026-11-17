@@ -42,7 +42,6 @@ _WORKER_ENV_KEYS = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
-        "JIUWENSYMBIOSIS_GENESIS_SCENE_CACHE",
         "LD_LIBRARY_PATH",
         "CUDA_HOME",
         "CUDA_PATH",
@@ -293,9 +292,9 @@ class GenesisPreview:
         path = self.state_dir / f"capture-{request_id}.jpg"
         depth_path = self.state_dir / f"capture-{request_id}.npz"
         if include_depth and camera_name == "observer":
-            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
+            raise ValueError("RGB-D requires a calibrated camera and sampling stride in [4, 32]")
         if include_depth and (type(depth_stride) is not int or not 4 <= depth_stride <= 32):
-            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
+            raise ValueError("RGB-D requires a calibrated camera and sampling stride in [4, 32]")
         if depth_region is not None and (
             not include_depth or len(depth_region) != 4 or any(type(i) is not int for i in depth_region)
         ):
@@ -309,7 +308,7 @@ class GenesisPreview:
             if self._capture_request is not None:
                 raise RuntimeError("另一张画面正在采样，请稍后重试。")
             if camera_name != "observer" and camera_name not in {c["name"] for c in state.get("cameras", [])}:
-                raise ValueError(f"当前机器人没有相机：{camera_name}")
+                raise ValueError(f"当前场景没有相机：{camera_name}")
             scene_instance_id = state["scene"]["instance_id"]
             config_revision = self._config_revision
             camera_revision = self._camera.revision
@@ -340,7 +339,9 @@ class GenesisPreview:
                         state.get("scene", {}).get("instance_id") != scene_instance_id
                         or self._config_revision != config_revision
                     )
-                    camera_changed = camera_name == "observer" and self._camera.revision != camera_revision
+                    camera_changed = (
+                        camera_name == "observer" or self.settings.robot_mode == "virtual_camera"
+                    ) and self._camera.revision != camera_revision
                     if state["state"] != "ready" or scene_changed or camera_changed:
                         raise RuntimeError("采样期间场景或视角已变化，请重新识别。")
                     result = state.get("capture_result", {})
@@ -455,6 +456,7 @@ class GenesisPreview:
         render_quality: str = "reference",
         camera_name: str = "observer",
         planning_profile: str | None = None,
+        floor_height_m: float | None | str = "unchanged",
     ) -> dict:
         with self._lock:
             state = self.status()["state"]
@@ -472,7 +474,7 @@ class GenesisPreview:
                 and camera_name != "observer"
                 and camera_name not in {c["name"] for c in self._state.get("cameras", [])}
             ):
-                raise ValueError(f"当前机器人没有相机：{camera_name}")
+                raise ValueError(f"当前场景没有相机：{camera_name}")
             if render_quality != "reference":
                 raise ValueError("网页渲染仅支持 reference。请刷新页面后重试。")
             settings = PreviewSettings(
@@ -485,6 +487,9 @@ class GenesisPreview:
                 robot_mode=robot_mode,
                 robot_id=robot_id,
                 camera_name=camera_name,
+                floor_height_m=(self.settings.floor_height_m if same_scene else None)
+                if floor_height_m == "unchanged"
+                else floor_height_m,
                 planning_profile=(
                     self.settings.planning_profile
                     if planning_profile is None and same_scene
@@ -755,7 +760,7 @@ class GenesisPreview:
             state = self.status()
             if state["state"] != "ready":
                 raise RuntimeError("Genesis 尚未就绪。")
-            if self.settings.camera_name != "observer":
+            if self.settings.camera_name != "observer" and self.settings.robot_mode != "virtual_camera":
                 raise ValueError("机器人相机随连杆运动，请切回观察视角后调整相机。")
             if action == "focus":
                 selected = state.get("selection")

@@ -71,9 +71,9 @@ def test_missing_hdr_and_unsupported_light_fail_explicitly(rig_source):
     from pxr import Usd, UsdLux
 
     stage = Usd.Stage.Open(str(rig_source))
-    UsdLux.SphereLight.Define(stage, "/Unsupported")
+    UsdLux.DiskLight.Define(stage, "/Unsupported")
     stage.GetRootLayer().Save()
-    with pytest.raises(ValueError, match="SphereLight"):
+    with pytest.raises(ValueError, match="DiskLight"):
         source_lighting.read_source_lighting(rig_source, exposure_ev=-10)
     stage.RemovePrim("/Unsupported")
     stage.GetRootLayer().Save()
@@ -92,11 +92,25 @@ def test_tilt_cannot_be_silently_lost(rig_source):
         source_lighting.read_source_lighting(rig_source, exposure_ev=-10)
 
 
-def test_profile_is_opt_in_and_has_no_asset_path(tmp_path, monkeypatch):
-    config = tmp_path / "profile.yaml"
-    config.write_text("scenes: {}\n")
-    monkeypatch.setattr(source_lighting, "PROFILE_PATH", config)
-    assert source_lighting.load_source_lighting(tmp_path / "missing.usda", "other") is None
+def test_loading_uses_asset_features_without_profile(rig_source, tmp_path):
+    rig = source_lighting.load_source_lighting(rig_source, directory=tmp_path)
+    assert rig.summary()["selection"] == "asset_features"
+    assert len(rig.rectangles) == 1
+    assert rig.fitting_decisions[0]["action"] == "preserve_source"
+    assert rig.exposure_ev == -8
+
+
+def test_no_dome_does_not_invent_fill_light(rig_source, tmp_path):
+    from pxr import Usd
+
+    stage = Usd.Stage.Open(str(rig_source))
+    stage.RemovePrim("/Dome")
+    stage.GetRootLayer().Save()
+    rig = source_lighting.load_source_lighting(rig_source, directory=tmp_path)
+    assert rig.environment_kind == "none"
+    assert rig.multiplier == 0
+    assert not rig.summary()["inspection_light"]
+    assert len(rig.rectangles) == 1
 
 
 def test_y_up_converts_to_genesis_z_up_and_hidden_lights_are_ignored(rig_source):
@@ -157,3 +171,63 @@ def test_environment_rotation_uses_sdk_degrees(monkeypatch):
     assert env.rotation == pytest.approx(90)
     assert env.texture == "sky.hdr"
     assert env.multiplier == 2
+
+
+@pytest.mark.parametrize("angle", [90, 120, 180])
+def test_neutral_hemisphere_shaping_is_supported(rig_source, angle):
+    from pxr import Usd, UsdLux
+
+    stage = Usd.Stage.Open(str(rig_source))
+    shaping = UsdLux.ShapingAPI.Apply(stage.GetPrimAtPath("/Room/Lamp"))
+    shaping.CreateShapingConeAngleAttr(angle)
+    stage.GetRootLayer().Save()
+    assert len(source_lighting.read_source_lighting(rig_source, exposure_ev=0).rectangles) == 1
+
+
+@pytest.mark.parametrize("field,value", [("ConeAngle", 45), ("Focus", 1), ("ConeSoftness", 0.5)])
+def test_directional_shaping_is_not_silently_discarded(rig_source, field, value):
+    from pxr import Usd, UsdLux
+
+    stage = Usd.Stage.Open(str(rig_source))
+    shaping = UsdLux.ShapingAPI.Apply(stage.GetPrimAtPath("/Room/Lamp"))
+    getattr(shaping, "CreateShaping" + field + "Attr")(value)
+    stage.GetRootLayer().Save()
+    with pytest.raises(ValueError, match="hemispherical"):
+        source_lighting.read_source_lighting(rig_source, exposure_ev=0)
+
+
+@pytest.mark.parametrize("normalized", [False, True])
+def test_native_sphere_and_distant_energy_and_transforms(rig_source, normalized):
+    from pxr import Usd, UsdLux
+
+    stage = Usd.Stage.Open(str(rig_source))
+    sphere = UsdLux.SphereLight.Define(stage, "/Sphere")
+    sphere.CreateRadiusAttr(100)  # fixture centimetres -> one metre
+    sphere.CreateIntensityAttr(100)
+    sphere.CreateNormalizeAttr(normalized)
+    sphere.AddTranslateOp().Set((100, 200, 300))
+    sun = UsdLux.DistantLight.Define(stage, "/Sun")
+    sun.CreateIntensityAttr(200)
+    sun.CreateAngleAttr(60)
+    sun.CreateNormalizeAttr(normalized)
+    stage.GetRootLayer().Save()
+    rig = source_lighting.read_source_lighting(rig_source, exposure_ev=-8)
+    point, directional = rig.native_lights
+    assert point["pos"] == pytest.approx([1, 2, 3])
+    assert point["intensity"] == pytest.approx(25 if normalized else 100 * math.pi)
+    assert directional["direction"] == pytest.approx([0, 0, -1])
+    assert directional["intensity"] == pytest.approx(200 if normalized else 50 * math.pi)
+    assert rig.summary()["point_count"] == rig.summary()["directional_count"] == 1
+    assert len(rig.approximations) == 2
+
+
+def test_nonuniform_sphere_is_explicitly_approximated(rig_source):
+    from pxr import Usd, UsdLux
+
+    stage = Usd.Stage.Open(str(rig_source))
+    sphere = UsdLux.SphereLight.Define(stage, "/Sphere")
+    sphere.AddScaleOp().Set((1, 2, 1))
+    stage.GetRootLayer().Save()
+    rig = source_lighting.read_source_lighting(rig_source, exposure_ev=-8)
+    assert rig.native_lights[0]["source_area_m2"] > 0
+    assert any("nonuniform" in item["reason"] for item in rig.approximations)

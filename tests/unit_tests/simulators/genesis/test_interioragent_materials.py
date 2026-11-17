@@ -129,3 +129,16 @@ def test_missing_procedural_texture_is_not_counted_as_success(tmp_path):
     path, report = prepare_materials(source, tmp_path / "cache", rules=RULES)
     assert path == source and report["converted"] == 0
     assert report["remaining"][0]["reason"] == "conversion_unavailable"
+
+
+def test_legacy_emission_uses_authored_mdl_radiance_units(tmp_path):
+    source = fixture(
+        tmp_path,
+        family="M_BaseMaterial_twosided",
+        Emissive_Color=("Float4", (1, 0.5, 0.25, 1)),
+        EmissiveIntensity=("Float", 20),
+    )
+    path, report = prepare_materials(source, tmp_path / "cache", rules=RULES)
+    stage, shader = converted(path)
+    assert tuple(shader.GetInput("emissiveColor").Get()) == pytest.approx((51200, 25600, 12800))
+    assert report["remaining"] == []

@@ -9,10 +9,10 @@ test('opaque kernel build shows its phase and elapsed time without an invented p
   assert.equal(view.elapsed, '已用时 12.4 秒');
 });
 
-test('collision progress uses the completed entity count, not a whole-load estimate', () => {
-  const view = loadingView({state: 'running', current_phase: 'collision_entities', progress: {completed: 12, total: 33}});
-  assert.equal(view.value, 12 / 33);
-  assert.equal(view.label, '构建场景碰撞体 · 12/33');
+test('single floor loading does not report removed house collision entities', () => {
+  const view = loadingView({state: 'running', current_phase: 'single_floor'});
+  assert.equal(view.value, null);
+  assert.equal(view.label, '创建单层地面');
 });
 
 test('completion hides progress and failure retains the failing phase', () => {

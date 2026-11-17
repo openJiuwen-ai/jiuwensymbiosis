@@ -18,11 +18,13 @@ if TYPE_CHECKING or __package__:
     from .camera import OrbitCamera, PreviewSettings
     from .rendering import SceneRenderer
     from .scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
+    from .source_lighting import load_source_lighting, make_environment
     from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
 else:
     from camera import OrbitCamera, PreviewSettings
     from rendering import SceneRenderer
     from scene_catalog import material_rules_for_asset, resolve_scene, scene_catalog
+    from source_lighting import load_source_lighting, make_environment
     from usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
@@ -31,7 +33,6 @@ def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
 
     # OpenCV reads this at FIRST import; EXR material textures need it before that.
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
-    import cv2
     import genesis as gs
     import gs_nyx.nyx_py_sdk as nps
     import numpy as np
@@ -60,11 +61,9 @@ def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
     try:
         scene = gs.Scene(show_viewer=False)
         scene.build(n_envs=1)
-        env = nps.EnvironmentMapAsset()
-        hdr = output / "studio.hdr"
-        cv2.imwrite(str(hdr), np.full((128, 256, 3), 0.3, dtype=np.float32))
-        env.texture = str(hdr)
-        env.layout = nps.EEnvMapLayout.LongLat
+        lighting = load_source_lighting(source, directory=output)
+        env = make_environment(lighting)
+        report["lighting"] = lighting.summary()
         background = SceneRenderer(
             scene,
             output / "static.usda",
@@ -72,7 +71,8 @@ def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
             settings,
             pose,
             env,
-            exposure=report["preview_exposure_ev"],
+            exposure=lighting.exposure_ev,
+            source_lighting=lighting,
             material_rules=material_rules_for_asset(asset),
         )
         report["startup_s"] = round(time.monotonic() - started, 3)

@@ -144,11 +144,18 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                 prepare_static_stage(asset.preview_path, Path(check) / "background.usda")
                     encoder.close()
                     encoder = None
-                    if (requested.scene_id, requested.robot_mode, requested.robot_id, requested.planning_profile) != (
+                    if (
+                        requested.scene_id,
+                        requested.robot_mode,
+                        requested.robot_id,
+                        requested.planning_profile,
+                        requested.floor_height_m,
+                    ) != (
                         settings.scene_id,
                         settings.robot_mode,
                         settings.robot_id,
                         settings.planning_profile,
+                        settings.floor_height_m,
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
@@ -356,7 +363,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 capture["config_revision"] != revision
                 or capture["scene_instance_id"] != runtime.info["instance_id"]
                 or (
-                    capture.get("camera_name", "observer") == "observer"
+                    (
+                        capture.get("camera_name", "observer") == "observer"
+                        or runtime.settings.robot_mode == "virtual_camera"
+                    )
                     and capture["camera_revision"] != runtime.pose["revision"]
                 )
                 or now > capture["expires_at"]
@@ -378,7 +388,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             memory_capture = capture.get("capture_mode") == "spatial_memory"
                             if memory_capture and name != "head_cam":
                                 raise ValueError("Spatial memory requires head_cam")
-                            if (
+                            virtual_capture = runtime.settings.robot_mode == "virtual_camera"
+                            if memory_capture and virtual_capture:
+                                raise ValueError("Robot spatial_memory capture does not accept virtual motion evidence")
+                            if not virtual_capture and (
                                 runtime.motion is None
                                 or (runtime.motion.active and not memory_capture)
                                 or (getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active)
@@ -417,7 +430,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                 **({"region": capture["depth_region"]} if capture.get("depth_region") else {}),
                                 check=check_capture,
                             )
-                            base_sample = measure(runtime.robot)
+                            base_sample = None if virtual_capture else measure(runtime.robot)
                             if runtime.steps != sensor_step:
                                 raise ValueError("Physics advanced during RGB-D capture")
                             if memory_capture:
@@ -431,19 +444,31 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                                     },
                                     motion_active=runtime.motion.active,
                                 )
-                            runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
-                                np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
-                            ).tolist()
-                            if runtime.arm_motion is not None:
-                                runtime.renderer.last_camera["T_planning_base_camera_m"] = (
-                                    np.linalg.inv(runtime.arm_motion.base_pose())
-                                    @ np.asarray(runtime.renderer.last_camera["T_world_camera"])
+                            if virtual_capture:
+                                capture_result.update(
+                                    pose_source="virtual_camera_pose",
+                                    robot_loaded=False,
+                                    synchronization={
+                                        "kind": "single_virtual_pose",
+                                        "rgb_step": sensor_step,
+                                        "depth_step": sensor_step,
+                                        "pose_step": sensor_step,
+                                    },
+                                )
+                            else:
+                                runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
+                                    np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
                                 ).tolist()
-                            capture_result.update(
-                                base_sample=base_sample,
-                                body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
-                                motion_id=runtime.motion.result.get("id"),
-                            )
+                                if runtime.arm_motion is not None:
+                                    runtime.renderer.last_camera["T_planning_base_camera_m"] = (
+                                        np.linalg.inv(runtime.arm_motion.base_pose())
+                                        @ np.asarray(runtime.renderer.last_camera["T_world_camera"])
+                                    ).tolist()
+                                capture_result.update(
+                                    base_sample=base_sample,
+                                    body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
+                                    motion_id=runtime.motion.result.get("id"),
+                                )
                             depth_path = directory / f"capture-{capture['id']}.npz"
                             np.savez(depth_path, rgb=pixels, depth_m=depth)
                             check_capture()
@@ -560,7 +585,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "reset_result": reset_result,
                         "message": f"Genesis / Nyx / NVENC 已就绪 · {settings.scene_id}"
                         + (
-                            "（静态场景，碰撞已加载）"
+                            "（静态场景，仅地面物理碰撞）"
                             if runtime.info["mode"] == "static_background"
                             else "（固定姿态检视，无碰撞）"
                             if runtime.info["mode"] == "robot_preview"

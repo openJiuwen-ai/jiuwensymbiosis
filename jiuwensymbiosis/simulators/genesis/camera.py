@@ -21,8 +21,15 @@ class PreviewSettings:
     render_mode: str = "reference"
     camera_name: str = "observer"
     planning_profile: str = ""
+    floor_height_m: float | None = None
 
     def __post_init__(self) -> None:
+        if self.floor_height_m is not None and (
+            isinstance(self.floor_height_m, bool)
+            or not isinstance(self.floor_height_m, (int, float))
+            or not math.isfinite(self.floor_height_m)
+        ):
+            raise ValueError("floor_height_m must be finite metres")
         if (self.width, self.height) not in {(960, 540), (1280, 720), (1920, 1080)}:
             raise ValueError("预览支持 540p、720p、1080p。")
         if type(self.fps) is not int or not 1 <= self.fps <= 120:
@@ -45,7 +52,7 @@ class PreviewSettings:
             raise ValueError("Invalid planning profile path")
         if self.planning_profile and self.robot_mode != "moz1_wheels":
             raise ValueError("Arm planning requires a physical robot controller")
-        if self.robot_mode not in {"inspection", "moz1_wheels"}:
+        if self.robot_mode not in {"inspection", "moz1_wheels", "virtual_camera"}:
             raise ValueError("机器人模式无效。")
 
 

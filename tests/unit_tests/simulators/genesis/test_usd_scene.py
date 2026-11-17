@@ -128,3 +128,17 @@ def test_room_camera_stays_in_scene_bounds_after_pan():
     panned = camera.command("pan", dx=0.1)
     assert panned.target[0] > 10  # no snap back to the tabletop's [-2,2] limits
     assert panned.distance == camera.distance
+
+
+def test_large_asset_diagnostics_are_preserved_without_overflowing_ipc(tmp_path):
+    import json
+
+    from jiuwensymbiosis.simulators.genesis.usd_scene import publish_stage_audit
+
+    audit = {"missing_assets": [f"materials/{i}/" + "x" * 200 for i in range(500)], "visible_meshes": 42}
+    path = tmp_path / "audit.json"
+    public = publish_stage_audit(audit, path)
+    assert len(json.dumps(public).encode()) < 4096
+    assert public["missing_assets_count"] == 500
+    assert public["missing_assets_truncated"] is True
+    assert json.loads(path.read_text()) == audit

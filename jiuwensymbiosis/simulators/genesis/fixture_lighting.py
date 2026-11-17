@@ -19,27 +19,42 @@ def read_diffusers(source: Path) -> list[Diffuser]:
     from pxr import Usd, UsdGeom, UsdShade
 
     stage = Usd.Stage.Open(str(source))
-    if str(UsdGeom.GetStageUpAxis(stage)) != "Z":
-        raise ValueError("灯具贴合目前只支持 Z-up 场景。")
+    y_up = str(UsdGeom.GetStageUpAxis(stage)) == "Y"
     scale = float(UsdGeom.GetStageMetersPerUnit(stage))
     result = []
-    for prim in stage.Traverse():
+    for prim in Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies()):
         if not prim.IsA(UsdGeom.Mesh) or UsdGeom.Imageable(prim).ComputeVisibility() == "invisible":
             continue
         material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
-        shader, _, _ = material.ComputeSurfaceSource("mdl") if material else (None, None, None)
-        if not shader or not shader.GetInput("enable_emission") or not shader.GetInput("enable_emission").Get():
+        shader, _, _ = material.ComputeSurfaceSource() if material else (None, None, None)
+        if not shader and material:
+            shader, _, _ = material.ComputeSurfaceSource("mdl")
+        if not shader:
+            continue
+        family = str(shader.GetShaderId() or shader.GetSourceAssetSubIdentifier("mdl"))
+        if family == "OmniPBR":
+            emissive = shader.GetInput("enable_emission").Get() if shader.GetInput("enable_emission") else False
+        elif family == "UsdPreviewSurface":
+            value = shader.GetInput("emissiveColor")
+            emissive = bool(value and (value.HasConnectedSource() or np.any(np.asarray(value.Get() or (0, 0, 0)) > 0)))
+        else:
+            emissive = False
+        if not emissive:
             continue
         mesh = UsdGeom.Mesh(prim)
         points = np.asarray(mesh.GetPointsAttr().Get(), dtype=float)
         matrix = np.asarray(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
         world = (np.column_stack((points, np.ones(len(points)))) @ matrix)[:, :3] * scale
+        if y_up:
+            world = world[:, [0, 2, 1]] * [1, -1, 1]
         counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get())
         indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
         starts = np.r_[0, np.cumsum(counts)[:-1]]
         triangles = np.array(
             [(s, s + j, s + j + 1) for s, n in zip(starts, counts, strict=True) for j in range(1, n - 1)]
         )
+        if triangles.size == 0:
+            continue
         xyz = world[indices[triangles]]
         cross = np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0])
         if mesh.GetOrientationAttr().Get() == "leftHanded":
@@ -57,7 +72,9 @@ def read_diffusers(source: Path) -> list[Diffuser]:
     return result
 
 
-def fit_rectangles(rig, diffusers: list[Diffuser], *, inset_m: float = 0.001, offset_m: float = 0.0002):
+def fit_rectangles(
+    rig, diffusers: list[Diffuser], *, inset_m: float = 0.001, offset_m: float = 0.0002, limit_radiance: bool = True
+):
     """Fit each face, keeping relative lamp power and avoiding native bright speckles.
 
     This changes the emitting shape to match the visible fixture, not the HDR,
@@ -134,6 +151,33 @@ def fit_rectangles(rig, diffusers: list[Diffuser], *, inset_m: float = 0.001, of
     # reducing radiance did. This is consistent with half-float overflow, but
     # native internals are unavailable. Keep headroom below the half-float max.
     peak = max((max(rect.radiance) for rect in fitted), default=0)
-    gain = min(1.0, 60000.0 / peak) if peak > 0 else 1.0
+    gain = min(1.0, 60000.0 / peak) if limit_radiance and peak > 0 else 1.0
     fitted = [replace(rect, radiance=tuple(np.asarray(rect.radiance) * gain)) for rect in fitted]
     return replace(rig, rectangles=tuple(fitted), emitter_gain=rig.emitter_gain * gain)
+
+
+def auto_fit_rectangles(rig, diffusers: list[Diffuser]):
+    """Fit only unambiguous eligible fixtures; preserve other authored rectangles."""
+    from scipy.spatial import QhullError
+
+    proposed, decisions = [], []
+    for rect in rig.rectangles:
+        try:
+            fitted = fit_rectangles(replace(rig, rectangles=(rect,)), diffusers, limit_radiance=False).rectangles[0]
+            proposed.append(fitted)
+            decisions.append({"path": rect.path, "action": "fit", "fixture": fitted.fixture_path})
+        except (ValueError, QhullError) as exc:
+            proposed.append(rect)
+            decisions.append({"path": rect.path, "action": "preserve_source", "reason": str(exc)})
+    # A fixture shared by multiple lamps is ambiguous: retain all original shapes.
+    for i, rect in enumerate(proposed):
+        if rect.fixture_path and sum(r.fixture_path == rect.fixture_path for r in proposed) > 1:
+            decisions[i] = {"path": rect.path, "action": "preserve_source", "reason": "shared_fixture"}
+    proposed = [
+        original if d["action"] == "preserve_source" else fitted
+        for original, fitted, d in zip(rig.rectangles, proposed, decisions, strict=True)
+    ]
+    peak = max((max(rect.radiance) for rect in proposed), default=0)
+    gain = min(1.0, 60000.0 / peak) if peak > 0 else 1.0
+    limited = [replace(rect, radiance=tuple(np.asarray(rect.radiance) * gain)) for rect in proposed]
+    return replace(rig, rectangles=tuple(limited), emitter_gain=gain, fitting_decisions=tuple(decisions))

@@ -22,7 +22,7 @@ from rendering import SceneRenderer
 from scene_catalog import material_rules_for_asset, resolve_scene, validate_material_bundle
 from selection import UsdPickIndex
 from source_lighting import load_source_lighting, make_environment
-from usd_scene import initial_camera, prepare_static_stage
+from usd_scene import initial_camera, prepare_static_stage, publish_stage_audit
 
 
 class RuntimeScene:
@@ -83,6 +83,10 @@ class RuntimeScene:
                 self.asset = resolve_scene(settings.scene_id) if settings.scene_id != "demo" else None
                 self.robot_asset = resolve_scene(settings.robot_id) if settings.robot_id else self.asset
             mobile = settings.robot_mode == "moz1_wheels"
+            if settings.robot_mode == "virtual_camera" and (
+                self.asset is None or self.asset.asset.preview_mode != "static_usd"
+            ):
+                raise ValueError("Virtual camera requires a static USD scene")
             if settings.robot_id and (self.asset is None or self.asset.asset.preview_mode != "static_usd"):
                 raise ValueError("组合场景需要 USD 背景资产。")
             if mobile and (self.robot_asset is None or self.robot_asset.asset.preview_mode != "urdf"):
@@ -102,6 +106,9 @@ class RuntimeScene:
                 self.presentation = read_presentation(self.asset.preview_path, root=self.asset.root)
                 with self._phase("static_stage_prepare"):
                     audit = prepare_static_stage(self.asset.preview_path, self.source)
+                    audit = publish_stage_audit(
+                        audit, self._evidence_directory / "scene-audits" / f"{uuid.uuid4().hex}.json"
+                    )
                 self.info = {
                     "id": settings.scene_id,
                     "mode": "robot_mobile" if mobile else "static_background",
@@ -132,14 +139,11 @@ class RuntimeScene:
             self.pose = self.initial_pose
             if self.source is not None:
                 with self._phase("source_lighting"):
-                    if self.presentation is not None:
-                        from source_lighting import read_source_lighting
-
-                        self.lighting = read_source_lighting(
-                            self.asset.preview_path, exposure_ev=0, directory=self.directory
-                        )
-                    else:
-                        self.lighting = load_source_lighting(self.asset.preview_path, settings.scene_id)
+                    self.lighting = load_source_lighting(
+                        self.asset.preview_path,
+                        directory=self.directory,
+                        **({"exposure_ev": 0.0} if self.presentation is not None else {}),
+                    )
                 if self.lighting is not None:
                     self.info["lighting"] = self.lighting.summary()
                     self.info["preview_exposure_ev"] = self.lighting.exposure_ev
@@ -152,6 +156,21 @@ class RuntimeScene:
                     self.cameras = load_robot_cameras(
                         self.robot_asset.paths["source"], {link.name for link in self.robot.entity.links}
                     )
+            if settings.robot_mode == "virtual_camera":
+                from virtual_camera import camera as virtual_sensor
+
+                sensor = virtual_sensor()
+                self.cameras[sensor.name] = sensor
+                x, y, z = self.indoor.spawn
+                self.initial_pose = OrbitCamera(
+                    yaw=math.pi,
+                    pitch=0,
+                    distance=1,
+                    target=(x + 1, y, z + 1.2),
+                    revision=revision,
+                ).snapshot()
+                self.pose = self.initial_pose.copy()
+                self.info.update(camera_motion="virtual_pose", robot_loaded=False)
             self.frame_size(settings.camera_name)
             if mobile:
                 from base_motion import RelativeMotion
@@ -239,37 +258,33 @@ class RuntimeScene:
             if set(contact_solver) - {"noslip_iterations"}:
                 raise ValueError("unsupported manipulation contact solver setting")
             options["rigid"].update(contact_solver)
+        self.scene = gs.Scene(
+            sim_options=gs.options.SimOptions(**options["sim"]),
+            rigid_options=gs.options.RigidOptions(**options["rigid"]),
+            show_viewer=False,
+        )
         if self.source is not None:
-            from scene_cache import RoomSceneCache
+            from indoor import read_room_meshes
+            from single_floor import SingleFloor
 
-            prepared = RoomSceneCache().prepare(
-                self.asset.preview_path,
-                options,
-                self.directory,
-                phase=self._phase,
-                progress=self._startup.advance if self._startup is not None else None,
-            )
-            self.scene, self.indoor = prepared.scene, prepared.indoor
-            self.info.update(
-                scene_cache=prepared.cache,
-                collision_meshes=len(self.indoor.meshes),
-                collision_method="fixed_mesh_convex_decomposition",
-            )
-        else:
-            self.scene = gs.Scene(
-                sim_options=gs.options.SimOptions(**options["sim"]),
-                rigid_options=gs.options.RigidOptions(**options["rigid"]),
-                show_viewer=False,
-            )
+            with self._phase("room_geometry"):
+                meshes = read_room_meshes(self.asset.preview_path)
+            with self._phase("single_floor"):
+                mobile = self.info["mode"] == "robot_mobile"
+                self.indoor = SingleFloor(
+                    self.scene,
+                    meshes,
+                    floor_z=self.settings.floor_height_m,
+                    radius=0.42 if mobile else 0.15,
+                    height=1.95 if mobile else 1.35,
+                )
+            self.info.update(self.indoor.summary())
         if self.info["mode"] == "robot_mobile":
             from omni_base import Moz1Base
 
             spawn = (0.0, 0.0, 0.0)
             if self.source is not None:
-                from indoor import supported_spawn
-
-                with self._phase("spawn_select"):
-                    spawn = supported_spawn(self.indoor.meshes)
+                spawn = self.indoor.spawn
                 self.info.update(
                     background_id=self.asset.asset.id,
                     robot_id=self.robot_asset.asset.id,
@@ -382,7 +397,7 @@ class RuntimeScene:
                         or np.linalg.norm(observed["linear_velocity_m_s"]) > 0.02
                         or sum(item["force_n"] for item in contacts["surfaces"]) < 1
                     ):
-                        raise ValueError("室内机器人出生后未能确认稳定地面支撑，请检查场景碰撞网格。")
+                        raise ValueError("室内机器人出生后未能确认稳定地面支撑，请检查地面高度和机器人支撑。")
                     self.info["spawn_support_verified"] = True
                     if not self.navigation_map.clear(observed["position_m"]):
                         raise ValueError("settled_spawn_not_admitted_by_navigation")
@@ -424,6 +439,7 @@ class RuntimeScene:
             presentation=self.presentation,
             robot=self.robot.entity if self.robot is not None else None,
             cameras=self.cameras,
+            camera_pose_provider=self.virtual_camera_pose if self.settings.robot_mode == "virtual_camera" else None,
             startup=self._startup,
             material_rules=material_rules_for_asset(self.asset),
             material_directory=self._material_directory,
@@ -435,7 +451,7 @@ class RuntimeScene:
         if camera_name == "observer":
             return self.settings.width, self.settings.height
         if camera_name not in self.cameras:
-            raise ValueError(f"当前机器人没有相机：{camera_name}")
+            raise ValueError(f"当前场景没有相机：{camera_name}")
         return self.cameras[camera_name].resolution
 
     def pick(self, u: float, v: float) -> dict | None:
@@ -533,6 +549,13 @@ class RuntimeScene:
             self.robot.hold()
         self.steps += 1
 
+    def virtual_camera_pose(self, name="scan_cam"):
+        from virtual_camera import optical_pose
+
+        if name != "scan_cam" or self.settings.robot_mode != "virtual_camera":
+            raise ValueError("Virtual camera is not loaded")
+        return optical_pose(self.pose)
+
     def update_camera(self, pose: dict) -> None:
         self.renderer.update_camera_pose(pos=pose["pos"], lookat=pose["lookat"], up=pose["up"])
         self.pose = pose
@@ -583,6 +606,8 @@ class RuntimeScene:
                 self.motion = RelativeMotion(self.robot)
             elif self.robot is not None:
                 self.robot.hold()
+            if self.settings.robot_mode == "virtual_camera":
+                self.update_camera({**self.initial_pose, "revision": self.pose["revision"] + 1})
             self.steps = self._initial_steps
             self.cycle += 1
             self.selection = self.selected_entity = self.truth = None

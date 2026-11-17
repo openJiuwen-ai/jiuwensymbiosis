@@ -49,6 +49,7 @@ def worker_loop(monkeypatch, tmp_path):
         return SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.zeros((2, 2, 3), dtype=np.uint8)))
 
     runtime = SimpleNamespace(
+        settings=SimpleNamespace(robot_mode="moz1_wheels"),
         info={"mode": "robot_mobile", "instance_id": "scene"},
         pose={"revision": 0},
         initial_pose={},
@@ -285,3 +286,34 @@ def test_unconfigured_arm_request_does_not_destroy_scene(worker_loop):
     result = ready[-1]["base_motion"]
     assert result["id"] == "arm-invalid" and not result["ok"]
     assert result["stop_confirmation"] == "unknown"
+
+
+def test_virtual_rgbd_has_no_fabricated_robot_evidence(worker_loop, monkeypatch):
+    state = worker_loop
+    runtime = state.runtime
+    from jiuwensymbiosis.simulators.genesis import capture_status
+
+    monkeypatch.setitem(sys.modules, "capture_status", capture_status)
+    runtime.settings.robot_mode = "virtual_camera"
+    runtime.info["mode"] = "static_background"
+    runtime.motion = None
+    runtime.robot = None
+    rgbd = ModuleType("rgbd")
+    rgbd.base_body_bounds = lambda *a: pytest.fail("virtual capture has no robot bounds")
+    rgbd.base_from_camera = lambda *a: pytest.fail("virtual capture has no base transform")
+    monkeypatch.setitem(sys.modules, "rgbd", rgbd)
+    runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
+    runtime.renderer.read_rgbd = lambda *a, **kw: (np.zeros((8, 8, 3), np.uint8), np.ones((8, 8), np.float32))
+    state.command["capture"] = {
+        **capture_request(),
+        "include_depth": True,
+        "camera_name": "scan_cam",
+        "capture_mode": "action",
+    }
+    state.run()
+    result = state.statuses[-1]["capture_result"]
+    assert "error" not in result
+    assert result["pose_source"] == "virtual_camera_pose"
+    assert result["robot_loaded"] is False
+    assert "base_sample" not in result
+    assert "T_base_camera_mm" not in result
