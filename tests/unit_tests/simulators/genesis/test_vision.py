@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwensymbiosis.agent.config import ModelSpec
-from jiuwensymbiosis.simulators.genesis import vision
-from jiuwensymbiosis.simulators.genesis.chat import ChatError, GenesisChat
-from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+from jiuwensymbiosis.simulators.common import vision
+from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat
+from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def setup_vision(monkeypatch, tmp_path, capture):
     monkeypatch.setattr(vision, "OUTPUT_DIR", tmp_path)
     invoke = AsyncMock(return_value=SimpleNamespace(content="桌子与椅子", tool_calls=[]))
     preview = SimpleNamespace(capture_image=Mock(return_value=capture))
-    chat = GenesisChat(
+    chat = SimulationChat(
         lambda: {"object_positions": [[999, 999, 999]], "scene": "private-scene-identity"},
         model_factory=lambda _: SimpleNamespace(invoke=invoke),
         preview=preview,
@@ -103,7 +103,7 @@ async def test_credentials_are_not_saved_and_bad_image_digest_is_rejected(setup_
 @pytest.mark.parametrize("camera_name", ["observer", "head_cam"])
 @pytest.mark.parametrize("changed", [None, "camera", "scene", "config", "stopped", "name", "expired"])
 def test_capture_requires_matching_fresh_camera_without_video(monkeypatch, tmp_path, changed, camera_name):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     preview._config_revision = 2
     state = {
         "state": "ready",
@@ -147,7 +147,7 @@ def test_capture_requires_matching_fresh_camera_without_video(monkeypatch, tmp_p
 def test_named_capture_is_independent_of_observer_navigation(monkeypatch, tmp_path):
     from dataclasses import replace
 
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),
@@ -173,7 +173,7 @@ def test_named_capture_is_independent_of_observer_navigation(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize("cancel", [False, True])
 def test_stop_releases_capture_and_concurrent_names_are_rejected(monkeypatch, tmp_path, cancel):
-    preview = GenesisPreview(state_dir=tmp_path)
+    preview = SimulationPreview(state_dir=tmp_path)
     state = {
         "state": "ready",
         "measured_at": time.monotonic(),

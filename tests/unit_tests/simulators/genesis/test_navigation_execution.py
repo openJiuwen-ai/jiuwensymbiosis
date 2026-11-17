@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.agent import make_session
+from jiuwensymbiosis.simulators.common.agent import make_session
 from jiuwensymbiosis.simulators.genesis.navigation import NavigationMap
 
 
@@ -21,7 +21,9 @@ def mobile():
         "angular_velocity_rad_s": [0, 0, 0],
     }
     calls = []
-    preview = SimpleNamespace(acquire_motion=Mock(return_value="owner"), release_motion=Mock())
+    preview = SimpleNamespace(
+        status=lambda: {"state": "ready"}, acquire_motion=Mock(return_value="owner"), release_motion=Mock()
+    )
 
     def query(operation, params, **kwargs):
         result = {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {CounterRate, BackendMetrics} from '../../../../jiuwensymbiosis/simulators/genesis/web/assets/metrics.mjs';
+import {CounterRate, BackendMetrics} from '../../../../jiuwensymbiosis/simulators/common/web/assets/metrics.mjs';
 
 const state = (overrides = {}) => ({state: 'ready', scene: {instance_id: 'room-a'}, config_revision: 1,
   measured_at: 10, steps: 1200, sim_time: 10, rendered_frames: 300,

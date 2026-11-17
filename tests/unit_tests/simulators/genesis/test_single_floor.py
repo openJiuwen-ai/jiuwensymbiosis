@@ -75,8 +75,8 @@ def test_virtual_pose_preserves_horizontal_optical_axes():
 
 
 def test_web_configuration_preserves_virtual_mode_and_explicit_floor():
-    from jiuwensymbiosis.simulators.genesis.stream import _preview_configuration
-    from jiuwensymbiosis.simulators.genesis.web.routes import StartOptions
+    from jiuwensymbiosis.simulators.common.stream import _preview_configuration
+    from jiuwensymbiosis.simulators.common.web.routes import StartOptions
 
     options = StartOptions(robot_mode="virtual_camera", camera_name="scan_cam", floor_height_m=0.14)
     config = _preview_configuration(options.preview_options(), 1280, 720)

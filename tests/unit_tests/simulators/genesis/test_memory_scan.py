@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.agent import make_session
+from jiuwensymbiosis.simulators.common.agent import make_session
 from jiuwensymbiosis.simulators.genesis.memory_scan import GenesisScanPort
 from tests.unit_tests.spatial_memory.test_capture_session import moving_capture
 

@@ -28,21 +28,17 @@ def test_usable_provisional_spawn_is_preserved():
 
 
 def test_runtime_retains_spawn_map_for_later_motion(monkeypatch):
-    import importlib.util
-    import sys
-    from pathlib import Path
+    import importlib
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    directory = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis"
-    monkeypatch.syspath_prepend(str(directory))
-    spec = importlib.util.spec_from_file_location("runtime_spawn_under_test", directory / "scene_runtime.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("jiuwensymbiosis.simulators.genesis.scene_runtime")
     meshes = [box((6, 6, 0.1), (0, 0, -0.05), "floor"), box((0.8, 0.8, 1.5), (0, 0, 0.75), "furniture")]
     provisional = np.array(supported_spawn(meshes))
     position = provisional + [0, 0, 0.105]
-    monkeypatch.setitem(sys.modules, "base_motion", SimpleNamespace(measure=lambda _: {"position_m": position}))
+    from jiuwensymbiosis.simulators.common import base_motion
+
+    monkeypatch.setattr(base_motion, "measure", lambda _: {"position_m": position})
     runtime = module.RuntimeScene.__new__(module.RuntimeScene)
     runtime.info = {"spawn_ground_m": tuple(provisional)}
     runtime.indoor = SimpleNamespace(meshes=meshes)

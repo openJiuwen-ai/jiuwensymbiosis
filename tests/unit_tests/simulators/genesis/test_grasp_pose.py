@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jiuwensymbiosis.simulators.common.observation_policy import allowed_tools
 from jiuwensymbiosis.simulators.genesis import grasp_pose
 from jiuwensymbiosis.simulators.genesis.grasp_pick import pick_target
-from jiuwensymbiosis.simulators.genesis.observation_policy import allowed_tools
 from jiuwensymbiosis.simulators.genesis.pick_lift import PickLift
 
 CONFIG = Path(__file__).resolve().parents[4] / "configs/simulators/grasp"
@@ -175,7 +175,7 @@ def test_trial_lift_requires_unsupported_target_bilateral_contact_and_height():
 def test_session_binds_only_the_current_scenes_configured_model():
     import json
 
-    from jiuwensymbiosis.simulators.genesis.agent import make_session
+    from jiuwensymbiosis.simulators.common.agent import make_session
 
     scene = {
         "instance_id": "one",
@@ -185,7 +185,8 @@ def test_session_binds_only_the_current_scenes_configured_model():
     }
     config = json.loads((CONFIG / "moz1-right-ground_truth.json").read_text())
     preview = SimpleNamespace(
-        status=lambda: {"scene": scene}, query_scene=lambda *args, **kw: {"scene_instance_id": "one", "config": config}
+        status=lambda: {"state": "ready", "scene": scene},
+        query_scene=lambda *args, **kw: {"scene_instance_id": "one", "config": config},
     )
     session = make_session(preview, observation_mode="ground_truth")
     assert session.env.grasp_backend.source == "ground_truth"

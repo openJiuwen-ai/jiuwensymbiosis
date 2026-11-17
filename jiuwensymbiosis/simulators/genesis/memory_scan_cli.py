@@ -4,9 +4,9 @@ import signal
 import threading
 
 from jiuwensymbiosis.agent.config import RobotAgentConfig
-from jiuwensymbiosis.simulators.genesis.agent import make_session
+from jiuwensymbiosis.simulators.common.agent import make_session
+from jiuwensymbiosis.simulators.common.resident import ResidentPreview
 from jiuwensymbiosis.simulators.genesis.memory_scan import GenesisScanPort
-from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
 from jiuwensymbiosis.spatial_memory.scan import ScanBudget, run_scan
 from jiuwensymbiosis.spatial_memory.yoloe import YoloEPromptFree
 

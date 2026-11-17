@@ -4,15 +4,14 @@ import copy
 import importlib.util
 import sys
 from dataclasses import asdict
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.camera import PreviewSettings
-from jiuwensymbiosis.simulators.genesis.scheduling import PhysicsClock
-from jiuwensymbiosis.simulators.genesis.startup_diagnostics import StartupDiagnostics
+from jiuwensymbiosis.simulators.common.camera import PreviewSettings
+from jiuwensymbiosis.simulators.common.scheduling import PhysicsClock
+from jiuwensymbiosis.simulators.common.startup_diagnostics import StartupDiagnostics
 
 
 @pytest.fixture
@@ -110,28 +109,66 @@ def worker_loop(monkeypatch, tmp_path):
 
     module("base_motion", measure=lambda robot: {})
     module("camera", PreviewSettings=PreviewSettings)
-    module("encoding", NvEncoder=encoder)
+    module("encoding", NvEncoder=encoder, SoftwareEncoder=encoder)
     module("ipc", Mailbox=object)
     module("scene_catalog", resolve_scene=lambda _: None, validate_material_bundle=lambda _: None)
-    module("scene_runtime", RuntimeScene=lambda *a, **kw: runtime)
+    module("scene_runtime", create_runtime=lambda *a, **kw: runtime, reset_runtime=lambda *a, **kw: (runtime, {}))
     module("quadrants")
     module("scheduling", PhysicsClock=lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
     module("startup_diagnostics", StartupDiagnostics=lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
     module("usd_scene", prepare_static_stage=lambda *a: None)
-    module("genesis", cuda=object(), init=lambda **kw: None, destroy=lambda: None)
-    module("quadrants")  # Optional cfg diagnostics report unavailable; never load the real SDK.
+    module(
+        "genesis",
+        cuda="cuda",
+        cpu="cpu",
+        metal="metal",
+        init=lambda **kw: setattr(state, "backend", kw["backend"]),
+        destroy=lambda: None,
+    )
     sdk = module("gs_nyx.nyx_py_sdk", startup=lambda: None, shutdown=lambda: None)
     module("gs_nyx", nyx_py_sdk=sdk)
     module("torch", cuda=SimpleNamespace(current_stream=lambda: SimpleNamespace(synchronize=lambda: None)))
-    path = Path(__file__).parents[4] / "jiuwensymbiosis/simulators/genesis/worker.py"
-    spec = importlib.util.spec_from_file_location("worker_scheduling_under_test", path)
-    worker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(worker)
+    worker = importlib.import_module("jiuwensymbiosis.simulators.common.worker")
+    monkeypatch.setattr(worker, "measure", lambda robot: {})
+    from jiuwensymbiosis.simulators.common import encoding
+
+    monkeypatch.setattr(encoding, "SoftwareEncoder", encoder)
+    monkeypatch.setattr(worker, "NvEncoder", encoder)
+    monkeypatch.setattr(worker, "create_runtime", lambda *a, **kw: runtime)
+    monkeypatch.setattr(worker, "reset_runtime", lambda *a, **kw: (runtime, {}))
+    monkeypatch.setattr(worker, "PhysicsClock", lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
+    monkeypatch.setattr(worker, "StartupDiagnostics", lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
+    monkeypatch.setattr(worker.sys, "platform", "linux")
     monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: state.now, sleep=advance))
     state.run = lambda: worker.run_preview(mailbox, tmp_path)
+    state.worker = worker
     state.directory = tmp_path
     state.runtime = runtime
     return state
+
+
+@pytest.mark.parametrize("requested, expected", [(None, "cpu"), ("cpu", "cpu"), ("metal", "metal")])
+def test_macos_physics_backend_keeps_the_worker_contract(worker_loop, monkeypatch, requested, expected):
+    state = worker_loop
+    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
+    if requested is None:
+        monkeypatch.delenv("JIUWEN_GENESIS_MACOS_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", requested)
+    state.run()
+    assert state.backend == expected
+    assert state.statuses[-1]["state"] == "ready"
+    assert state.statuses[-1]["physics_backend"] == expected
+
+
+def test_macos_invalid_backend_fails_before_scene_or_encoder(worker_loop, monkeypatch):
+    state = worker_loop
+    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
+    monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", "invalid")
+    state.run()
+    assert state.encoders == 0
+    assert state.statuses[-1]["state"] == "failed"
+    assert state.statuses[-1]["startup"]["failed_phase"] == "genesis_init"
 
 
 def capture_request():
@@ -232,8 +269,6 @@ def test_rgbd_motion_mode_preserves_action_and_arm_guards(
 ):
     from unittest.mock import Mock
 
-    from jiuwensymbiosis.simulators.genesis import capture_status
-
     state = worker_loop
     runtime = state.runtime
     runtime.info["mode"] = "robot_mobile"
@@ -241,11 +276,10 @@ def test_rgbd_motion_mode_preserves_action_and_arm_guards(
     runtime.arm_motion = Mock(active=arm_active)
     runtime.arm_motion.base_pose.return_value = np.eye(4)
     runtime.arm_motion.effectors.report.return_value = {}
-    rgbd = ModuleType("rgbd")
-    rgbd.base_body_bounds = lambda *args: np.zeros((2, 3))
-    rgbd.base_from_camera = lambda *args: np.eye(4)
-    monkeypatch.setitem(sys.modules, "rgbd", rgbd)
-    monkeypatch.setitem(sys.modules, "capture_status", capture_status)
+    from jiuwensymbiosis.simulators.genesis import rgbd as rgbd_module
+
+    monkeypatch.setattr(rgbd_module, "base_body_bounds", lambda *args: np.zeros((2, 3)))
+    monkeypatch.setattr(rgbd_module, "base_from_camera", lambda *args: np.eye(4))
     runtime.robot.bounds = np.zeros((2, 3))
     runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
 
@@ -291,17 +325,14 @@ def test_unconfigured_arm_request_does_not_destroy_scene(worker_loop):
 def test_virtual_rgbd_has_no_fabricated_robot_evidence(worker_loop, monkeypatch):
     state = worker_loop
     runtime = state.runtime
-    from jiuwensymbiosis.simulators.genesis import capture_status
-
-    monkeypatch.setitem(sys.modules, "capture_status", capture_status)
     runtime.settings.robot_mode = "virtual_camera"
     runtime.info["mode"] = "static_background"
     runtime.motion = None
     runtime.robot = None
-    rgbd = ModuleType("rgbd")
-    rgbd.base_body_bounds = lambda *a: pytest.fail("virtual capture has no robot bounds")
-    rgbd.base_from_camera = lambda *a: pytest.fail("virtual capture has no base transform")
-    monkeypatch.setitem(sys.modules, "rgbd", rgbd)
+    from jiuwensymbiosis.simulators.genesis import rgbd as rgbd_module
+
+    monkeypatch.setattr(rgbd_module, "base_body_bounds", lambda *a: pytest.fail("virtual capture has no robot bounds"))
+    monkeypatch.setattr(rgbd_module, "base_from_camera", lambda *a: pytest.fail("virtual capture has no base transform"))
     runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
     runtime.renderer.read_rgbd = lambda *a, **kw: (np.zeros((8, 8, 3), np.uint8), np.ones((8, 8), np.float32))
     state.command["capture"] = {

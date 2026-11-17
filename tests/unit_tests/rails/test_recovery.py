@@ -122,6 +122,35 @@ class TestRecoveryRail:
         assert mock_session.api._call_log == []
 
     @pytest.mark.asyncio
+    async def test_cancellation_skips_recovery(self, mock_session):
+        """A user stop must not be followed by release/home (docs promise this)."""
+        from jiuwensymbiosis.agent.cancel import RunCancelled
+
+        assert RunCancelled.skip_recovery is True
+
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RunCancelled("user cancelled"))
+        await rail.on_tool_exception(ctx)
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
+    async def test_wrapped_cancellation_skips_recovery(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import RunCancelled
+
+        wrapped = RuntimeError("AbilityExecutionError")
+        wrapped.__cause__ = RunCancelled("user cancelled")
+        wrapped.cause = wrapped.__cause__
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {}}',
+            exception=wrapped,
+        )
+        await rail.on_tool_exception(ctx)
+
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
     async def test_implicit_exception_context_does_not_skip_real_failure_recovery(self, mock_session):
         class SafeFailure(RuntimeError):
             skip_recovery = True
@@ -252,6 +281,55 @@ class TestRecoveryRailTraceSink:
         assert sink.events[0][3] is True  # mock home succeeds
 
 
+class TestCancelledRunSkipsRecovery:
+    """The abandoned helper thread must not move the robot after a user stop."""
+
+    @pytest.mark.asyncio
+    async def test_after_tool_call_does_not_move_when_cancelled(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = CancelToken()
+        token.set()
+        mock_session.cancel_token = token
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(
+            tool_name="robot_control",
+            tool_args='{"action": "goto_xyzr", "params": {}}',
+            tool_result=SimpleNamespace(success=False, data={"action": "goto_xyzr", "dispatched": True}),
+        )
+
+        await rail.after_tool_call(ctx)
+
+        assert mock_session.api._call_log == []
+        assert RECOVERY_PERFORMED_KEY not in ctx.extra
+
+    @pytest.mark.asyncio
+    async def test_on_tool_exception_does_not_move_when_cancelled(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        token = CancelToken()
+        token.set()
+        mock_session.cancel_token = token
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await rail.on_tool_exception(ctx)
+
+        assert mock_session.api._call_log == []
+
+    @pytest.mark.asyncio
+    async def test_uncancelled_run_still_recovers(self, mock_session):
+        from jiuwensymbiosis.agent.cancel import CancelToken
+
+        mock_session.cancel_token = CancelToken()
+        rail = RecoveryRail(mock_session)
+        ctx = FakeCtx(tool_name="goto_xyzr", exception=RuntimeError("driver timed out"))
+
+        await rail.on_tool_exception(ctx)
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+
+
 class TestAfterToolCallRecovery:
     """RobotControlTool reports adapter failures as ``ToolOutput(success=False)``.
 
@@ -342,3 +420,64 @@ class TestAfterToolCallRecovery:
         await rail.after_tool_call(ctx)
 
         assert mock_session.api._call_log == []
+
+
+class TestAfterToolCallChainContract:
+    """The hook must fire through openjiuwen's real callback manager.
+
+    Unit tests above feed ``FakeCtx``/``SimpleNamespace``; this one registers the
+    rail on a real ``AgentCallbackManager``, drives the real ``AFTER_TOOL_CALL``
+    event with a real ``RobotControlTool`` output, and asserts the full recovery
+    (release + home). It proves registration/dispatch/input shape, not that the
+    whole agent loop emits the event — the framework owns that.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_callback_chain_recovers_after_dispatched_tool_failure(self, mock_session):
+        import json
+
+        from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
+        from openjiuwen.core.single_agent.rail.base import (
+            AgentCallbackContext,
+            AgentCallbackEvent,
+            ToolCallInputs,
+        )
+
+        from jiuwensymbiosis.api.actions import ACTIONS, implements
+        from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
+
+        class DriverFailure(RuntimeError):
+            pass
+
+        class FailingApi:
+            capabilities = frozenset({"motion.cartesian"})
+
+            @implements(ACTIONS["goto_xyzr"])
+            def goto_xyzr(self, x, y, z, r=0.0, orientation_policy=None):
+                raise DriverFailure("driver lost connection mid-move")
+
+        output = await RobotControlTool(FailingApi()).invoke(
+            {"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}
+        )
+        assert output.success is False
+        assert output.data["dispatched"] is True
+
+        manager = AgentCallbackManager("recovery-after-tool-e2e")
+        agent = SimpleNamespace(agent_callback_manager=manager)
+        ctx = AgentCallbackContext(
+            agent=agent,
+            inputs=ToolCallInputs(
+                tool_name="robot_control",
+                tool_args=json.dumps({"action": "goto_xyzr", "params": {"x": 100, "y": 0, "z": 300}}),
+                tool_result=output,
+            ),
+        )
+        try:
+            await manager.register_rail(RecoveryRail(mock_session), agent)
+            await manager.execute(AgentCallbackEvent.AFTER_TOOL_CALL, ctx)
+        finally:
+            await manager.clear()
+
+        assert any(call == "home" for call in mock_session.api._call_log)
+        assert any("deactivate_suction" in call for call in mock_session.api._call_log)
+        assert ctx.extra[RECOVERY_PERFORMED_KEY] is True

@@ -346,7 +346,7 @@ with session:
 ## 6. Configure software and hardware safety boundaries
 
 SafetyRail checks Cartesian Z, XY workspace, and joint soft limits before dispatch and transparently unwraps
-`RobotControlTool` actions. A rejected call raises a corrective `ValueError` and must not reach hardware.
+`RobotControlTool` actions. A rejected call aborts with `AbortError` (cause `SafetyViolationError`, still a `ValueError` subclass carrying the corrective message) and a pre-dispatch rejection must not reach hardware. When the violation is only observed after commands were sent, the adapter must raise an error that explicitly declares `skip_recovery = False` (SO-101 does this with `So101TrackingViolation`) so RecoveryRail still releases/homes.
 
 ### Boundary configuration and ownership
 

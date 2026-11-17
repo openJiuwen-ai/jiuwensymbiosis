@@ -76,7 +76,7 @@ def main() -> None:
             raise SystemExit(2)
         return
     if args.command == "capture":
-        from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
+        from jiuwensymbiosis.simulators.common.resident import ResidentPreview
         from jiuwensymbiosis.simulators.genesis.spatial_capture import capture_sequence
 
         preview = ResidentPreview(state_dir=args.state_dir)

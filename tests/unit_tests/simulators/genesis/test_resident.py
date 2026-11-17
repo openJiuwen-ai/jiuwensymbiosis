@@ -9,9 +9,9 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jiuwensymbiosis.simulators.genesis.resident import ResidentPreview
-from jiuwensymbiosis.simulators.genesis.resident_server import ResidentHost, ResidentServer
-from jiuwensymbiosis.simulators.genesis.resident_transport import MAX_RESPONSE, receive_message, send_message
+from jiuwensymbiosis.simulators.common.resident import ResidentPreview
+from jiuwensymbiosis.simulators.common.resident_server import ResidentHost, ResidentServer
+from jiuwensymbiosis.simulators.common.resident_transport import MAX_RESPONSE, receive_message, send_message
 
 
 @pytest.fixture
@@ -89,6 +89,25 @@ def test_client_cannot_use_another_clients_motion_owner(service):
     with pytest.raises(RuntimeError, match="控制权"):
         dispatch(service.host, second, "navigate_relative", owner=owner, dx=0.1, dy=0, dyaw=0)
     service.preview.navigate_relative.assert_not_called()
+
+
+def test_policy_action_roundtrip_enforces_owner_and_passes_cancellation(service):
+    service.preview.policy_action.return_value = {"ok": True, "settled": True}
+    service.preview.release_motion.return_value = None
+    first, second = ResidentPreview(state_dir=service.root), ResidentPreview(state_dir=service.root)
+    try:
+        first.start()
+        second.start()
+        owner = first.acquire_motion()
+        with pytest.raises(RuntimeError, match="控制权"):
+            second.policy_action(owner, "jump")
+        service.preview.policy_action.assert_not_called()
+        assert first.policy_action(owner, "jump") == {"ok": True, "settled": True}
+        assert isinstance(service.preview.policy_action.call_args.kwargs["cancelled"], threading.Event)
+        first.release_motion(owner)
+    finally:
+        first.close()
+        second.close()
 
 
 def test_expired_gui_cancels_inflight_request_and_confirms_stop(service):

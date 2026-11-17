@@ -96,6 +96,7 @@ Key semantics:
 - base verbs use **metres** (detections are millimetres) and return `{ok, reason, ...}`;
 - `grab_frames()` returns aligned `(rgb_uint8, depth_m_float32)` or `None`;
 - `close()` must be idempotent.
+- Failure classification: a pre-dispatch rejection raises `SafetyViolationError` (default `skip_recovery=True`, so RecoveryRail neither releases nor homes); a violation observed only after commands were sent (such as tracking) must raise an error that explicitly declares `skip_recovery = False` so RecoveryRail still releases/homes.
 
 The named `VisionDriver` Protocol currently covers only eye-in-hand calibration. Eye-to-hand adapters such as SO-101 expose `tf_base_cam` and `calibration` through body-specific structured interfaces and declare the `vision.eye_to_hand` marker; there is no standalone named eye-to-hand Protocol yet.
 
@@ -137,7 +138,7 @@ Env properties:
 | `base_step_limits` | `None` | SafetyRail, `(max|translation|m, max|turn|rad)` per base command |
 | `lift_limits` | `None` | SafetyRail, `set_lifter` soft limits |
 | `waist_step_limit_rad` | `None` | SafetyRail, `turn_waist` per-command cap |
-| `holding_payload` | Not provided | RecoveryRail checks before homing so a carried payload is not dropped blindly |
+| `holding_payload` | Not provided | On a motion/grasp failure, a held payload suppresses only the release; homing still runs (preferring `recovery_home`) |
 | `cameras` | `(None,)` | Perceivable cameras (best-first); `grab_calibrated_frame(camera)` |
 | `urdf_path`/`arm_chains`/`arm_joints` | `None` | Derive `planning.reachability`; joints each arm actuates |
 

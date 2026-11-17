@@ -21,9 +21,11 @@ Notes:
 - Recovery actions themselves are NOT railed (they wrap the env directly,
   not the api), so a recovery failure is logged but does not crash the
   rail.
-- Adapter-specific exceptions may set ``skip_recovery = True`` when the command
-  was rejected before leaving the arm in an unsafe state; those are surfaced to
-  the caller without an automatic home move.
+- Adapter-specific exceptions may set ``skip_recovery = True`` only when the
+  raiser judged recovery unnecessary (typically a pre-dispatch rejection where
+  nothing moved); those are surfaced to the caller without an automatic home
+  move. A violation detected only after dispatch must declare ``False`` (which
+  clears an inherited ``True``) so recovery still releases/homes.
 - A motion failure while the adapter reports ``holding_payload=True`` keeps the
   end effector closed and attempts a payload-aware recovery home. It never
   drops the payload merely because endpoint settle was outside tolerance.
@@ -46,6 +48,7 @@ from typing import Any
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
 from jiuwensymbiosis.agent.trace import TraceEventSink
+from jiuwensymbiosis.errors import find_skip_recovery_exception
 from jiuwensymbiosis.rails.tool_args import coerce_tool_args
 
 logger = logging.getLogger(__name__)
@@ -152,43 +155,6 @@ def recover_session(
     return released_ok, home_ok
 
 
-def find_skip_recovery_exception(exception: Any) -> BaseException | None:
-    """Find an adapter opt-out marker through framework exception wrappers.
-
-    OpenJiuwen wraps tool failures in ``AbilityExecutionError``. Its
-    ``cause``/``__cause__`` retains the original adapter exception, so only
-    checking the outer object loses ``skip_recovery`` and triggers an
-    unnecessary release/home after a pre-dispatch rejection.
-    """
-    if not isinstance(exception, BaseException):
-        return None
-    pending: list[BaseException] = [exception]
-    visited: set[int] = set()
-    wrapper_attrs = (
-        "__cause__",
-        "cause",
-        "exception",
-        "original_exception",
-        "original_error",
-    )
-    while pending:
-        current = pending.pop()
-        current_id = id(current)
-        if current_id in visited:
-            continue
-        visited.add(current_id)
-        if bool(getattr(current, "skip_recovery", False)):
-            return current
-        for attr in wrapper_attrs:
-            try:
-                nested = getattr(current, attr, None)
-            except Exception:  # noqa: BLE001 - wrapper inspection must be fail-safe
-                continue
-            if isinstance(nested, BaseException) and id(nested) not in visited:
-                pending.append(nested)
-    return None
-
-
 class RecoveryRail(AgentRail):
     """Attempt to return the robot to a safe state when a motion/grasp tool errors."""
 
@@ -247,7 +213,18 @@ class RecoveryRail(AgentRail):
         await self._recover_after_failure(ctx)
 
     async def _recover_after_failure(self, ctx: Any) -> None:
-        """Release/home for the watched action a failure was attached to."""
+        """Release/home for the watched action a failure was attached to.
+
+        A cancelled run never recovers: the caller thread already returned
+        ``RunCancelled`` and the user asked the robot to stop. The abandoned
+        helper thread of ``cancellable_call`` may still surface a driver error,
+        and the tool turns adapter errors into ``ToolOutput(success=False)``;
+        neither failure is ``RunCancelled``, so both need this gate.
+        """
+        token = getattr(self.session, "cancel_token", None)
+        if token is not None and token.is_set():
+            logger.warning("RecoveryRail: run cancelled; skipping recovery")
+            return
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
         tool_args = getattr(inputs, "tool_args", None)

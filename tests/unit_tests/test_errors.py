@@ -57,3 +57,65 @@ def test_safety_violation_stays_a_value_error():
 def test_safety_violation_declines_recovery():
     # 预检拒绝发生在下发前,RecoveryRail 不应为它 home/release
     assert SafetyViolationError("refused").skip_recovery is True
+
+
+class TestFindSkipRecoveryException:
+    """The marker walker must never raise; adapters rely on it on failure paths."""
+
+    def test_non_exception_argument_returns_none(self):
+        assert errors.find_skip_recovery_exception("not an exception") is None
+
+    def test_marked_exception_is_returned(self):
+        violation = SafetyViolationError("refused")
+        assert errors.find_skip_recovery_exception(violation) is violation
+
+    def test_unmarked_exception_returns_none(self):
+        assert errors.find_skip_recovery_exception(RuntimeError("boom")) is None
+
+    def test_marker_property_failure_is_treated_as_unmarked(self):
+        class Hostile(Exception):
+            @property
+            def skip_recovery(self):
+                raise RuntimeError("marker property exploded")
+
+        assert errors.find_skip_recovery_exception(Hostile("x")) is None
+
+    def test_wrapper_property_failure_is_skipped(self):
+        class Hostile(Exception):
+            @property
+            def cause(self):
+                raise RuntimeError("wrapper property exploded")
+
+        assert errors.find_skip_recovery_exception(Hostile("x")) is None
+
+    def test_unmarked_wrapper_inherits_the_marker_from_its_cause(self):
+        violation = SafetyViolationError("refused")
+        wrapper = RuntimeError("wrapped")
+        wrapper.__cause__ = violation
+        assert errors.find_skip_recovery_exception(wrapper) is violation
+
+    def test_explicit_false_wrapper_clears_an_inherited_marker(self):
+        class ClearsOptOut(RuntimeError):
+            skip_recovery = False
+
+        wrapper = ClearsOptOut("post-dispatch failure")
+        wrapper.__cause__ = SafetyViolationError("pre-dispatch refusal")
+        assert errors.find_skip_recovery_exception(wrapper) is None
+
+    def test_explicit_false_cause_beats_an_outer_true_wrapper(self):
+        class OptsOut(RuntimeError):
+            skip_recovery = True
+
+        wrapper = OptsOut("already safe")
+        wrapper.__cause__ = self._clearing_error()
+
+        # Recovery must win over an outer "safe" verdict: the inner failure
+        # says the arm may have moved and needs release/homing.
+        assert errors.find_skip_recovery_exception(wrapper) is None
+
+    @staticmethod
+    def _clearing_error():
+        class ClearsOptOut(RuntimeError):
+            skip_recovery = False
+
+        return ClearsOptOut("post-dispatch failure")

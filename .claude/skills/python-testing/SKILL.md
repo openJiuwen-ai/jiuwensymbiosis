@@ -67,6 +67,8 @@ example checks the same rejection for a direct tool name and wrapped dispatch:
 ```python
 import pytest
 
+from openjiuwen.core.runner.callback.errors import AbortError
+
 from jiuwensymbiosis.rails.safety import SafetyRail
 from tests.helpers import FakeCtx, make_mock_session
 
@@ -80,8 +82,9 @@ async def test_policy_rejects_both_tool_shapes(wrapped):
         tool_name="robot_control" if wrapped else "goto_xyzr",
         tool_args={"action": "goto_xyzr", "params": motion} if wrapped else motion,
     )
-    with pytest.raises(ValueError, match="below z_floor"):
+    with pytest.raises(AbortError, match="below z_floor") as info:
         await rail.before_tool_call(ctx)
+    assert info.value.cause.code == "safety_rejected"
 ```
 
 A callback test establishes policy behavior, not that every caller invokes it.

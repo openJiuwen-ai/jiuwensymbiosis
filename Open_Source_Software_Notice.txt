@@ -150,7 +150,7 @@ All rights reserved.
 
 License: BSD 3-Clause License
 Please see above
-Software: torch 2.11.0+cu130
+Software: torch 2.11.0 (macOS CPU/Metal) / 2.11.0+cu130 (Linux CUDA)
 Copyright notice:
 From PyTorch:
 
@@ -405,10 +405,19 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 License source: https://github.com/PyAV-Org/PyAV/blob/v17.1.0/LICENSE.txt
 This entry covers the PyAV bindings. FFmpeg and codec libraries supplied in
-third-party binary wheels have separate licenses; the checked av 17.1.0 Linux
-wheel reports LGPL version 3 or later for its FFmpeg libraries. Those binaries
-are not bundled by this repository. Binary redistributors must retain their
-applicable license notices and meet their source/relinking obligations.
+third-party binary wheels have separate licenses. The av 17.1.0 macOS arm64 build
+used for simulation reports "LGPL version 3 or later" but also enables libx264/libx265.
+That string is not a license clearance for the codec libraries. This project selects
+libx264 for software H264; x264 is offered under GPL-2.0-or-later or a separate
+commercial license. Do not infer the binary stack's redistribution terms from PyAV's
+BSD license or FFmpeg's reported string. The Linux wheel previously inspected also
+reported LGPL v3+; that does not establish the licenses of all platforms/codecs.
+These binaries are not bundled in this source repository. Binary/container
+redistributors must verify the exact build, retain codec notices and satisfy its
+source/relinking or commercial-license obligations before distribution.
+Codec licensing: https://www.videolan.org/developers/x264.html
+PyAV build source: https://github.com/PyAV-Org/pyav-ffmpeg
+Upstream licensing discussion: https://github.com/PyAV-Org/PyAV/issues/2270
 FFmpeg license information: https://ffmpeg.org/legal.html
 Inspect the selected binary build with: python -m av --version
 Software: Pillow 12.2.0
@@ -922,6 +931,35 @@ License: MIT License
 Please see above
 Source: https://pypi.org/pypi/coacd/1.0.14/json
 
+
+Software: mujoco-core 4.0.1 (classic OpenGL rendering extra)
+Copyright notice: Copyright 2022 DeepMind Technologies Limited
+License: Apache License V2.0 (see above)
+Source and license: https://github.com/google-deepmind/mujoco/tree/4.0.1
+Package: https://pypi.org/project/mujoco-core/4.0.1/
+MuJoCo Studio and external robot assets are not bundled by this repository.
+
+Software: onnxruntime 1.31.1
+Copyright notice: Copyright (c) Microsoft Corporation. All rights reserved.
+License: MIT License (see above)
+Source and license: https://github.com/microsoft/onnxruntime/blob/v1.31.1/LICENSE
+Package: https://pypi.org/project/onnxruntime/1.31.1/
+
+Software: better-actuator-models 1.0.3
+Copyright notice: Copyright 2025 Marc Duclusaud & Grégoire Passault
+License: Apache License V2.0 (see above)
+Source and license: https://github.com/Rhoban/bam
+Package: https://pypi.org/project/better-actuator-models/1.0.3/
+Import name: bam. Only the runtime actuator controller is used, without training extras.
+
+External robot assets (not redistributed by this repository):
+- Jumper: https://github.com/KingKongRobotics/jumper (Apache-2.0; retain upstream LICENSE/NOTICE).
+- Microduck code/MJCF: https://github.com/pollen-robotics/microduck_rl (Apache-2.0).
+  Copyright Pollen Robotics. Its STL files are separately CC BY-NC-SA 4.0:
+  https://github.com/pollen-robotics/microduck_rl/blob/main/LICENSE-MODELS.md
+  These noncommercial assets must not be included in a commercial product
+  distribution without separate permission. Registration does not relicense them.
+  Model/codec binaries and downloaded weights are excluded from source releases.
 Software: python-fcl 0.7.0.11 (declared ==0.7.0.11)
 Copyright notice:
 Copyright (c) 2017, Matthew Matl
