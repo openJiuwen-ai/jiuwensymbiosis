@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import asdict
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING or __package__:
     from . import AssetError, AssetLibrary, build_index, initialize_config, load_config, probe_asset
+    from .robot_assets import fetch_assets, register_robot, simulator_root
 else:
     # Load a private namespace so the directory CLI never shadows installed modules.
     from types import ModuleType
@@ -27,6 +29,7 @@ else:
         load_config,
         probe_asset,
     )
+    from _jiuwensymbiosis_asset_cli.assets.robot_assets import fetch_assets, register_robot, simulator_root
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("init-config", help="生成本机资产配置示例，不覆盖已有文件")
     commands.add_parser("build", help="扫描并原子替换索引；不修改源资产")
     commands.add_parser("status", help="构建摘要、诊断及验证边界")
+    register = commands.add_parser("register-robot", help="登记外置策略机器人；--fetch 显式下载固定官方版本")
+    register.add_argument("robot", choices=("jumper", "microduck"))
+    register.add_argument("--source", type=Path, help="已有 checkout 或新下载目录；默认数据根下 outputs/vendor/<robot>")
+    register.add_argument("--home", type=Path, default=simulator_root(), help="本机仿真数据根，不覆盖已有资产根")
+    register.add_argument("--fetch", action="store_true", help="下载并校验官方资产；目标目录必须尚不存在")
     search = commands.add_parser("search", help="分页查询文件级候选")
     search.add_argument("query", nargs="?", default="")
     for name in ("root-id", "kind", "category", "preview-mode"):
@@ -49,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument("id")
     probe.add_argument("--usd", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "register-robot" and (args.config or args.index):
+        parser.error("register-robot 使用 --home 指定仿真数据根；不接受 --config 或 --index")
     if args.command not in {"build", "init-config"} and args.config:
         parser.error("查询不读取 YAML；请用 --index 指定 SQLite")
     if args.command in {"build", "init-config"} and args.index:
@@ -58,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         library = AssetLibrary(args.index)
         if args.command == "init-config":
             result = {"config": str(initialize_config(args.config)), "next_step": "编辑 roots[].path 后运行 build"}
+        elif args.command == "register-robot":
+            folder = "microduck_rl" if args.robot == "microduck" else args.robot
+            source = args.source or args.home / "outputs/vendor" / folder
+            if args.fetch:
+                fetch_assets(args.robot, source)
+            result = register_robot(args.robot, source, args.home)
         elif args.command == "build":
             result = build_index(load_config(args.config))
         elif args.command == "status":
@@ -76,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             result = {**resolved.asset.to_dict(), "paths": {role: str(path) for role, path in resolved.paths.items()}}
         else:
             result = probe_asset(library, args.id, usd=args.usd)
-    except (AssetError, OSError, ET.ParseError, json.JSONDecodeError) as exc:
+    except (AssetError, OSError, ET.ParseError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         # These streams carry the CLI JSON protocol, not prefixed log messages.
         json.dump({"error": str(exc)}, sys.stderr, ensure_ascii=False)
         return 1

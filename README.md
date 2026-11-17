@@ -68,7 +68,9 @@ python -m pip install -e ".[full]" \
 
 See [Installation and Quick Start](docs/en/tutorial/01-quick-start.md) for combined extras and pinned runtime dependencies.
 
-Genesis simulation is an optional plugin; see [Install Genesis (Chinese)](docs/zh/tutorial/03-install-genesis.md) for environment setup and startup.
+The workbench supports Genesis and MuJoCo as selectable simulation backends. Backend installation,
+external Jumper/Microduck assets, manual and Agent control, and startup/shutdown are documented in the
+[Simulation Guide](docs/en/how-to/simulaiton-guide.md).
 
 The unified launcher selects a GUI plugin; this repository currently ships `workbench`:
 

@@ -6,10 +6,10 @@ import math
 from typing import TYPE_CHECKING
 
 from jiuwensymbiosis.contracts import NavigationResult
-from jiuwensymbiosis.simulators.genesis.base_motion import wrap
+from jiuwensymbiosis.simulators.common.base_motion import wrap
 
 if TYPE_CHECKING:
-    from jiuwensymbiosis.simulators.genesis.agent import GenesisDriver
+    from jiuwensymbiosis.simulators.common.agent import SimulationDriver
 
 
 def _stopped(robot: dict) -> bool:
@@ -19,7 +19,7 @@ def _stopped(robot: dict) -> bool:
     )
 
 
-def navigate(driver: GenesisDriver, params: dict) -> NavigationResult:
+def navigate(driver: SimulationDriver, params: dict) -> NavigationResult:
     """Follow one route, checking fresh physical feedback before each next command."""
     driver.require_motion()
     planned = driver.query_truth("plan_navigation", params)

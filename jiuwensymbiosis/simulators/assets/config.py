@@ -46,7 +46,8 @@ class ContentFamily(StrictModel):
 class RootSpec(StrictModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     path: str = Field(min_length=1)
-    scanner: Literal["content_tree", "geniesim", "spiritai"]
+    scanner: Literal["content_tree", "geniesim", "spiritai", "jumper", "microduck", "mjcf"]
+    entries: list[str] = Field(default_factory=list)
     content_path: str = "."
     exclude: list[str] = Field(default_factory=list)
     families: dict[str, ContentFamily] = Field(default_factory=dict)
@@ -62,6 +63,14 @@ class RootSpec(StrictModel):
 
     @model_validator(mode="after")
     def check_families(self) -> RootSpec:
+        if self.scanner == "mjcf":
+            if not self.entries:
+                raise ValueError("mjcf scanner requires explicit entries")
+            for entry in self.entries:
+                if Path(relative_path(entry)).suffix.lower() not in {".xml", ".mjcf"}:
+                    raise ValueError("MJCF entries require .xml or .mjcf")
+        elif self.entries:
+            raise ValueError("entries is only supported by the mjcf scanner")
         if self.scanner == "content_tree" and not self.families:
             raise ValueError("content_tree 必须声明 families 目录与分类")
         if self.scanner != "content_tree" and self.families:
