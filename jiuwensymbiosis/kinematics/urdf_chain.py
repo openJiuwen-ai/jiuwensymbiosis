@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -37,7 +36,7 @@ class Chain:
         return {j.name: (j.lower, j.upper) for j in self.joints if j.jtype != "fixed"}
 
 
-def _triple(text: Optional[str], default: tuple[float, float, float]) -> tuple[float, float, float]:
+def _triple(text: str | None, default: tuple[float, float, float]) -> tuple[float, float, float]:
     if not text:
         return default
     parts = [float(x) for x in text.split()]
@@ -46,15 +45,25 @@ def _triple(text: Optional[str], default: tuple[float, float, float]) -> tuple[f
     return (parts[0], parts[1], parts[2])
 
 
+def _required_attribute(element: ET.Element | None, attribute: str, location: str) -> str:
+    value = element.get(attribute) if element is not None else None
+    if value is None or not value.strip():
+        raise ValueError(f"URDF {location} requires a non-blank '{attribute}' attribute")
+    return value
+
+
 def parse_chain(urdf_path: str, root_link: str, leaf_link: str) -> Chain:
     """Parse the kinematic chain from ``root_link`` down to ``leaf_link``."""
     root = ET.parse(urdf_path).getroot()
-    # child_link -> joint element
-    by_child: dict[str, ET.Element] = {}
-    for j in root.findall("joint"):
-        child = j.find("child")
-        if child is not None:
-            by_child[child.get("link")] = j
+    # Index each child by its joint element and validated identity and parent.
+    by_child: dict[str, tuple[ET.Element, str, str, str]] = {}
+    for index, joint in enumerate(root.findall("joint"), start=1):
+        name = _required_attribute(joint, "name", f"joint #{index}")
+        location = f"joint {name!r}"
+        joint_type = _required_attribute(joint, "type", location)
+        parent_link = _required_attribute(joint.find("parent"), "link", f"{location} <parent>")
+        child_link = _required_attribute(joint.find("child"), "link", f"{location} <child>")
+        by_child[child_link] = (joint, name, joint_type, parent_link)
 
     # Walk from leaf up to root, collecting joints.
     rev: list[Joint] = []
@@ -64,18 +73,19 @@ def parse_chain(urdf_path: str, root_link: str, leaf_link: str) -> Chain:
         if link in visited:
             raise ValueError(f"cycle detected in URDF chain at link {link!r}")
         visited.add(link)
-        j = by_child.get(link)
-        if j is None:
+        entry = by_child.get(link)
+        if entry is None:
             raise ValueError(f"no joint produces link {link!r}; chain to {root_link!r} is broken")
-        origin = j.find("origin")
-        axis_el = j.find("axis")
-        limit_el = j.find("limit")
+        joint, name, joint_type, parent_link = entry
+        origin = joint.find("origin")
+        axis_el = joint.find("axis")
+        limit_el = joint.find("limit")
         lo = float(limit_el.get("lower", "0.0")) if limit_el is not None else 0.0
         hi = float(limit_el.get("upper", "0.0")) if limit_el is not None else 0.0
         rev.append(
             Joint(
-                name=j.get("name"),
-                jtype=j.get("type"),
+                name=name,
+                jtype=joint_type,
                 xyz=_triple(origin.get("xyz") if origin is not None else None, (0.0, 0.0, 0.0)),
                 rpy=_triple(origin.get("rpy") if origin is not None else None, (0.0, 0.0, 0.0)),
                 axis=_triple(axis_el.get("xyz") if axis_el is not None else None, (0.0, 0.0, 1.0)),
@@ -83,7 +93,7 @@ def parse_chain(urdf_path: str, root_link: str, leaf_link: str) -> Chain:
                 upper=hi,
             )
         )
-        link = j.find("parent").get("link")
+        link = parent_link
 
     rev.reverse()  # root→leaf
     return Chain(joints=rev, urdf_path=urdf_path, leaf_link=leaf_link)
