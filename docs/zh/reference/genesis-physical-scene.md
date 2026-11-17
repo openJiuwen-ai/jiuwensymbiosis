@@ -105,8 +105,9 @@ data/genesis_appearance.yaml，旧 scenes 映射不再接受，genesis_lighting.
 这不是逐帧自动曝光，也不是保证所有资产同样明亮。
 
 每个 USD 都检查材质：Nyx 原生支持的 OmniPBR/UsdPreviewSurface 保持不变，
-不支持的 shader 写入 material-repair.json 并在状态中计数。已有根目录声明的特殊
-材质转换规则仍独立存在；本次未把专用 MDL 模板规则当作通用转换。
+OmniGlass 由公共规则按 shader 类型自动转换，不需要 `material_rules` 配置，适用于 GenieSim、InteriorAgent 和其他 USD 资产。
+公共规则之外的未知 shader 写入 material-repair.json 并在状态中计数。根目录声明的专用
+MDL 模板规则仍独立存在；显式资产规则优先，未匹配时使用公共规则。普通透明 OmniPBR/UsdPreviewSurface 不会被误判为玻璃。
 OmniGlass 转换会请求原生双面薄壁透射：只将已标记的玻璃网格分到独立 USD 可见性层，保留源几何和变换，并显式启用 Nyx 双面材质及背面法线翻转。它修复单面玻璃壳的黑背面；体积吸收、厚度仍是近似，不代表完整玻璃光学还原。混合面材质的网格暂不分离，计入 `skipped_subset_meshes`。
 
 

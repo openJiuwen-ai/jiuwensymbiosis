@@ -235,3 +235,5 @@ sceneGen 元数据或相邻发布 manifest 后，使用源相机位姿、垂直 
 
 资产索引 schema/scanner 3 会保存根配置的 material_rules。修改规则后运行资产 build；
 旧版本索引会提示重建，不在查询时悄悄套用当前 YAML 或根据 root 名称猜测材质规则。
+
+OmniGlass uses a common shader-family conversion automatically for all USD roots; no `material_rules` opt-in or index rebuild is needed. The root key selects additional vendor templates, such as InteriorAgent UE4 MDL materials. Transparent OmniPBR/UsdPreviewSurface are not automatically treated as glass.

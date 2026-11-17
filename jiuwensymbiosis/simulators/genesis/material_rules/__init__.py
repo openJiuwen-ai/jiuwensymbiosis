@@ -1,9 +1,10 @@
-"""Explicitly selected asset-specific material conversion rules.
+"""Common shader recipes and explicitly selected asset-specific rules.
 
 A library root declares which recipe set applies to it (the ``material_rules``
 key in ``assets.yaml``); ``rules_for`` resolves that declared key here. Adding a
 second source means adding one entry to ``_RULES_MODULES`` — no generic module
-changes. An unknown key warns loudly instead of silently rendering unconverted.
+changes. Common recipes are always applied by prepare_materials.
+An unknown vendor key warns; it does not disable the common recipes.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ _RULES_MODULES: dict[str, str] = {"interioragent": "interioragent"}
 
 
 def rules_for(key: str) -> MaterialRules | None:
-    """Resolve a declared key to its rule set; unknown keys warn and convert nothing."""
+    """Resolve a declared key to its rule set; unknown keys warn and add no vendor recipes."""
     module_name = _RULES_MODULES.get(key)
     if module_name is None:
         logger.warning("Unknown material_rules key %r; known keys: %s", key, sorted(_RULES_MODULES))

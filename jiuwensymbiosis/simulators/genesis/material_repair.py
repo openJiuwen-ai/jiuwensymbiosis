@@ -1,7 +1,7 @@
-"""Non-destructive USD material preparation using explicitly supplied rules.
+"""Non-destructive USD preparation with common and explicitly supplied rules.
 
-No asset-specific rules are selected here. With no rules, source materials stay
-unchanged and unsupported families are reported for the caller to inspect.
+Common rules recognize portable shader families regardless of asset origin.
+Asset-specific templates require explicit rules; unknown families are reported.
 """
 
 from __future__ import annotations
@@ -55,6 +55,11 @@ def prepare_materials(source: Path, directory: Path, *, rules: MaterialRules | N
     """
     from pxr import Sdf, Usd, UsdGeom, UsdShade
 
+    if __package__:
+        from .material_rules.common import RULES as common_rules
+    else:
+        from material_rules.common import RULES as common_rules
+
     source = Path(source).resolve(strict=True)
     original = Usd.Stage.Open(str(source))
     if original is None:
@@ -92,7 +97,7 @@ def prepare_materials(source: Path, directory: Path, *, rules: MaterialRules | N
         family = str(shader.GetShaderId() or shader.GetSourceAssetSubIdentifier("mdl"))
         if family in SUPPORTED:
             continue
-        convert = (rules or {}).get(family)
+        convert = (rules or {}).get(family) or common_rules.get(family)
         if convert is None:
             report["remaining"].append({"path": str(path), "family": family})
             continue

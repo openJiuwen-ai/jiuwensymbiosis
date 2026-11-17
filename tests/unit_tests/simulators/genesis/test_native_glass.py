@@ -135,3 +135,41 @@ def test_no_glass_does_not_create_layers(tmp_path):
     path, groups, audit = prepare_glass_layers(source, tmp_path / "native")
     assert path == source and not groups and audit["mesh_count"] == 0
     assert not (tmp_path / "native").exists()
+
+
+@pytest.mark.parametrize("rules", [None, {}])
+def test_common_glass_converts_without_asset_rules(tmp_path, rules):
+    source = fixture(
+        tmp_path,
+        family="OmniGlass",
+        glass_ior=("Float", 1.4),
+        frosting_roughness=("Float", 0.3),
+        glass_color=("Color3f", (0.9, 0.8, 0.7)),
+    )
+    original = source.read_bytes()
+    path, report = prepare_materials(source, tmp_path / "materials", rules=rules)
+    stage, shader = converted(path)
+    assert report["converted"] == 1 and not report["remaining"]
+    assert shader.GetPrim().GetCustomDataByKey("symbiosis:nativeGlass") is True
+    assert shader.GetInput("ior").Get() == pytest.approx(1.4)
+    assert shader.GetInput("roughness").Get() == pytest.approx(0.3)
+    assert tuple(shader.GetInput("diffuseColor").Get()) == pytest.approx((0.9, 0.8, 0.7))
+    assert source.read_bytes() == original
+
+
+def test_common_glass_does_not_require_or_duplicate_vendor_rule():
+    from jiuwensymbiosis.simulators.genesis.material_rules.common import RULES as COMMON_RULES
+
+    assert "OmniGlass" in COMMON_RULES
+    assert "OmniGlass" not in RULES
+
+
+@pytest.mark.parametrize("family", ["OmniPBR", "UsdPreviewSurface"])
+def test_common_rules_do_not_treat_arbitrary_transparency_as_glass(tmp_path, family):
+    source = fixture(tmp_path, family=family, opacity=("Float", 0.15))
+    original = source.read_bytes()
+    path, report = prepare_materials(source, tmp_path / "materials")
+    assert path == source and report["converted"] == 0
+    assert source.read_bytes() == original
+    stage, shader = converted(source)
+    assert not shader.GetPrim().GetCustomDataByKey("symbiosis:nativeGlass")

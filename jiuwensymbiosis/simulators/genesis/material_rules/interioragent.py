@@ -330,21 +330,6 @@ def _other(stage, preview, shader, family, report, directory) -> bool:
     if family == "BasicShapeMaterial":
         _constant(preview, "diffuseColor", _rgb(_value(shader, "Color", (0.9, 0.9, 0.9))))
         _constant(preview, "roughness", float(_value(shader, "Roughness", 0.6407)))
-    elif family == "OmniGlass":
-        preview.GetPrim().SetCustomDataByKey("symbiosis:nativeGlass", True)
-        _constant(preview, "diffuseColor", _rgb(_value(shader, "glass_color", (1, 1, 1))))
-        _constant(preview, "roughness", float(_value(shader, "frosting_roughness", 0)))
-        _constant(preview, "ior", float(_value(shader, "glass_ior", 1.5)))
-        _constant(preview, "opacity", 0.15)
-        report["issues"].append(
-            {
-                "kind": "approximation",
-                "shader": str(shader.GetPath()),
-                "detail": (
-                    "OmniGlass uses native double-sided thin transmission; volume absorption/thickness remain approximate"
-                ),
-            }
-        )
     elif family == "OmniSurface":
         _constant(preview, "diffuseColor", _rgb(_value(shader, "diffuse_reflection_color", (0.8, 0.8, 0.8))))
         _constant(preview, "roughness", float(_value(shader, "specular_reflection_roughness", 0.5)))
@@ -438,9 +423,6 @@ def _convert(stage, preview, shader, family, report, directory) -> bool:
 
 
 RULES = dict.fromkeys(
-    LEGACY
-    | MODERN
-    | set(CLOTH)
-    | {"BasicShapeMaterial", "OmniGlass", "OmniSurface", "boli", MIRROR, EMISSION, "WorldGridMaterial"},
+    LEGACY | MODERN | set(CLOTH) | {"BasicShapeMaterial", "OmniSurface", "boli", MIRROR, EMISSION, "WorldGridMaterial"},
     _convert,
 )

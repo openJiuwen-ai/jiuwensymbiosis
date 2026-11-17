@@ -102,7 +102,7 @@ The shared display policy uses Neutral and a fixed -8 EV baseline for ordinary U
 (the existing source-presentation contract retains its 0 EV baseline). There is no per-frame
 auto exposure. The global genesis_appearance.yaml rejects scene overrides; genesis_lighting.yaml
 has been removed. Every USD receives a material audit, including unsupported shader counts.
-Native OmniPBR/UsdPreviewSurface are unchanged. Converted OmniGlass requests native double-sided thin transmission. Visibility-only USD layers isolate marked glass meshes without changing geometry or transforms; explicit Nyx sidedness and back-face normal flipping prevent black shell back faces. Volume absorption and thickness remain approximate. Meshes with material-binding face subsets are left unchanged and counted in `skipped_subset_meshes`.
+Native OmniPBR/UsdPreviewSurface are unchanged. OmniGlass is automatically recognized by a common shader-family rule for every USD asset, including GenieSim and InteriorAgent, without a root `material_rules` setting. Explicit vendor rules take precedence; unmatched families fall back to common rules. Ordinary transparent OmniPBR/UsdPreviewSurface are not classified as glass. Converted OmniGlass requests native double-sided thin transmission. Visibility-only USD layers isolate marked glass meshes without changing geometry or transforms; explicit Nyx sidedness and back-face normal flipping prevent black shell back faces. Volume absorption and thickness remain approximate. Meshes with material-binding face subsets are left unchanged and counted in `skipped_subset_meshes`.
 
 
 ## Declared material rules
