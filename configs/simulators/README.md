@@ -121,7 +121,8 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --inventory --output outp
 
 先按上文构建本地资产索引。探针只接受索引返回的 `library://...` ID，
 不自动扫描或下载资产。`--inventory` 只做 USD 元数据和依赖检查，不初始化渲染器。
-源码可编辑安装后，`genesis_appearance.yaml`、`genesis_lighting.yaml` 从源码包内 `data/` 加载。
+所有 USD 按资产中的灯光和发光材质选择处理方式，不再使用逐场景光照配置。
+全局色调映射由包内 `data/genesis_appearance.yaml` 配置，不支持 scenes 覆盖。
 生成的静态场景覆盖层和报告写入显式 `--output`，不覆盖源 USD。
 
 GPU 渲染桥接使用独立 Python 3.12 环境和固定版本的 Genesis/Nyx：
@@ -230,3 +231,7 @@ sceneGen 元数据或相邻发布 manifest 后，使用源相机位姿、垂直 
 未知材质、损坏的直接绑定、缺失表面节点和已知不支持的光学元数据明确报错。
 玻璃透射尚未验收，不以不透明材质替换。诊断资产已验证加载、RGB/NVENC、相对依赖
 搬移与渲染器重建；正式生成包、Agent 会话及物理任务仍须各自验收。
+
+
+资产索引 schema/scanner 3 会保存根配置的 material_rules。修改规则后运行资产 build；
+旧版本索引会提示重建，不在查询时悄悄套用当前 YAML 或根据 root 名称猜测材质规则。

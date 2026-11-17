@@ -4,20 +4,26 @@ This page describes host/worker interfaces in `jiuwensymbiosis.simulators.genesi
 The [Chinese version](../../zh/reference/genesis-physical-scene.md) is authoritative.
 These are backend capabilities; new Agent bindings and workbench controls follow separately.
 
-## Scene cache
 
-`RoomSceneCache.prepare()` caches fixed room collision entities and original meshes, excluding
-robots, dynamic objects and live world state. Robots must still be added and the scene built.
-Static USD backgrounds also load collision geometry.
+## Original USD visuals and a single physical floor
 
-The default is `$XDG_CACHE_HOME/jiuwensymbiosis/genesis/scenes`, falling back to
-`~/.cache/jiuwensymbiosis/genesis/scenes`. Override with an absolute
-`JIUWENSYMBIOSIS_GENESIS_SCENE_CACHE`; relative paths are rejected.
-Keys include source/USD dependency content, physics options, relevant SDK versions and
-cache/collision processor code. Hits validate the manifest and payload checksums; corrupt
-entries rebuild under a per-key process lock. Publication is atomic, and source changes
-during preparation prevent publication. `scene.scene_cache` reports `hit`/`built` and rebuild reasons.
-Cache reuse does not establish collision equivalence or physical acceptance.
+Static USD backgrounds use one invisible horizontal plane for physical support. The original
+USD remains the visual source; room meshes are read only for support selection, navigation
+and truth queries. Per-mesh collision export, convex decomposition, SDF construction and the
+room collision cache have been removed. Robot collision admission is unchanged.
+
+The floor defaults to a supported horizontal source surface. Configure `floor_height_m` in
+world metres to select a different supported level (null reselects automatically). This is a
+single-level approximation: stairs, slopes, wall/furniture contact and multi-storey physics
+are not supported. The plane is infinite; source geometry still bounds navigation admission.
+Contacts explicitly report `scope: ground_only`; a clear physical path does not establish
+clearance from visual walls or furniture.
+
+Use `robot_mode: virtual_camera` and `camera_name: scan_cam` for a horizontal independent
+640x480 calibrated camera without a robot. RGB-D action capture reports virtual pose and
+synchronized frame metadata, without inventing a measured base pose. Robot spatial-memory
+capture remains reserved for its physical robot contract. Reset restores the initial camera;
+viewport changes retain the physical world. Old external room caches are no longer read.
 
 ## Reset within the current world
 
@@ -79,3 +85,30 @@ Source asset manifests pair physical and visual URDFs; derived model manifests i
 Visual materials are handled separately by `material_surface.py`; visual appearance is not collision evidence.
 
 Planning profile: `planning_profile.load_profile` requires `schema_version=1`, `base_link`, and `groups` (independent joints/tools). `limits`/`default_limits` supply velocity/acceleration/jerk (rad or m per time to powers 1–3), and effort (N/Nm); overrides must belong to groups. Optional `collision_source` (format/path/ignore_rationale) imports and hashes spheres; otherwise provide collision_spheres. `CuroboPlanner` validates `uncontrolled_support_joints` as continuous, centred-sphere support leaves; `CollisionGate` admits floor contact only for `support_links`. Optional `effectors` is consumed by EndEffectors (fields in the grasp guide); `contact_solver.noslip_iterations` configures the scene solver.
+
+
+## Asset-driven lighting
+
+All static USD assets read authored DomeLight/RectLight radiance and transforms.
+There is no scene-ID lighting whitelist or inspection fill. Missing domes use zero
+environment illumination; sphere/distant lights use audited point/directional approximations. Other unsupported light types, shaping and multiple domes fail explicitly.
+
+Downward planar emissive OmniPBR/UsdPreviewSurface fixtures are fitted only after unique
+geometric matching. Unmatched or ambiguous lamps retain their source geometry, with reasons
+in the lighting audit. A common peak-radiance limit of 60000 preserves lamp ratios and reports
+its gain; this backend numerical approximation is not exact photometric equivalence.
+
+The shared display policy uses Neutral and a fixed -8 EV baseline for ordinary USD
+(the existing source-presentation contract retains its 0 EV baseline). There is no per-frame
+auto exposure. The global genesis_appearance.yaml rejects scene overrides; genesis_lighting.yaml
+has been removed. Every USD receives a material audit, including unsupported shader counts.
+Native OmniPBR/UsdPreviewSurface are unchanged; OmniGlass remains a backend limitation.
+
+
+## Declared material rules
+
+The root material_rules key now survives scanning, Asset serialization, SQLite search/get/resolve
+and the formal renderer. Index schema/scanner 3 requires rebuilding legacy indexes.
+InteriorAgent legacy UE4 emission follows its authored 20*128 radiance conversion.
+Source asset diagnostics are persisted in full; IPC contains counts and up to eight examples.
+Shader conversion success does not establish optical equivalence, texture completeness or glass transmission.
