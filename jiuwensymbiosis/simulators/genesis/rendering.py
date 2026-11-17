@@ -177,6 +177,12 @@ class SceneRenderer:
                 source = self._repair_materials(
                     source, directory, material_rules, material_directory, validate=presentation is not None
                 )
+            if TYPE_CHECKING or __package__:
+                from .native_glass import append_glass_instances, prepare_glass_layers
+            else:
+                from native_glass import append_glass_instances, prepare_glass_layers
+            source, glass_groups, glass_audit = prepare_glass_layers(source, directory / "native-glass")
+            self.appearance["native_glass"] = glass_audit
             asset = nps.SceneAsset()
             if not nps.import_scene_file(path, asset):
                 raise RuntimeError("无法创建 Nyx 背景场景。")
@@ -192,6 +198,7 @@ class SceneRenderer:
             instance.convertAxis = False  # USD carries its own upAxis/metersPerUnit.
             instance.enabled = True
             asset.set_instance(background_index, instance)
+            append_glass_instances(asset, glass_groups)
             nps.export_scene_file(path, asset)
         if source_lighting is not None:
             if TYPE_CHECKING or __package__:

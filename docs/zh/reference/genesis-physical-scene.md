@@ -107,7 +107,7 @@ data/genesis_appearance.yaml，旧 scenes 映射不再接受，genesis_lighting.
 每个 USD 都检查材质：Nyx 原生支持的 OmniPBR/UsdPreviewSurface 保持不变，
 不支持的 shader 写入 material-repair.json 并在状态中计数。已有根目录声明的特殊
 材质转换规则仍独立存在；本次未把专用 MDL 模板规则当作通用转换。
-OmniGlass 仍是已知后端限制，不能声称其玻璃光学已还原。
+OmniGlass 转换会请求原生双面薄壁透射：只将已标记的玻璃网格分到独立 USD 可见性层，保留源几何和变换，并显式启用 Nyx 双面材质及背面法线翻转。它修复单面玻璃壳的黑背面；体积吸收、厚度仍是近似，不代表完整玻璃光学还原。混合面材质的网格暂不分离，计入 `skipped_subset_meshes`。
 
 
 ## 资产材质规则传递与审计

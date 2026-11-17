@@ -331,6 +331,7 @@ def _other(stage, preview, shader, family, report, directory) -> bool:
         _constant(preview, "diffuseColor", _rgb(_value(shader, "Color", (0.9, 0.9, 0.9))))
         _constant(preview, "roughness", float(_value(shader, "Roughness", 0.6407)))
     elif family == "OmniGlass":
+        preview.GetPrim().SetCustomDataByKey("symbiosis:nativeGlass", True)
         _constant(preview, "diffuseColor", _rgb(_value(shader, "glass_color", (1, 1, 1))))
         _constant(preview, "roughness", float(_value(shader, "frosting_roughness", 0)))
         _constant(preview, "ior", float(_value(shader, "glass_ior", 1.5)))
@@ -340,7 +341,7 @@ def _other(stage, preview, shader, family, report, directory) -> bool:
                 "kind": "approximation",
                 "shader": str(shader.GetPath()),
                 "detail": (
-                    "OmniGlass volume absorption/transmission replaced by thin transparent PreviewSurface opacity=0.15"
+                    "OmniGlass uses native double-sided thin transmission; volume absorption/thickness remain approximate"
                 ),
             }
         )

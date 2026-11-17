@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwensymbiosis.simulators.genesis import appearance, source_lighting
+from jiuwensymbiosis.simulators.genesis import appearance, native_glass, source_lighting
 from jiuwensymbiosis.simulators.genesis.rendering import SceneRenderer
 
 
@@ -22,6 +22,7 @@ def test_renderer_exports_effective_color_without_changing_lights(
     monkeypatch.setattr(SceneRenderer, "_repair_materials", lambda self, source, *a, **kw: source)
     monkeypatch.setattr(source_lighting, "load_source_lighting", lambda *a, **kw: SimpleNamespace(exposure_ev=-3.0))
     monkeypatch.setattr(source_lighting, "make_environment", lambda rig: object())
+    monkeypatch.setattr(native_glass, "prepare_glass_layers", lambda source, directory: (source, [], {}))
     captured = {}
 
     class SceneAsset:
