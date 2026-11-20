@@ -7,6 +7,7 @@ import hashlib
 import json
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,16 @@ def sibling(name):
 
 def identity(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+@contextmanager
+def timed(record, name):
+    """Retain wall time even when a preparation or solve raises."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        record[name] = time.monotonic() - started
 
 
 def transform(position, quaternion):
@@ -127,6 +138,12 @@ class CuroboPlanner:
             source = Path(provenance["path"])
             if hashlib.sha256(source.read_bytes()).hexdigest() != provenance["sha256"]:
                 raise ValueError("collision profile source changed")
+            fitted = provenance.get("sphere_overrides")
+            if fitted:
+                if hashlib.sha256(Path(fitted["path"]).read_bytes()).hexdigest() != fitted["sha256"]:
+                    raise ValueError("collision sphere overrides changed")
+                if fitted["prepared_model_sha256"] != manifest["model_sha256"]:
+                    raise ValueError("collision sphere overrides do not match the prepared model")
         spheres = profile["collision_spheres"]
         if not spheres or set(spheres) - links:
             raise ValueError("unknown collision sphere links")
@@ -156,18 +173,46 @@ class CuroboPlanner:
                     raise ValueError("uncontrolled support collision must be a centred sphere")
         self.backend: Any = None
         self.key = None
+        self.backend_structure = None
+        self.prepare_timing = {}
+        self.plan_timing = {}
         self.model_id = identity({"model": manifest["model_sha256"], "profile": profile})
 
-    def _prepare(self, group_name, state, world):
+    def _prepare(self, group_name, state, world, *, ik_only=False):
+        self.prepare_timing = {"backend_reused": False, "backend_create_s": 0.0, "warmup_s": 0.0}
+        with timed(self.prepare_timing, "prepare_s"):
+            return self._prepare_backend(group_name, state, world, ik_only=ik_only)
+
+    def _prepare_backend(self, group_name, state, world, *, ik_only=False):
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+
+        begin = time.monotonic()
 
         group = self.profile["groups"][group_name]
         names = group["joints"]
         static = {n: state[n] for n, j in self.joints.items() if j.get("type") != "fixed" and n not in names}
-        key = identity({"group": group_name, "static": static, "world": world})
-        if key == self.key:
+        key = identity(
+            {"group": group_name, "static": static, "world": world, "spheres": self.profile["collision_spheres"]}
+        )
+        profile_structure = copy.deepcopy(self.profile)
+        for link in getattr(self, "payload_links", ()):
+            profile_structure["collision_spheres"][link] = len(self.profile["collision_spheres"][link])
+        structure = identity(
+            {
+                "ik_only": ik_only,
+                "model": self.model_id,
+                "group": group_name,
+                "root": ET.tostring(self.root, encoding="unicode"),
+                "profile": profile_structure,
+                "world_capacity": {kind: max(8, len(entries)) for kind, entries in world.items()},
+            }
+        )
+        if key == self.key and self.backend is not None and self.backend_structure == structure:
+            self.prepare_timing["backend_reused"] = True
             return group
-        self.close()
+        reuse = self.backend is not None and self.backend_structure == structure
+        if not reuse:
+            self.close()
         root = copy.deepcopy(self.root)
         for j in root.findall("joint"):
             name = j.get("name")
@@ -207,23 +252,77 @@ class CuroboPlanner:
                 "max_jerk": min(self.profile["limits"][n]["jerk"] for n in names),
             },
         }
-        self.backend = MotionPlanner(
-            MotionPlannerCfg.create(
-                robot={"robot_cfg": {"kinematics": kin}},
-                scene_model=world,
-                self_collision_check=True,
-                collision_cache={"cuboid": max(8, len(world.get("cuboid", {})))},
-                position_tolerance=0.002,
-                orientation_tolerance=0.03,
-                interpolation_dt=0.025,
+        if reuse:
+            from curobo.kinematics import KinematicsCfg
+            from curobo.scene import Scene
+
+            # Refresh exact frozen-joint transforms in-place: captured CUDA graphs
+            # retain their tensor addresses. Never reuse stale measured geometry.
+            config = KinematicsCfg.from_data_dict(
+                {**kin, "load_collision_spheres": not ik_only}, device_cfg=self.backend.device_cfg
             )
-        )
+            components = (
+                (self.backend,)
+                if ik_only
+                else (self.backend.ik_solver, self.backend.trajopt_solver, self.backend.graph_planner)
+            )
+            for component in components:
+                if component is not None:
+                    component.kinematics.update_kinematics_config(config.kinematics_config)
+            if not ik_only:
+                self.backend.update_world(Scene.create(world))
+            self.backend.reset_seed()
+            self.key = key
+            self.prepare_timing["backend_reused"] = True
+            self.prepare_timing["model_update_s"] = time.monotonic() - begin
+            return group
+        if ik_only:
+            from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
+
+            with timed(self.prepare_timing, "backend_create_s"):
+                self.backend = InverseKinematics(
+                    InverseKinematicsCfg.create(
+                        robot={"robot_cfg": {"kinematics": kin}},
+                        scene_model=None,
+                        self_collision_check=False,
+                        load_collision_spheres=False,
+                        position_tolerance=0.001,
+                        orientation_tolerance=0.01,
+                    )
+                )
+            if self.backend.joint_names != names:
+                self.close()
+                raise ValueError("IK joint mapping mismatch")
+            self.key, self.backend_structure = key, structure
+            return group
+        with timed(self.prepare_timing, "backend_create_s"):
+            self.backend = MotionPlanner(
+                MotionPlannerCfg.create(
+                    robot={"robot_cfg": {"kinematics": kin}},
+                    scene_model=world,
+                    self_collision_check=True,
+                    collision_cache={"cuboid": max(8, len(world.get("cuboid", {})))},
+                    position_tolerance=0.002,
+                    orientation_tolerance=0.03,
+                    interpolation_dt=0.025,
+                )
+            )
         if self.backend.joint_names != names:
             self.close()
             raise ValueError("planner joint mapping mismatch")
-        self.backend.warmup(enable_graph=True)
+        with timed(self.prepare_timing, "warmup_s"):
+            self.backend.warmup(enable_graph=True)
         self.key = key
+        self.backend_structure = structure
         return group
+
+    def prepare_motion(self, group, state, world):
+        """Initialize and warm the planner without commanding the robot."""
+        return self._prepare(group, state, world)
+
+    def prepare_ik(self, group, state):
+        """Reuse an IK-only backend with current frozen-joint transforms."""
+        return self._prepare(group, state, {}, ik_only=True)
 
     @staticmethod
     def _state(q, names):
@@ -236,6 +335,14 @@ class CuroboPlanner:
         self, group: str, state: dict, world: dict, binding: str, *, targets=None, poses=None, speed=1.0, timeout_s=30.0
     ):
         """Targets use radians/metres; tool poses use base-link metres and wxyz."""
+        self.prepare_timing = {}
+        self.plan_timing = {"solve_s": 0.0, "postprocess_s": 0.0}
+        with timed(self.plan_timing, "plan_including_prepare_s"):
+            return self._plan(
+                group, state, world, binding, targets=targets, poses=poses, speed=speed, timeout_s=timeout_s
+            )
+
+    def _plan(self, group, state, world, binding, *, targets, poses, speed, timeout_s):
         if isinstance(speed, bool) or not np.isfinite(speed) or speed <= 0:
             raise ValueError("speed must be finite and positive")
         if not np.isfinite(timeout_s) or timeout_s <= 0:
@@ -283,7 +390,9 @@ class CuroboPlanner:
         begin = time.monotonic()
         if targets is not None:
             q = [targets.get(n, state[n]) for n in names]
-            result = self.backend.plan_cspace(self._state(q, names), start, max_attempts=3)
+            with timed(self.plan_timing, "solve_s"):
+                result = self.backend.plan_cspace(self._state(q, names), start, max_attempts=3)
+                success = result is not None and bool(result.success.all().item())
         else:
             import torch
             from curobo.types import GoalToolPose
@@ -302,11 +411,18 @@ class CuroboPlanner:
                 position=torch.tensor(values[:, :3], device="cuda", dtype=torch.float32).reshape(1, 1, -1, 1, 3),
                 quaternion=torch.tensor(values[:, 3:], device="cuda", dtype=torch.float32).reshape(1, 1, -1, 1, 4),
             )
-            result = self.backend.plan_pose(goal, start, max_attempts=3)
+            with timed(self.plan_timing, "solve_s"):
+                result = self.backend.plan_pose(goal, start, max_attempts=3)
+                success = result is not None and bool(result.success.all().item())
         if time.monotonic() - begin > timeout_s:
             raise TimeoutError("planning deadline exceeded; result discarded")
-        if result is None or not bool(result.success.all().item()):
+        if not success:
             raise RuntimeError("planning_failed")
+        with timed(self.plan_timing, "postprocess_s"):
+            return self._trajectory(result, names, state, targets, binding, speed)
+
+    def _trajectory(self, result, names, state, targets, binding, speed):
+        """Convert the solved path into the existing bounded execution trajectory."""
         q = result.get_interpolated_plan().position.detach().cpu().numpy().reshape(-1, len(names))
         if targets is not None:
             held = [i for i, n in enumerate(names) if n not in targets]

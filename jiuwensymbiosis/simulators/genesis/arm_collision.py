@@ -1,4 +1,4 @@
-"""CPU snapshots and loaded-geometry sampled collision checks, not continuous collision proof."""
+"""Physical snapshots for cuRobo obstacle planning and live obstacle monitoring."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def snapshot(entity, profile, attachments=None):
                     )
                 if "PLANE" in kind:
                     record["plane"] = True
-                    # Workspace bounding box; the independent gate retains the exact halfspace.
+                    # Approximate the floor halfspace within the planning workspace.
                     if is_robot:
                         raise ValueError("robot plane geometry unsupported")
                     center = (pose @ local) @ np.array([0.0, 0.0, -0.05, 1.0])
@@ -85,8 +85,6 @@ def snapshot(entity, profile, attachments=None):
                     vertices = array(geom.init_verts)
                     record.update(
                         vertices=vertices,
-                        faces=array(geom.init_faces).astype(int),
-                        convex=bool(geom.is_convex),
                     )
                     if not is_robot and attachment is None:
                         lo, hi = vertices.min(0), vertices.max(0)
@@ -99,13 +97,12 @@ def snapshot(entity, profile, attachments=None):
                 geometries[int(geom.idx)] = record
     if needed - geometries.keys():
         raise ValueError("incomplete physical collision snapshot")
-    # Remove measured supports only from coarse spheres; full-geometry checks retain every support.
+    # Exclude the measured contact support from lift planning to allow departure.
     for attachment in attachments.values():
         for idx in attachment.get("support_geoms", []):
             world["cuboid"].pop(f"geom_{idx}", None)
     return {
         "geometries": geometries,
-        "pairs": pairs,
         "world": world,
         "world_from_base": world_from_base,
         "dynamic": dynamic,
@@ -127,113 +124,3 @@ def world_unchanged(entity, captured):
         if error["position_m"] > 0.002 or error["rotation_rad"] > 0.02:
             return False
     return True
-
-
-class CollisionGate:
-    def __init__(self, root, profile, captured):
-        import fcl
-
-        self.fcl, self.root, self.profile, self.captured = fcl, root, profile, captured
-        self.objects = {}
-        uncontrolled_links = {
-            joint.find("child").get("link")
-            for joint in root.findall("joint")
-            if joint.get("name") in profile.get("uncontrolled_support_joints", [])
-        }
-        for idx, record in captured["geometries"].items():
-            if record["link"] in uncontrolled_links:
-                vertices = record["vertices"] @ record["pose"][:3, :3].T + record["pose"][:3, 3]
-                shape = fcl.Sphere(float(np.max(np.linalg.norm(vertices, axis=1))))
-                record["pose"] = np.eye(4)
-            elif record.get("plane"):
-                shape = fcl.Halfspace(np.array([0.0, 0.0, 1.0]), 0.0)
-            elif record["convex"]:
-                faces = np.column_stack((np.full(len(record["faces"]), 3), record["faces"])).reshape(-1)
-                shape = fcl.Convex(record["vertices"], len(record["faces"]), faces)
-            else:
-                shape = fcl.BVHModel()
-                shape.beginModel(num_tris_=len(record["faces"]), num_vertices_=len(record["vertices"]))
-                shape.addSubModel(record["vertices"], record["faces"])
-                shape.endModel()
-            self.objects[idx] = fcl.CollisionObject(shape)
-        self.support = set(profile.get("support_links", []))
-        if not self.support <= {link.get("name") for link in root.findall("link")}:
-            raise ValueError("unknown support link")
-
-    def coverage(self):
-        result = {}
-        for record in self.captured["geometries"].values():
-            link = record["link"]
-            if link is None or record.get("plane") or record.get("payload"):
-                continue
-            vertices = record["vertices"] @ record["pose"][:3, :3].T + record["pose"][:3, 3]
-            # Vertices and centroids quantify coverage; they do not prove conservative coverage.
-            points = np.concatenate((vertices, vertices[record["faces"]].mean(axis=1)))
-            spheres = self.profile["collision_spheres"].get(link, [])
-            if spheres:
-                centers = np.array([s["center"] for s in spheres])
-                radii = np.array([s["radius"] for s in spheres])
-                gap = np.min(np.linalg.norm(points[:, None, :] - centers, axis=-1) - radii, axis=1)
-                uncovered, maximum = int((gap > 1e-5).sum()), float(max(0.0, gap.max()))
-            else:
-                uncovered, maximum = len(points), None
-            result.setdefault(link, []).append(
-                {
-                    "samples": len(points),
-                    "uncovered": uncovered,
-                    "max_uncovered_m": maximum,
-                    "sphere_count": len(spheres),
-                }
-            )
-        return result
-
-    def check_state(self, state):
-        fk = _planning().forward_kinematics(self.root, state)
-        base_inverse = np.linalg.inv(fk[self.profile["base_link"]])
-        for idx, record in self.captured["geometries"].items():
-            pose = record["pose"] if record["link"] is None else base_inverse @ fk[record["link"]] @ record["pose"]
-            self.objects[idx].setTransform(self.fcl.Transform(pose[:3, :3], pose[:3, 3]))
-        for first, second in self.captured["pairs"]:
-            a, b = self.captured["geometries"][first], self.captured["geometries"][second]
-            grasp_a = a.get("payload") and b["link"] in a["contact_links"] and not b.get("payload")
-            grasp_b = b.get("payload") and a["link"] in b["contact_links"] and not a.get("payload")
-            if grasp_a or grasp_b:
-                continue
-            # Floor contact only for authored support links; other collision checks still apply.
-            floor_a = a["link"] in self.support and b.get("plane")
-            floor_b = b["link"] in self.support and a.get("plane")
-            if floor_a or floor_b:
-                continue
-            result = self.fcl.CollisionResult()
-            request = self.fcl.CollisionRequest(num_max_contacts=1000, enable_contact=True)
-            if self.fcl.collide(self.objects[first], self.objects[second], request, result):
-                support_contact = (a.get("payload") and second in a.get("support_geoms", [])) or (
-                    b.get("payload") and first in b.get("support_geoms", [])
-                )
-                up = np.asarray(self.captured.get("world_from_base", np.eye(4)))[:3, :3].T @ np.array([0.0, 0.0, 1.0])
-                bounded = bool(result.contacts) and len(result.contacts) < 1000
-                shallow = all(
-                    c.penetration_depth <= 0.001 and abs(np.dot(c.normal, up)) >= 0.9 for c in result.contacts
-                )
-                if support_contact and bounded and shallow:
-                    continue
-                raise ValueError(f"physical_geometry_collision: {a['link'] or first} / {b['link'] or second}")
-
-    def check(self, trajectory, *, max_joint_step=0.01):
-        if not np.isfinite(max_joint_step) or max_joint_step <= 0:
-            raise ValueError("invalid collision sampling interval")
-        count = 0
-        state = dict(trajectory.start)
-        samples = trajectory.sample(np.linspace(0.0, trajectory.duration, max(2, len(trajectory.positions) * 4)))
-        for first, second in zip(samples[:-1], samples[1:], strict=True):
-            n = max(1, int(np.ceil(np.max(np.abs(second - first)) / max_joint_step)))
-            for alpha in np.linspace(0.0, 1.0, n + 1):
-                state.update(zip(trajectory.names, first + (second - first) * alpha, strict=True))
-                self.check_state(state)
-                count += 1
-        return {
-            "checked_samples": count,
-            "max_joint_step_rad_or_m": max_joint_step,
-            "method": "loaded_geometry_fcl_sampled",
-            "continuous_collision_proof": False,
-        }

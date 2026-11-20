@@ -20,7 +20,15 @@ support_links: [MOZ1__Geometry__base_link__OmniWheel_02__wheel, MOZ1__Geometry__
   MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_1, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_2, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_3, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_4, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_5,
   MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_6, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_7, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_8, MOZ1__Geometry__base_link__OmniWheel_04__wheel_passive_9]
 default_limits: {velocity: 0.6, acceleration: 2.0, jerk: 20.0, effort: 120.0}
-collision_source: {format: xrdf, path: '${MOZ1_XRDF}', ignore_rationale: Upstream sphere approximation exclusions. Independent loaded-geometry gate uses only actual Genesis pair filtering; these exclusions never bypass that gate.}
+collision_source:
+  format: xrdf
+  path: '${MOZ1_XRDF}'
+  ignore_rationale: 'RoboSim MOZ1 adjacent shoulder geometry: waist03 and left/right02/03 spheres overlap by design. Other self-collision and environment checks remain in cuRobo; no separate FCL check.'
+  adjacent_self_collision_pairs:
+    - [waist03, left02]
+    - [waist03, left03]
+    - [waist03, right02]
+    - [waist03, right03]
 uncontrolled_support_joints: [MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_0_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_1_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_2_joint,
   MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_3_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_4_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_5_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_6_joint,
   MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_7_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_8_joint, MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_9_joint, MOZ1__Geometry__base_link__OmniWheel_01__joints__wheel_passive_0_joint,

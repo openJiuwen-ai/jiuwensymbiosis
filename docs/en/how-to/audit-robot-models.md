@@ -43,7 +43,12 @@ There is no GUI policy selector. Ordinary mobile mode passes no policy and prese
 `Moz1Base` remains a MOZ1 controller; its names and gains are not a generic robot interface.
 
 The output's `collision_parts/` cache is keyed by source bytes, type, parameters, tool versions and preparation-code hash.
-Repeated calls to the same output directory reuse it; separate instance directories do not share caches.
+Repeated calls to the same output directory reuse it. The mobile Genesis runtime supplies
+a persistent `robot-model-cache/` directory under its runtime workspace so newly built
+worlds reuse the same validated parts. Standalone preparation keeps the output-local
+cache by default; callers can explicitly supply `collision_cache`. Model manifests and
+loaded-model admission remain instance-specific. Cache hits still verify part hashes,
+closed convex geometry, metadata and coordinate bounds; a corrupt entry is rejected.
 Every hit verifies hashes, convexity, closure, winding, volume and bounds. Process locks and atomic publication
 prevent partial caches. Part basenames include the full key to avoid importer asset-name collisions.
 

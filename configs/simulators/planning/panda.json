@@ -26,7 +26,7 @@
   "collision_source": {
     "format": "curobo",
     "path": "${CUROBO_FRANKA_CONFIG}",
-    "ignore_rationale": "Upstream sphere approximation exclusions. Independent loaded-geometry gate uses only actual Genesis pair filtering; these exclusions never bypass that gate."
+    "ignore_rationale": "Upstream robot-model self-collision exclusions used by cuRobo; execution does not perform a separate FCL geometry check."
   },
   "support_links": [
     "panda_link0"

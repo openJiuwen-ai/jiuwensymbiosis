@@ -108,7 +108,13 @@
   "collision_source": {
     "format": "xrdf",
     "path": "${MOZ1_XRDF}",
-    "ignore_rationale": "Upstream sphere approximation exclusions. Independent loaded-geometry gate uses only actual Genesis pair filtering; these exclusions never bypass that gate."
+    "ignore_rationale": "RoboSim MOZ1 adjacent shoulder geometry: waist03 and left/right02/03 spheres overlap by design. Other self-collision and environment checks remain in cuRobo; no separate FCL check.",
+    "adjacent_self_collision_pairs": [
+      ["waist03", "left02"],
+      ["waist03", "left03"],
+      ["waist03", "right02"],
+      ["waist03", "right03"]
+    ]
   },
   "uncontrolled_support_joints": [
     "MOZ1__Geometry__base_link__OmniWheel_02__joints__wheel_passive_0_joint",

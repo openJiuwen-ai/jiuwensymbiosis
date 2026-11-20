@@ -13,7 +13,7 @@ import pytest
 from jiuwensymbiosis.api.actions import OPEN_GRIPPER
 from jiuwensymbiosis.simulators.common.agent import SimulationManipulationApi, make_session
 from jiuwensymbiosis.simulators.common.observation_policy import TRUTH_PROMPT, allowed_tools, history_for
-from jiuwensymbiosis.simulators.genesis.arm_collision import CollisionGate, link_pose, snapshot, world_unchanged
+from jiuwensymbiosis.simulators.genesis.arm_collision import link_pose, snapshot, world_unchanged
 from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
 from jiuwensymbiosis.simulators.genesis.arm_planning import CuroboPlanner, forward_kinematics
 from jiuwensymbiosis.simulators.genesis.arm_trajectory import Trajectory, TrajectoryFollower
@@ -188,57 +188,6 @@ def test_measured_start_outside_limits_is_reported_before_backend(tmp_path, monk
     assert state == original  # Never clamp measured state to manufacture feasibility.
 
 
-@pytest.fixture
-def collision_model(tmp_path):
-    pytest.importorskip("fcl")
-    import trimesh
-
-    manifest, profile = model(tmp_path)
-    box = trimesh.creation.box(extents=[0.04] * 3)
-    return (
-        ET.parse(manifest["urdf"]).getroot(),
-        profile,
-        {"vertices": box.vertices, "faces": box.faces, "pose": np.eye(4), "convex": True},
-    )
-
-
-def test_collision_gate_checks_loaded_shapes_between_clear_endpoints(collision_model):
-    root, profile, geometry = collision_model
-    obstacle = np.eye(4)
-    obstacle[0, 3] = 0.05
-    captured = {
-        "geometries": {
-            1: dict(geometry, link="tip"),
-            2: dict(geometry, link=None, pose=obstacle),
-        },
-        "pairs": [(1, 2)],
-    }
-    gate = CollisionGate(root, profile, captured)
-    gate.check_state({"slide": 0.0})
-    gate.check_state({"slide": 0.1})
-    with pytest.raises(ValueError, match="physical_geometry_collision"):
-        gate.check(trajectory())
-    profile["collision_spheres"] = {}
-    assert gate.coverage()["tip"][0]["uncovered"] == len(geometry["vertices"]) + len(geometry["faces"])
-
-
-def test_payload_contact_permission_does_not_hide_world_collision(collision_model):
-    root, profile, geometry = collision_model
-    captured = {
-        "geometries": {
-            1: dict(geometry, link="tip", payload=True, contact_links=["tip"]),
-            2: dict(geometry, link="tip"),
-            3: dict(geometry, link=None),
-        },
-        "pairs": [(1, 2)],
-    }
-    gate = CollisionGate(root, profile, captured)
-    gate.check_state({"slide": 0.0})
-    captured["pairs"].append((1, 3))
-    with pytest.raises(ValueError, match="physical_geometry_collision"):
-        gate.check_state({"slide": 0.0})
-
-
 def test_world_binding_rejects_velocity_before_displacement():
     link = SimpleNamespace(idx=8, get_vel=lambda: np.array([[0.1, 0.0, 0.0]]), get_ang=lambda: np.zeros((1, 3)))
     entity = SimpleNamespace(solver=SimpleNamespace(entities=[SimpleNamespace(links=[link])]))
@@ -399,6 +348,7 @@ def test_snapshot_rejects_multilink_payload_before_readback():
 def test_tool_names_are_rejected_before_snapshot_or_planner(poses):
     motion = object.__new__(ArmMotion)
     motion.follower, motion.process = Mock(terminal=False), None
+    motion.phase = "idle"
     motion.runtime, motion.stopped, motion.read = Mock(), lambda: True, lambda: ({}, {})
     motion.runtime.motion.active = False
     motion.profile = {"groups": {"arm": {"joints": ["joint"], "tools": ["tool"]}}}

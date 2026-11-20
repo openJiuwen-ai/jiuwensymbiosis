@@ -49,8 +49,10 @@ def test_pick_uses_only_configured_sensor_and_inferred_rotation(source, monkeypa
 
     def query(op, params, **kw):
         assert op == "grasp_ik"
+        assert not params.get("direct_ik", False)
         np.testing.assert_allclose(params["poses"][1], m @ b.tool_offset)
-        assert params["poses"][0][2][3] == pytest.approx(0.48)
+        assert params["poses"][0][2][3] == pytest.approx((m @ b.tool_offset)[2, 3] + 0.08)
+        assert params["poses"][2][2][3] == pytest.approx((m @ b.tool_offset)[2, 3] + 0.08)
         return {"scene_instance_id": "scene", "targets": [{"q": 1.0}, {"q": 2.0}, {"q": 3.0}]}
 
     def move(**kw):
@@ -88,6 +90,9 @@ def test_pick_uses_only_configured_sensor_and_inferred_rotation(source, monkeypa
     )
     result = pick_target(env, b, "object", lambda *a, **kw: [{"mask": np.ones((10, 12), bool)}])
     assert result["ok"] and len(commands) == 3 and "pick_lift" in commands[-1]
+    assert all(not command.get("direct_ik", False) for command in commands)
+    assert commands[0]["targets"] == {"q": 1.0}
+    assert commands[1]["targets"] == {"q": 2.0}
 
     def empty(**kw):
         return REACHED | {"grasp_confirmed": False, "holding_payload": False}

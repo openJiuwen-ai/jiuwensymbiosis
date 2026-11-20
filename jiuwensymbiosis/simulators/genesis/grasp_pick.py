@@ -107,7 +107,11 @@ def pick_target(env, backend, target, detector=None):
         validate()
         answer = driver.preview.query_scene(
             "grasp_ik",
-            {"group": backend.group, "tool": backend.tool, "poses": [pre.tolist(), goal.tolist(), lift.tolist()]},
+            {
+                "group": backend.group,
+                "tool": backend.tool,
+                "poses": [pre.tolist(), goal.tolist(), lift.tolist()],
+            },
             cancelled=driver.cancelled,
         )
         if answer["scene_instance_id"] != binding[0]:
@@ -116,33 +120,18 @@ def pick_target(env, backend, target, detector=None):
             continue
         refresh()
         pre_q, goal_q, lift_q = answer["targets"]
+        # Select before moving; do not retry another candidate after execution starts.
         for q in (pre_q, goal_q):
             validate()
             result = driver.move_arm(group=backend.group, targets=q)
             if not reached(result):
-                break
-        if reached(result):
-            break
-        if (
-            result.get("failure_stage") not in {"curobo_planning", "path_collision_check"}
-            or result.get("plan_success")
-            or not result.get("settled")
-            or result.get("stop_confirmation") != "measured"
-        ):
-            return {**result, "ok": False}
+                return {**result, "ok": False}
+        break
     else:
         return {**result, "ok": False, "goal_reached": False, "reason": "no_feasible_grasp"}
     validate()
     trial = {"effector": effector, "center_m": np.median(points, axis=0).tolist()}
     result = driver.move_arm(group=backend.group, pick_lift={**trial, "joint_goal": lift_q})
-    if (
-        result.get("failure_stage") in {"curobo_planning", "path_collision_check"}
-        and not result.get("plan_success")
-        and result.get("settled")
-        and result.get("stop_confirmation") == "measured"
-    ):
-        validate()
-        result = driver.move_arm(group=backend.group, pick_lift=trial)
     ok = bool(reached(result) and result.get("grasp_confirmed") and result.get("holding_payload"))
     if ok and truth is not None:
         ok = driver.preview.status()["effectors"][effector]["object_id"] == truth["body_idx"]

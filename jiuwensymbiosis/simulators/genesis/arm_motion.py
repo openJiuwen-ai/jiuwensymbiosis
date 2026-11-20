@@ -22,8 +22,8 @@ class ArmMotion:
     pick_lift = None
 
     def __init__(self, runtime, profile: dict, directory: Path):
-        if find_spec("curobo") is None or find_spec("fcl") is None:
-            raise RuntimeError("Arm planning requires cuRobo V2 and python-fcl in the simulation environment")
+        if find_spec("curobo") is None:
+            raise RuntimeError("Arm planning requires cuRobo V2 in the simulation environment")
         self.runtime, self.entity = runtime, runtime.robot.entity
         self.directory = Path(directory)
         self.planner = sibling("arm_planning").CuroboPlanner(runtime.robot.model_manifest, profile, directory)
@@ -37,6 +37,11 @@ class ArmMotion:
         self.stable = self.elapsed = 0.0
         configurations = self.profile.get("effectors", {})
         motors = {n for config in configurations.values() for n in config["joints"]}
+        self.effector_followers = {
+            n
+            for n, joint in self.planner.joints.items()
+            if (mimic := joint.find("mimic")) is not None and mimic.get("joint") in motors
+        }
         if any(motors.intersection(group["joints"]) for group in self.profile["groups"].values()):
             raise ValueError("arm groups and effector motors must be disjoint")
         self.effectors = sibling("end_effectors").EndEffectors(self.entity, self.planner.root, configurations)
@@ -45,6 +50,62 @@ class ArmMotion:
         self.execution_path = self.plan_directory = None
         self.goal_poses = self.captured = self.static = self.payloads = None
         self.started = 0.0
+        self.command_started = self.execution_started = None
+
+    def warmup(self):
+        """Prepare configured grasp groups during load; never execute a trajectory."""
+        started = time.monotonic()
+        groups = sorted({config["group"] for config in self.profile.get("grasp_pose_backends", {}).values()})
+        report = {"groups": {}, "robot_motion": False}
+        try:
+            if not groups:
+                return report
+            state, _ = self.read()
+            captured = sibling("arm_collision").snapshot(self.entity, self.profile)
+            fk = sibling("arm_planning").forward_kinematics(self.planner.root, state)
+            for group in groups:
+                directory = self.directory / f"warmup-{group}-{uuid.uuid4().hex}"
+                directory.mkdir()
+                path = directory / "request.json"
+                begin = time.monotonic()
+                self._submit_plan(
+                    path,
+                    {
+                        "manifest": self.planner.model,
+                        "profile": self.profile,
+                        "group": group,
+                        "state": state,
+                        "captured": captured,
+                        "binding": "",
+                        "request": {"warmup": True},
+                    },
+                )
+                result_path = directory / "result.json"
+                while not result_path.exists():
+                    if self.process.poll() is not None:
+                        raise RuntimeError("cuRobo planner exited during loading")
+                    if time.monotonic() - begin > 90:
+                        raise TimeoutError("cuRobo planner loading timeout")
+                    time.sleep(0.01)
+                result = json.loads(result_path.read_text())
+                report["groups"][group] = {"motion": result, "motion_request_wall_s": time.monotonic() - begin}
+                if not result["ok"]:
+                    raise RuntimeError(result["reason"])
+                tool = self.profile["groups"][group]["tools"][0]
+                target = np.linalg.inv(fk[self.profile["base_link"]]) @ fk[tool]
+                begin = time.monotonic()
+                result = sibling("arm_ik").solve(self, group, tool, np.asarray([target]), warmup=True)
+                report["groups"][group].update(ik=result, ik_request_wall_s=time.monotonic() - begin)
+            report["ok"] = True
+            return report
+        except Exception as exc:
+            report.update(ok=False, reason=f"{type(exc).__name__}: {exc}")
+            self._stop_planner()
+            sibling("arm_ik").stop_worker(self)
+            raise
+        finally:
+            report["total_s"] = time.monotonic() - started
+            (self.directory / "warmup.json").write_text(json.dumps(report, indent=2, allow_nan=False))
 
     @property
     def active(self):
@@ -63,6 +124,7 @@ class ArmMotion:
             "reason",
             "failure_stage",
             "backend_success",
+            "execution_mode",
             "max_tracking_error",
             "grasp_confirmed",
             "holding_payload",
@@ -98,7 +160,19 @@ class ArmMotion:
         error = sibling("arm_planning").pose_error(pose, self.anchor)
         changed = error["position_m"] > 0.003 or error["rotation_rad"] > 0.005
         q, _ = self.read()
-        changed |= any(abs(q[n] - v) > 0.01 for n, v in self.static.items())
+        # Mimic linkage motion can amplify small motor tracking deviations.
+        tolerances = {n: 0.02 if n in self.effector_followers else 0.01 for n in self.static}
+        drift = {n: q[n] - v for n, v in self.static.items() if abs(q[n] - v) > tolerances[n]}
+        peaks = self.result.setdefault("effector_follower_max_drift_rad", {})
+        for n in self.effector_followers.intersection(self.static):
+            peaks[n] = max(peaks.get(n, 0.0), abs(q[n] - self.static[n]))
+        changed |= bool(drift)
+        if changed:
+            self.result["binding_change"] = {
+                "base_error": error,
+                "stationary_joint_drift": drift,
+                "joint_tolerances_rad": {n: tolerances[n] for n in drift},
+            }
         if getattr(self, "captured", None) is not None:
             changed |= not sibling("arm_collision").world_unchanged(self.entity, self.captured)
             changed |= any(e.state == "unknown" for e in self.effectors.evidence.values())
@@ -135,8 +209,10 @@ class ArmMotion:
         self.result["tool_goal_errors"] = errors
 
     def stopped(self):
+        from ..common.base_motion import measure
+
         _, v = self.read()
-        root = sibling("base_motion").measure(self.runtime.robot)
+        root = measure(self.runtime.robot)
         return (
             max(abs(value) for name, value in v.items() if name not in self.planner.uncontrolled) < 0.02
             and np.linalg.norm(root["linear_velocity_m_s"]) < 0.008
@@ -156,6 +232,8 @@ class ArmMotion:
             if not live or not same:
                 self.cancel("cancelled_or_lease_expired")
         elif request is not None and not same:
+            self.command_started = time.monotonic()
+            self.execution_started = None
             self.result = {
                 "id": request["id"],
                 "status": "running",
@@ -176,7 +254,7 @@ class ArmMotion:
                 self.cancel(f"{type(exc).__name__}: {exc}")
 
     def start(self, request):
-        if self.follower.terminal or (self.process is not None and self.process.poll() is None):
+        if self.follower.terminal or self.active:
             raise RuntimeError("planner busy or stop unconfirmed")
         if self.runtime.motion.active or not self.stopped():
             raise ValueError("base and joints must be measured stopped before planning")
@@ -261,9 +339,12 @@ class ArmMotion:
                 mimic = joint.find("mimic")
                 if n in motors or (mimic is not None and mimic.get("joint") in motors):
                     self.static.pop(n, None)
+        snapshot_started = time.monotonic()
         captured = sibling("arm_collision").snapshot(self.entity, self.profile, self.payloads)
+        self.result.setdefault("timing", {})["scene_snapshot_s"] = time.monotonic() - snapshot_started
         self.captured = captured
         self.result["fk_errors"] = errors
+        self.result["execution_mode"] = "curobo_planned"
         self.phase = "planning"
         self.started = time.monotonic()
         self.plan_directory = self.directory / uuid.uuid4().hex
@@ -278,14 +359,24 @@ class ArmMotion:
             "request": request,
         }
         path = self.plan_directory / "request.json"
+        self._submit_plan(path, data)
+
+    def _submit_plan(self, path, data):
+        """Share the scene-owned worker between load-time warmup and action requests."""
         path.write_text(json.dumps(data, default=lambda value: value.tolist(), allow_nan=False))
-        with (self.plan_directory / "worker.log").open("w") as log:
-            self.process = subprocess.Popen(
-                [sys.executable, str(Path(__file__).with_name("arm_plan_worker.py")), str(path)],
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=log,
-            )
+        if self.process is None or self.process.poll() is not None:
+            self._stop_planner()
+            with (self.directory / "planner-worker.log").open("a") as log:
+                self.process = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("arm_plan_worker.py"))],
+                    stdin=subprocess.PIPE,
+                    env=sibling("arm_ik").worker_environment(),
+                    stdout=log,
+                    stderr=log,
+                    text=True,
+                )
+        self.process.stdin.write(str(path.resolve()) + "\n")
+        self.process.stdin.flush()
 
     def _stop_planner(self):
         if self.process is not None:
@@ -296,6 +387,8 @@ class ArmMotion:
                 except subprocess.TimeoutExpired:
                     self.process.kill()
                     self.process.wait(timeout=2.0)
+            if self.process.stdin is not None:
+                self.process.stdin.close()
             self.process = None
 
     def cancel(self, reason="cancelled"):
@@ -358,12 +451,14 @@ class ArmMotion:
                 self.cancel("planning_world_or_payload_changed")
             elif time.monotonic() - self.started > 90:
                 self.cancel("planning_timeout_result_discarded")
-            elif self.process.poll() is not None:
+            elif (self.plan_directory / "result.json").exists() or self.process.poll() is not None:
                 try:
                     path = self.plan_directory / "result.json"
                     result = json.loads(path.read_text())
+                    result.setdefault("timing", {})["request_wall_s"] = time.monotonic() - self.started
+                    self.result.setdefault("timing", {}).update(result["timing"])
                     self.result.update(
-                        {key: result[key] for key in ("backend_success", "failure_stage", "timing") if key in result}
+                        {key: result[key] for key in ("backend_success", "failure_stage") if key in result}
                     )
                     if not result["ok"]:
                         raise ValueError(result["reason"])
@@ -372,6 +467,7 @@ class ArmMotion:
                     trajectory = sibling("arm_trajectory").Trajectory(**data)
                     validation = result["collision_validation"]
                     self.follower.start(trajectory)
+                    self.execution_started = time.monotonic()
                     self.result.update(plan_success=True, trajectory_path=str(path), collision_validation=validation)
                     if self.pick_lift:
                         self.pick_lift.close()
@@ -447,6 +543,12 @@ class ArmMotion:
                     )
                     self.result.update(holding_payload=held, grasp_confirmed=held is True)
                 self.phase = "completed"
+                now = time.monotonic()
+                timing = self.result.setdefault("timing", {})
+                if self.command_started is not None:
+                    timing["command_wall_s"] = now - self.command_started
+                if self.execution_started is not None:
+                    timing["execution_and_settle_s"] = now - self.execution_started
                 try:
                     self.execution_path.write_text(json.dumps(self.result, indent=2, allow_nan=False))
                 except OSError:
@@ -455,6 +557,7 @@ class ArmMotion:
                     self.follower.terminal = True
 
     def close(self):
+        sibling("arm_ik").stop_worker(self)
         self.cancel("scene_closed")
         self._stop_planner()
         self.planner.close()
