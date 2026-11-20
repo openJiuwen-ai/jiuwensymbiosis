@@ -42,7 +42,7 @@ from .base_motion import measure
 from .camera import PreviewSettings
 from .encoding import NvEncoder, rgb_array
 from .ipc import Mailbox
-from .preview_backends import preview_backend
+from .preview_backends import MUJOCO_VERSION, preview_backend
 from .runtime import create_runtime, reset_runtime
 from .scene_catalog import resolve_scene, validate_material_bundle
 from .scheduling import PhysicsClock
@@ -122,8 +122,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             with startup.phase("mujoco_init"):
                 import mujoco
 
-                if mujoco.__version__ != "4.0.1":
-                    raise RuntimeError("MuJoCo backend requires mujoco-core 4.0.1; use a fresh .[mujoco] environment")
+                if mujoco.__version__ != MUJOCO_VERSION:
+                    raise RuntimeError(f"MuJoCo 后台加载了 {mujoco.__version__}，需要 mujoco-core {MUJOCO_VERSION}。")
         with startup.phase("runtime_scene"):
             runtime = create_runtime(settings, directory, startup=startup)
         logger.info("Simulation world and %s renderer ready", renderer_name)

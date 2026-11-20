@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from errno import EMFILE, ENFILE
+
 from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def is_file_descriptor_limit(error: BaseException) -> bool:
+    """Recognize the OS limit even when a local transport wraps the error."""
+    causes: set[int] = set()
+    cause: BaseException | None = error
+    while cause is not None and id(cause) not in causes:
+        if isinstance(cause, OSError) and cause.errno in {EMFILE, ENFILE}:
+            return True
+        causes.add(id(cause))
+        cause = cause.__cause__
+    return False
 
 
 def report_failure(code: str, error: Exception) -> None:

@@ -79,3 +79,33 @@ def test_microduck_policy_registration_admits_only_complete_bundle(tmp_path):
     assert resolved.paths["walking_policy"] == weight
     assert result["robot_mode"] == "microduck"
     assert len(config.spec.roots) == 1
+
+
+def test_complete_download_is_verified_before_publication_and_preserves_existing_files(tmp_path, monkeypatch):
+    from hashlib import sha256
+
+    from jiuwensymbiosis.simulators.assets import robot_assets
+
+    root = checkout(tmp_path / "upstream")
+    (root / MODEL_DIR / "scene.xml").touch()
+    upstream = tmp_path / "factory.onnx"
+    upstream.write_bytes(b"factory")
+    digest = sha256(upstream.read_bytes()).hexdigest()
+    names = ("policies/one.onnx", "policies/two.onnx")
+    sources = [(name, upstream.as_uri(), digest) for name in names]
+    monkeypatch.setattr(robot_assets, "_policy_sources", lambda _: sources)
+
+    sources[1] = (names[1], upstream.as_uri(), "0" * 64)
+    with pytest.raises(AssetError, match="SHA256"):
+        robot_assets.complete_policies("microduck", root)
+    assert not any((root / name).exists() for name in names)
+
+    sources[1] = (names[1], upstream.as_uri(), digest)
+    robot_assets.complete_policies("microduck", root)
+    upstream.unlink()
+    robot_assets.complete_policies("microduck", root)
+    assert all((root / name).read_bytes() == b"factory" for name in names)
+    (root / names[0]).write_bytes(b"locally changed")
+    with pytest.raises(AssetError, match="SHA256"):
+        robot_assets.complete_policies("microduck", root)
+    assert (root / names[0]).read_bytes() == b"locally changed"

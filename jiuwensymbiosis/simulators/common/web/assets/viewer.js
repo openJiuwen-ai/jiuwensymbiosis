@@ -1,6 +1,7 @@
 import {ViewportNavigation} from './navigation.mjs';
 import {contentRect, pickCoordinates, boxPath} from './selection.mjs';
 import {CounterRate, BackendMetrics} from './metrics.mjs';
+import {policyControls} from './policy-controls.mjs';
 import {loadingView} from './loading.mjs';
 const byId = (id) => document.getElementById(id);
 const video = byId('video');
@@ -28,13 +29,16 @@ async function post(path, action, body = {}, keepalive = false) {
   return result;
 }
 function showError(error) { byId('notice').textContent = error.message || String(error); }
+const updatePolicies = policyControls(byId('policy-controls'), (kind, params) =>
+  post('policy', 'policy', {session_id: session, kind, params, scene_instance_id: viewState.scene.instance_id,
+    config_revision: viewState.config_revision}));
 function buttons() {
   byId('world-reset').disabled = busy || backendState !== 'ready';
   if (busy || backendState !== 'ready' || !session || peer?.connectionState !== 'connected') navigation.stop();
   document.body.dataset.connected = String(peer?.connectionState === 'connected');
   for (const id of ['engine', 'resolution', 'fps', 'scene', 'scene-search', 'robot-mode', 'robot', 'render-quality']) byId(id).disabled = busy || ['starting', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
   byId('start').disabled = busy || ['starting', 'ready', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
-  byId('stop').disabled = busy || ['stopped', 'unknown', 'unavailable'].includes(backendState);
+  byId('stop').disabled = busy || ['stopping', 'stopped', 'unknown', 'unavailable'].includes(backendState);
   byId('connect').disabled = busy || backendState !== 'ready' || !!peer || connecting;
   byId('disconnect').disabled = !peer && !connecting;
   byId('start').hidden = !['stopped', 'failed'].includes(backendState);
@@ -50,7 +54,9 @@ function buttons() {
   byId('clear-selection').disabled = byId('reset').disabled;
   for (const button of document.querySelectorAll('[data-camera]')) button.disabled = byId('reset').disabled;
   const mobile = ['wheel_velocity_physics', 'policy_locomotion'].includes(viewState?.robot?.control_mode);
-  byId('base-controls').hidden = !mobile;
+  const navigationAvailable = viewState?.robot?.relative_navigation !== false;
+  byId('base-controls').hidden = !mobile || !navigationAvailable;
+  updatePolicies(viewState?.robot, viewState?.scene?.instance_id, controlsUnavailable || selecting);
   const [linear, angular] = manualRates();
   byId('base-controls').title = `方向以机器人自身为准；每次最多运行 1 秒，速度指令 ${linear} m/s，转速指令 ${angular} rad/s`;
   byId('robot-stop').hidden = !mobile;
@@ -344,7 +350,7 @@ async function poll() {
       viewState = {...state, camera};
       if (!sameScene || (!selecting && selectionToken === selectionGeneration)) selection = state.selection;
     }
-    if (['reconfiguring', 'resetting'].includes(state.state)) {
+    if (['reconfiguring', 'resetting', 'stopping'].includes(state.state)) {
       byId('placeholder').hidden = false;
     } else if (state.state === 'ready' && peer?.connectionState === 'connected') {
       byId('placeholder').hidden = video.readyState >= 2;
@@ -384,7 +390,7 @@ async function poll() {
     backendMetrics.update(state, performance.now());
     showQuality();
     if (!busy) showBackend(state);
-    byId('placeholder').textContent = state.state === 'resetting' ? '正在复位，视频将自动恢复…' : state.state === 'reconfiguring' ? '正在切换，视频将自动恢复…' : state.state === 'ready' ? '后台已就绪，点击“连接视频”' : state.state === 'starting' ? '后台初始化中，请稍候…' : state.state === 'failed' ? '后台启动或运行失败，请查看下方提示' : '启动后台，等待就绪后连接视频';
+    byId('placeholder').textContent = state.state === 'resetting' ? '正在复位，视频将自动恢复…' : state.state === 'reconfiguring' ? '正在切换，视频将自动恢复…' : state.state === 'stopping' ? state.message : state.state === 'ready' ? '后台已就绪，点击“连接视频”' : state.state === 'starting' ? '后台初始化中，请稍候…' : state.state === 'failed' ? '后台启动或运行失败，请查看下方提示' : '启动后台，等待就绪后连接视频';
     byId('details').textContent = JSON.stringify(state, null, 2);
     if (session && Date.now() - lastHeartbeat > 2000) {
       lastHeartbeat = Date.now();

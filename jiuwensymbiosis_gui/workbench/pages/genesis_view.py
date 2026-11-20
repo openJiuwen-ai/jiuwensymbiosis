@@ -13,7 +13,7 @@ from nicegui import ui
 
 from jiuwensymbiosis.agent.config import ModelSpec
 from jiuwensymbiosis.perception.config import DetectorConfig, LocalDetectorConfig
-from jiuwensymbiosis.simulators.common.chat import ChatError, SimulationChat, state_snapshot
+from jiuwensymbiosis.simulators.common.chat import AgentIdleTimeout, ChatError, SimulationChat, state_snapshot
 from jiuwensymbiosis.utils.service_http import HttpEndpointConfig
 
 __all__ = ["GenesisView"]
@@ -305,7 +305,7 @@ class GenesisView:
         self._mode_badge.set_text("可控制" if event.value else "只读")
         self._cancel_button.set_text("停止任务" if event.value else "停止回复")
         self._input.props(
-            'placeholder="输入控制指令，例如：向左移动 20 厘米…"'
+            'placeholder="输入动作指令，例如：观察前方后向前移动…"'
             if event.value
             else 'placeholder="用头部相机观察前方…"'
         )
@@ -351,7 +351,10 @@ class GenesisView:
             help_text = "已开启：请选择支持移动的机器人及其物理模式（MOZ1 / Jumper）。"
         else:
             help_text = "已开启：可控制前后、左右横移和旋转；关闭将取消当前任务。"
-            if {"jump", "set_gripper"} <= set((status.get("robot") or {}).get("policy_actions", [])):
+            policy_actions = set((status.get("robot") or {}).get("policy_actions", []))
+            if "roller_skate" in policy_actions:
+                help_text = "已开启：可用头部相机和轮滑动作，例如向前滑行 1 秒后停稳。"
+            elif {"jump", "set_gripper"} <= policy_actions:
                 help_text = "已开启：可移动、跳跃及开合左右夹爪。移动或跳跃前须先张开夹爪；取消跳跃会等待落地。"
         if self._chat.observation_mode == "perception" and self._chat.detector_config.mode == "disabled":
             help_text += "检测未启用：目标定位与接近不可用。"
@@ -370,6 +373,7 @@ class GenesisView:
             "ready": "后台就绪",
             "starting": "后台启动中",
             "reconfiguring": "后台切换中",
+            "stopping": "正在释放后台",
             "stopped": "后台未启动",
             "failed": "后台异常",
             "unavailable": "服务不可达 · 状态未知",
@@ -540,16 +544,28 @@ class GenesisView:
         try:
             reply = await self._request
             self._append(reply)
+            execution = self._chat.last_execution or {}
             self._chat_status.set_text(
-                "任务返回 · 已记录动作与相机观测"
+                execution.get("motion_abort", "任务已取消，后台任务已退出。")
+                if execution.get("execution_status") == "cancelled"
+                else "任务返回 · 已记录动作与相机观测"
                 if action_mode
                 else "回复完成 · 本轮相机图片已在对话中展示"
-                if (self._chat.last_execution or {}).get("frames")
+                if execution.get("frames")
                 else "回复完成 · 本轮未获取新图像"
             )
         except asyncio.CancelledError:
             self._chat_status.set_text(
-                "已请求取消动作，等待底盘制动与任务退出。" if action_mode else "回复已停止，仿真继续运行。"
+                "已手动取消任务，等待底盘制动与任务退出。" if action_mode else "回复已停止，仿真继续运行。"
+            )
+        except AgentIdleTimeout as exc:
+            self._chat_status.set_text(str(exc))
+            stopped_execution = await self._chat.wait_for_action_exit()
+            released = stopped_execution is not None and stopped_execution.get("control_released") is True
+            self._chat_status.set_text(
+                "任务因无进展超时停止，后台任务已退出，仿真控制权已释放。"
+                if released
+                else "任务因无进展超时停止，后台任务已退出，仿真控制权释放尚未确认。"
             )
         except ChatError as exc:
             self._chat_status.set_text(str(exc))

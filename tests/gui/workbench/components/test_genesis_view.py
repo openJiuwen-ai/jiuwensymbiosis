@@ -69,6 +69,19 @@ async def test_action_switch_uses_selected_model_and_shared_execution(monkeypatc
     assert view._action_switch.enabled
 
 
+async def test_automatic_motion_abort_shows_reason_in_reply_and_status(monkeypatch, page_slot):
+    message = "转身时检测到机器人姿态不稳，需要恢复站姿，本轮已中止。机器人已停稳。"
+    runner = Mock(return_value={"reply": message, "motion_abort": message, "execution_status": "cancelled"})
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
+    with page_slot:
+        view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=object())
+    view._action_switch.set_value(True)
+    view._input.set_value("转身后跑四米")
+    await view._send()
+    assert view._chat_status.text == message
+    assert any(isinstance(element, ui.html) and message in element.content for element in view._messages.descendants())
+
+
 async def test_observation_mode_is_independent_and_resets_model_context(monkeypatch, page_slot):
     runner = Mock(return_value={"reply": "已查询场景", "actions": []})
     monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", runner)
@@ -318,3 +331,32 @@ async def test_stop_failure_is_reported_without_claiming_physical_success(page_s
     await view._stop_robot()
     assert preview.base_command.call_count == 2
     assert "停止请求未确认" in view._chat_status.text
+
+
+@pytest.mark.parametrize("released", [True, False])
+async def test_agent_timeout_status_updates_after_worker_exits(monkeypatch, page_slot, released):
+    release, cancelled_in_worker = threading.Event(), threading.Event()
+
+    def run(*args, cancelled, **kwargs):
+        assert cancelled.wait(5)
+        cancelled_in_worker.set()
+        assert release.wait(5)
+        return {"reply": "已取消", "control_released": released}
+
+    monkeypatch.setattr("jiuwensymbiosis.simulators.common.agent.run_agent_query", run)
+    with page_slot:
+        view = GenesisView(status=mobile_ready, model=ModelSpec, open_models=lambda: None, preview=object())
+    view._chat._timeout = 0.15
+    view._action_switch.set_value(True)
+    view._input.set_value("前进")
+    task = asyncio.create_task(view._send())
+    try:
+        assert await asyncio.to_thread(cancelled_in_worker.wait, 2)
+        assert "正在等待后台任务退出" in view._chat_status.text
+        assert not view._input.enabled
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 2)
+    assert "后台任务已退出" in view._chat_status.text
+    assert ("控制权已释放" if released else "释放尚未确认") in view._chat_status.text
+    assert view._input.enabled

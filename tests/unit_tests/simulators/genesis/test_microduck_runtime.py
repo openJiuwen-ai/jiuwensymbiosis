@@ -4,7 +4,7 @@ import importlib.util
 import math
 import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
@@ -17,10 +17,26 @@ def robot(monkeypatch):
     runtime = module.MicroduckRuntime.__new__(module.MicroduckRuntime)
     runtime.model = object()
     runtime.data = SimpleNamespace(time=0.0, qpos=np.zeros(7), body=lambda _: SimpleNamespace(xmat=np.eye(3).ravel()))
+    runtime.data.qpos[2] = 0.125
+    runtime.rollers = False
+    runtime.hold_roller_seat = False
+    runtime.kicking_bodies = set()
+    runtime.show_started = None
+    runtime.gait, runtime.gait_scale = "velstand_gait", 1.0
     runtime.physics_steps = 0
     runtime._command = runtime._policy_command = (0.0, 0.0, 0.0)
     runtime._command_until = 0.0
-    runtime.policy = SimpleNamespace(vel_cmd=np.zeros(3), infer=lambda: np.zeros(14), apply_action=Mock())
+    runtime.policy = SimpleNamespace(
+        vel_cmd=np.zeros(3),
+        infer=lambda: np.zeros(14),
+        apply_action=Mock(),
+        sit_mode=False,
+        ground_pick_mode=False,
+        behavior_mode=None,
+        current_policy="walking",
+        update_ground_pick_phase=Mock(),
+        update_behavior=Mock(),
+    )
     runtime.policy.set_vel_cmd = Mock(
         side_effect=lambda *values: setattr(runtime.policy, "vel_cmd", np.asarray(values))
     )
@@ -47,6 +63,30 @@ def test_expired_command_is_zero_at_next_policy_tick(robot):
     robot._physics_step()
     assert robot._policy_command == (0, 0, 0)
     robot.policy.set_vel_cmd.assert_not_called()
+
+
+@pytest.mark.parametrize("behavior", [None, "kick_left"])
+def test_pose_keeps_policy_and_existing_twist_or_phase(robot, behavior):
+    policy = robot.policy
+    policy.behavior_mode = behavior
+    policy.head_offset = np.zeros(4)
+    policy.body_cmd = np.zeros(6)
+    policy.command = np.zeros(13)
+    if behavior is None:
+        policy.current_policy = "sit"
+        policy.command[0] = 1
+    initial_command = policy.command.copy()
+    current_policy = policy.current_policy
+
+    robot.set_policy_pose(head=[0, 0.5, 0, 0], body=[0, 0, 0, 0, 0.1, 0])
+
+    assert policy.current_policy == current_policy
+    policy.set_vel_cmd.assert_not_called()
+    assert policy.head_offset[1] == 0.5 and policy.body_cmd[4] == 0.1
+    if behavior is None:
+        initial_command[4] = 0.5
+        initial_command[11] = 0.1
+    np.testing.assert_array_equal(policy.command, initial_command)
 
 
 @pytest.mark.parametrize("command", [(0.41, 0, 0), (0.4, 0.01, 0), (0, 0, 1.51), (float("nan"), 0, 0)])
@@ -104,6 +144,64 @@ def test_native_runtime_reports_unsupported_interfaces_explicitly(robot):
         robot.query_truth("robot_state", {})
     with pytest.raises(ValueError, match="RGB-D"):
         MujocoRenderer.read_rgbd("head_cam")
+
+
+@pytest.mark.parametrize(
+    ("distance_m", "lateral_m", "cancelled", "expected_reason"),
+    [
+        (2.02, 0.04, False, "reached"),
+        (1.999, 0.3, False, "sprint_short"),
+        (0, 0, False, "sprint_short"),
+        (2.02, 0.04, True, "cancelled"),
+    ],
+)
+def test_sprint_result_uses_forward_distance_after_measured_stop(distance_m, lateral_m, cancelled, expected_reason):
+    from jiuwensymbiosis.simulators.mujoco.microduck_motion import MicroduckMotion
+
+    # Start facing +Y so sideways travel cannot satisfy the forward distance.
+    pose = {
+        "position_m": [1.0, 2.0, 0.12],
+        "body_yaw_rad": math.pi / 2,
+        "linear_velocity_m_s": [0, 0, 0],
+        "angular_velocity_rad_s": [0, 0, 0],
+    }
+    duck = SimpleNamespace(
+        observe_base=lambda: pose.copy(),
+        policy=SimpleNamespace(sit_mode=False, current_policy="standing", ground_pick_mode=False, behavior_mode=None),
+        actions=["sprint_2m"],
+        upright=lambda: True,
+        show_started=None,
+        max_linear_rate=0.4,
+        select_gait=Mock(),
+        command=Mock(),
+        stop=Mock(),
+    )
+    motion = MicroduckMotion(duck, SimpleNamespace(active=False))
+    motion.start({"id": "sprint", "kind": "sprint_2m"}, 0)
+    motion.tick(0.1, 1)
+    duck.select_gait.assert_called_once_with("sprint_2m")
+    duck.command.assert_called_once_with(0.4, 0, 0, 0.2)
+    if cancelled:
+        motion.cancel()
+
+    duck.command.reset_mock()
+    pose["position_m"] = [1.0, 3.91 if distance_m else 2.0, 0.12]
+    pose["linear_velocity_m_s"] = [0, 0.5, 0]
+    motion.tick(0.1 if distance_m else 12, 2)
+    assert motion.active and not motion.result["ok"]
+    duck.command.assert_not_called()
+    duck.select_gait.assert_called_once_with("sprint_2m")
+    assert duck.stop.call_count >= 2
+
+    pose["position_m"] = [1.0 + lateral_m, 2.0 + distance_m, 0.12]
+    pose["linear_velocity_m_s"] = [0, 0, 0]
+    for step in range(3, 7):
+        motion.tick(0.1, step)
+    assert not motion.active and motion.result["settled"]
+    assert motion.result["forward_displacement_m"] == pytest.approx(distance_m)
+    assert motion.result["reason"] == expected_reason
+    assert motion.result["ok"] == (expected_reason == "reached")
+    assert duck.select_gait.call_args_list == [call("sprint_2m"), call("velstand_gait")]
 
 
 def test_renderer_evicts_old_sizes_and_closes_remaining_resources(monkeypatch):
