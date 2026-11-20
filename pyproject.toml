@@ -147,15 +147,17 @@ simulator-media = [
     "av==17.1.0",
 ]
 genesis = [
-    # Linux/NVIDIA only; Mac uses the mujoco/jumper/microduck extras instead.
+    # Linux/NVIDIA uses Nyx; Apple Silicon uses the Genesis Rasterizer demo.
     # Linux retains the explicit CUDA build and requires the cu130 package index.
     "scipy>=1.14,<2; sys_platform == 'linux'",
     "usd-core==25.11; sys_platform == 'linux'",
     "trimesh>=4.8.2,<6; sys_platform == 'linux'",
     "rtree>=1; sys_platform == 'linux'",
     "torch==2.11.0+cu130; sys_platform == 'linux'",
+    "torch==2.11.0; sys_platform == 'darwin'",
     "numpy==2.3.5",
     "genesis-world[render,usd]==1.4.6; sys_platform == 'linux'",
+    "genesis-world==1.4.4; sys_platform == 'darwin'",
     "gs-nyx-plugin==0.1.10; sys_platform == 'linux'",
     "gs-nyx==0.1.9; sys_platform == 'linux'",
     "aiortc==1.15.0",

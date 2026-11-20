@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,26 +17,68 @@ import yaml
 from .._paths import simulator_root
 from .config import RootSpec, load_config
 from .index import build_index
-from .models import AssetError
+from .models import AssetError, local_file
+from .policy_files import MICRODUCK_ARENA, MICRODUCK_FILES, MICRODUCK_REVISION, jumper_export_files
 from .scanners import scan_root
 
-__all__ = ["fetch_assets", "register_robot"]
+__all__ = ["complete_policies", "fetch_assets", "register_robot"]
 
 REVISIONS = {
     "jumper": ("https://github.com/KingKongRobotics/jumper.git", "198686eac0d188815d0943e9fee50de415edc80a"),
     "microduck": ("https://github.com/pollen-robotics/microduck_rl.git", "0daab160d3fb1c2cbaba16a4a19052f36709dd9e"),
 }
-POLICY_REVISION = "283771bcb3690a0a94a288c108365d9b630d21e4"
-MICRODUCK_FILES = {
-    "velstand.onnx": "ce894d30b3343036d499bfac1102bdaa58d59a21c1b58401ecb70fb6a2f63e0a",
-    "manifest.json": "5c6a73f95f388f131aaef570f6113f0d36b84a72d5755662cd57e67adf7fd24c",
-}
+POLICY_REVISION = MICRODUCK_REVISION
 JUMPER_MANIFEST = "88a1e061ac17853837063cc3f1b69737042f4372fd931177ee6b4464172a3948"
 
 
 def verify_digest(path: Path, expected: str) -> None:
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
         raise AssetError(f"Asset SHA256 mismatch: {path.name}")
+
+
+def _policy_sources(body: str):
+    if body == "jumper":
+        revision = REVISIONS[body][1]
+        for _, _, relative, digest in jumper_export_files():
+            yield relative, f"https://raw.githubusercontent.com/KingKongRobotics/jumper/{revision}/{relative}", digest
+        return
+    for name, digest in MICRODUCK_FILES.items():
+        yield (
+            f"policies/{name}",
+            f"https://huggingface.co/pollen-robotics/microduck-policies/resolve/{POLICY_REVISION}/{name}",
+            digest,
+        )
+    for name, release in MICRODUCK_ARENA.items():
+        for filename, digest in release["files"].items():
+            url = f"https://huggingface.co/{release['repo']}/resolve/{release['revision']}/{filename}"
+            yield f"policies/arena/{name}/{filename}", url, digest
+
+
+def complete_policies(body: str, root: Path) -> None:
+    """Fill a local official model checkout. Existing files are verified and never overwritten."""
+    root = root.expanduser().resolve(strict=True)
+    entry = "assets/jumper/jumper.xml" if body == "jumper" else "src/mjlab_microduck/robot/microduck/scene.xml"
+    if body not in REVISIONS or not local_file(root, entry).is_file():
+        raise AssetError("An existing official robot model checkout is required")
+    with tempfile.TemporaryDirectory(prefix=".policy-download-", dir=root) as temp:
+        pending: list[tuple[Path, str, str]] = []
+        for relative, url, digest in _policy_sources(body):
+            target = local_file(root, relative)
+            if target.exists():
+                verify_digest(target, digest)
+                continue
+            path = Path(temp) / str(len(pending))
+            with urlopen(url, timeout=120) as response, path.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            verify_digest(path, digest)
+            pending.append((path, relative, digest))
+        for path, relative, digest in pending:
+            target = local_file(root, relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(path, target)
+            except FileExistsError:
+                verify_digest(target, digest)
 
 
 def fetch_assets(body: str, destination: Path) -> None:
@@ -51,7 +94,14 @@ def fetch_assets(body: str, destination: Path) -> None:
     url, revision = REVISIONS[body]
     destination.parent.mkdir(parents=True, exist_ok=True)
     patterns = (
-        ["/assets/jumper/", "/out/bundle_example/jumper/", "/LICENSE", "/NOTICE", "/licenses/"]
+        [
+            "/assets/jumper/",
+            "/out/bundle_example/jumper/",
+            "/LICENSE",
+            "/NOTICE",
+            "/licenses/",
+            *("/" + rel for _, _, rel, _ in jumper_export_files()),
+        ]
         if body == "jumper"
         else ["/src/mjlab_microduck/robot/microduck/", "/scripts/infer_policy.py", "/LICENSE", "/LICENSE-MODELS.md"]
     )
@@ -69,13 +119,7 @@ def fetch_assets(body: str, destination: Path) -> None:
         if actual != revision:
             raise AssetError("Unexpected upstream revision")
         if body == "microduck":
-            policies = checkout / "policies"
-            policies.mkdir(exist_ok=True)
-            for name, digest in MICRODUCK_FILES.items():
-                address = f"https://huggingface.co/pollen-robotics/microduck-policies/resolve/{POLICY_REVISION}/{name}"
-                with urlopen(address, timeout=120) as response:
-                    (policies / name).write_bytes(response.read())
-                verify_digest(policies / name, digest)
+            complete_policies(body, checkout)
         else:
             bundle = checkout / "out/bundle_example/jumper"
             verify_digest(bundle / "bundle.json", JUMPER_MANIFEST)
@@ -84,6 +128,8 @@ def fetch_assets(body: str, destination: Path) -> None:
                 if not path.is_relative_to(bundle.resolve()):
                     raise AssetError("Jumper bundle reference leaves its directory")
                 verify_digest(path, entry["sha256"])
+            for _, _, relative, digest in jumper_export_files():
+                verify_digest(checkout / relative, digest)
         # mkdir reserves the name, protecting a destination created during the download.
         destination.mkdir()
         checkout.rename(destination)

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING or __package__:
     from . import AssetError, AssetLibrary, build_index, initialize_config, load_config, probe_asset
-    from .robot_assets import fetch_assets, register_robot, simulator_root
+    from .robot_assets import complete_policies, fetch_assets, register_robot, simulator_root
 else:
     # Load a private namespace so the directory CLI never shadows installed modules.
     from types import ModuleType
@@ -29,7 +29,12 @@ else:
         load_config,
         probe_asset,
     )
-    from _jiuwensymbiosis_asset_cli.assets.robot_assets import fetch_assets, register_robot, simulator_root
+    from _jiuwensymbiosis_asset_cli.assets.robot_assets import (
+        complete_policies,
+        fetch_assets,
+        register_robot,
+        simulator_root,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,7 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     register.add_argument("robot", choices=("jumper", "microduck"))
     register.add_argument("--source", type=Path, help="已有 checkout 或新下载目录；默认数据根下 outputs/vendor/<robot>")
     register.add_argument("--home", type=Path, default=simulator_root(), help="本机仿真数据根，不覆盖已有资产根")
-    register.add_argument("--fetch", action="store_true", help="下载并校验官方资产；目标目录必须尚不存在")
+    download = register.add_mutually_exclusive_group()
+    download.add_argument("--fetch", action="store_true", help="下载并校验官方资产；目标目录必须尚不存在")
+    download.add_argument("--complete", action="store_true", help="给已有官方模型补齐缺失的固定版本策略并重建索引")
     search = commands.add_parser("search", help="分页查询文件级候选")
     search.add_argument("query", nargs="?", default="")
     for name in ("root-id", "kind", "category", "preview-mode"):
@@ -73,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
             source = args.source or args.home / "outputs/vendor" / folder
             if args.fetch:
                 fetch_assets(args.robot, source)
+            if args.complete:
+                complete_policies(args.robot, source)
             result = register_robot(args.robot, source, args.home)
         elif args.command == "build":
             result = build_index(load_config(args.config))

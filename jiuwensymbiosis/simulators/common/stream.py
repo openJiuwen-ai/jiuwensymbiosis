@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 import uuid
 from fractions import Fraction
@@ -129,6 +130,7 @@ class PreviewStream:
         self._peer: Any = None
         self._track: Any = None
         self._session: str | None = None
+        self._manual_cancel: threading.Event | None = None
         self._watchdog: asyncio.Task | None = None
         self._last_seen = 0.0
         self._offered_at = 0.0
@@ -277,10 +279,56 @@ class PreviewStream:
             self._require_session(session)
             if self._peer.connectionState != "connected":
                 raise StreamError("视频连接尚未建立。")
+            if self._manual_cancel is not None and all(values.get(axis) == 0 for axis in ("vx", "vy", "wz")):
+                self._manual_cancel.set()
             try:
                 return await asyncio.to_thread(partial(self.preview.base_command, **values))
             except (ValueError, RuntimeError, TimeoutError) as exc:
                 raise StreamError(str(exc), 400) from exc
+
+    async def policy_action(
+        self, session: str, kind: str, params: dict, scene_instance_id: str, config_revision: int
+    ) -> dict:
+        from ..mujoco.policy_actions import validate_action
+
+        try:
+            params = validate_action(kind, params)
+        except ValueError as exc:
+            raise StreamError(str(exc), 400) from exc
+        async with self._lock:
+            self._require_session(session)
+            if self._peer.connectionState != "connected" or self._manual_cancel is not None:
+                raise StreamError("请连接视频并等待当前动作完成。")
+            event = self._manual_cancel = threading.Event()
+
+        def run():
+            if event.is_set():
+                raise RuntimeError("动作已取消。")
+            owner = self.preview.acquire_motion()
+            try:
+                state = self.preview.motion_state(owner)
+                if (state.get("scene", {}).get("instance_id"), state.get("config_revision")) != (
+                    scene_instance_id,
+                    config_revision,
+                ):
+                    raise ValueError("场景已切换，请等待新画面后操作。")
+                return self.preview.policy_action(owner, kind, cancelled=event, **params)
+            finally:
+                self.preview.release_motion(owner)
+
+        worker = asyncio.create_task(asyncio.to_thread(run))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            event.set()
+            await asyncio.gather(worker, return_exceptions=True)
+            raise
+        except (ValueError, RuntimeError, TimeoutError) as exc:
+            raise StreamError(str(exc), 409) from exc
+        finally:
+            event.set()
+            if self._manual_cancel is event:
+                self._manual_cancel = None
 
     def _require_session(self, session: str) -> None:
         if session != self._session or self._peer is None:
@@ -312,6 +360,8 @@ class PreviewStream:
                 return
 
     async def _close_peer(self) -> None:
+        if self._manual_cancel is not None:
+            self._manual_cancel.set()
         peer, track, watcher = self._peer, self._track, self._watchdog
         self._peer = self._track = self._watchdog = self._session = None
         error = None

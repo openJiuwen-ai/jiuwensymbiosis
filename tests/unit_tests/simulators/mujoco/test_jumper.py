@@ -119,6 +119,9 @@ def test_fetch_uses_resolved_git_and_verifies_downloaded_bundle(tmp_path, monkey
     executable = str(tmp_path / "bin" / "git")
     revision = robot_assets.REVISIONS["jumper"][1]
     model = b"downloaded-model"
+    rel = "tasks/jumper/dance_waist/out/example/actor.onnx"
+    digest = hashlib.sha256(model).hexdigest()
+    monkeypatch.setattr(robot_assets, "jumper_export_files", lambda: [("dance_waist", "actor.onnx", rel, digest)])
     manifest = json.dumps({"files": {"model.onnx": {"sha256": hashlib.sha256(model).hexdigest()}}}).encode()
     commands = []
 
@@ -130,6 +133,9 @@ def test_fetch_uses_resolved_git_and_verifies_downloaded_bundle(tmp_path, monkey
             bundle.mkdir(parents=True)
             (bundle / "bundle.json").write_bytes(manifest)
             (bundle / "model.onnx").write_bytes(model)
+            export = Path(command[2]) / rel
+            export.parent.mkdir(parents=True)
+            export.write_bytes(model)
 
     def head(command, **kwargs):
         assert command[0] == executable and command[-2:] == ["rev-parse", "HEAD"]
@@ -143,6 +149,7 @@ def test_fetch_uses_resolved_git_and_verifies_downloaded_bundle(tmp_path, monkey
     robot_assets.fetch_assets("jumper", destination)
     assert len(commands) == 5 and commands[3][-1] == revision
     assert (destination / "out" / "bundle_example" / "jumper" / "model.onnx").read_bytes() == model
+    assert (destination / rel).read_bytes() == model
 
 
 def test_bundle_file_digest_and_path_boundary(tmp_path):
@@ -306,7 +313,11 @@ def policy_motion(monkeypatch):
         fsm=fsm,
         wire=["LF_J4_joint", "RF_J4_joint"],
         dt=0.001,
+        posture={},
+        trigger_axes={},
         key_events=events,
+        cancel_keys=events.clear,
+        arm_pose=Mock(),
         operators=False,
         use_operators=Mock(),
         tap_mode=Mock(side_effect=lambda mode: events.extend([(mode, True), (mode, False)])),
@@ -314,6 +325,7 @@ def policy_motion(monkeypatch):
     policy.use_operators.side_effect = lambda enabled: setattr(policy, "operators", enabled)
     contact = NS(geom1=0, geom2=1)
     robot = NS(
+        actions={"jump", "set_gripper"},
         policy=policy,
         stop=Mock(),
         model=NS(geom_bodyid=np.asarray([0, 1])),
@@ -365,6 +377,34 @@ def test_cancellation_before_native_tick_clears_queued_jump(policy_motion):
     for step in range(120):
         motion.tick(0.01, step)
     assert motion.result["settled"] and not motion.result["ok"]
+
+
+def test_optional_mode_requires_its_installed_export(policy_motion):
+    motion, robot = policy_motion
+    accept(motion, jump_request(kind="dance_crab"))
+    for step in range(120):
+        motion.tick(0.01, step)
+    robot.policy.tap_mode.assert_not_called()
+    assert motion.result["reason"] == "policy_unavailable"
+
+
+def test_cancelled_arm_pose_releases_held_modifier_in_five_foot_mode(policy_motion):
+    from unittest.mock import Mock
+
+    motion, robot = policy_motion
+    robot.actions.add("claw_pose")
+    motion.claw_side = "left"
+    robot.policy.fsm.mode = "claw_left"
+    robot.policy.arm_pose = Mock(side_effect=lambda *_: robot.policy.key_events.append(("key_left_alt", True)))
+    request = jump_request(kind="claw_pose", params={"side": "left", "pose": "web_up"})
+    accept(motion, request)
+    motion.tick(0.01, 1)
+    assert robot.policy.key_events
+    accept(motion, {**request, "cancelled": True})
+    assert not robot.policy.key_events
+    for step in range(120):
+        motion.tick(0.01, step)
+    assert not motion.result["ok"] and motion.result["settled"]
 
 
 def test_cancelled_unstarted_closure_does_not_leave_false_closed_state(policy_motion):

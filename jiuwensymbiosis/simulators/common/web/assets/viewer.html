@@ -48,6 +48,12 @@
     <button data-base="stop" class="danger" disabled>停止机器人</button>
   </div>
 </section>
+  <form id="policy-controls" class="camera-toolbar" hidden>
+    <label>官方动作 <select name="kind"></select></label>
+    <fieldset data-fields aria-label="动作参数"></fieldset>
+    <button type="submit">执行动作</button>
+    <output aria-live="polite"></output>
+  </form>
   <section class="camera-toolbar" aria-label="观察视角控制" title="仅调整观察相机，不移动机器人"><span class="control-caption">视角</span><div class="camera-buttons">
     <button data-camera="left" title="左转" aria-label="左转" disabled>←</button><button data-camera="right" title="右转" aria-label="右转" disabled>→</button><button data-camera="up" title="抬高" aria-label="抬高" disabled>↑</button><button data-camera="down" title="降低" aria-label="降低" disabled>↓</button><span class="divider"></span><button data-camera="in" title="拉近" aria-label="拉近" disabled>＋</button><button data-camera="out" title="拉远" aria-label="拉远" disabled>−</button>
   </div></section>
@@ -76,14 +82,14 @@
   <div class="dialog-heading"><strong>渲染设置</strong><button data-close="settings-dialog" aria-label="关闭渲染设置">×</button></div>
   <div class="settings-fields">
     <label><span>观察分辨率</span><select id="resolution" aria-label="分辨率"><option value="960x540">540p</option><option value="1280x720" selected>720p</option><option value="1920x1080">1080p</option></select></label>
-    <label><span>渲染</span><select id="render-quality" aria-label="渲染质量" disabled><option value="fast" selected>FastPathTracer · 32 采样</option></select></label>
+    <label><span>渲染</span><select id="render-quality" aria-label="渲染质量" disabled><option value="fast" selected>后端默认</option></select></label>
     <label><span>FPS 上限</span><select id="fps" aria-label="帧率"><option value="30">30 fps</option><option value="60" selected>60 fps</option></select></label>
     <label><span>机器人模式</span><select id="robot-mode" aria-label="机器人模式">{{ROBOT_MODE_OPTIONS}}</select></label>
   </div>
-  <p id="quality-description">FastPathTracer：32 采样；实际刷新率取决于场景。</p>
+  <p id="quality-description"></p>
   <div class="settings-performance"><span>请求档位</span><strong id="requested-profile">—</strong><span>实际表现</span><strong id="actual-performance">等待有效测量</strong></div>
   <p class="muted">修改后立即应用，视频自动恢复。FPS 是上限；实际呈现、解码帧率和物理实时率在画面右上角。</p>
-  <p class="muted">FastPathTracer 与 Reference 之间切换保留机器人位姿；切换到或离开 Rasterizer 会重新加载场景。</p>
+  <p class="muted">调整观察分辨率会保留机器人位姿。切换仿真后端会重新加载场景。</p>
   <p class="muted">Nyx 机器人相机使用模型标定的分辨率与镜头参数；Rasterizer 当前仅提供观察视角。</p>
 </dialog>
 
@@ -95,7 +101,7 @@
   <p><strong>点选与聚焦：</strong>左键单击物体，黄色包围框表示已选；F 将对象完整纳入画面，之后 Alt + 左键围绕对象旋转。单击空白或 Esc 取消选择；未选择时按 F 显示整个场景。触屏轻点也可选择。</p>
   <p class="muted">移动速度随场景大小调整。USD 按模型选择，名称来自资产节点；黄色框为三维包围盒。相机可以穿过背景几何。</p>
   <p>场景、画质和帧率可在运行中切换，视频自动恢复。切换场景会重置场景状态。</p>
-  <p>FastPathTracer 使用 32 次采样，Reference 使用 64 次采样。Rasterizer 使用光栅化观察视角，切换到或离开此模式会重新加载场景。</p>
+  <p>Linux Genesis 使用 Nyx FastPathTracer 32 采样；Apple Silicon 的 Genesis 动态演示使用 Rasterizer。</p>
   <p>MOZ1 移动：选择 MOZ1 资产和“MOZ1 底盘物理”，连接视频后使用底盘按钮。方向以机器人自身为准，单击最多运行 1 秒；断开视频会停止轮速指令。此模式通过关节位置控制保持上身姿态，使用 URDF 滚子碰撞代理与地面接触，尚不支持机械臂或避障。</p>
   <p>断开视频后，仿真后台继续运行；“关闭仿真”才会结束仿真。</p>
   <p class="muted">室内移动：选择 USD 场景，再在“场景机器人”中选择 MOZ1。系统自动寻找地面上的空闲出生点，并从场景网格生成固定碰撞体；家具不会被推动，也不提供自动避障。不添加机器人时仍为纯视觉预览。空场景或超过 500 万可见三角形会显示具体原因。</p>

@@ -14,9 +14,12 @@ from tomllib import loads
 
 import numpy as np
 
+from ..assets.policy_files import JUMPER_EXPORTS
+from .policy_actions import RECORDINGS
+
 
 class JumperPolicy:
-    def __init__(self, manifest_path: Path):
+    def __init__(self, manifest_path: Path, assets: dict[str, Path] | None = None):
         import onnxruntime as ort
 
         self.root = manifest_path.parent.resolve()
@@ -26,6 +29,14 @@ class JumperPolicy:
         self.contracts = {
             name: self.file(entry["contract"]).read_text() for name, entry in self.manifest["modes"].items()
         }
+        self.config = self.file("controller.toml").read_text()
+        self.models = {name: self.file(entry["models"]["onnx"]) for name, entry in self.manifest["modes"].items()}
+        self.trajectories = {
+            name: self.file(entry["trajectory"]).read_text()
+            for name, entry in self.manifest["modes"].items()
+            if entry.get("trajectory")
+        }
+        self._add_exports(assets or {})
         parsed = {name: json.loads(text) for name, text in self.contracts.items()}
         self.contract = parsed["locomotion"]
         self.wire = self.contract["wire_joint_order"]
@@ -54,8 +65,7 @@ class JumperPolicy:
         options.enable_cpu_mem_arena = False
         # Models, native hooks, gains and trajectories remain the bundled versions.
         self.sessions: dict[Path, ort.InferenceSession] = {}
-        for entry in self.manifest["modes"].values():
-            path = self.file(entry["models"]["onnx"])
+        for path in self.models.values():
             if path not in self.sessions:
                 self.sessions[path] = ort.InferenceSession(
                     str(path), sess_options=options, providers=["CPUExecutionProvider"]
@@ -64,7 +74,17 @@ class JumperPolicy:
         self.fsm = self.new_fsm()
         self.operators = False
         self.key_events: deque[tuple[str, bool]] = deque()
-        config = loads(self.file("controller.toml").read_text())["fsm"]
+        self.pressed_keys: set[str] = set()
+        self.posture: dict[str, float] = {}
+        self.arm_key: str | None = None
+        self.trigger_axes: dict[str, float] = {}
+        self.send_trigger_frame = False
+        self.durations = {name: parsed[name]["reference"]["duration"] for name in RECORDINGS if name in parsed}
+        self.claw_controls = {
+            side: parsed["claw_" + side]["controller"]["devices"]["keyboard"] for side in ("left", "right")
+        }
+        config = loads(self.config)["fsm"]
+        self.modifiers = {e["name"]: "key_left_" + e["with"] for e in config["button"] if e.get("key") and "with" in e}
         self.mode_keys = {
             entry["name"]: entry["key"]
             for entry in config["button"]
@@ -74,14 +94,41 @@ class JumperPolicy:
             side: parsed["claw_" + side]["controller"]["devices"]["keyboard"]["task"]["claw_" + side][0]
             for side in ("left", "right")
         }
+        self.claw_triggers = {
+            side: parsed["claw_" + side]["controller"]["devices"]["gamepad"]["task"]["claw_" + side]
+            for side in ("left", "right")
+        }
         self.summary = {
             "controller_commit": runtime["commit"],
             "bundle_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
             "backend": "ONNX Runtime CPU / official native FSM",
-            "exposed_modes": ["locomotion", "jump", "claw_left", "claw_right"],
+            "exposed_modes": list(self.contracts),
             "notes": self.manifest.get("notes", []),
             "reference_check": self.parity,
         }
+
+    def _add_exports(self, paths: dict[str, Path]) -> None:
+        # Extend the host bindings for the two separately published examples.
+        # Keep every bundled rule, including tilt and stale-feedback priorities.
+        fallback = '[[fsm.rule]]\nwhen = "always"'
+        for mode, key in (("dance_waist", "keypad_5"), ("ref_free_jump", "keypad_6")):
+            if f"{mode}/layout.json" not in paths:
+                continue
+            for filename, digest in JUMPER_EXPORTS[mode].items():
+                if hashlib.sha256(paths[f"{mode}/{filename}"].read_bytes()).hexdigest() != digest:
+                    raise ValueError(f"Jumper export digest mismatch: {mode}/{filename}")
+            if self.config.count(fallback) != 1:
+                raise ValueError("Unsupported Jumper FSM fallback")
+            rule = f'[[fsm.rule]]\nwhen = "button:{mode}"\nenter = "{mode}"\n\n'
+            self.config = self.config.replace(fallback, rule + fallback)
+            self.config += (
+                f'\n[[fsm.state]]\nname = "{mode}"\nmodel = "{mode}.onnx"\ntask = "jumper.{mode}"\n'
+                f'\n[[fsm.button]]\nname = "{mode}"\nkey = "{key}"\non = "toggle"\nfrom = ["locomotion"]\n'
+            )
+            self.models[mode] = paths[f"{mode}/actor.onnx"]
+            self.contracts[mode] = paths[f"{mode}/layout.json"].read_text()
+            if mode == "dance_waist":
+                self.trajectories[mode] = paths[f"{mode}/waist.motion.trajectory.json"].read_text()
 
     def file(self, relative: str) -> Path:
         path = (self.root / relative).resolve()
@@ -101,7 +148,7 @@ class JumperPolicy:
             (t.get("params", {}) for t in self.contract["observation"]["terms"] if t["name"] == "gait_phase"), {}
         )
         return self.extension.Fsm(
-            self.file("controller.toml").read_text(),
+            self.config,
             self.contracts,
             {
                 "joint_names": self.wire,
@@ -111,11 +158,7 @@ class JumperPolicy:
                 "gait_period": gait.get("period"),
                 "gait_gate_threshold": gait.get("command_threshold"),
             },
-            trajectories={
-                name: self.file(entry["trajectory"]).read_text()
-                for name, entry in self.manifest["modes"].items()
-                if entry.get("trajectory")
-            },
+            trajectories=self.trajectories,
             operators=operators,
         )
 
@@ -130,6 +173,10 @@ class JumperPolicy:
                 raise RuntimeError("Jumper input handoff requires locomotion")
             self.fsm = self.new_fsm(operators=enabled)
             self.key_events.clear()
+            self.pressed_keys.clear()
+            self.arm_key = None
+            self.trigger_axes.clear()
+            self.send_trigger_frame = False
             self.operators = enabled
 
     def tap_mode(self, mode: str):
@@ -137,24 +184,63 @@ class JumperPolicy:
         if key is None:
             raise ValueError(f"Jumper controller has no mode key: {mode}")
         # Both edges must be observed on different controller ticks.
+        modifier = self.modifiers.get(mode)
+        if modifier:
+            self.key_events.append((modifier, True))
         self.key_events.extend(((key, True), (key, False)))
+        if modifier:
+            self.key_events.append((modifier, False))
 
     def claw(self, side: str, closed: bool):
         key = self.claw_keys.get(side)
         if key is None:
             raise ValueError(f"Jumper controller has no claw key: {side}")
+        if self.trigger_axes:
+            self.trigger_axes.clear()
+            self.send_trigger_frame = True
         self.key_events.append((key, closed))
 
+    def claw_aperture(self, side: str, opening: float) -> None:
+        # Release the keyboard's previous squeeze before driving the native LT/RT input.
+        self.claw(side, False)
+        self.trigger_axes = {self.claw_triggers[side]: 1.0 - opening} if opening < 1 else {}
+        self.send_trigger_frame = True
+
+    def cancel_keys(self) -> None:
+        """Discard pending input and release observed motion/modifier keys, preserving the claw."""
+        self.key_events.clear()
+        for key in sorted(self.pressed_keys.difference(self.claw_keys.values())):
+            self.key_events.append((key, False))
+        self.arm_key = None
+
+    def arm_pose(self, side: str, pose: str) -> None:
+        if self.arm_key:
+            self.key_events.append((self.arm_key, False))
+        self.arm_key = None if pose == "rest" else "key_left_" + self.claw_controls[side]["task"]["arm_" + pose][0]
+        if self.arm_key:
+            self.key_events.append((self.arm_key, True))
+
+    def step_key(self, side: str, direction: str) -> str:
+        axes = self.claw_controls[side]["axes"]
+        for axis, positive, negative in (
+            ("lin_vel_x", "forward", "backward"),
+            ("lin_vel_y", "left", "right"),
+            ("ang_vel_z", "turn_left", "turn_right"),
+            ("pitch", "pitch_down", "pitch_up"),
+            ("roll", "roll_right", "roll_left"),
+            ("twist", "twist_left", "twist_right"),
+        ):
+            if direction in (positive, negative):
+                return str(axes[axis]["+" if direction == positive else "-"][0])
+        raise ValueError("Unknown five-foot control")
+
     def infer(self, mode: str, observation):
-        path = self.file_path_for_mode(mode)
+        path = self.models[mode]
         session = self.sessions[path]
         action = session.run(None, {session.get_inputs()[0].name: np.asarray([observation], dtype=np.float32)})[0][0]
         if not np.isfinite(action).all():
             raise RuntimeError("Jumper policy produced non-finite actions")
         return action
-
-    def file_path_for_mode(self, mode):
-        return (self.root / self.manifest["modes"][mode]["models"]["onnx"]).resolve()
 
     def verify_reference(self) -> dict:
         path = self.file(self.manifest["reference"])
@@ -178,9 +264,21 @@ class JumperPolicy:
 
     def tick(self, q, qd, tau, quat, gyro, command, now_us: int):
         self.fsm.set_state(q.tolist(), qd.tolist(), tau.tolist(), quat.tolist(), gyro.tolist(), now_us)
-        self.fsm.set_command(*command, now_us)
+        if self.posture and not self.operators and self.fsm.mode == "locomotion":
+            axes = {"lin_vel_x": command[0], "lin_vel_y": command[1], "ang_vel_z": command[2], **self.posture}
+            self.fsm.set_command_axes(list(axes), list(axes.values()), now_us)
+        else:
+            self.fsm.set_command(*command, now_us)
+        if self.send_trigger_frame or self.trigger_axes:
+            self.fsm.set_pad_frame([], self.trigger_axes, connected=bool(self.trigger_axes), now_us=now_us)
+            self.send_trigger_frame = False
         if self.key_events:
-            self.fsm.set_key(*self.key_events.popleft(), now_us)
+            key, pressed = self.key_events.popleft()
+            self.fsm.set_key(key, pressed, now_us)
+            if pressed:
+                self.pressed_keys.add(key)
+            else:
+                self.pressed_keys.discard(key)
         mode = self.fsm.tick(now_us)
         if mode is not None:
             self.fsm.resume(self.infer(mode, self.fsm.observation()).tolist())

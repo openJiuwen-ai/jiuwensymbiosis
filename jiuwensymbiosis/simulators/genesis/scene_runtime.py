@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from ..common.camera import OrbitCamera, PreviewSettings
 from ..common.scene_catalog import resolve_scene, validate_material_bundle
-from .rendering import SceneRenderer
+from .rendering import RasterRenderer, SceneRenderer
 from .scene_catalog import material_rules_for_asset
 from .selection import UsdPickIndex
 from .source_lighting import load_source_lighting, make_environment
@@ -50,6 +50,7 @@ class RuntimeScene:
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
+        self.raster_renderer: RasterRenderer | None = None
         self.bodies: list[Any] = []
         self.grasp_targets: dict[str, Any] = {}
         self.robot: Any = None
@@ -193,7 +194,7 @@ class RuntimeScene:
                     )
                     self.initial_pose = replace(camera, revision=revision).snapshot()
                     self.pose = self.initial_pose
-            with self._phase("nyx_renderer"):
+            with self._phase("raster_renderer" if self.raster_renderer is not None else "nyx_renderer"):
                 self.build_renderer(settings)
             self._startup = None  # Later renderer changes are not part of initial startup.
         except BaseException:
@@ -361,6 +362,8 @@ class RuntimeScene:
                     morph=gs.morphs.Sphere(radius=0.11, pos=(0.34, 0.05, 1.8)), surface=gs.surfaces.Copper()
                 ),
             ]
+        if self._render_dispatch is None:
+            self.raster_renderer = RasterRenderer(self.scene, self.pose)
         with self._phase("scene_build"):
             self.scene.build(n_envs=1)
         if fixture:
@@ -412,7 +415,8 @@ class RuntimeScene:
                     self.info["spawn_admission"]["settled_start_verified"] = True
         self._initial_state = self.scene.get_state()
         self._initial_steps = self.steps
-        self._render_dispatch.call(self._build_environment)
+        if self._render_dispatch is not None:
+            self._render_dispatch.call(self._build_environment)
 
     def _build_environment(self):
         import cv2
@@ -434,6 +438,13 @@ class RuntimeScene:
 
     def build_renderer(self, settings: PreviewSettings) -> None:
         """Re-export the current world, retaining its physical and camera state."""
+        if self.raster_renderer is not None:
+            self.raster_renderer.configure(settings, self.pose)
+            self.renderer = self.raster_renderer
+            self.info["appearance"] = self.renderer.appearance
+            self.info["renderer"] = self.renderer.appearance["renderer"]
+            self.settings = settings
+            return
         import torch
 
         # Physics construction leaves cached Torch scratch buffers. Nyx allocates
@@ -669,6 +680,7 @@ class RuntimeScene:
             if self.scene is not None:
                 self.scene.destroy()
                 self.scene = None
+            self.raster_renderer = None
             self.bodies = []
             if self._model_directory is not None and self._model_directory.exists():
                 (self._model_directory / "closed").touch()

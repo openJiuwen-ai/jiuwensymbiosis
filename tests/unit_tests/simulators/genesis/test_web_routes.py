@@ -170,15 +170,14 @@ def test_viewer_and_preview_settings_agree_on_platform_modes(client, monkeypatch
     monkeypatch.setattr(routes.sys, "platform", platform)
     html = client[0].get("/simulation/viewer").text
 
-    engines = "mujoco" if platform == "darwin" else "genesis,mujoco"
-    assert f'<option data-engines="{engines}" value="inspection">' in html
+    assert '<option data-engines="genesis,mujoco" value="inspection">' in html
     for mode in ("jumper", "microduck"):
         assert f'<option data-engines="mujoco" value="{mode}">' in html
     for mode in ("moz1_wheels", "virtual_camera"):
         option = f'<option data-engines="genesis" value="{mode}">'
         if platform == "darwin":
             assert option not in html
-            with pytest.raises(ValueError, match="Unsupported"):
+            with pytest.raises(ValueError, match="not supported"):
                 PreviewSettings(robot_mode=mode)
         else:
             assert option in html
@@ -347,6 +346,44 @@ def test_base_route_requires_local_origin_live_session_and_finite_values(client)
         assert calls[-1]["vx"] == 0.4 and calls[-1]["wz"] == 1.5
         service._peer.connectionState = "disconnected"
         assert http.post("/genesis/base", headers=headers("base"), json=body).status_code == 409
+    finally:
+        service._peer = service._session = None
+
+
+def test_policy_route_validates_params_and_holds_the_scene_lease(client):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    http, backend, service = client
+    scene = "b" * 32
+    body = {
+        "session_id": "a" * 32,
+        "scene_instance_id": scene,
+        "config_revision": 3,
+        "kind": "roulade",
+        "params": {"repetitions": 2},
+    }
+    headers = {"Origin": "http://127.0.0.1:8770", "X-Simulation-Action": "policy"}
+    backend.acquire_motion = Mock(return_value="owner")
+    backend.release_motion = Mock()
+    backend.motion_state = Mock(return_value={"scene": {"instance_id": scene}, "config_revision": 3})
+    backend.policy_action = Mock(return_value={"ok": True, "settled": True})
+    assert http.post("/simulation/policy", json=body).status_code == 403
+    assert http.post("/simulation/policy", headers=headers, json=body).status_code == 409
+    service._session = body["session_id"]
+    service._peer = SimpleNamespace(connectionState="connected")
+    try:
+        for params in ({"repetitions": 0}, {"repetitions": True}, {"repetitions": 2.4}, {"other": 2}):
+            assert http.post("/simulation/policy", headers=headers, json={**body, "params": params}).status_code == 400
+        backend.acquire_motion.assert_not_called()
+        assert http.post("/simulation/policy", headers=headers, json={**body, "config_revision": 2}).status_code == 409
+        backend.policy_action.assert_not_called()
+        backend.release_motion.assert_called_once_with("owner")
+        response = http.post("/simulation/policy", headers=headers, json=body)
+        assert response.json() == {"ok": True, "settled": True}
+        assert backend.policy_action.call_args.args == ("owner", "roulade")
+        assert backend.policy_action.call_args.kwargs["repetitions"] == 2
+        assert backend.release_motion.call_count == 2
     finally:
         service._peer = service._session = None
 

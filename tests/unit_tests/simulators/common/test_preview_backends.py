@@ -1,5 +1,6 @@
 """Backend selection and advertised capabilities stay independent of display labels."""
 
+import sys
 from typing import get_args
 
 import pytest
@@ -12,6 +13,7 @@ from jiuwensymbiosis.simulators.common.preview_backends import (
     installation_extra,
     preview_backend,
     required_modules,
+    supported_modes,
 )
 
 
@@ -48,14 +50,24 @@ def test_both_engines_support_inspection_without_a_policy_dependency():
 
 
 def test_platform_changes_genesis_renderer_without_changing_robot_identity():
-    with pytest.raises(ValueError, match="Linux"):
-        preview_backend("genesis", "darwin")
+    mac = preview_backend("genesis", "darwin")
+    assert mac.id == "genesis_raster" and mac.software_encoding and not any(mac.features.values())
+    assert supported_modes("genesis", "darwin") == ("inspection",)
+    assert "gs_nyx_plugin" not in required_modules("genesis", "inspection", "darwin")
     linux = preview_backend("genesis", "linux")
     assert linux.id == "genesis_nyx" and linux.depth and linux.truth and linux.pick
     with pytest.raises(ValueError):
         preview_backend("not-a-mode")
 
 
-@pytest.mark.parametrize("platform", ["linux"])
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
 def test_genesis_install_hint_uses_the_shared_extra(platform):
     assert installation_extra("genesis", "inspection", platform) == "genesis"
+
+
+@pytest.mark.parametrize("settings", [{"scene_id": "room"}, {"camera_name": "head_cam"}])
+def test_macos_genesis_restricts_preview_to_the_demo_observer(monkeypatch, settings):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert PreviewSettings().scene_id == "demo"
+    with pytest.raises(ValueError, match="observer"):
+        PreviewSettings(**settings)

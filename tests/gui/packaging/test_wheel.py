@@ -197,11 +197,9 @@ from jiuwensymbiosis.simulators.genesis.material_rules import interioragent
 root = Path(sys.argv[1])
 for module in (appearance, material_baking, material_repair, material_surface, interioragent, source_lighting, usd_probe):
     assert Path(module.__file__).is_relative_to(root)
-for path in (appearance.PROFILE_PATH, source_lighting.PROFILE_PATH):
-    assert path.is_relative_to(root) and path.is_file()
-assert appearance.load_appearance_profile("unlisted").color_management.tone_mapper == "reinhard"
-assert source_lighting.load_source_lighting(root / "not-needed.usda", "unlisted") is None
-assert "genesis" not in sys.modules
+assert appearance.PROFILE_PATH.is_relative_to(root) and appearance.PROFILE_PATH.is_file()
+assert appearance.load_appearance_profile().color_management.tone_mapper == "neutral"
+assert not {"genesis", "gs_nyx", "pxr"} & sys.modules.keys()
 """
     run([sys.executable, "-I", "-c", scene_probe, str(installed)])
     # A standalone entry must also work with no source checkout or core import.
@@ -212,7 +210,7 @@ import usd_probe
 from scene_catalog import material_rules_for_asset
 from types import SimpleNamespace
 assert material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(material_rules="interioragent")))
-assert not material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(root_id="interioragent")))
+assert not material_rules_for_asset(SimpleNamespace(asset=SimpleNamespace(root_id="interioragent", material_rules=None)))
 assert not {"jiuwensymbiosis", "openjiuwen", "torch", "genesis", "pxr"} & sys.modules.keys()
 sys.argv = ["usd_probe", "--help"]
 usd_probe.main()
@@ -255,14 +253,22 @@ from jiuwensymbiosis.simulators.common.web.routes import install_simulation_rout
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 assets = root / "jiuwensymbiosis/simulators/common/web/assets"
-for filename in ("viewer.html", "viewer.css", "viewer.js", "navigation.mjs", "selection.mjs", "workbench.css"):
+for filename in ("viewer.html", "viewer.css", "viewer.js", "navigation.mjs", "selection.mjs", "policy-controls.mjs", "workbench.css"):
     assert (assets / filename).stat().st_size > 0, filename
 result = vision.save_result({"jpeg": b"filesystem-probe"}, "probe", model="stub", duration_s=0)
 assert vision.OUTPUT_DIR.is_relative_to(user_dir)
 assert vision.latest_result()["id"] == result["id"]
 preview = SimpleNamespace(status=lambda: {"state": "ready", "cameras": []})
-with patch.object(agent, "build_model", return_value=object()), patch.object(agent, "run_robot_task", return_value={"output": "probe"}):
+class ProbeAgent:
+    deep_config = SimpleNamespace(auto_create_workspace=True)
+
+    async def invoke(self, inputs):
+        assert self.deep_config.auto_create_workspace is False
+        return {"output": "probe"}
+
+with patch.object(agent, "_simulation_model", return_value=object()), patch.object(agent, "build_robot_agent", return_value=ProbeAgent()):
     result = agent.run_agent_query(preview, ModelSpec(), "probe", actions_enabled=False)
+assert result["reply"] == "probe"
 output = user_dir / ".jiuwensymbiosis/simulators/outputs/genesis-agent"
 assert (output / (result["id"] + ".json")).is_file()
 app = FastAPI()

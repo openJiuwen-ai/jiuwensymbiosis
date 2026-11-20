@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import asdict, dataclass, replace
 
 from .preview_backends import MODES, validate_backend
@@ -30,6 +31,12 @@ class PreviewSettings:
 
     def __post_init__(self) -> None:
         validate_backend(self.backend, self.robot_mode)
+        if (
+            self.backend == "genesis"
+            and sys.platform == "darwin"
+            and (self.scene_id != "demo" or self.camera_name != "observer")
+        ):
+            raise ValueError("Mac Genesis 仅支持动态演示和 observer 观察视角。")
         if (self.width, self.height) not in PREVIEW_RESOLUTIONS:
             raise ValueError("预览支持 540p、720p、1080p。")
         if type(self.fps) is not int or not 1 <= self.fps <= 120:

@@ -20,6 +20,7 @@ from jiuwensymbiosis.simulators.common.camera import OrbitCamera, PreviewSetting
 from jiuwensymbiosis.simulators.common.ipc import Mailbox
 from jiuwensymbiosis.simulators.common.preview_backends import installation_extra, preview_backend, required_modules
 from jiuwensymbiosis.simulators.common.scene_catalog import scene_path
+from jiuwensymbiosis.simulators.common.worker_python import MUJOCO_PYTHON_ENV, mujoco_worker_python
 
 _WORKER = Path(__file__).with_name("worker.py")
 # Rendering, dynamic libraries, device selection, caches and locale only.
@@ -70,6 +71,8 @@ _WORKER_ENV_KEYS = frozenset(
         "OPENBLAS_NUM_THREADS",
         "NUMBA_NUM_THREADS",
         "QD_NUM_THREADS",
+        "JIUWEN_GENESIS_MACOS_BACKEND",
+        MUJOCO_PYTHON_ENV,
     }
 )
 
@@ -95,6 +98,16 @@ def _worker_environment() -> dict[str, str]:
     # Freeze the same data root for the subprocess, independent of its working directory.
     environment["JIUWENSYMBIOSIS_SIMULATOR_HOME"] = str(simulator_root())
     return environment
+
+
+def _worker_python(settings: PreviewSettings, environment: dict[str, str]) -> str:
+    backend, mode = settings.backend, settings.robot_mode
+    if backend == "mujoco":
+        return mujoco_worker_python(mode, environment)
+    missing = [name for name in required_modules(backend, mode) if importlib.util.find_spec(name) is None]
+    if missing:
+        raise RuntimeError(f"缺少 {', '.join(missing)}。请在独立环境安装 .[{installation_extra(backend, mode)}]。")
+    return sys.executable
 
 
 class SimulationPreview:
@@ -223,44 +236,43 @@ class SimulationPreview:
             if sys.platform not in {"linux", "darwin"}:
                 self._state = {"state": "failed", "message": "仿真预览支持 Linux + NVIDIA 或 Apple Silicon macOS。"}
                 return self.status()
-            required = required_modules(self.settings.backend, self.settings.robot_mode)
-            missing = [name for name in required if importlib.util.find_spec(name) is None]
-            if missing:
-                extra = installation_extra(self.settings.backend, self.settings.robot_mode)
-                self._state = {
-                    "state": "failed",
-                    "message": f"缺少 {', '.join(missing)}。请在独立环境安装 .[{extra}]。",
-                }
-                return self.status()
             worker_env = _worker_environment()
-            self.state_dir.mkdir(parents=True, exist_ok=True)
-            fd, name = tempfile.mkstemp(prefix="genesis-", suffix=".mmap", dir=self.state_dir)
-            os.close(fd)
-            self._mailbox_path = Path(name)
-            # A live mapping cannot be resized safely while the worker reads it.
-            self._mailbox = Mailbox(self._mailbox_path, frame_bytes=1920 * 1080 * 3)
-            self._camera, self._frame, self._streaming = OrbitCamera(), None, False
-            self._config_revision, self._observed_revision, self._switch_started = 0, -1, 0.0
-            self._requested_settings = self.settings
-            self._pick_request = None
-            self._base_request = None
-            self._send_control()
-            self._state = {"state": "starting", "message": "正在启动仿真…"}
-            self._mailbox.write_status(self._state)
             try:
-                with (self.state_dir / "worker.log").open("a") as log:
-                    self._process = subprocess.Popen(
-                        [sys.executable, str(_WORKER), str(self._mailbox_path), str(os.getpid())],
-                        stdin=subprocess.DEVNULL,
-                        stdout=log,
-                        stderr=log,
-                        cwd=self.state_dir,
-                        env=worker_env,
-                    )
-            except OSError as exc:
-                self._release_mailbox()
-                self._state = {"state": "failed", "message": f"无法启动仿真：{exc}"}
-            return self.status()
+                python = _worker_python(self.settings, worker_env)
+            except RuntimeError as exc:
+                self._state = {"state": "failed", "message": str(exc)}
+                return self.status()
+            return self._launch(python, worker_env)
+
+    def _launch(self, python: str, worker_env: dict[str, str]) -> dict[str, Any]:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix="genesis-", suffix=".mmap", dir=self.state_dir)
+        os.close(fd)
+        self._mailbox_path = Path(name)
+        # A live mapping cannot be resized safely while the worker reads it.
+        self._mailbox = Mailbox(self._mailbox_path, frame_bytes=1920 * 1080 * 3)
+        self._camera, self._frame, self._streaming = OrbitCamera(), None, False
+        self._config_revision, self._observed_revision, self._switch_started = 0, -1, 0.0
+        self._requested_settings = self.settings
+        self._pick_request = None
+        self._base_request = None
+        self._send_control()
+        self._state = {"state": "starting", "message": "正在启动仿真…"}
+        self._mailbox.write_status(self._state)
+        try:
+            with (self.state_dir / "worker.log").open("a") as log:
+                self._process = subprocess.Popen(
+                    [python, str(_WORKER), str(self._mailbox_path), str(os.getpid())],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=log,
+                    cwd=self.state_dir,
+                    env=worker_env,
+                )
+        except OSError as exc:
+            self._release_mailbox()
+            self._state = {"state": "failed", "message": f"无法启动仿真：{exc}"}
+        return self.status()
 
     def latest_frame(self) -> dict[str, Any] | None:
         with self._lock:
@@ -526,16 +538,13 @@ class SimulationPreview:
             if self._motion_owner is not None and backend == self.settings.backend:
                 raise RuntimeError("运动任务持有控制权，请先结束任务再切换配置。")
             if backend != self.settings.backend and self._process is not None and self._process.poll() is None:
-                missing = [
-                    name for name in required_modules(backend, robot_mode) if importlib.util.find_spec(name) is None
-                ]
-                if missing:
-                    raise RuntimeError(f"缺少 {', '.join(missing)}；安装 .[{installation_extra(backend, robot_mode)}]")
+                worker_env = _worker_environment()
+                python = _worker_python(settings, worker_env)
                 switch_started = time.monotonic()
                 resume_streaming = self._streaming
                 self.stop()
                 self.settings = self._requested_settings = settings
-                started = self.start()
+                started = self._launch(python, worker_env)
                 if started["state"] == "failed":
                     return started
                 self._switch_started = switch_started
@@ -712,14 +721,16 @@ class SimulationPreview:
         validate_move(dx, dy, dyaw)
         return self._run_motion(owner, {"dx": dx, "dy": dy, "dyaw": dyaw}, cancelled=cancelled)
 
-    def policy_action(self, owner: str, kind: str, *, side="left", closed=False, cancelled=None) -> dict:
-        from jiuwensymbiosis.simulators.mujoco.jumper_motion import validate_policy_action
+    def policy_action(self, owner: str, kind: str, *, cancelled=None, **values) -> dict:
+        from ..mujoco.policy_actions import action_wait_s, validate_action
 
-        validate_policy_action(kind, side=side, closed=closed)
+        params = validate_action(kind, values)
         with self._lock:
             if kind not in (self.motion_state(owner).get("robot") or {}).get("policy_actions", []):
                 raise ValueError("当前机器人未开放此策略动作。")
-        return self._run_motion(owner, {"kind": kind, "side": side, "closed": closed}, cancelled=cancelled)
+        return self._run_motion(
+            owner, {"kind": kind, "params": params}, cancelled=cancelled, timeout=action_wait_s(kind)
+        )
 
     def move_arm(
         self,
@@ -749,9 +760,9 @@ class SimulationPreview:
             payload["pick_lift"] = pick_lift
         if len(json.dumps(payload, allow_nan=False).encode()) > 2048:
             raise ValueError("Arm request too large")
-        return self._run_motion(owner, payload, cancelled=cancelled)
+        return self._run_motion(owner, payload, cancelled=cancelled, timeout=180)
 
-    def _run_motion(self, owner: str, params: dict, *, cancelled=None) -> dict:
+    def _run_motion(self, owner: str, params: dict, *, cancelled=None, timeout=100) -> dict:
         with self._lock:
             state = self.status()
             if self._motion_owner != owner or self._motion_binding != (
@@ -782,7 +793,7 @@ class SimulationPreview:
             self._motion_request = request
             self._send_control()
         started = time.monotonic()
-        deadline = started + (180 if params.get("kind") == "arm" else 100)
+        deadline = started + timeout
         slow_arm = params.get("kind") == "arm" and bool(state.get("scene", {}).get("grasp_pose_backends"))
         last_step = state.get("steps", 0)
         try:
@@ -799,7 +810,7 @@ class SimulationPreview:
                         and state.get("steps", 0) > last_step
                     ):
                         last_step = state["steps"]
-                        deadline = min(started + 900, time.monotonic() + 180)
+                        deadline = min(started + 900, time.monotonic() + timeout)
                     if result.get("id") == request["id"] and result.get("status") == "completed" and fresh:
                         return result
                     if state["state"] != "ready" or not fresh or self._config_revision != request["config_revision"]:
@@ -809,7 +820,7 @@ class SimulationPreview:
                     request["lease_until"] = time.monotonic() + 2
                     self._send_control()
                 time.sleep(0.05)
-            raise TimeoutError("等待底盘动作结果超时，停止结果尚未确认。")
+            raise TimeoutError("等待动作结果超时，停止结果尚未确认。")
         finally:
             self.cancel_motion(owner, request["id"])
 

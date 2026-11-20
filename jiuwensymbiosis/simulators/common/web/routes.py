@@ -69,6 +69,13 @@ class BaseCommand(Session):
     config_revision: int = Field(ge=0, strict=True)
 
 
+class PolicyCommand(Session):
+    kind: str = Field(min_length=1, max_length=32)
+    params: dict[str, bool | int | float | str] = Field(default_factory=dict, max_length=8)
+    scene_instance_id: str = Field(min_length=32, max_length=32, pattern="^[a-f0-9]+$")
+    config_revision: int = Field(ge=0, strict=True)
+
+
 class StartOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resolution: Literal["960x540", "1280x720", "1920x1080"] = "1280x720"
@@ -262,6 +269,14 @@ def install_simulation_routes(app: Any, service: PreviewStream | None = None) ->
         guard(request, "base")
         try:
             return await service.base_command(body.session_id, **body.model_dump(exclude={"session_id"}))
+        except StreamError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
+    @router.post("/policy")
+    async def policy(request: Request, body: PolicyCommand):
+        guard(request, "policy")
+        try:
+            return await service.policy_action(body.session_id, **body.model_dump(exclude={"session_id"}))
         except StreamError as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
 

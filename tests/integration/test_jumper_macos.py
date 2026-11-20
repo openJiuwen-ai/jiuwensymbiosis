@@ -23,11 +23,11 @@ pytestmark = [
 
 
 @pytest.mark.parametrize(
-    ("body", "skills"),
-    [("jumper", False), ("jumper", True), ("microduck", False)],
-    ids=["locomotion", "jump-and-claws", "microduck"],
+    ("body", "skills", "rollers"),
+    [("jumper", False, False), ("jumper", True, False), ("microduck", False, False), ("microduck", False, True)],
+    ids=["locomotion", "jump-and-claws", "microduck", "microduck-rollers"],
 )
-async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkeypatch, body, skills):
+async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkeypatch, body, skills, rollers):
     prefix = "JIUWEN_" + body.upper()
     if os.environ.get(prefix + "_INTEGRATION") != "1":
         pytest.skip("Opt-in " + body + " acceptance")
@@ -36,8 +36,10 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
     from PIL import Image
 
     from jiuwensymbiosis.agent.config import ModelSpec
+    from jiuwensymbiosis.simulators.assets import AssetLibrary, load_config
     from jiuwensymbiosis.simulators.assets.robot_assets import register_robot
     from jiuwensymbiosis.simulators.common.agent import make_session, run_agent_query
+    from jiuwensymbiosis.simulators.common.chat import SimulationChat
     from jiuwensymbiosis.simulators.common.preview import SimulationPreview
     from jiuwensymbiosis.simulators.common.resident import ResidentPreview
     from jiuwensymbiosis.simulators.common.stream import PreviewStream
@@ -46,6 +48,11 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
     entry = await asyncio.to_thread(register_robot, body, source, tmp_path)
     monkeypatch.setenv("JIUWENSYMBIOSIS_SIMULATOR_HOME", str(tmp_path))
     evidence = Path(os.environ.get(prefix + "_EVIDENCE", tmp_path / "evidence"))
+    scene_id = entry["scene_id"]
+    if rollers:
+        library = AssetLibrary(load_config(entry["config"]).index)
+        scene_id = next(asset.id for asset in library.search(root_id=body).items if asset.options.get("rollers"))
+        evidence /= "rollers"
     await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
     preview_type = ResidentPreview if os.environ.get("JIUWEN_SIM_RESIDENT_INTEGRATION") == "1" else SimulationPreview
     runtime_directory = tempfile.TemporaryDirectory(prefix="sym-policy-", dir="/tmp")
@@ -85,6 +92,13 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         ]
         evidence = evidence / "skills"
         await asyncio.to_thread(evidence.mkdir, parents=True, exist_ok=True)
+    elif rollers:
+        sequence = [
+            ("capture_camera", {"camera_name": "head_cam"}),
+            ("roller_skate", {"forward": 0.6, "heading": 0.0, "duration_s": 1.0}),
+            ("mouth", {"opening": 1.0}),
+            ("capture_camera", {"camera_name": "head_cam"}),
+        ]
 
     class Model(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -127,15 +141,33 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
             self.wfile.write(payload)
 
     try:
-        preview.configure(width=960, height=540, fps=30, scene_id=entry["scene_id"], backend="mujoco", robot_mode=body)
+        preview.configure(width=960, height=540, fps=30, scene_id=scene_id, backend="mujoco", robot_mode=body)
         await asyncio.to_thread(preview.start)
         await wait(lambda: preview.status()["state"] == "ready")
         initial = preview.status()
         pid = initial["pid"]
         assert initial["robot"]["control_mode"] == "policy_locomotion"
-        assert initial["robot"]["dofs"] == (14 if body == "microduck" else 22)
+        assert initial["robot"]["dofs"] == (15 if body == "microduck" else 22)
+        if body == "microduck":
+            assert initial["robot"]["policy_dofs"] == 14
+            assert initial["robot"]["joint_names"][-1] == "mouth"
         if body == "jumper":
             assert initial["scene"]["policy"]["reference_check"]["frames"] == 24
+        controls = initial["robot"]["policy_actions"]
+        if skills and "claw_aperture" in controls:
+            sequence[-1:-1] = [
+                ("claw_aperture", {"side": "right", "opening": 0.5}),
+                ("open_gripper", {"effector": "right"}),
+            ]
+        if skills and "gesture_bow" in controls:
+            sequence.insert(-1, ("gesture_bow", {}))
+        if body == "microduck" and not rollers and "sit" in controls:
+            sequence[-1:-1] = [
+                ("head_pose", {"head_yaw": 0.25}),
+                ("mouth", {"opening": 1.0}),
+                ("sit", {}),
+                ("stand", {}),
+            ]
         assert initial["base_observation"]["position_m"][2] > 0.07
         report["initial"] = initial
         for name in ("observer", "head_cam"):
@@ -157,13 +189,21 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                result = await asyncio.to_thread(
-                    run_agent_query,
-                    preview,
-                    ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="jumper-test"),
-                    "观察后依次前进20厘米、左移15厘米、左转0.5弧度、后退15厘米，再看相机。",
-                    output_dir=evidence / "agent",
-                )
+                model = ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="jumper-test")
+                if rollers:
+                    chat = SimulationChat(service.status, preview=preview)
+                    chat.actions_enabled = True
+                    assert await chat.send("看一眼前方，向前滑行一秒并停稳，张开鸟喙，再看相机。", model)
+                    result = chat.last_execution
+                    assert result is not None
+                else:
+                    result = await asyncio.to_thread(
+                        run_agent_query,
+                        preview,
+                        model,
+                        "观察后依次前进20厘米、左移15厘米、左转0.5弧度、后退15厘米，再看相机。",
+                        output_dir=evidence / "agent",
+                    )
             finally:
                 server.shutdown()
                 thread.join(2)
@@ -175,7 +215,9 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
                 assert action["position_error_m"] <= (0.04 if body == "microduck" else 0.03)
                 assert abs(action["yaw_error_rad"]) <= (0.1 if body == "microduck" else 0.08)
         if skills:
-            for action in (result["actions"][0], result["actions"][-1]):
+            jumps = [action for action in result["actions"] if action.get("kind") == "jump"]
+            assert len(jumps) == 2
+            for action in jumps:
                 assert action["kind"] == "jump" and action["flight_s"] > 0.1
                 assert action["max_height_m"] - action["before"]["position_m"][2] > 0.08
                 assert action["support_contacts"] >= 3
@@ -187,6 +229,12 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
                 assert abs(opened["joint_velocity_rad_s"]) < 0.03
                 assert not close["grasp_verified"] and not opened["grasp_verified"]
             assert {"jump", "open_gripper", "close_gripper"} <= {t["function"]["name"] for t in requests[0]["tools"]}
+        elif rollers:
+            assert [a["kind"] for a in result["actions"]] == ["roller_skate", "mouth"]
+            assert result["actions"][0]["distance_m"] > 0.01
+            assert result["actions"][1]["joint_angle_rad"] > 0.45
+            names = {t["function"]["name"] for t in requests[0]["tools"]}
+            assert names == {*controls, "capture_camera"}
         else:
             forward = result["actions"][0]
             assert forward["after"]["position_m"][0] - forward["before"]["position_m"][0] > 0.15
@@ -210,7 +258,7 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
             width=960,
             height=540,
             fps=30,
-            scene_id=entry["scene_id"],
+            scene_id=scene_id,
             backend="mujoco",
             robot_mode=body,
             camera_name="head_cam",
@@ -225,13 +273,28 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         track = await asyncio.wait_for(incoming.get(), 15)
         video = await asyncio.wait_for(track.recv(), 15)
         assert (video.width, video.height) == (640, 480)
+        if body == "microduck" and "head_pose" in controls:
+            live = preview.status()
+            manual = await service.policy_action(
+                answer["session_id"],
+                "head_pose",
+                {"head_yaw": -0.2},
+                live["scene"]["instance_id"],
+                live["config_revision"],
+            )
+            assert manual["ok"] and manual["settled"]
+            report["manual_policy_action"] = manual
         await service.disconnect(answer["session_id"])
         report["head_camera_webrtc"] = True
 
         # Cancelling a moving Agent session must command zero and confirm a stop.
         cancelled = threading.Event()
         with make_session(preview, cancelled=cancelled) as session:
-            task = asyncio.create_task(asyncio.to_thread(session.api.navigate_relative, 0.8))
+            task = asyncio.create_task(
+                asyncio.to_thread(session.env.low_level.policy_action, "roller_skate", duration_s=4.0)
+                if rollers
+                else asyncio.to_thread(session.api.navigate_relative, 0.8)
+            )
             await wait(lambda: preview.status().get("base_motion", {}).get("status") == "running")
             await asyncio.sleep(0.5)
             cancelled.set()
@@ -252,7 +315,7 @@ async def test_jumper_shared_agent_motion_camera_video_and_stop(tmp_path, monkey
         before = preview.status()["base_observation"]["position_m"]
         instance = preview.status()["scene"]["instance_id"]
         configured = preview.configure(
-            width=1280, height=720, fps=30, scene_id=entry["scene_id"], backend="mujoco", robot_mode=body
+            width=1280, height=720, fps=30, scene_id=scene_id, backend="mujoco", robot_mode=body
         )
         await wait(lambda: preview.status().get("config_revision") == configured["requested_config_revision"])
         assert preview.status()["scene"]["instance_id"] == instance

@@ -15,10 +15,11 @@ from urllib.parse import urlsplit
 from jiuwensymbiosis.agent.config import ModelSpec, build_model
 from jiuwensymbiosis.perception.config import DetectorConfig
 from jiuwensymbiosis.simulators.common.base_motion import MOZ1_SUPPORTS_LATERAL
+from jiuwensymbiosis.simulators.common.diagnostics import is_file_descriptor_limit
 from jiuwensymbiosis.simulators.common.visual_policy import visual_history
 from jiuwensymbiosis.utils.logging import get_logger
 
-__all__ = ["SimulationChat", "ChatError", "state_snapshot"]
+__all__ = ["SimulationChat", "ChatError", "AgentIdleTimeout", "state_snapshot"]
 
 logger = get_logger(__name__)
 _PROMPT = """你是 Symbiosis-sim 纯视觉仿真助手，用中文回答。
@@ -29,6 +30,25 @@ _PROMPT = """你是 Symbiosis-sim 纯视觉仿真助手，用中文回答。
 
 class ChatError(Exception):
     """A user-facing error containing no provider response or credentials."""
+
+
+class AgentIdleTimeout(ChatError):
+    """A simulation Agent stopped making progress and its worker is winding down."""
+
+
+def _tool_timeout(tool_name: str, default: float) -> float:
+    from ..mujoco.policy_actions import ACTIONS, action_wait_s
+
+    # Give simulator tools at least the time already allowed by their own RPCs.
+    if tool_name in ACTIONS:
+        return max(default, action_wait_s(tool_name) + 20)
+    if tool_name in {"navigate_relative", "rotate_base", "navigate_to_entity", "navigate_to_pose"}:
+        return max(default, 120)
+    if tool_name in {"move_joint", "move_tool_poses", "open_gripper", "close_gripper"}:
+        return max(default, 200)
+    if tool_name in {"search_target", "approach_target"}:
+        return max(default, 240)
+    return default
 
 
 def state_snapshot(status: dict[str, Any], *, actions_enabled: bool = False) -> dict[str, Any]:
@@ -53,7 +73,7 @@ def state_snapshot(status: dict[str, Any], *, actions_enabled: bool = False) -> 
             snapshot["base_observation"] = status["base_observation"]
             snapshot["scene_contacts"] = status.get("scene_contacts")
             snapshot["robot_actions_available"] = actions_enabled
-            snapshot["supports_lateral"] = MOZ1_SUPPORTS_LATERAL
+            snapshot["supports_lateral"] = (status.get("robot") or {}).get("supports_lateral", MOZ1_SUPPORTS_LATERAL)
         snapshot.update(
             {k: status[k] for k in ("steps", "sim_time", "cycle", "streaming", "object_positions") if k in status}
         )
@@ -322,12 +342,13 @@ class SimulationChat:
                 raise ChatError("模型未返回文本，请检查模型设置后重试。")
             return self._remember(query, text, spec)
         except TimeoutError:
-            if self._action_task is not None and not self._action_task.done():
-                raise ChatError("本轮 Agent 任务超时，已请求停止；后台任务尚未退出，请等待或重启工作台。") from None
             raise ChatError("模型响应超时，请检查服务后重试。") from None
         except (ChatError, asyncio.CancelledError):
             raise
         except Exception as exc:
+            if is_file_descriptor_limit(exc):
+                logger.warning("仿真对话失败：工作台文件描述符已耗尽。")
+                raise ChatError("工作台打开文件数已达上限，本轮已中断。请重启工作台释放资源后再试。") from None
             logger.warning("Genesis chat failed (%s)", type(exc).__name__)
             raise ChatError("模型请求失败，请检查模型配置；看图需要模型同时支持图片输入和工具调用。") from None
         finally:
@@ -346,6 +367,17 @@ class SimulationChat:
         while len(self._history) > 12 or sum(len(m["content"]) for m in self._history) > 48000:
             del self._history[:2]
         return text
+
+    async def wait_for_action_exit(self) -> dict | None:
+        """Wait for the timed-out worker to finish releasing control."""
+        task = self._action_task
+        if task is None:
+            return None
+        try:
+            self.last_execution = await asyncio.shield(task)
+        except Exception:
+            return None
+        return self.last_execution
 
     async def _send_agent(self, query: str, spec: ModelSpec, *, on_frame: Callable | None = None) -> str:
         if self.preview is None:
@@ -373,29 +405,51 @@ class SimulationChat:
             if on_frame is not None and not cancelled.is_set() and generation == self._generation:
                 on_frame(frame)
 
-        self._action_task = asyncio.create_task(
-            asyncio.to_thread(
-                run_agent_query,
-                self.preview,
-                deepcopy(spec),
-                query,
-                cancelled=cancelled,
-                actions_enabled=self.actions_enabled,
-                observation_mode=self.observation_mode,
-                detector_config=self.detector_config,
-                history=deepcopy(self._history),
-                on_frame=lambda frame: loop.call_soon_threadsafe(deliver, frame),
-            )
-        )
+        idle = asyncio.timeout(self._timeout)
+        idle_seconds = self._timeout
+        active_tool = None
+
+        def progress(tool_name: str | None) -> None:
+            nonlocal idle_seconds, active_tool
+            if cancelled.is_set() or idle.expired() or action_task.done():
+                return
+            active_tool = tool_name
+            idle_seconds = _tool_timeout(tool_name, self._timeout) if tool_name else self._timeout
+            idle.reschedule(loop.time() + idle_seconds)
+
+        def report_progress(tool_name: str | None) -> None:
+            loop.call_soon_threadsafe(progress, tool_name)
+
         try:
-            async with asyncio.timeout(600 if self.observation_mode == "ground_truth" else 240):
-                execution: dict = await asyncio.shield(self._action_task)
+            async with idle:
+                action_task = self._action_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        run_agent_query,
+                        self.preview,
+                        deepcopy(spec),
+                        query,
+                        cancelled=cancelled,
+                        actions_enabled=self.actions_enabled,
+                        observation_mode=self.observation_mode,
+                        detector_config=self.detector_config,
+                        history=deepcopy(self._history),
+                        on_frame=lambda frame: loop.call_soon_threadsafe(deliver, frame),
+                        on_progress=report_progress,
+                    )
+                )
+                execution: dict = await asyncio.shield(action_task)
                 self.last_execution = execution
             self.last_snapshot = state_snapshot(self._status(), actions_enabled=self.actions_enabled)
             return str(execution["reply"]) or "本轮未返回回复，请检查模型的图片输入和工具调用支持。"
-        except BaseException:
-            self._action_cancel.set()
+        except BaseException as exc:
+            cancelled.set()
             # Keep the task referenced: busy remains true until the session releases
             # control. Cancelling an asyncio waiter cannot stop its worker thread.
-            self._action_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            action_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            if isinstance(exc, TimeoutError) and idle.expired():
+                stage = "仿真工具" if active_tool else "模型或 Agent"
+                logger.info("仿真 Agent 无进展超时，等待%s %.1f 秒。", stage, idle_seconds)
+                raise AgentIdleTimeout(
+                    f"{stage}连续 {idle_seconds:g} 秒没有进展，已请求停止，正在等待后台任务退出。"
+                ) from None
             raise

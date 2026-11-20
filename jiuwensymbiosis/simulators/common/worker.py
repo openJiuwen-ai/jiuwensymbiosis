@@ -42,7 +42,7 @@ from .base_motion import measure
 from .camera import PreviewSettings
 from .encoding import NvEncoder, rgb_array
 from .ipc import Mailbox
-from .preview_backends import preview_backend
+from .preview_backends import MUJOCO_VERSION, preview_backend
 from .render_schedule import RenderSchedule
 from .runtime import create_runtime, reset_runtime
 from .scene_catalog import resolve_scene, validate_material_bundle
@@ -82,16 +82,13 @@ def _publish_configuration(
 def run_preview(mailbox: Mailbox, directory: Path, *, render_dispatch=None) -> None:
     """Keep Simulation initialized while replacing only the resources that changed."""
     settings = PreviewSettings(**mailbox.read_control()["settings"])
-    if render_dispatch is None and settings.backend == "genesis":
+    profile = preview_backend(settings.backend)
+    if render_dispatch is None and profile.id == "genesis_nyx":
         from .split_threads import run_split
 
         run_split(lambda dispatch: run_preview(mailbox, directory, render_dispatch=dispatch))
         return
-    # Report the same physics device that the SDK owner resolves, independently of rendering.
-    from ..genesis.engine import physics_backend as resolve_physics_backend
-
-    physics_backend = resolve_physics_backend()
-    profile = preview_backend(settings.backend)
+    physics_backend = "MuJoCo CPU"
     renderer_name = profile.renderer
     encoder_name = profile.encoder_name
     sdk = ExitStack()
@@ -142,13 +139,13 @@ def run_preview(mailbox: Mailbox, directory: Path, *, render_dispatch=None) -> N
         if settings.backend == "genesis":
             from ..genesis.engine import engine_session
 
-            sdk.enter_context(engine_session(startup, render_dispatch=render_dispatch))
+            physics_backend = sdk.enter_context(engine_session(startup, render_dispatch=render_dispatch))
         else:
             with startup.phase("mujoco_init"):
                 import mujoco
 
-                if mujoco.__version__ != "4.0.1":
-                    raise RuntimeError("MuJoCo backend requires mujoco-core 4.0.1; use a fresh .[mujoco] environment")
+                if mujoco.__version__ != MUJOCO_VERSION:
+                    raise RuntimeError(f"MuJoCo 后台加载了 {mujoco.__version__}，需要 mujoco-core {MUJOCO_VERSION}。")
         with startup.phase("runtime_scene"):
             runtime = create_runtime(settings, directory, startup=startup, render_dispatch=render_dispatch)
         logger.info("Simulation world and %s renderer ready", renderer_name)
@@ -777,7 +774,7 @@ def run_preview(mailbox: Mailbox, directory: Path, *, render_dispatch=None) -> N
                             },
                         },
                         "encoder": encoder_name,
-                        "physics_backend": "MuJoCo CPU" if settings.backend == "mujoco" else physics_backend,
+                        "physics_backend": physics_backend,
                         "raw_cpu_readback": True,
                         "raw_ipc": False,
                         "camera": runtime.pose,

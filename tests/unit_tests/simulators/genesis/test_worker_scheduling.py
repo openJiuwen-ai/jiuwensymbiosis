@@ -356,3 +356,14 @@ def test_genesis_engine_uses_cpu_and_dispatches_nyx(worker_loop):
         assert worker_loop.backend == "cpu"
         assert len(calls) == 1
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("backend", ["cpu", "metal"])
+def test_macos_raster_worker_keeps_physics_on_selected_backend(worker_loop, monkeypatch, backend):
+    state = worker_loop
+    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
+    monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", backend)
+    state.command["settings"] = asdict(PreviewSettings())
+    state.run()
+    assert state.backend == backend
+    assert state.statuses[-1]["execution_threads"] == {"mode": "serial"}
