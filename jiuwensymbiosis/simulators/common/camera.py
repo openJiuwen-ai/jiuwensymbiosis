@@ -17,13 +17,13 @@ class PreviewSettings:
     width: int = 1280
     height: int = 720
     fps: int = 60
-    spp: int = 64
+    spp: int = 32
     dt: float = 1 / 120
     scene_id: str = "demo"
     backend: str = "genesis"
     robot_mode: str = "inspection"
     robot_id: str = ""
-    render_mode: str = "reference"
+    render_mode: str = "fast"
     camera_name: str = "observer"
     planning_profile: str = ""
     floor_height_m: float | None = None
@@ -34,10 +34,10 @@ class PreviewSettings:
             raise ValueError("预览支持 540p、720p、1080p。")
         if type(self.fps) is not int or not 1 <= self.fps <= 120:
             raise ValueError("帧率必须在 1–120 之间。")
-        if type(self.spp) is not int or not 1 <= self.spp <= 64:
-            raise ValueError("spp 必须在 1–64 之间。")
-        if self.render_mode not in {"fast", "reference"}:
-            raise ValueError("渲染模式必须为 fast 或 reference。")
+        if type(self.spp) is not int or self.spp != 32:
+            raise ValueError("渲染固定使用 32 spp。")
+        if self.render_mode != "fast":
+            raise ValueError("渲染模式固定为 fast。")
         if not isinstance(self.camera_name, str) or not self.camera_name.isidentifier() or len(self.camera_name) > 64:
             raise ValueError("相机名称无效。")
         if not math.isfinite(self.dt) or not 0 < self.dt <= 0.1:

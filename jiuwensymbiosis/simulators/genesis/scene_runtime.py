@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import sys
 import tempfile
 import time
 import uuid
@@ -37,8 +36,10 @@ class RuntimeScene:
         revision: int = 0,
         *,
         startup: StartupDiagnostics | None = None,
+        render_dispatch,
     ) -> None:
         self.settings = settings
+        self._render_dispatch = render_dispatch
         self._model_directory: Path | None = None
         self._planning_profile = {}
         if settings.planning_profile:
@@ -49,7 +50,6 @@ class RuntimeScene:
         self._startup = startup
         self.scene: Any = None
         self.renderer: Any = None
-        self.raster_renderer: Any = None
         self.bodies: list[Any] = []
         self.grasp_targets: dict[str, Any] = {}
         self.robot: Any = None
@@ -208,6 +208,10 @@ class RuntimeScene:
     def _install_arm(self, arm):
         self.info["grasp_pose_backends"] = list(self._planning_profile.get("grasp_pose_backends", {}))
         self.arm_motion = arm
+        self.info["arm_planning_ready"] = False
+        if arm is not None:
+            with self._phase("arm_planning_warmup"):
+                self.info["arm_planning_warmup"] = arm.warmup()
         self.info.update(arm_planning_ready=arm is not None, effectors_ready=bool(arm and arm.effectors.evidence))
 
     def _phase(self, name: str) -> AbstractContextManager[None]:
@@ -318,6 +322,7 @@ class RuntimeScene:
                         else None
                     ),
                     model_directory=self._model_directory,
+                    collision_cache=self._evidence_directory / "robot-model-cache",
                 )
             if self._planning_profile.get("tabletop_fixture") and self.source is None:
                 self.scene.add_entity(morph=gs.morphs.Box(size=(0.4, 0.35, 0.04), pos=(-0.25, -0.5, 0.8), fixed=True))
@@ -356,10 +361,6 @@ class RuntimeScene:
                     morph=gs.morphs.Sphere(radius=0.11, pos=(0.34, 0.05, 1.8)), surface=gs.surfaces.Copper()
                 ),
             ]
-        if sys.platform == "darwin":
-            from .rendering import RasterRenderer
-
-            self.raster_renderer = RasterRenderer(self.scene, self.pose)
         with self._phase("scene_build"):
             self.scene.build(n_envs=1)
         if fixture:
@@ -411,10 +412,12 @@ class RuntimeScene:
                     self.info["spawn_admission"]["settled_start_verified"] = True
         self._initial_state = self.scene.get_state()
         self._initial_steps = self.steps
-        if sys.platform == "darwin":
-            return
+        self._render_dispatch.call(self._build_environment)
+
+    def _build_environment(self):
         import cv2
         import gs_nyx.nyx_py_sdk as nps
+        import numpy as np
 
         if self.lighting is not None:
             self.env = make_environment(self.lighting)
@@ -431,19 +434,17 @@ class RuntimeScene:
 
     def build_renderer(self, settings: PreviewSettings) -> None:
         """Re-export the current world, retaining its physical and camera state."""
-        if sys.platform == "darwin":
-            self.renderer = self.raster_renderer
-            self.renderer.configure(settings, self.pose)
-            self.info["appearance"] = self.renderer.appearance
-            self.settings = settings
-            return
         import torch
 
         # Physics construction leaves cached Torch scratch buffers. Nyx allocates
         # through a different GPU allocator and cannot reuse those reservations.
         torch.cuda.empty_cache()
         self._render_directory = tempfile.TemporaryDirectory(prefix="render-", dir=self.directory)
-        self.renderer = SceneRenderer(
+
+        def construct(*args, **kwargs):
+            return self._render_dispatch.call(SceneRenderer, *args, **kwargs)
+
+        renderer = construct(
             self.scene,
             self.source,
             Path(self._render_directory.name),
@@ -462,7 +463,15 @@ class RuntimeScene:
             material_rules=material_rules_for_asset(self.asset),
             material_directory=self._material_directory,
         )
+        from .threaded_rendering import ThreadedSceneRenderer
+
+        try:
+            self.renderer = ThreadedSceneRenderer(renderer, self._render_dispatch, self.pose)
+        except BaseException:
+            self._render_dispatch.call(renderer.close)
+            raise
         self.info["appearance"] = self.renderer.appearance
+        self.info["renderer"] = "Nyx FastPathTracer"
         self.settings = settings
 
     def frame_size(self, camera_name: str) -> tuple[int, int]:
@@ -528,7 +537,12 @@ class RuntimeScene:
                 raise ValueError("grasp backend disabled")
             return {
                 "scene_instance_id": self.info["instance_id"],
-                "targets": screen(self.arm_motion, params["group"], params["tool"], params["poses"]),
+                "targets": screen(
+                    self.arm_motion,
+                    params["group"],
+                    params["tool"],
+                    params["poses"],
+                ),
             }
         if self.truth is None:
             from .truth import EntityRegistry
@@ -562,7 +576,7 @@ class RuntimeScene:
                     self.robot.stop()
             self.motion.tick(self.settings.dt, self.steps)
             self.robot.before_step(self.settings.dt)
-        self.scene.step()
+        self.scene.step(update_visualizer=False)
         if self.info["mode"] == "robot_preview":
             self.robot.hold()
         self.steps += 1
@@ -632,8 +646,10 @@ class RuntimeScene:
             self.info["instance_id"] = instance_id
             self.info["reset_generation"] = self.cycle
             if arm is not None:
-                self._install_arm(replacement)
-                arm.close()
+                try:
+                    self._install_arm(replacement)
+                finally:
+                    arm.close()
         return {
             "previous_instance_id": before,
             "scene_instance_id": self.info["instance_id"],
@@ -647,6 +663,8 @@ class RuntimeScene:
                 self.arm_motion.close()
                 self.arm_motion = None
             self.close_renderer()
+            if getattr(self, "_render_dispatch", None) is not None:
+                self._render_dispatch.call(lambda: setattr(self, "env", None))
         finally:
             if self.scene is not None:
                 self.scene.destroy()

@@ -302,7 +302,7 @@ async def test_stale_packet_is_acknowledged_and_waits_for_fresh_idr():
                 "scene_id": "demo",
                 "robot_mode": "inspection",
                 "robot_id": "",
-                "render_quality": "reference",
+                "render_quality": "fast",
                 "camera_name": "observer",
                 "backend": "genesis",
             },

@@ -120,12 +120,12 @@ def render_scene(scene_id: str, output: Path) -> dict:
         pose = inspection_camera(source)
         report["camera_source"] = "clear_floor_cell_with_longest_free_view_direction"
     report["camera"] = pose
-    settings = camera.PreviewSettings(scene_id=scene_id, spp=16)
+    settings = camera.PreviewSettings(scene_id=scene_id, spp=32)
     renderer = scene = None
     sdk_up = False
     started = time.monotonic()
     try:
-        gs.init(backend=gs.cuda, logging_level="warning", performance_mode=True)
+        gs.init(backend=gs.cpu, logging_level="warning", performance_mode=True)
         nps.startup()
         sdk_up = True
         scene = gs.Scene(show_viewer=False)

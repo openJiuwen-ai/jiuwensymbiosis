@@ -73,7 +73,7 @@ class StartOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resolution: Literal["960x540", "1280x720", "1920x1080"] = "1280x720"
     fps: Literal[30, 60] = 60
-    render_quality: Literal["reference"] = "reference"
+    render_quality: Literal["fast"] = "fast"
     backend: PhysicsBackend = "genesis"
     robot_mode: RobotMode = "inspection"
     floor_height_m: float | None = Field(default=None, allow_inf_nan=False, strict=True)

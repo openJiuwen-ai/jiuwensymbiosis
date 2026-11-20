@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import math
-import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -59,13 +58,11 @@ class SimulationRuntime(Protocol):
         pass
 
 
-def create_runtime(settings, directory, revision=0, *, startup=None) -> SimulationRuntime:
+def create_runtime(settings, directory, revision=0, *, startup=None, render_dispatch=None) -> SimulationRuntime:
     if settings.backend == "genesis":
-        if sys.platform == "darwin" and settings.scene_id != "demo":
-            raise ValueError("Mac Genesis 仅支持动态演示；USD/URDF 请使用 Linux / NVIDIA。")
         from ..genesis.scene_runtime import RuntimeScene
 
-        return RuntimeScene(settings, directory, revision, startup=startup)
+        return RuntimeScene(settings, directory, revision, startup=startup, render_dispatch=render_dispatch)
     if settings.robot_mode == "inspection":
         from ..mujoco.scene_runtime import RuntimeScene as MujocoScene
 

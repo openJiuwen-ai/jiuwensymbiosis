@@ -41,7 +41,7 @@ from .source_lighting import load_source_lighting, make_environment
 from .usd_scene import initial_camera, inspect_stage, prepare_static_stage
 
 
-def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
+def render(scene_id: str, output: Path) -> dict:
     import os
 
     # OpenCV reads this at FIRST import; EXR material textures need it before that.
@@ -66,9 +66,9 @@ def render(scene_id: str, output: Path, *, spp: int = 64) -> dict:
     started = time.monotonic()
     report.update(prepare_static_stage(source, output / "static.usda"))
     pose = OrbitCamera(**initial_camera(camera_key, report["bounds_m"])).snapshot()
-    settings = PreviewSettings(scene_id=scene_id, spp=spp)
-    report["spp"] = spp
-    gs.init(backend=gs.cuda, logging_level="warning")
+    settings = PreviewSettings(scene_id=scene_id, spp=32)
+    report["spp"] = 32
+    gs.init(backend=gs.cpu, logging_level="warning")
     nps.startup()
     background = env = None
     try:
@@ -122,7 +122,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", default="library://geniesim/background/kitchen/kitchen_1/background")
     parser.add_argument("--inventory", action="store_true")
-    parser.add_argument("--spp", type=int, default=64, help="Samples per pixel (1–64)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -141,7 +140,7 @@ def main() -> None:
         (output / "inventory.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2))
         return
     try:
-        report = render(args.scene, output, spp=args.spp)
+        report = render(args.scene, output)
     except Exception as exc:
         report = {"scene_id": args.scene, "ok": False, "error": str(exc)}
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))

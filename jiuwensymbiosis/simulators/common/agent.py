@@ -705,8 +705,6 @@ def make_session(
     native = mode in POLICY_MODES or state.get("runtime_backend") == "mujoco"
     if observation_mode != "visual" and native:
         raise ValueError("Jumper/Microduck 当前支持 RGB 相机观察；RGB-D 感知和真值导航尚未接入。")
-    if observation_mode == "perception" and state.get("runtime_backend") == "genesis_raster":
-        raise ValueError("Mac Genesis 仅支持动态演示，RGB-D 机器人感知尚未接入；请使用 Linux / NVIDIA。")
     env = JumperEnv(driver) if {"jump", "set_gripper"} <= set(policy_actions) else SimulationEnv(driver)
     api: BaseRobotApi
     starters = []

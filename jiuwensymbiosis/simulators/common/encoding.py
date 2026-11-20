@@ -104,7 +104,7 @@ def rgb_array(rgb: Any):
 
 
 class SoftwareEncoder:
-    """Low-latency H264 for the macOS rasterizer, retaining the IPC contract."""
+    """Low-latency software H264 for MuJoCo, retaining the IPC contract."""
 
     def __init__(self, settings: Any, *, resolution: tuple[int, int] | None = None) -> None:
         import av

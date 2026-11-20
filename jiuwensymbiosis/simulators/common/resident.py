@@ -303,6 +303,8 @@ class ResidentPreview:
             effector=effector,
             opened=opened,
             pick_lift=pick_lift,
-            timeout=190,
+            # Slow grasp execution may renew its deadline up to 900 seconds
+            # in Preview._run_motion. Keep the transport alive until it returns.
+            timeout=910,
             cancelled=cancelled,
         )

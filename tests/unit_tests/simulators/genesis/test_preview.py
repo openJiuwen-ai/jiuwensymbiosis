@@ -191,32 +191,6 @@ def test_missing_dependency_never_spawns(manager, monkeypatch):
     assert "gui" not in message
 
 
-def test_macos_starts_without_nyx_and_keeps_its_process_contract(manager, monkeypatch):
-    monkeypatch.setattr(preview.sys, "platform", "darwin")
-    original = importlib.util.find_spec
-    monkeypatch.setattr(
-        preview.importlib.util, "find_spec", lambda name: None if name == "gs_nyx_plugin" else original(name)
-    )
-    assert manager.start()["state"] == "starting"
-    wait_for(lambda: manager.status()["state"] == "ready")
-    assert manager.status()["renderer"] == "Genesis Rasterizer"
-    pid = manager.status()["pid"]
-    assert pid is not None
-    assert manager.stop()["pid"] is None
-
-
-def test_macos_defaults_and_missing_dependency_guidance(tmp_path, monkeypatch):
-    monkeypatch.setattr(preview.sys, "platform", "darwin")
-    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: None)
-    instance = preview.SimulationPreview(state_dir=tmp_path / "macos")
-    assert (instance.settings.width, instance.settings.height, instance.settings.fps) == (960, 540, 30)
-    state = instance.start()
-    assert state["state"] == "failed"
-    assert ".[genesis]" in state["message"]
-    assert "gs_nyx" not in state["message"]
-    assert not instance.state_dir.exists()
-
-
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.01, 1.01, True, "1"])
 def test_camera_rejects_invalid_input_without_changing_pose(value):
     camera = OrbitCamera()
@@ -371,26 +345,6 @@ def test_old_configuration_frame_is_not_delivered_after_switch(manager, monkeypa
     assert manager.latest_frame() is None
     manager._mailbox.write_frame({"sequence": 2, "stream_epoch": manager._stream_epoch, "config_revision": 1}, b"new")
     assert manager.latest_frame()["h264"] == b"new"
-
-
-def test_reference_quality_switch_preserves_worker_and_physics_budget(manager):
-    manager.start()
-    wait_for(lambda: manager.status()["state"] == "ready")
-    pid = manager.status()["pid"]
-    dt = manager.settings.dt
-    manager.configure(width=1280, height=720, fps=30, render_quality="reference")
-    wait_for(lambda: manager.status()["state"] == "ready")
-    assert manager.status()["pid"] == pid
-    assert manager.settings.render_mode == "reference"
-    assert manager.status()["renderer"] == "Nyx RefPathTracer"
-    assert manager.settings.spp == 64
-    assert manager.settings.dt == dt
-    for quality in ("balanced", "high", "fast"):
-        with pytest.raises(ValueError, match="仅支持 reference"):
-            manager.configure(width=1280, height=720, fps=30, render_quality=quality)
-    assert manager.settings.render_mode == "reference"
-    assert manager.status()["renderer"] == "Nyx RefPathTracer"
-    assert manager.status()["pid"] == pid
 
 
 @pytest.mark.parametrize(
@@ -553,3 +507,18 @@ def test_quadrants_cache_path_rejects_an_existing_file(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="must name a directory"):
         preview._worker_environment()
     assert path.read_text() == "keep"
+
+
+def test_only_fast_quality_is_admitted(manager):
+    for quality in ("reference", "rasterizer", "balanced", "high"):
+        with pytest.raises(ValueError, match="未知渲染质量"):
+            manager.configure(width=1280, height=720, fps=30, render_quality=quality)
+    assert manager.settings.render_mode == "fast"
+    assert manager.settings.spp == 32
+
+
+def test_macos_default_host_keeps_mujoco_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview.sys, "platform", "darwin")
+    instance = preview.SimulationPreview(state_dir=tmp_path / "macos")
+    assert instance.settings.backend == "mujoco"
+    assert instance.status()["renderer"] == "MuJoCo OpenGL"

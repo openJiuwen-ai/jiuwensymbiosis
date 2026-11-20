@@ -48,13 +48,14 @@ def test_both_engines_support_inspection_without_a_policy_dependency():
 
 
 def test_platform_changes_genesis_renderer_without_changing_robot_identity():
-    assert preview_backend("genesis", "darwin").id == "genesis_raster"
+    with pytest.raises(ValueError, match="Linux"):
+        preview_backend("genesis", "darwin")
     linux = preview_backend("genesis", "linux")
     assert linux.id == "genesis_nyx" and linux.depth and linux.truth and linux.pick
     with pytest.raises(ValueError):
         preview_backend("not-a-mode")
 
 
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("platform", ["linux"])
 def test_genesis_install_hint_uses_the_shared_extra(platform):
     assert installation_extra("genesis", "inspection", platform) == "genesis"

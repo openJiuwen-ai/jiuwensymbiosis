@@ -170,14 +170,15 @@ def test_viewer_and_preview_settings_agree_on_platform_modes(client, monkeypatch
     monkeypatch.setattr(routes.sys, "platform", platform)
     html = client[0].get("/simulation/viewer").text
 
-    assert '<option data-engines="genesis,mujoco" value="inspection">' in html
+    engines = "mujoco" if platform == "darwin" else "genesis,mujoco"
+    assert f'<option data-engines="{engines}" value="inspection">' in html
     for mode in ("jumper", "microduck"):
         assert f'<option data-engines="mujoco" value="{mode}">' in html
     for mode in ("moz1_wheels", "virtual_camera"):
         option = f'<option data-engines="genesis" value="{mode}">'
         if platform == "darwin":
             assert option not in html
-            with pytest.raises(ValueError, match="not supported"):
+            with pytest.raises(ValueError, match="Unsupported"):
                 PreviewSettings(robot_mode=mode)
         else:
             assert option in html
@@ -290,7 +291,8 @@ def test_selection_rejects_invalid_pixel_and_view_identity(client, field, value)
         {"spp": 1},
         {"render_quality": "balanced"},
         {"render_quality": "high"},
-        {"render_quality": "fast"},
+        {"render_quality": "reference"},
+        {"render_quality": "rasterizer"},
     ],
 )
 def test_start_rejects_unsupported_quality(client, body):
@@ -314,7 +316,7 @@ def test_running_configuration_route_preserves_backend(client):
         "scene_id": "demo",
         "robot_mode": "inspection",
         "robot_id": "",
-        "render_quality": "reference",
+        "render_quality": "fast",
         "camera_name": "observer",
     }
     assert backend.starts == 1 and backend.stops == 0
@@ -349,7 +351,7 @@ def test_base_route_requires_local_origin_live_session_and_finite_values(client)
         service._peer = service._session = None
 
 
-@pytest.mark.parametrize("quality", ["reference"])
+@pytest.mark.parametrize("quality", ["fast"])
 def test_indoor_background_and_robot_ids_reach_backend_together(client, quality):
     http, backend, _ = client
     room = "library://geniesim/background/home/home_0/background"

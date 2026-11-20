@@ -215,9 +215,7 @@ class SceneRenderer:
             max(camera["res"][1] for camera in camera_defs),
             n_envs=1,
             camera_defs=camera_defs,
-            render_mode=(
-                npr.ERenderMode.RefPathTracer if settings.render_mode == "reference" else npr.ERenderMode.FastPathTracer
-            ),
+            render_mode=(npr.ERenderMode.FastPathTracer),
         )
         try:
             with startup.phase("nyx_renderer_build") if startup and not startup.finished else nullcontext():
@@ -301,10 +299,34 @@ class SceneRenderer:
         # are separate buffers. The direct renderer consumes the latter.
         self._scene.visualizer.update_visual_states()
         self._renderer.update_scene()
-        self._renderer.update()
-        # The public plugin API owns batched rendering and external GPU buffers.
-        rgb = self._renderer.render(self._camera_indices[camera_name], 0)
+        rgb = self.render_camera(camera_name)
+        return self.project_rgb(rgb, camera_name, rectified=rectified)
+
+    def render_camera(self, camera_name: str):
+        """Render only the selected camera into a borrowed RGB view (env 0).
+
+        The pinned native SDK's single-camera output starts at byte zero, even
+        for a nonzero camera index. The plugin's batch views have other offsets
+        and must not be used here. Consume this view before the next render.
+        """
+        index = self._camera_indices[camera_name]
+        plugin = self._renderer
+        native = plugin._renderer  # noqa: SLF001 -- pinned SDK's native single-camera API
+        plugin.update()
+        # Single-camera output invalidates the plugin's packed batch views.
+        plugin._batch_dirty = True  # noqa: SLF001 -- native output invalidates plugin batch cache
+        if not native.render_frame(index):
+            raise RuntimeError(f"Nyx 单相机渲染失败：{camera_name}")
+        width, height = native.camera_resolution(index)
+        size = width * height * 3
+        output = plugin._color_output  # noqa: SLF001 -- pinned shared CameraColor allocation
+        if output is None or len(output) < size:
+            raise RuntimeError("Nyx 单相机 RGB 输出缓冲不足")
         self.render_counts[camera_name] += 1
+        return output[:size].reshape(height, width, 3)
+
+    def project_rgb(self, rgb, camera_name, *, rectified=False):
+        """Apply the calibrated lens to an already-rendered, stable RGB view."""
         if camera_name == "observer":
             return rgb
         from torch.nn.functional import grid_sample
@@ -317,16 +339,14 @@ class SceneRenderer:
             self.last_camera.update(D=[0.0] * 5, distortion_model="rectified_pinhole")
         return warped[0].permute(1, 2, 0).round().clamp_(0, 255).to(rgb.dtype).contiguous()
 
-    def read_rgbd(self, camera_name: str, *, stride: int = 8, check=lambda: None, region=None):
-        """One state, one calibrated rectified RGB image and optical-Z depth map."""
+    def read_depth(self, camera_name, *, stride=8, check=lambda: None, region=None):
+        """Read depth from the same rendered state, before any next frame."""
         import numpy as np
 
         from .rgbd import sample_depth
 
         if camera_name not in self.cameras:
             raise ValueError("RGB-D requires a calibrated robot camera")
-        check()
-        rgb = self.read_rgb(camera_name, rectified=True).cpu().numpy().copy()
         # gs-nyx-plugin 0.1.9 has no public accessor for the native depth ray API.
         # Keep this bridge explicit; an incompatible SDK must fail, not invent depth.
         # pylint: disable=protected-access
@@ -342,7 +362,7 @@ class SceneRenderer:
         self.last_camera.update(depth_type="optical_z", depth_unit="m", depth_sampling_stride=stride)
         if region is not None:
             self.last_camera.update(depth_sampling_region=region, depth_sampling_stride=None)
-        return rgb, depth
+        return depth
 
     def close(self):
         if self._renderer is not None:
@@ -350,52 +370,3 @@ class SceneRenderer:
             self._renderer = None
         self._grids.clear()
         self._rectified_grids.clear()
-
-
-class RasterRenderer:
-    """Observer-only OpenGL rendering for the portable Genesis demo."""
-
-    def __init__(self, scene, pose: dict, *, fov_y: float = 42):
-        if TYPE_CHECKING or __package__:
-            from ..common.camera import PREVIEW_RESOLUTIONS
-        else:
-            from camera import PREVIEW_RESOLUTIONS
-
-        self.fov_y = fov_y
-        self.appearance = {"renderer": "Genesis Rasterizer", "source_material_fidelity": False}
-        self._observers = {
-            size: scene.add_camera(
-                res=size, fov=fov_y, GUI=False, **{key: pose[key] for key in ("pos", "lookat", "up")}
-            )
-            for size in PREVIEW_RESOLUTIONS
-        }
-        self._camera = self._observers[(960, 540)]
-        self.render_counts = {"observer": 0}
-        self.last_camera: dict = {}
-
-    def configure(self, settings, pose: dict) -> None:
-        camera = self._observers.get((settings.width, settings.height))
-        if camera is None:
-            raise ValueError("预览支持 540p、720p、1080p。")
-        self._camera = camera
-        self.update_camera_pose(pos=pose["pos"], lookat=pose["lookat"], up=pose["up"])
-
-    def update_camera_pose(self, *, pos, lookat, up):
-        self._camera.set_pose(pos=pos, lookat=lookat, up=up)
-
-    def read_rgb(self, camera_name: str = "observer"):
-        import torch
-
-        if camera_name != "observer":
-            raise ValueError("Mac Genesis 演示仅提供 observer 观察视角。")
-        rgb, *_ = self._camera.render(rgb=True)
-        self.render_counts[camera_name] += 1
-        return torch.from_numpy(rgb.copy())
-
-    @staticmethod
-    def pick(u: float, v: float):
-        raise ValueError("macOS 最小预览暂不支持表面点选；可使用相机环绕、平移和缩放。")
-
-    def close(self):
-        # Cameras belong to the scene and remain available across resizing.
-        pass

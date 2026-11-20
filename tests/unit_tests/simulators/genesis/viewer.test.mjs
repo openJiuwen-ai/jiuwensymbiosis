@@ -23,7 +23,7 @@ function viewer() {
     ['robot-mode', new Select(['inspection', 'moz1_wheels', 'jumper', 'microduck'])],
     ['robot', new Select(['', 'moz1'])],
     ['scene-results', new Select([])],
-    ['render-quality', new Select(['reference'])],
+    ['render-quality', new Select(['fast'])],
   ]);
   const byId = id => {
     if (!elements.has(id)) elements.set(id, {value: '', options: []});
@@ -98,7 +98,7 @@ for (const pending of ['starting', 'reconfiguring']) {
       await ui.poll();
       await ui.backendAction('start');
       assert.equal(ui.sent.camera_name, expected);
-      assert.equal(ui.sent.render_quality, 'reference');
+      assert.equal(ui.sent.render_quality, 'fast');
     });
   }
 }

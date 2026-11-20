@@ -70,7 +70,6 @@ _WORKER_ENV_KEYS = frozenset(
         "OPENBLAS_NUM_THREADS",
         "NUMBA_NUM_THREADS",
         "QD_NUM_THREADS",
-        "JIUWEN_GENESIS_MACOS_BACKEND",
     }
 )
 
@@ -103,7 +102,9 @@ class SimulationPreview:
 
     def __init__(self, *, state_dir: Path | None = None, settings: PreviewSettings | None = None) -> None:
         self.settings = settings or (
-            PreviewSettings(width=960, height=540, fps=30) if sys.platform == "darwin" else PreviewSettings()
+            PreviewSettings(backend="mujoco", width=960, height=540, fps=30)
+            if sys.platform == "darwin"
+            else PreviewSettings()
         )
         self._requested_settings = self.settings
         self._config_revision = 0
@@ -140,7 +141,11 @@ class SimulationPreview:
                     self._state = observed
                     revision = observed.get("config_revision", 0)
                     if observed.get("state") == "ready" and revision == self._config_revision:
-                        if "settings" in observed:
+                        view_pending = (
+                            self._observed_revision == revision
+                            and observed.get("stream_epoch", self._stream_epoch) != self._stream_epoch
+                        )
+                        if "settings" in observed and not view_pending:
                             self.settings = PreviewSettings(**observed["settings"])
                         if self._observed_revision != revision:
                             self._observed_revision = revision
@@ -164,9 +169,7 @@ class SimulationPreview:
                 "backend": self.settings.backend,
                 "runtime_backend": profile.id,
                 "backend_features": profile.features,
-                "renderer": profile.renderer
-                if profile.software_encoding
-                else ("Nyx RefPathTracer" if self.settings.render_mode == "reference" else "Nyx FastPathTracer"),
+                "renderer": profile.renderer,
                 "settings": asdict(self.settings),
                 "requested_settings": asdict(self._requested_settings),
                 "requested_config_revision": self._config_revision,
@@ -463,7 +466,7 @@ class SimulationPreview:
         backend: str = "genesis",
         robot_mode: str = "inspection",
         robot_id: str = "",
-        render_quality: str = "reference",
+        render_quality: str = "fast",
         camera_name: str = "observer",
         planning_profile: str | None = None,
         floor_height_m: float | None | str = "unchanged",
@@ -486,15 +489,15 @@ class SimulationPreview:
                 and camera_name not in {c["name"] for c in self._state.get("cameras", [])}
             ):
                 raise ValueError(f"当前场景没有相机：{camera_name}")
-            if render_quality != "reference":
-                raise ValueError("网页渲染仅支持 reference。请刷新页面后重试。")
+            if render_quality != "fast":
+                raise ValueError("未知渲染质量，请刷新页面后重试。")
             settings = PreviewSettings(
                 width=width,
                 height=height,
                 fps=fps,
                 scene_id=scene_id,
-                spp=64,
-                render_mode="reference",
+                spp=32,
+                render_mode=render_quality,
                 backend=backend,
                 robot_mode=robot_mode,
                 robot_id=robot_id,
@@ -510,6 +513,18 @@ class SimulationPreview:
             )
             if settings == self.settings:
                 return self.status()
+            if same_scene and settings == replace(self.settings, camera_name=camera_name):
+                # Selecting a view changes only video identity. Keep physical
+                # leases, active commands and world/configuration identity.
+                self.settings = self._requested_settings = settings
+                self._stream_epoch += 1
+                self._keyframe_request += 1
+                self._frame = None
+                self._pick_request = None
+                self._send_control()
+                return self.status()
+            if self._motion_owner is not None and backend == self.settings.backend:
+                raise RuntimeError("运动任务持有控制权，请先结束任务再切换配置。")
             if backend != self.settings.backend and self._process is not None and self._process.poll() is None:
                 missing = [
                     name for name in required_modules(backend, robot_mode) if importlib.util.find_spec(name) is None
@@ -527,8 +542,6 @@ class SimulationPreview:
                 if resume_streaming:
                     self.set_streaming(True)
                 return self.status()
-            if self._motion_owner is not None:
-                raise RuntimeError("运动任务持有控制权，请先结束任务再切换配置。")
             self._base_request = None
             if self._process is not None and self._process.poll() is None:
                 if state != "ready":

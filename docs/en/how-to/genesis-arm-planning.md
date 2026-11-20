@@ -2,6 +2,11 @@
 
 cuRobo V2 plans; the existing Genesis scene alone owns motors, physics and measured stopping. Stop the base before arm planning; mobile whole-body planning is unsupported. ArmMotion/EndEffectors/GraspEvidence have no robot-name branches (wheel-base control remains MOZ1-specific): MOZ1/Panda joints, tools, gains and collision sources are profile data, not defaults for other bodies or hardware.
 
+
+## Acceptance boundary (2026-11-20)
+
+One Chrome trial with CPU physics (eight substeps, noslip=5) and GPU Nyx FastPathTracer at 32 spp lifted the MOZ1 payload about 8.2 cm from the symmetric folded posture and confirmed a two-second hold. The Agent then returned an empty reply without issuing placement. About 48 seconds after hold confirmation, relative translation exceeded 3 mm and triggered `payload_slip`, despite bilateral contact and an unchanged closing target. The complete pick-and-place cycle did not pass; reliable holding and placement remain unaccepted. Local video, state and timing evidence is retained in `outputs/simulation-clean-verify-20261120/` and is not distributed with the repository.
+
 ## Installation and entry point
 
 Use `pip install -e '.[genesis]' --extra-index-url https://download.pytorch.org/whl/cu130` in a dedicated environment. Separately build [cuRobo V2 commit 78fd485](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a) using its upstream CUDA instructions (tested version `0.8.0.post1.dev43`). This Apache-2.0 checkout exposes `MotionPlanner`/`MotionPlannerCfg`, not legacy `MotionGen`; its code/assets are not bundled here. Core imports no CUDA planner.

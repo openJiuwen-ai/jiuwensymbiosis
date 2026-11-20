@@ -16,7 +16,6 @@ let observedConfig = -1;
 let sceneCatalog = [];
 let configGeneration = 0;
 let viewState = null, selection = null, selecting = false, selectionGeneration = 0;
-let rasterRendering = false;
 let selectionTask = Promise.resolve(), cameraRequest = Promise.resolve();
 
 async function post(path, action, body = {}, keepalive = false) {
@@ -34,6 +33,7 @@ function buttons() {
   if (busy || backendState !== 'ready' || !session || peer?.connectionState !== 'connected') navigation.stop();
   document.body.dataset.connected = String(peer?.connectionState === 'connected');
   for (const id of ['engine', 'resolution', 'fps', 'scene', 'scene-search', 'robot-mode', 'robot', 'render-quality']) byId(id).disabled = busy || ['starting', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
+  byId('render-quality').disabled ||= byId('engine').value !== 'genesis';
   byId('start').disabled = busy || ['starting', 'ready', 'reconfiguring', 'resetting', 'stopping'].includes(backendState);
   byId('stop').disabled = busy || ['stopped', 'unknown', 'unavailable'].includes(backendState);
   byId('connect').disabled = busy || backendState !== 'ready' || !!peer || connecting;
@@ -251,6 +251,7 @@ for (const id of ['engine', 'scene', 'resolution', 'fps', 'robot-mode', 'robot',
     byId('scene').value = 'demo';
     byId('robot').value = '';
     byId('robot-mode').value = 'inspection';
+    byId('render-quality').value = 'fast';
     updateEngineOptions();
   }
   if (['engine', 'scene', 'robot', 'robot-mode'].includes(id)) byId('camera-source').value = 'observer';
@@ -356,8 +357,7 @@ async function poll() {
       decodedFps = presentedFps = null;
       byId('notice').textContent = state.reconfigure_error || '';
     }
-    if (state.settings && (['ready', 'starting', 'reconfiguring'].includes(backendState)
-      || (backendState === 'stopped' && state.runtime_backend === 'genesis_raster'))) {
+    if (state.settings && ['ready', 'starting', 'reconfiguring'].includes(backendState)) {
       const selected = backendState === 'reconfiguring' ? state.requested_settings : state.settings;
       if (byId('engine').value !== (selected.backend || 'genesis')) {
         byId('engine').value = selected.backend || 'genesis';
@@ -375,9 +375,7 @@ async function poll() {
       if ([...cameraSelect.options].some(option => option.value === name)) cameraSelect.value = name;
       byId('resolution').value = `${selected.width}x${selected.height}`;
       byId('fps').value = String(selected.fps);
-      byId('render-quality').value = 'reference';
-      rasterRendering = ['genesis_raster', 'mujoco'].includes(state.runtime_backend);
-      byId('render-quality').options[0].textContent = state.runtime_backend === 'mujoco' ? 'MuJoCo · OpenGL' : rasterRendering ? 'Rasterizer · macOS' : 'Reference · 64 采样';
+      byId('render-quality').value = selected.render_mode || 'fast';
       byId('robot-mode').value = selected.robot_mode || 'inspection';
       byId('robot').value = selected.robot_id || '';
       if ([...byId('scene').options].some(option => option.value === (selected.scene_id || 'demo'))) byId('scene').value = selected.scene_id || 'demo';
@@ -465,7 +463,7 @@ function showMetrics() {
   const metrics = backendMetrics.current(performance.now());
   const element = byId('metrics');
   const values = {decodedFps, presentedFps, ...metrics};
-  for (const key of ['decodedFps', 'presentedFps', 'physicsHz', 'realTimeFactor', 'renderFps', 'renderP95Ms']) {
+  for (const key of ['decodedFps', 'presentedFps', 'physicsHz', 'realTimeFactor', 'renderFps', 'renderP95Ms', 'stateAgeMs', 'simulationLagMs']) {
     element.dataset[key] = Number.isFinite(values[key]) ? values[key].toFixed(3) : '';
   }
   element.dataset.sampledAt = String(performance.now());
@@ -473,8 +471,8 @@ function showMetrics() {
   element.dataset.backendFresh = String(metrics.fresh);
   byId('video-metrics').textContent = `呈现 ${number(presentedFps)} · 解码 ${number(decodedFps)} FPS`;
   byId('physics-metrics').textContent = `物理 ${number(metrics.physicsHz)} Hz · RTF ${number(metrics.realTimeFactor, 2)}`;
-  byId('render-metrics').textContent = `视频渲染 P95 ${number(metrics.renderP95Ms)} ms`;
-  element.title = `${video.videoWidth || '—'} × ${video.videoHeight || '—'} · 后台渲染 ${number(metrics.renderFps)} FPS · RTF 1.00 为实时；呈现为浏览器合成帧率`;
+  byId('render-metrics').textContent = `渲染 ${number(metrics.renderFps)} FPS · 源帧状态延迟 ${number(metrics.stateAgeMs, 0)} ms`;
+  element.title = `${video.videoWidth || '—'} × ${video.videoHeight || '—'} · 渲染 P95 ${number(metrics.renderP95Ms)} ms · 仿真状态落后 ${number(metrics.simulationLagMs, 0)} ms · 状态延迟为物理状态完成到源帧编码完成，不含网络和浏览器排队；RTF 1.00 为实时`;
   byId('actual-performance').textContent = `呈现 ${number(presentedFps)} FPS · 物理 ${number(metrics.physicsHz)} Hz · RTF ${number(metrics.realTimeFactor, 2)}`;
 }
 
@@ -482,10 +480,8 @@ function showQuality() {
   const mujoco = viewState?.renderer === 'MuJoCo OpenGL';
   byId('quality-description').textContent = mujoco
     ? 'MuJoCo 接触物理与官方步态策略；建议 540p / 30 fps。头部相机输出 640 × 480。'
-    : rasterRendering
-    ? 'macOS：光栅化渲染，建议 540p / 30 fps。仅支持动态演示和观察视角；USD 场景、URDF 机器人请使用 Linux / NVIDIA。'
-    : 'Reference：64 采样，呈现间接光与反射；实际刷新率取决于场景。';
-  const label = mujoco ? 'MuJoCo OpenGL' : rasterRendering ? 'Rasterizer' : 'Reference / 64';
+    : 'FastPathTracer：32 采样，降低实时预览的渲染开销；实际刷新率取决于场景。';
+  const label = mujoco ? 'MuJoCo OpenGL' : 'FastPathTracer / 32';
   const sensor = viewState?.cameras?.find(camera => camera.name === byId('camera-source').value);
   const size = sensor ? `${sensor.width} × ${sensor.height}` : byId('resolution').value.replace('x', ' × ');
   byId('requested-profile').textContent = `${size} · ${label} · ${byId('fps').value} FPS 上限`;

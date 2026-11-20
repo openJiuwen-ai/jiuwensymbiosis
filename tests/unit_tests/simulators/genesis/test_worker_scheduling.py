@@ -23,7 +23,7 @@ def worker_loop(monkeypatch, tmp_path):
 
     state.advance = advance
     state.command = {
-        "settings": asdict(PreviewSettings()),
+        "settings": asdict(PreviewSettings(backend="mujoco")),
         "config_revision": 0,
         "stream_epoch": 0,
         "streaming": True,
@@ -114,6 +114,7 @@ def worker_loop(monkeypatch, tmp_path):
     module("scene_catalog", resolve_scene=lambda _: None, validate_material_bundle=lambda _: None)
     module("scene_runtime", create_runtime=lambda *a, **kw: runtime, reset_runtime=lambda *a, **kw: (runtime, {}))
     module("quadrants")
+    module("mujoco", __version__="4.0.1")
     module("scheduling", PhysicsClock=lambda dt: PhysicsClock(dt, monotonic=lambda: state.now))
     module("startup_diagnostics", StartupDiagnostics=lambda **kw: StartupDiagnostics(**kw, clock=lambda: state.now))
     module("usd_scene", prepare_static_stage=lambda *a: None)
@@ -147,30 +148,6 @@ def worker_loop(monkeypatch, tmp_path):
     return state
 
 
-@pytest.mark.parametrize("requested, expected", [(None, "cpu"), ("cpu", "cpu"), ("metal", "metal")])
-def test_macos_physics_backend_keeps_the_worker_contract(worker_loop, monkeypatch, requested, expected):
-    state = worker_loop
-    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
-    if requested is None:
-        monkeypatch.delenv("JIUWEN_GENESIS_MACOS_BACKEND", raising=False)
-    else:
-        monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", requested)
-    state.run()
-    assert state.backend == expected
-    assert state.statuses[-1]["state"] == "ready"
-    assert state.statuses[-1]["physics_backend"] == expected
-
-
-def test_macos_invalid_backend_fails_before_scene_or_encoder(worker_loop, monkeypatch):
-    state = worker_loop
-    monkeypatch.setattr(state.worker.sys, "platform", "darwin")
-    monkeypatch.setenv("JIUWEN_GENESIS_MACOS_BACKEND", "invalid")
-    state.run()
-    assert state.encoders == 0
-    assert state.statuses[-1]["state"] == "failed"
-    assert state.statuses[-1]["startup"]["failed_phase"] == "genesis_init"
-
-
 def capture_request():
     return {"id": "test", "config_revision": 0, "scene_instance_id": "scene", "camera_revision": 1, "expires_at": 10}
 
@@ -182,12 +159,23 @@ def test_invalid_capture_is_rejected_while_physics_blocks_render(worker_loop):
 
     state.run()
 
-    assert state.renders == 0
-    waiting = [status for status in state.statuses if status.get("rendered_frames") == 0]
-    assert waiting and all(status["state"] == "starting" for status in waiting)
-    assert all(status["loading"]["state"] == "running" for status in waiting)
-    assert all("已就绪" not in status["message"] for status in waiting)
+    # Invalid capture remains rejected, but it must not starve valid video.
+    assert state.renders == 1
     assert state.statuses[-1]["capture_result"] == {"id": "test", "error": "capture_failed"}
+
+
+def test_video_keeps_refreshing_when_physics_cannot_clear_its_debt(worker_loop):
+    state = worker_loop
+    rendered_at = []
+    state.on_render = lambda: rendered_at.append(state.now)
+    state.on_ready = lambda: setattr(state, "stopping", state.now >= 2.0)
+    state.run()
+    # 10 ms physics ticks cannot meet the unchanged 1/120 s target. Frames
+    # still arrive under the 20% video budget, not the old 0.5 s fallback.
+    assert len(rendered_at) > 12
+    assert max(b - a for a, b in zip(rendered_at, rendered_at[1:], strict=False)) < 0.2
+    assert state.statuses[-1]["physics_clock"]["actual_hz"] < 120
+    assert state.statuses[-1]["video_schedule"]["recent_source_fps"] > 5
 
 
 def test_stop_during_capture_prevents_an_extra_video_render(worker_loop):
@@ -332,7 +320,9 @@ def test_virtual_rgbd_has_no_fabricated_robot_evidence(worker_loop, monkeypatch)
     from jiuwensymbiosis.simulators.genesis import rgbd as rgbd_module
 
     monkeypatch.setattr(rgbd_module, "base_body_bounds", lambda *a: pytest.fail("virtual capture has no robot bounds"))
-    monkeypatch.setattr(rgbd_module, "base_from_camera", lambda *a: pytest.fail("virtual capture has no base transform"))
+    monkeypatch.setattr(
+        rgbd_module, "base_from_camera", lambda *a: pytest.fail("virtual capture has no base transform")
+    )
     runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
     runtime.renderer.read_rgbd = lambda *a, **kw: (np.zeros((8, 8, 3), np.uint8), np.ones((8, 8), np.float32))
     state.command["capture"] = {
@@ -348,3 +338,21 @@ def test_virtual_rgbd_has_no_fabricated_robot_evidence(worker_loop, monkeypatch)
     assert result["robot_loaded"] is False
     assert "base_sample" not in result
     assert "T_base_camera_mm" not in result
+
+
+def test_genesis_engine_uses_cpu_and_dispatches_nyx(worker_loop):
+    from jiuwensymbiosis.simulators.genesis.engine import engine_session
+
+    calls = []
+
+    def dispatch_call(function):
+        calls.append(function)
+        return function()
+
+    import logging
+
+    startup = StartupDiagnostics(logger=logging.getLogger(__name__))
+    with engine_session(startup, render_dispatch=SimpleNamespace(call=dispatch_call)):
+        assert worker_loop.backend == "cpu"
+        assert len(calls) == 1
+    assert len(calls) == 2

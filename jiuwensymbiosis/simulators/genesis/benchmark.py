@@ -23,8 +23,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene", default="demo", help="GenieSim catalog ID, or demo")
     parser.add_argument("--robot", default="", help="Indexed robot ID to add to a USD background")
     parser.add_argument("--robot-mode", choices=["inspection", "moz1_wheels"], default="inspection")
-    parser.add_argument("--spp", type=int, default=8, help="Samples per pixel (1–64)")
-    parser.add_argument("--render-mode", choices=["fast", "reference"], default="fast")
     parser.add_argument("--min-fps", type=float, default=0, help="Fail if real decoded FPS is below this value")
     args = parser.parse_args()
     if not 5 <= args.seconds <= 3600:
@@ -48,10 +46,8 @@ async def benchmark(args: argparse.Namespace) -> None:
         height=height,
         fps=args.fps,
         scene_id=args.scene,
-        spp=args.spp,
         robot_id=args.robot,
         robot_mode=args.robot_mode,
-        render_mode=args.render_mode,
     )
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)

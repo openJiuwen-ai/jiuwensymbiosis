@@ -208,6 +208,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         """
         import json
         import logging
+        import time
         from dataclasses import asdict
         from pathlib import Path
         from types import ModuleType, SimpleNamespace as NS
@@ -224,7 +225,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         def init(**kwargs):
             calls.append('init')
             logging.getLogger('genesis').setLevel(logging.WARNING)
-        sys.modules['genesis'] = NS(cuda='fake', init=init,
+        sys.modules['genesis'] = NS(cpu='fake', init=init,
                                     destroy=lambda: calls.append('destroy'))
         nyx = ModuleType('gs_nyx')
         nyx.nyx_py_sdk = NS(startup=lambda: calls.append('nyx_startup'),
@@ -238,14 +239,27 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
         sys.modules['torch'] = NS(cuda=NS(current_stream=lambda: NS(synchronize=lambda: None)))
 
         class Runtime:
-            def __init__(self, settings, directory, *, startup):
+            def __init__(self, settings, directory, *, startup, render_dispatch):
                 with startup.phase('scene_build'):
                     if MODE == 'build_failure':
                         raise RuntimeError('test build failure')
                 self.settings = settings
                 self.info = {'mode': 'static_background', 'instance_id': 'test'}
                 self.pose = self.initial_pose = OrbitCamera().snapshot()
-                self.renderer = NS(read_rgb=lambda name: None, fov_y=60, render_counts={})
+                def completed_snapshot(name):
+                    now = time.monotonic()
+                    return NS(completed_at=now, ready_at=now)
+                def render_completed(geometry, **kwargs):
+                    if MODE == 'delayed_frame':
+                        deadline = time.monotonic() + 5
+                        while not any(s.get('rendered_frames') == 0 for s in mailbox.states):
+                            assert time.monotonic() < deadline
+                            time.sleep(0.001)
+                    return None
+                self.renderer = NS(
+                    fov_y=60, render_counts={}, completed_snapshot=completed_snapshot,
+                    render_completed=render_completed, threading_snapshot=render_dispatch.snapshot,
+                )
                 self.robot = self.motion = self.indoor = None
                 self.cameras = {}
                 self.bodies = []
@@ -264,7 +278,7 @@ def test_worker_publishes_startup_evidence_without_gpu(tmp_path, mode):
                 settings = asdict(PreviewSettings())
                 revision = 0
                 if MODE == 'quality_change' and ready:
-                    settings['spp'] = 2
+                    settings['width'], settings['height'] = 960, 540
                     revision = 1
                 return {'settings': settings, 'camera': OrbitCamera().snapshot(),
                         'stream_epoch': 0, 'streaming': False, 'keyframe_request': 0,

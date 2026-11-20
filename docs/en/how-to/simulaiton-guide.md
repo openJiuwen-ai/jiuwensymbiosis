@@ -40,7 +40,7 @@ For Genesis alone on Apple Silicon, install `.[gui,genesis]`. For both backends,
 `.[gui,genesis,mujoco,jumper,microduck]` instead. Genesis brings its own SDK dependencies.
 Keep core `.[dev]` tests in a separate environment because their Pillow requirement conflicts
 with Genesis's pinned version. The single `genesis` extra uses standard platform markers supported by pip. Mac selects regular
-Torch and the Rasterizer; Linux retains `torch==2.11.0+cu130` and Nyx. Markers do not detect GPU
+Torch for MuJoCo tools; Genesis/Nyx requires Linux with `torch==2.11.0+cu130`. Markers do not detect GPU
 hardware or drivers. Linux still requires the CUDA package index below; unavailable CUDA wheels
 cause installation failure rather than CPU fallback.
 Use a new environment for MuJoCo 4: its distribution split can cause file conflicts when
@@ -62,10 +62,8 @@ python -m pip check
 python -c 'import torch; assert torch.cuda.is_available(), "CUDA unavailable"'
 ```
 
-On Mac, Genesis uses CPU physics and the Rasterizer. Set `JIUWEN_GENESIS_MACOS_BACKEND=metal`
-before startup to compare Metal. Mac Genesis supports the dynamic demo and observer view;
-USD/URDF rooms and MOZ1 mounted cameras use the Linux/NVIDIA path. Native MuJoCo robot
-cameras work independently. First Genesis startup compiles kernels and can take minutes.
+Genesis uses CPU physics and GPU Nyx FastPathTracer (32 spp) on Linux/NVIDIA.
+Mac Genesis rendering is not supported; native MuJoCo robots and cameras remain available.
 
 ## Start and stop simulation
 
@@ -230,7 +228,7 @@ with supporting source geometry.
 | Esc | Clear selection and cancel current navigation. |
 
 Moving the observer does not move the robot or establish a traversable route. Object picking
-is limited to supported Genesis/Nyx scenes. MuJoCo and Mac Rasterizer do not expose picking.
+is limited to supported Genesis/Nyx scenes. MuJoCo does not expose picking.
 Mounted cameras cannot be dragged like the observer. MOZ1's head and hand cameras require
 the supported Genesis configuration. Jumper/Microduck expose head_cam at 640×480;
 other MJCF scenes can expose named model cameras. Their intrinsics come from the model,
@@ -255,7 +253,7 @@ Microduck uses its declared policy range because small commands fall in a startu
 These are policy commands, not measured speeds. Manual rates do not change Agent navigation tuning.
 
 Observer resolution is 540p/720p/1080p; robot cameras retain their sensor resolution.
-Nyx uses Reference with 64 samples, Mac Genesis uses Rasterizer and MuJoCo uses classic OpenGL.
+Nyx uses FastPathTracer with 32 samples on Linux/NVIDIA; MuJoCo uses classic OpenGL.
 The FPS setting (30 or 60) is an upper bound. Read actual presented/decoded FPS, physics Hz,
 real-time factor and render P95 in the HUD or Stream Details. Resolution changes retain the
 world and robot pose, but configuration changes interrupt active control.

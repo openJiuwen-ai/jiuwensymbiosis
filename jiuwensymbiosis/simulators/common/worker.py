@@ -11,7 +11,7 @@ import tempfile
 import time
 from collections import deque
 from contextlib import ExitStack, nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -43,6 +43,7 @@ from .camera import PreviewSettings
 from .encoding import NvEncoder, rgb_array
 from .ipc import Mailbox
 from .preview_backends import preview_backend
+from .render_schedule import RenderSchedule
 from .runtime import create_runtime, reset_runtime
 from .scene_catalog import resolve_scene, validate_material_bundle
 from .scheduling import PhysicsClock
@@ -78,19 +79,41 @@ def _publish_configuration(
     )
 
 
-def run_preview(mailbox: Mailbox, directory: Path) -> None:
+def run_preview(mailbox: Mailbox, directory: Path, *, render_dispatch=None) -> None:
     """Keep Simulation initialized while replacing only the resources that changed."""
     settings = PreviewSettings(**mailbox.read_control()["settings"])
-    macos = sys.platform == "darwin"
-    # Single-robot stepping on Apple Silicon is dominated by Metal dispatch
-    # overhead. CPU keeps the same solver/timestep and leaves the GPU to GL.
-    physics_backend = os.environ.get("JIUWEN_GENESIS_MACOS_BACKEND", "cpu") if macos else "cuda"
-    encoder_type = _encoder_type(settings)
+    if render_dispatch is None and settings.backend == "genesis":
+        from .split_threads import run_split
+
+        run_split(lambda dispatch: run_preview(mailbox, directory, render_dispatch=dispatch))
+        return
+    # Report the same physics device that the SDK owner resolves, independently of rendering.
+    from ..genesis.engine import physics_backend as resolve_physics_backend
+
+    physics_backend = resolve_physics_backend()
     profile = preview_backend(settings.backend)
     renderer_name = profile.renderer
     encoder_name = profile.encoder_name
     sdk = ExitStack()
     encoder = runtime = None
+
+    def make_encoder(config, scene):
+        def construct():
+            codec = _encoder_type(config)(config, resolution=scene.frame_size(config.camera_name))
+            if render_dispatch is None:
+                return codec
+            from .independent_video import IndependentVideoLoop
+
+            return IndependentVideoLoop(render_dispatch, mailbox, scene.renderer, codec, config)
+
+        return construct() if render_dispatch is None else render_dispatch.call(construct)
+
+    def discard_video():
+        if render_dispatch is not None and encoder is not None:
+            # Main-thread barrier: finish consuming the borrowed RGB view, then
+            # invalidate completed states before reset/capture/renderer teardown.
+            encoder.clear_state()
+
     capture_path: Path | None = None
     depth_path: Path | None = None
     query_path: Path | None = None
@@ -98,7 +121,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     error = None
     switch_ms = 0.0
     sequence = published = encoded_bytes = 0
-    timings: dict[str, deque] = {k: deque(maxlen=600) for k in ("physics", "render", "encode", "copy", "nvenc", "ipc")}
+    timings: dict[str, deque] = {
+        k: deque(maxlen=600) for k in ("physics", "render", "encode", "copy", "nvenc", "ipc", "snapshot", "frame_age")
+    }
     startup = StartupDiagnostics(
         logger=logger,
         publish=lambda data: mailbox.write_status(
@@ -117,7 +142,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
         if settings.backend == "genesis":
             from ..genesis.engine import engine_session
 
-            sdk.enter_context(engine_session(startup))
+            sdk.enter_context(engine_session(startup, render_dispatch=render_dispatch))
         else:
             with startup.phase("mujoco_init"):
                 import mujoco
@@ -125,10 +150,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 if mujoco.__version__ != "4.0.1":
                     raise RuntimeError("MuJoCo backend requires mujoco-core 4.0.1; use a fresh .[mujoco] environment")
         with startup.phase("runtime_scene"):
-            runtime = create_runtime(settings, directory, startup=startup)
+            runtime = create_runtime(settings, directory, startup=startup, render_dispatch=render_dispatch)
         logger.info("Simulation world and %s renderer ready", renderer_name)
         with startup.phase("encoder_init" if profile.software_encoding else "nvenc_init"):
-            encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
+            encoder = make_encoder(settings, runtime)
         logger.info("%s encoder ready", encoder_name)
         stream_epoch = -1
         keyframe_request = -1
@@ -139,8 +164,12 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
         query_result: dict = {}
         reset_result: dict = {}
         physics_clock = PhysicsClock(settings.dt)
+        video_clock = RenderSchedule(settings.fps, monotonic=time.monotonic)
         next_frame = next_status = time.monotonic()
+        next_snapshot = 0.0
         while not mailbox.stopping():
+            if render_dispatch is not None:
+                render_dispatch.check_error()
             command = mailbox.read_control()
             if query_path is not None and (command.get("scene_query") or {}).get("id") != query_result.get("id"):
                 query_path.unlink(missing_ok=True)
@@ -157,6 +186,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     depth_path = None
             requested_revision = command.get("config_revision", 0)
             if requested_revision != revision:
+                discard_video()
                 base_result = {}
                 if runtime.info["mode"] == "robot_mobile":
                     runtime.motion.cancel("configuration_changed")
@@ -205,7 +235,13 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ):
                         renderer_changed = True
                         runtime.close_renderer()
-                        candidate = create_runtime(requested, directory, runtime.pose["revision"] + 1, startup=loading)
+                        candidate = create_runtime(
+                            requested,
+                            directory,
+                            runtime.pose["revision"] + 1,
+                            startup=loading,
+                            render_dispatch=render_dispatch,
+                        )
                     elif (requested.width, requested.height, requested.spp, requested.render_mode) != (
                         settings.width,
                         settings.height,
@@ -222,9 +258,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     with loading.phase(
                         "encoder_init" if preview_backend(requested.backend).software_encoding else "nvenc"
                     ):
-                        new_encoder = _encoder_type(requested)(
-                            requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
-                        )
+                        new_encoder = make_encoder(requested, candidate or runtime)
                     if candidate is not None:
                         runtime.close()
                         runtime = candidate
@@ -234,7 +268,6 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     settings = requested
                     profile = preview_backend(settings.backend)
                     renderer_name, encoder_name = profile.renderer, profile.encoder_name
-                    encoder_type = _encoder_type(settings)
                     runtime.settings = requested
                 except Exception as exc:
                     loading.finish(error=True)
@@ -248,7 +281,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         runtime.close_renderer()
                         runtime.build_renderer(old_settings)
                     if encoder is None:
-                        encoder = encoder_type(old_settings, resolution=runtime.frame_size(old_settings.camera_name))
+                        encoder = make_encoder(old_settings, runtime)
                 revision = requested_revision
                 switch_ms = round((time.monotonic() - started) * 1000, 1)
                 published = 0
@@ -260,9 +293,12 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 # Begin a new measurement epoch, rather than hiding ordinary
                 # frame stalls by resetting the physics deadline every loop.
                 physics_clock = PhysicsClock(settings.dt)
+                video_clock = RenderSchedule(settings.fps, monotonic=time.monotonic)
                 next_frame = next_status = time.monotonic()
+                next_snapshot = 0.0
             reset = command.get("reset")
             if reset and reset["id"] != reset_result.get("id"):
+                discard_video()
                 reset_result = {"id": reset["id"], "complete": False}
 
                 def publish_reset(data, revision, settings, runtime, reset_result):
@@ -295,23 +331,39 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     runtime, result = reset_runtime(
                         runtime, settings, directory, phase=loading.phase, stopping=mailbox.stopping, startup=loading
                     )
+                    if render_dispatch is not None:
+                        encoder.close()
+                        encoder = make_encoder(settings, runtime)
+                        next_snapshot = 0.0
                     reset_result.update(result)
                     pick_result = capture_result = base_result = query_result = {}
                     published = 0
                     camera_dirty = True
                     physics_clock = PhysicsClock(settings.dt)
+                    video_clock = RenderSchedule(settings.fps, monotonic=time.monotonic)
                     next_frame = next_status = time.monotonic()
                 except Exception as exc:
                     loading.finish(error=True)
                     reset_result.update(error=str(exc)[:1000], complete=True)
                     next_status = 0
             if command["stream_epoch"] != stream_epoch:
-                if stream_epoch >= 0:
+                camera_name = command["settings"].get("camera_name", "observer")
+                camera_changed = camera_name != settings.camera_name
+                if camera_changed:
+                    runtime.frame_size(camera_name)  # Validate against this built world's cameras.
+                discard_video()
+                if camera_changed:
+                    settings = replace(settings, camera_name=camera_name)
+                    runtime.settings = settings
+                if stream_epoch >= 0 or camera_changed:
                     encoder.close()
-                    encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
+                    encoder = make_encoder(settings, runtime)
+                next_snapshot = 0.0
                 stream_epoch = command["stream_epoch"]
                 published = 0
                 keyframe_request = -1
+                camera_dirty = True
+                next_status = 0
             streaming = command["streaming"]
             if command["camera"]["revision"] > runtime.pose["revision"]:
                 runtime.update_camera(command["camera"])
@@ -384,7 +436,11 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         base_result["error"] = str(exc)
                     next_status = 0
             started = time.monotonic()
-            if physics_clock.run_batch(runtime.step, stopping=mailbox.stopping):
+            completed_steps = physics_clock.run_batch(runtime.step, stopping=mailbox.stopping)
+            if render_dispatch is not None:
+                render_dispatch.physics_steps += completed_steps
+                encoder.states.note_step(runtime.steps)
+            if completed_steps:
                 timings["physics"].append((time.monotonic() - started) * 1000)
             if mailbox.stopping():
                 break
@@ -425,7 +481,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 )
                 or now > capture["expires_at"]
             )
-            if capture_pending and (capture_invalid or physics_clock.render_ready()):
+            if capture_pending and (capture_invalid or render_dispatch is not None or physics_clock.render_ready()):
+                discard_video()
                 capture_result = {"id": capture["id"]}
                 try:
                     if capture_invalid:
@@ -557,26 +614,59 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 break
             available = not published or mailbox.acknowledged() >= published
             now = time.monotonic()
-            # A render is allowed to create debt, but another render must wait
-            # for fixed-step catch-up, except the bounded overload heartbeat.
-            # Each batch refreshes control/leases; no second physics owner.
+            # Video has its own bounded wall-time budget. Waiting for all
+            # physics debt to clear can starve it indefinitely near capacity.
+            # Every iteration still advances a bounded physics batch first.
             render_requested = streaming or camera_dirty
-            frame_due = render_requested and available and now >= next_frame
-            if frame_due and physics_clock.render_ready():
+            if not render_requested:
+                video_clock.pause()
+            frame_due = render_requested and available and video_clock.ready()
+            if render_dispatch is not None:
+                from .independent_video import CompletedFrame
+
+                if render_requested and now >= next_snapshot:
+                    snapshot_started = time.monotonic()
+                    geometry = runtime.renderer.completed_snapshot(settings.camera_name)
+                    encoder.states.publish(
+                        CompletedFrame(
+                            geometry=geometry,
+                            step=runtime.steps,
+                            dt=settings.dt,
+                            completed_at=geometry.completed_at,
+                            ready_at=geometry.ready_at,
+                            scene_instance_id=runtime.info["instance_id"],
+                            config_revision=revision,
+                            stream_epoch=stream_epoch,
+                            reset_id=reset_result.get("id"),
+                            reset_generation=runtime.cycle,
+                            camera_revision=runtime.pose["revision"],
+                        )
+                    )
+                    del geometry
+                    timings["snapshot"].append((time.monotonic() - snapshot_started) * 1000)
+                    next_snapshot = time.monotonic() + 1 / settings.fps
+                frames, rendered_camera_revision = encoder.progress()
+                camera_dirty = rendered_camera_revision != runtime.pose["revision"]
+                if frames:
+                    startup.mark_first_frame()
+                    loading.mark_first_frame()
+                    loading.finish()
+                    if reset_result and not reset_result.get("error"):
+                        reset_result["complete"] = True
+            if frame_due and render_dispatch is None:
                 started = time.monotonic()
                 with loading.phase("initial_render") if not loading.finished else nullcontext():
                     rgb = runtime.renderer.read_rgb(settings.camera_name)
-                    if not preview_backend(settings.backend).software_encoding:
-                        import torch
-
-                        torch.cuda.current_stream().synchronize()
+                frame_step, frame_camera_revision = runtime.steps, runtime.pose["revision"]
+                render_ms = (time.monotonic() - started) * 1000
                 startup.mark_first_frame()
                 loading.mark_first_frame()
                 loading.finish()
                 if reset_result and not reset_result.get("error"):
                     reset_result["complete"] = True
                 physics_clock.mark_render()
-                timings["render"].append((time.monotonic() - started) * 1000)
+                timings["render"].append(render_ms)
+                timings["frame_age"].append((time.monotonic() - started) * 1000)
                 sequence += 1
                 if streaming:
                     encode_start = time.monotonic()
@@ -586,8 +676,8 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         {
                             "sequence": sequence,
                             "captured_at": started,
-                            "step": runtime.steps,
-                            "camera_revision": runtime.pose["revision"],
+                            "step": frame_step,
+                            "camera_revision": frame_camera_revision,
                             "camera_name": settings.camera_name,
                             "stream_epoch": stream_epoch,
                             "config_revision": revision,
@@ -607,10 +697,12 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     available = False
                     timings["ipc"].append((time.monotonic() - ipc_start) * 1000)
                 del rgb  # release the borrowed CUDA view before any renderer replacement
-                camera_dirty = False
-                next_frame = max(next_frame + 1 / settings.fps, time.monotonic())
+                camera_dirty = frame_camera_revision != runtime.pose["revision"]
+                video_clock.finish(started)
+                next_frame = video_clock.next_frame
             pick = command.get("pick")
             if pick and pick["id"] != pick_result.get("id") and not camera_dirty:
+                discard_video()
                 pick_started = time.monotonic()
                 pick_result = {"id": pick["id"]}
                 try:
@@ -629,6 +721,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 next_status = 0
             now = time.monotonic()
             if now >= next_status:
+                video_stats = encoder.snapshot() if render_dispatch is not None else {}
                 startup_data = startup.snapshot()
                 mailbox.write_status(
                     {
@@ -654,6 +747,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         if loading.finished
                         else "正在等待当前世界的首帧…",
                         "config_revision": revision,
+                        "stream_epoch": stream_epoch,
                         "settings": asdict(settings),
                         "reconfigure_error": error,
                         "switch_ms": switch_ms,
@@ -662,17 +756,25 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         "steps": runtime.steps,
                         "sim_time": runtime.steps * settings.dt,
                         "physics_clock": {"config_revision": revision, **physics_clock.snapshot()},
+                        "video_schedule": video_stats.get("video_schedule", video_clock.snapshot()),
+                        "frame_clock": video_stats.get("frame_clock"),
+                        "execution_threads": runtime.renderer.threading_snapshot()
+                        if render_dispatch is not None
+                        else {"mode": "serial"},
                         "cycle": runtime.cycle,
-                        "rendered_frames": sequence,
-                        "encoded_bytes": encoded_bytes,
+                        "rendered_frames": video_stats.get("sequence", sequence),
+                        "encoded_bytes": video_stats.get("encoded_bytes", encoded_bytes),
                         "render_ms": round(timings["render"][-1], 2) if timings["render"] else 0,
                         "timings_ms": {
-                            k: {
-                                "p50": round(float(np.percentile(v, 50)), 3),
-                                "p95": round(float(np.percentile(v, 95)), 3),
-                            }
-                            for k, v in timings.items()
-                            if v
+                            **video_stats.get("timings_ms", {}),
+                            **{
+                                k: {
+                                    "p50": round(float(np.percentile(v, 50)), 3),
+                                    "p95": round(float(np.percentile(v, 95)), 3),
+                                }
+                                for k, v in timings.items()
+                                if v
+                            },
                         },
                         "encoder": encoder_name,
                         "physics_backend": "MuJoCo CPU" if settings.backend == "mujoco" else physics_backend,
@@ -723,6 +825,10 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             }
         )
     finally:
+        try:
+            discard_video()
+        except Exception:
+            logger.exception("Pending render failed during cleanup")
         for resource in (encoder, runtime):
             if resource is not None:
                 try:

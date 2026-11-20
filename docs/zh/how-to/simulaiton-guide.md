@@ -29,7 +29,7 @@ python3.12 -m venv .venv-sim4
 ```
 
 `genesis` 统一作为 Mac 与 Linux 的安装项，通过标准平台条件选择依赖，支持 pip。
-Mac 使用普通 Torch 与 Rasterizer；Linux 保留 `torch==2.11.0+cu130` 与 Nyx。
+Genesis/Nyx 仅支持 Linux/NVIDIA，使用 `torch==2.11.0+cu130`；Mac 使用 MuJoCo。
 平台条件不检测 GPU 或驱动，Linux 仍须使用下方 CUDA 下载源；缺少 CUDA 包时安装失败，不会回退到 CPU 版。
 
 按需要选择安装组合：
@@ -52,10 +52,8 @@ MuJoCo 使用 `mujoco-core[rendering]==4.0.1`、经典 OpenGL 和软件 H264；�
 组合不需要 Genesis、Torch、CUDA 或 MuJoCo Studio，也不安装机器人训练环境。
 MuJoCo 4.0 拆分了 Python 发行包，请新建环境，避免直接覆盖旧 3.x 安装造成文件冲突。
 
-Mac Genesis 默认使用 CPU 物理、Rasterizer 和软件 H264；首次启动会编译内核。
-需要比较 Metal 时，在启动前设置 `JIUWEN_GENESIS_MACOS_BACKEND=metal`。
-Mac Genesis 仅支持动态演示与观察视角；USD/URDF 和 MOZ1 机载相机使用 Linux/NVIDIA。
-Jumper、Microduck 的 MuJoCo 场景与头部相机不受此限制。
+Genesis 使用 CPU 物理和 GPU Nyx FastPathTracer（32 spp），要求 Linux/NVIDIA。
+不再支持 Mac Genesis 渲染；Jumper、Microduck 的 MuJoCo 场景与头部相机仍可使用。
 
 ### Linux / NVIDIA
 
@@ -300,7 +298,7 @@ Genesis 机器人物理加载需提供上述 export manifest 或匹配 URDF；Mu
 | 选择与聚焦 | 左键点选物体，黄色包围框表示已选；按 F 或「聚焦 F」。 |
 | 重置与取消 | 「重置视角」或 H/Home 回到初始视角；Esc 取消选择和当前导航。 |
 
-物体点选仅在支持该能力的 Genesis/Nyx 场景开放，MuJoCo 和 Mac Rasterizer 不支持点选。
+物体点选仅在支持该能力的 Genesis/Nyx 场景开放，MuJoCo 不支持点选。
 未选物体时，F 显示整个场景。观察相机可以穿过背景几何；视角移动不等同于机器人可通行路线。
 
 ![头部相机视角：相机选择保留在画面下方](../../images/gui-simulator/camera.jpg)
@@ -362,10 +360,10 @@ MOZ1 的 36 个上身关节保留原始关节限位：6 个躯干关节、14 个
 | 设置 | 说明 |
 |---|---|
 | 观察分辨率 | 540p、720p 或 1080p；仅作用于观察视角，机器人相机使用标定分辨率。 |
-| 渲染类别 | Linux Genesis/Nyx 使用 Reference 64 采样；Mac Genesis 使用 Rasterizer，MuJoCo 使用经典 OpenGL。 |
+| 渲染类别 | Linux Genesis/Nyx 使用 FastPathTracer 32 采样；MuJoCo 使用经典 OpenGL。 |
 | FPS 上限 | 30 或 60；这是请求上限，实际帧率受场景和 GPU 负载影响。 |
 
-Nyx 的室内场景、机器人相机和动态演示使用 Reference · 64 采样；该采样设置不适用于 Rasterizer 或 MuJoCo。调整分辨率或 FPS 上限保留物理世界和机器人位姿，但会中断正在执行的动作。
+Nyx 的室内场景、机器人相机和动态演示固定使用 FastPathTracer · 32 采样；MuJoCo 使用自己的渲染器。调整分辨率或 FPS 上限保留物理世界和机器人位姿，但会中断正在执行的动作。
 
 画面右上角的「呈现／解码 FPS」分别表示浏览器呈现速度和视频解码速度；「物理 Hz」表示实际步进速度，
 「RTF」约为 1 时表示仿真与现实时间同步；「视频渲染 P95」是渲染耗时的 95 分位值。
@@ -498,7 +496,7 @@ Agent 运动任务同一时间只有一个所有者；持有期间不能调整�
 
 ## 执行预算、诊断和进程边界
 
-Linux Genesis/Nyx 使用 Reference 64 采样；其他后端使用各自的渲染器。物理调度每批最多补64步，同时受8ms时间预算限制，
+Linux Genesis/Nyx 使用 FastPathTracer 32 采样；其他后端使用各自的渲染器。物理调度每批最多补64步，同时受8ms时间预算限制，
 逐步检查停止请求，批间处理控制消息；上限不是保证每次执行64步，也不是实时因子承诺。
 单模型聊天/识别请求默认90秒；连接 preview 的共享 Agent 整轮预算为240秒，
 其中包含只读看图及可选动作。状态快照仅用于操作者诊断，不送入纯视觉模型输入。
@@ -551,7 +549,7 @@ open_gripper(effector="left")                  # 张开指定侧夹爪
 
 跳跃复用官方 `jump.onnx`、录制轨迹及原生 FSM；不提供任意高度/距离参数。
 成功需确认实际离地至少 20 ms、恢复地面支撑，并连续停稳 1 s。
-取消已触发的跳跃会等本次跳跃结束落地，不启动下一次。
+取消已触发的跳跃会等本次跳跃结束落地，不启动下一次。诊断结果中的 `cancellation` 保留首次取消时的物理仿真时间、策略阶段、支撑接触数和机体位姿/速度；最终 `support_contacts` 则是动作结束时的读回，两者不可混用来判断取消是否发生在空中。
 
 夹爪复用 `five_foot` 策略和官方原生 hook：左、右模式一次只抬起一侧，
 其他五足支撑；右侧由官方镜像实现。闭合命令完成后保持夹爪状态，停止

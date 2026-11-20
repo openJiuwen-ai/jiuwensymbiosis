@@ -25,13 +25,15 @@ export class BackendMetrics {
     this.measuredAt = null;
     this.receivedAt = null;
     this.renderP95 = null;
+    this.stateAge = null;
+    this.simulationLag = null;
   }
   update(state, nowMs) {
     if (state.state !== 'ready' || !Number.isFinite(state.measured_at)) {
       this.reset();
       return this.current(nowMs);
     }
-    const identity = `${state.scene?.instance_id ?? ''}:${state.config_revision ?? ''}`;
+    const identity = `${state.scene?.instance_id ?? ''}:${state.config_revision ?? ''}:${state.cycle ?? ''}`;
     if (identity !== this.identity || state.measured_at < this.measuredAt) {
       this.reset();
       this.identity = identity;
@@ -46,6 +48,10 @@ export class BackendMetrics {
       this.rendered.sample(state.rendered_frames, timeMs);
       const p95 = state.timings_ms?.render?.p95;
       this.renderP95 = Number.isFinite(p95) && p95 >= 0 ? p95 : null;
+      const age = state.frame_clock?.state_age_ms;
+      this.stateAge = Number.isFinite(age) && age >= 0 ? age : null;
+      const lag = state.frame_clock?.simulation_lag_s;
+      this.simulationLag = Number.isFinite(lag) && lag >= 0 ? lag * 1000 : null;
     }
     return this.current(nowMs);
   }
@@ -56,6 +62,8 @@ export class BackendMetrics {
       realTimeFactor: fresh ? this.simulation.value : null,
       renderFps: fresh ? this.rendered.value : null,
       renderP95Ms: fresh ? this.renderP95 : null,
+      stateAgeMs: fresh ? this.stateAge : null,
+      simulationLagMs: fresh ? this.simulationLag : null,
       fresh,
     };
   }

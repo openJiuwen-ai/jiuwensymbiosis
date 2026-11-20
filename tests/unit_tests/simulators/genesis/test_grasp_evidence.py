@@ -124,6 +124,7 @@ def test_retry_and_cancel_preserve_latched_grip_target():
 @pytest.mark.parametrize("unwritable", [False, True])
 def test_selected_gripper_confirmation_while_other_hand_holds(tmp_path, opened, state, object_id, ok, unwritable):
     motion = ArmMotion.__new__(ArmMotion)
+    motion.command_started = motion.execution_started = None
     evidence = GraspEvidence(state=state, object_id=object_id, contact_time=0.3)
     motion.effectors = SimpleNamespace(
         tick=lambda dt: None, evidence={"hand": evidence, "other": GraspEvidence(state="held")}
@@ -206,6 +207,7 @@ def test_confirmation_lost_while_stopping_fails_command(tmp_path, opened, state,
     from jiuwensymbiosis.simulators.genesis.arm_motion import ArmMotion
 
     motion = ArmMotion.__new__(ArmMotion)
+    motion.command_started = motion.execution_started = None
     evidence = GraspEvidence(state=state, object_id=object_id)
     motion.effectors = SimpleNamespace(tick=lambda dt: None, evidence={"hand": evidence})
     motion.runtime = SimpleNamespace(robot=SimpleNamespace(stop=lambda: None))

@@ -91,7 +91,7 @@ def test_renderer_exports_effective_color_without_changing_lights(
         export_scene_file=lambda path, asset: captured.update(background=asset),
         generate_uuid=lambda: "background-id",
     )
-    modes = SimpleNamespace(ERenderMode=SimpleNamespace(FastPathTracer=1, RefPathTracer=2))
+    modes = SimpleNamespace(ERenderMode=SimpleNamespace(FastPathTracer=1))
     modules = {
         "gs_nyx": SimpleNamespace(nyx_py_renderer=modes, nyx_py_sdk=sdk),
         "gs_nyx.nyx_py_renderer": modes,

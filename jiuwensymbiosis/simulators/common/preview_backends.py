@@ -8,7 +8,7 @@ from typing import Literal
 
 RobotMode = Literal["inspection", "moz1_wheels", "virtual_camera", "jumper", "microduck"]
 PhysicsBackend = Literal["genesis", "mujoco"]
-BackendId = Literal["mujoco", "genesis_raster", "genesis_nyx"]
+BackendId = Literal["mujoco", "genesis_nyx"]
 
 
 @dataclass(frozen=True)
@@ -53,15 +53,14 @@ class PreviewBackend:
 
 
 MUJOCO = PreviewBackend("mujoco", "MuJoCo OpenGL", True, False, False, False)
-RASTER = PreviewBackend("genesis_raster", "Genesis Rasterizer", True, False, False, False)
-NYX = PreviewBackend("genesis_nyx", "Nyx", False, True, True, True)
+NYX = PreviewBackend("genesis_nyx", "Nyx FastPathTracer", False, True, True, True)
 
 
 def supported_modes(backend: str, platform: str | None = None) -> tuple[str, ...]:
     """Return the robot modes the engine can start on this platform."""
     if backend == "genesis":
-        if (platform or sys.platform) == "darwin":
-            return ("inspection",)
+        if (platform or sys.platform) != "linux":
+            return ()
         return tuple(mode for mode in MODES if mode not in POLICY_MODES)
     if backend == "mujoco":
         return ("inspection", *POLICY_MODES)
@@ -82,7 +81,9 @@ def preview_backend(backend: str, platform: str | None = None) -> PreviewBackend
         return MUJOCO
     if backend != "genesis":
         raise ValueError(f"Unsupported simulation backend: {backend}")
-    return RASTER if (platform or sys.platform) == "darwin" else NYX
+    if (platform or sys.platform) != "linux":
+        raise ValueError("Genesis Nyx requires Linux / NVIDIA")
+    return NYX
 
 
 def required_modules(backend: str, mode: str, platform: str | None = None) -> tuple[str, ...]:
@@ -90,8 +91,7 @@ def required_modules(backend: str, mode: str, platform: str | None = None) -> tu
     media = ("aiortc", "av", "PIL")
     if backend == "mujoco":
         return ("mujoco", *media, *tuple(n for n in MODES[mode].modules if n != "mujoco"))
-    modules = ("genesis", *media)
-    return modules if (platform or sys.platform) == "darwin" else (*modules, "gs_nyx_plugin")
+    return ("genesis", *media, "gs_nyx_plugin")
 
 
 def installation_extra(backend: str, mode: str, platform: str | None = None) -> str:

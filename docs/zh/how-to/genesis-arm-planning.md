@@ -2,6 +2,11 @@
 
 cuRobo V2 规划；现有 Genesis 场景独占电机、物理时钟和实测停止。底盘须先停稳，不支持移动全身规划。ArmMotion/EndEffectors/GraspEvidence 无机型分支（底盘轮系仍为 MOZ1 专用），MOZ1/Panda 关节、工具、增益及碰撞来源仅在 YAML 中，不可作为其他机器人或真实硬件的默认参数。
 
+
+## 当前验收边界（2026-11-20）
+
+CPU 物理（八子步、noslip=5）＋ GPU Nyx FastPathTracer 32 spp 的单次 Chrome 验证中，MOZ1 从双臂对称收拢姿态抓取并抬升约 8.2 cm，通过 2 秒保持确认。Agent 随后返回空回复，未执行放置；持续悬空约 48 秒后，相对平移超过 3 mm，触发 `payload_slip`，但双侧接触和闭爪目标仍存在。该次完整抓放闭环未通过，不能据此宣称稳定抓取或放置已验收。原始录像、状态和耗时保存在本地 `outputs/simulation-clean-verify-20261120/`，不随仓库分发。
+
 ## 安装和入口
 
 专用环境执行 `pip install -e '.[genesis]' --extra-index-url https://download.pytorch.org/whl/cu130`。另行安装 [cuRobo V2](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a)：检出该 commit，按上游 CUDA 安装说明构建（验证版本 `0.8.0.post1.dev43`）；使用 `MotionPlanner`/`MotionPlannerCfg`，不兼容旧 `MotionGen`。源码许可证为 Apache-2.0；本仓库/wheel 不分发它。core 不加载 CUDA 依赖。

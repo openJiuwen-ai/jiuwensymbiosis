@@ -114,7 +114,7 @@ def _preview_configuration(options: dict, width: int, height: int) -> dict[str, 
         "backend": options.get("backend", "genesis"),
         "robot_mode": options.get("robot_mode", "inspection"),
         "robot_id": options.get("robot_id", ""),
-        "render_quality": options.get("render_quality", "reference"),
+        "render_quality": options.get("render_quality", "fast"),
         "camera_name": options.get("camera_name", "observer"),
         **({"floor_height_m": options["floor_height_m"]} if "floor_height_m" in options else {}),
     }

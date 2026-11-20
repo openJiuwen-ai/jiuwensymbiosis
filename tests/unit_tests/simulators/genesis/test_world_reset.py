@@ -25,6 +25,7 @@ def world(monkeypatch):
     runtime.scene, runtime.renderer, runtime.robot = Mock(), object(), Mock()
     runtime.motion = SimpleNamespace(active=False)
     runtime.settings = SimpleNamespace(dt=0.01, planning_profile="", robot_mode="moz1_wheels")
+    runtime._startup = None
     runtime._planning_profile = {}
     runtime._initial_state = object()
     runtime._initial_steps = 200
@@ -167,6 +168,7 @@ def test_reset_rebuilds_arm_evidence_but_never_bypasses_unknown_stop(world, monk
     old = Mock(active=False, follower=SimpleNamespace(terminal=False))
     old.effectors.evidence = {}
     runtime.arm_motion = old
+    runtime._startup = None
     runtime._planning_profile = {}
     runtime._evidence_directory = Path("/unused")
     replacement = Mock()
