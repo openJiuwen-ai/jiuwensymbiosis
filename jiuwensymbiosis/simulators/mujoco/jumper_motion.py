@@ -35,6 +35,9 @@ class JumperMotion(PolicyMotion):
         self.claw_closed = False
 
     def start(self, request: dict, step: int) -> None:
+        request_id = request.get("id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("Jumper motion requires a request ID")
         kind = request.get("kind", "navigate")
         if kind == "navigate":
             from ..common.base_motion import validate_move
@@ -60,7 +63,7 @@ class JumperMotion(PolicyMotion):
             "previous_claw": (self.claw_side, self.claw_closed),
         }
         self._result = {
-            "id": request["id"],
+            "id": request_id,
             "kind": kind,
             "status": "running",
             "ok": False,
@@ -160,12 +163,10 @@ class JumperMotion(PolicyMotion):
         self._result["max_height_m"] = max(self._result["max_height_m"], height)
         if self.robot.policy.fsm.mode == self.task["kind"] and self.robot.policy.fsm.running_policy:
             self.task["saw_mode"] = True
-        if (
-            self.task["kind"] in JUMPS
-            and self.task["saw_mode"]
-            and self._support_count() == 0
-            and height > self._result["before"]["position_m"][2] + 0.015
-        ):
+        if self.task["kind"] not in JUMPS or not self.task["saw_mode"]:
+            return
+        takeoff_height = self._result["before"]["position_m"][2] + 0.015
+        if height > takeoff_height and self._support_count() == 0:
             self._result["flight_s"] += self.robot.policy.dt
 
     def _dispatch(self, task: dict, step: int) -> None:
@@ -227,7 +228,8 @@ class JumperMotion(PolicyMotion):
             task["saw_mode"] = True
         proportional = task["kind"] == "claw_aperture"
         if proportional and not task.get("sent"):
-            if in_claw and r.policy.fsm.running_policy and not r.policy.key_events and not task["failure"]:
+            controller_ready = in_claw and r.policy.fsm.running_policy and not r.policy.key_events
+            if controller_ready and not task["failure"]:
                 r.policy.claw_aperture(side, task["opening"])
                 self.claw_closed = task["opening"] < 1
                 task["sent"] = True

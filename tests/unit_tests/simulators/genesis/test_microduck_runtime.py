@@ -65,6 +65,30 @@ def test_expired_command_is_zero_at_next_policy_tick(robot):
     robot.policy.set_vel_cmd.assert_not_called()
 
 
+@pytest.mark.parametrize("behavior", [None, "kick_left"])
+def test_pose_keeps_policy_and_existing_twist_or_phase(robot, behavior):
+    policy = robot.policy
+    policy.behavior_mode = behavior
+    policy.head_offset = np.zeros(4)
+    policy.body_cmd = np.zeros(6)
+    policy.command = np.zeros(13)
+    if behavior is None:
+        policy.current_policy = "sit"
+        policy.command[0] = 1
+    initial_command = policy.command.copy()
+    current_policy = policy.current_policy
+
+    robot.set_policy_pose(head=[0, 0.5, 0, 0], body=[0, 0, 0, 0, 0.1, 0])
+
+    assert policy.current_policy == current_policy
+    policy.set_vel_cmd.assert_not_called()
+    assert policy.head_offset[1] == 0.5 and policy.body_cmd[4] == 0.1
+    if behavior is None:
+        initial_command[4] = 0.5
+        initial_command[11] = 0.1
+    np.testing.assert_array_equal(policy.command, initial_command)
+
+
 @pytest.mark.parametrize("command", [(0.41, 0, 0), (0.4, 0.01, 0), (0, 0, 1.51), (float("nan"), 0, 0)])
 def test_out_of_envelope_request_never_reaches_policy(robot, command):
     with pytest.raises(ValueError):

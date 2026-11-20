@@ -237,11 +237,15 @@ class MicroduckRuntime(MujocoPolicyRuntime):
                 if hashlib.sha256(data).hexdigest() != digest:
                     raise ValueError(f"Microduck Arena policy digest mismatch: {name}/{filename}")
                 files[filename] = data
-            manifest = json.loads(files["manifest.json"])
+            manifest_bytes = files.get("manifest.json")
+            policy_bytes = files.get("policy.onnx")
+            if manifest_bytes is None or policy_bytes is None:
+                raise ValueError(f"Microduck Arena policy or manifest missing: {name}")
+            manifest = json.loads(manifest_bytes)
             if ("rollers" in manifest["robot"]["accessories"]) != self.rollers:
                 raise ValueError("Microduck Arena policy and feet mismatch")
             self.sessions[name] = ort.InferenceSession(
-                files["policy.onnx"], sess_options=options, providers=["CPUExecutionProvider"]
+                policy_bytes, sess_options=options, providers=["CPUExecutionProvider"]
             )
             if "timeline.json" in files:
                 self.timeline = json.loads(files["timeline.json"])
@@ -344,12 +348,16 @@ class MicroduckRuntime(MujocoPolicyRuntime):
         self.actuators.set_q_target("mouth", self.mouth_target)
 
     def set_policy_pose(self, *, head=None, body=None):
+        p = self.policy
         if head is not None:
-            self.policy.head_offset[:] = head
+            p.head_offset[:] = head
         if body is not None:
-            self.policy.body_cmd[:] = body
-        # Refresh the pinned reference's 13 command slots without changing its active gait.
-        self.policy._update_command()  # noqa: SLF001
+            p.body_cmd[:] = body
+        # The pinned 13-slot layout keeps twist or sit/ground-pick phase in
+        # the first three slots. Kick and roll actors require all-zero commands.
+        if p.behavior_mode is None:
+            p.command[3:7] = p.head_offset
+            p.command[7:13] = p.body_cmd
 
     def watch_kick(self, side):
         import mujoco as mj

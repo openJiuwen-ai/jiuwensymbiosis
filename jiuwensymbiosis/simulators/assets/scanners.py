@@ -158,13 +158,12 @@ def _scan_microduck(spec: RootSpec, root: Path) -> ScanResult:
         )
     ]
     if "roller" in microduck_paths:
+        roller_roles = {"policy_reference", "policy_manifest", "code_license", "model_license", "roller"}
         roller_paths = {
-            k: microduck_paths[k]
-            for k in ("policy_reference", "policy_manifest", "code_license", "model_license", "roller")
+            key: value
+            for key, value in microduck_paths.items()
+            if key in roller_roles or key.startswith("roller_sprint_2m/")
         }
-        roller_paths.update(
-            (key, value) for key, value in microduck_paths.items() if key.startswith("roller_sprint_2m/")
-        )
         if "roller_crouch" in microduck_paths:
             roller_paths["roller_crouch"] = microduck_paths["roller_crouch"]
         # Pollen's roller configuration retains both kick skills.

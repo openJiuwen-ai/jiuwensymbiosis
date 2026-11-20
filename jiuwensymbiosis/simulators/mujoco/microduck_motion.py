@@ -121,6 +121,11 @@ class MicroduckMotion(PolicyMotion):
         yaw = before["body_yaw_rad"]
         return float((x - start_x) * math.cos(yaw) + (y - start_y) * math.sin(yaw))
 
+    def _ball_xy(self) -> np.ndarray:
+        start = self.robot.policy.ball_qpos_adr
+        end = start + 2
+        return np.asarray(self.robot.data.qpos[start:end])
+
     def tick(self, dt: float, step: int) -> None:
         if self.base.active:
             if not self.robot.upright():
@@ -158,7 +163,7 @@ class MicroduckMotion(PolicyMotion):
             task["stable"] = task["stable"] + dt if quiet and r.upright() else 0.0
             if task["stable"] >= 0.4:
                 if kind.startswith("kick_"):
-                    task["ball_start"] = r.data.qpos[p.ball_qpos_adr : p.ball_qpos_adr + 2].copy()
+                    task["ball_start"] = self._ball_xy().copy()
                     r.watch_kick(kind.removeprefix("kick_"))
                 p.trigger_behavior(kind)
                 task["stable"] = 0.0
@@ -214,9 +219,10 @@ class MicroduckMotion(PolicyMotion):
         ready = settled and (pose_reached or task["failure"])
         if not ready and task["elapsed"] < task.get("prepare_started", 0) + task["wait"] + 10:
             return
-        if kind == "roulade" and ready and task.get("remaining") and not task["failure"]:
+        rolls_remaining = task.get("remaining", 0) if kind == "roulade" else 0
+        if rolls_remaining and ready and not task["failure"]:
             # Re-arm the released one-second actor from its measured standing entry pose.
-            task.update(remaining=task["remaining"] - 1, prepare=True, prepare_started=task["elapsed"], stable=0.0)
+            task.update(remaining=rolls_remaining - 1, prepare=True, prepare_started=task["elapsed"], stable=0.0)
             return
         if kind == "roulade" and self._result.get("rolls_observed", 0) < task.get("rolls", 1):
             task["failure"] = task["failure"] or "roll_unconfirmed"
@@ -235,9 +241,7 @@ class MicroduckMotion(PolicyMotion):
             if distance < 0.01:
                 task["failure"] = task["failure"] or "skate_unconfirmed"
         if "ball_start" in task:
-            self._result["ball_displacement_m"] = math.dist(
-                task["ball_start"], r.data.qpos[p.ball_qpos_adr : p.ball_qpos_adr + 2]
-            )
+            self._result["ball_displacement_m"] = math.dist(task["ball_start"], self._ball_xy())
             self._result["foot_ball_contact"] = r.kick_contact
             r.kicking_bodies.clear()
             if ready and (not r.kick_contact or self._result["ball_displacement_m"] < 0.01):
