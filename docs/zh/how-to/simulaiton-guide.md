@@ -51,6 +51,9 @@ Mac 仅使用 Genesis 时安装 `.[gui,genesis]`；例如，同时使用两套�
 MuJoCo 使用 `mujoco-core[rendering]==4.0.1`、经典 OpenGL 和软件 H264；仅安装 MuJoCo
 组合不需要 Genesis、Torch、CUDA 或 MuJoCo Studio，也不安装机器人训练环境。
 MuJoCo 4.0 拆分了 Python 发行包，请新建环境，避免直接覆盖旧 3.x 安装造成文件冲突。
+启动 MuJoCo 时，仿真后台先检查当前 Python。如果版本或所选机器人的依赖不匹配，源码工作区会检查
+`.venv-sim4/bin/python`。使用其他环境时，可在启动工作台前将 `JIUWEN_MUJOCO_PYTHON` 设为该环境的
+Python 绝对路径。释放后台资源后再次启动会重新检查。Genesis 仍使用启动工作台的 Python。
 
 Mac Genesis 默认使用 CPU 物理、Rasterizer 和软件 H264；首次启动会编译内核。
 需要比较 Metal 时，在启动前设置 `JIUWEN_GENESIS_MACOS_BACKEND=metal`。
@@ -101,6 +104,9 @@ Genesis 的已验证依赖以 [`pyproject.toml`](../../../pyproject.toml) 为准
 .venv-sim4/bin/python -m jiuwensymbiosis.simulators.assets register-robot microduck --source /绝对路径/microduck_rl
 ```
 
+已有旧版行走资产时，在上述命令中加 `--complete` 即可补齐官方发布的策略并更新本机索引。
+已有文件逐项校验，首次下载只写入缺失文件。离线登记按本机实际具备的策略提供动作。
+
 命令追加本机资产根并重建索引，不修改上游模型或覆盖已有根。`--fetch` 拒绝覆盖已有目录，
 下载失败不会登记残缺目录；上游许可证留在下载目录。省略 `--source` 时使用仿真数据根下的
 `outputs/vendor/jumper` 或 `outputs/vendor/microduck_rl`；可用 `--home` 指定本机仿真数据根。
@@ -110,11 +116,11 @@ Genesis 的已验证依赖以 [`pyproject.toml`](../../../pyproject.toml) 为准
 |---|---|---|
 | [KingKongRobotics/jumper](https://github.com/KingKongRobotics/jumper) | `198686eac0d188815d0943e9fee50de415edc80a` | 校验 bundle 和所引用文件的 SHA256；保留 LICENSE/NOTICE。 |
 | [Pollen Robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl) | `0daab160d3fb1c2cbaba16a4a19052f36709dd9e` | 代码/MJCF 按上游 Apache-2.0；STL 单独适用 CC BY-NC-SA 4.0。 |
-| [Microduck velstand 策略](https://huggingface.co/pollen-robotics/microduck-policies) | `283771bcb3690a0a94a288c108365d9b630d21e4` | 下载并校验 velstand.onnx 与 manifest.json。 |
+| [Microduck 出厂策略](https://huggingface.co/pollen-robotics/microduck-policies/blob/236d1835b03ac7b45d962efbf2fe3a6940206112/manifest.json) | `236d1835b03ac7b45d962efbf2fe3a6940206112` | 10 个出厂权重和清单逐项校验。另有 5 个 Pollen Arena 参考包，各自固定版本与摘要。 |
 
 资产登记不改变原许可；Microduck STL 的非商业限制仍然有效。索引可识别仅有模型的
 Microduck，但需要完整策略才能进入可运行场景列表。其索引身份为 `robot_walk`，运行时加载
-官方 `scene.xml` / `robot_groundcontact.xml`。
+官方接地模型；具备踢球策略时使用带球场景，具备轮滑策略时另列「Microduck · 轮滑」场景。
 
 ### 其他 MJCF、USD 与 URDF
 
@@ -567,7 +573,16 @@ open_gripper(effector="left")                  # 张开指定侧夹爪
 支持站立、前后移动、左右横移、转向、停止，以及观察/机载 RGB 视频。
 初始场景有地面和红绿蓝路标，均参与接触物理。当前没有把 Jumper 转换到
 Genesis，也没有把它放入 USD 房间；这是保留原步态物理的原生 MuJoCo 接入。
-已开放跳跃与左右夹爪开合；舞蹈及姿态切换仍未开放。没有自动避障、视觉抓取或深度工具。
+连接视频后，打开「手动控制 → 官方动作」即可选择当前模型的动作和参数。仿真 Agent 也可调用同名工具。
+
+| 动作 | 用法 |
+|---|---|
+| `jumper_posture` | 调整俯仰、横滚、躯干扭转和机身高度。 |
+| `claw_aperture` | 指定左爪或右爪的连续开度，0 为闭合，1 为完全张开，0.5 对应官方扳机的半程。 |
+| `claw_pose`、`claw_step`、`stow_claw` | 指定左臂或右臂，选前臂姿态，五足支撑移动或倾身，再收回已经张开的夹爪。 |
+| 螃蟹舞、巴西舞、迷宫舞、梦的翅膀、扭腰舞 | 完整运行官方轨迹，回到行走模式并停稳。螃蟹舞约四分钟。 |
+| 挥手、鞠躬、伸爪、敬礼 | 分别调用 `gesture_hello`、`gesture_bow`、`gesture_paw`、`gesture_salute`。 |
+| `ref_free_jump` | 加载单独发布的无参考跳跃权重。当前固定版本在 CPU 场景中回到站姿，但未测得离地，返回 `flight_unconfirmed`。需要已验证的跳跃时使用 `jump`。 |
 
 运动采用真实机身反馈闭环。步态停止后，位置误差需保持在 3 cm 内、
 偏航误差在 0.08 rad 内，并连续稳定 1 s 才成功；这是仿真验收容差。
@@ -591,7 +606,24 @@ RGB-only 观测模式下，配置模型并开启 Agent 控制，例如：
 > 先看头部相机，向前走 20 厘米，向左转 0.5 弧度，然后停车并重新观察。
 
 复用 `capture_camera(head_cam)`、`navigate_relative(dx_m, dy_m, dyaw_rad)` 和 `rotate_base(dyaw_rad)`。
-仅开放已接入的行走和停止，不提供 Jumper 的跳跃、夹爪或 Microduck 的舞蹈动作。
+在「手动控制 → 官方动作」中可选以下动作，也可直接让仿真 Agent 调用。普通脚和轮滑脚场景均提供观察相机与 640×480 头部相机。
+
+| 场景 | 官方动作 |
+|---|---|
+| 普通脚 | 四轴头颈姿态、六轴机身姿态、坐下、站起、跌倒恢复、低头啄取、左右脚踢球、前滚翻。踢球须测到指定脚与球接触、球移动至少 1 cm，连续滚翻按机身倒转次数验收。 |
+| 普通脚步态及编舞 | 相对导航可用 velstand、经典走停、爬坡或走停挑战步态。`sprint_2m` 会向前跑，停稳后按实测前向位移达到 2 米才确认成功，随后切回 velstand。才艺秀按官方的 20 秒坐立时间轴播放。 |
+| 轮滑脚 | 在「Microduck · 轮滑」中切换标准轮滑或轮滑短跑，执行前进、转向、制动、俯身滑行和左右脚踢球。轮滑模型用官方 `roller_crouch` 执行坐立，`sit` 保持低位，`stand` 继续该周期并恢复站姿。普通脚使用 `alpha_sitstand`。滑行后的站姿可能踢空，返回 `kick_unconfirmed`。 |
+
+轮滑脚用 `roller_skate` 按速度、航向偏差和时长滑行。开启「允许 Agent 控制仿真」后，可以说
+「用头部相机看看前方，向前滑行 1 秒并停稳，再看相机。」普通脚用相对导航指定距离和转角。
+
+两种足型都在当前位置起脚，起脚时球的位置和速度由物理仿真连续演进。踢球未确认且已停稳时，
+Agent 需要重新取图，再根据球的实际位置调整机器人。
+
+仿真 Agent 按模型请求、取图和动作的进展判断超时，耗时较长的动作有独立的等待预算。
+动作触发保护停车时，对话和状态栏会显示具体原因，以及是否已确认停稳。
+
+两种足型都可用 `mouth(opening=0…1)` 开合鸟喙。仿真将原有下喙网格装到 CAD 轴承处，用独立的 BAM XL330 舵机执行官方 −5° 到 +30° 的命令。下喙质量按网格密度估算，闭合参考位保留原头部的总质量和惯量。开合用关节角与速度确认，啄取和闭喙只记录运动结果。[Pollen 喙部舵机定义](https://github.com/pollen-robotics/microduck/blob/ef666aada8a7e945cbbeefbf1577a091b8a8294b/duck-control/src/model.rs)
 
 适配范围：
 
@@ -606,7 +638,7 @@ RGB-only 观测模式下，配置模型并开启 Agent 控制，例如：
   当前到达后的稳定范围为 4 cm / 0.1 rad，连续实测停稳 1 秒才确认成功。
 - 官方 CAD 导出的 `head_camera` 指向镜头内部。运行时仅修正渲染相机朝向和向外 5 mm 的位置；
   不改源文件、刚体、惯量或碰撞。640×480 内参来自渲染 FOV，不代表实机标定。
-- 倾倒、非有限状态或未确认停车会报错，不用传送位置代替动作；倾倒后需重启场景。
+- 倾倒会中断导航，可用 `recover_stance` 让普通脚的 velstand 策略在零速下尝试恢复，站稳后才确认成功。非有限状态或超时会报错。
 
 
 运行前校验官方参考脚本及 ONNX 的 SHA256，不接受任意修改后的上游代码：
@@ -854,6 +886,13 @@ JIUWEN_MICRODUCK_INTEGRATION=1 JIUWEN_SIM_RESIDENT_INTEGRATION=1 \
 JIUWEN_MICRODUCK_SOURCE="$PWD/outputs/vendor/microduck_rl" \
 JIUWEN_MICRODUCK_EVIDENCE="$PWD/outputs/microduck" \
   .venv-sim4/bin/python -m pytest tests/integration/test_jumper_macos.py -k microduck -q
+
+# 在 Jumper、Microduck 普通脚和轮滑脚上逐项运行官方动作，保存物理测量。
+JIUWEN_POLICY_CATALOG_INTEGRATION=1 \
+JIUWEN_JUMPER_SOURCE="$PWD/outputs/vendor/jumper" \
+JIUWEN_MICRODUCK_SOURCE="$PWD/outputs/vendor/microduck_rl" \
+JIUWEN_POLICY_CATALOG_EVIDENCE="$PWD/outputs/official-sim-motions" \
+  .venv-sim4/bin/python -m pytest tests/integration/test_native_policy_catalog.py -q
 ```
 
 证据目录保存 acceptance.json、相机图片和 Agent 执行轨迹；Jumper 跳跃/夹爪在 skills/ 下另存记录。

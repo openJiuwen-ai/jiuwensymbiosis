@@ -27,6 +27,7 @@ class CameraObservation(AgentRail):
         on_frame: Callable | None,
         *,
         on_observation: Callable[[str, float], None] | None = None,
+        on_progress: Callable[[str | None], None] | None = None,
         max_frames: int = 4,
     ):
         self.preview = preview
@@ -35,6 +36,8 @@ class CameraObservation(AgentRail):
         self.run_id = run_id
         self.on_frame = on_frame
         self.on_observation = on_observation
+        self.on_progress = on_progress
+        self._active_tool: str | None = None
         self.max_frames = max_frames
         self._capture_count = 0
         self.frames: list[dict] = []
@@ -149,6 +152,8 @@ class CameraObservation(AgentRail):
                 "captured_at": frame["captured_at"],
             }
         )
+        if self.on_progress is not None:
+            self.on_progress(self._active_tool)
         return {**metadata, "image_delivery": "图片随下一次模型输入提供；仅代表采样时刻，移动后需重新观察。"}
 
     def record_detection(self, frame_id: str, prompt: str, rgb, detection: dict | None) -> None:
@@ -195,14 +200,24 @@ class CameraObservation(AgentRail):
         return True
 
     async def before_tool_call(self, ctx) -> None:
-        self._guard(ctx)
+        if self._guard(ctx) and self.on_progress is not None:
+            self._active_tool = ctx.inputs.tool_name
+            self.on_progress(self._active_tool)
+
+    async def after_tool_call(self, ctx) -> None:
+        self._active_tool = None
+        if self.on_progress is not None:
+            self.on_progress(None)
 
     async def after_model_call(self, ctx) -> None:
-        self._guard(ctx)
+        if self._guard(ctx) and self.on_progress is not None:
+            self.on_progress(None)
 
     async def before_model_call(self, ctx) -> None:
         if not self._guard(ctx):
             return
+        if self.on_progress is not None:
+            self.on_progress(None)
         from openjiuwen.core.foundation.llm.schema.message import UserMessage
 
         while self.pending:

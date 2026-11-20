@@ -24,6 +24,7 @@ from jiuwensymbiosis.simulators.common.resident_transport import (
 from jiuwensymbiosis.utils.logging import get_logger
 
 logger = get_logger(__name__)
+_STOPPING = {"state": "stopping", "message": "正在释放仿真后台资源…"}
 
 
 class ResidentPreview:
@@ -35,6 +36,8 @@ class ResidentPreview:
         self._client_id = uuid.uuid4().hex
         self._attached = False
         self._lock = threading.RLock()
+        self._state_lock = threading.Lock()
+        self._stopping = False
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
         self._state: dict[str, Any] = {"state": "stopped", "message": "仿真后台未连接"}
@@ -139,8 +142,9 @@ class ResidentPreview:
                 raise RuntimeError("仿真后台未运行，请先启动。")
             self._client_id = uuid.uuid4().hex
             self._rpc("attach")
-            self._attached = True
-            self._heartbeat_stop = threading.Event()
+            with self._state_lock:
+                self._heartbeat_stop = threading.Event()
+                self._attached = True
             self._heartbeat_thread = threading.Thread(target=self._heartbeat, daemon=True)
             self._heartbeat_thread.start()
 
@@ -150,31 +154,44 @@ class ResidentPreview:
             try:
                 self._rpc("heartbeat", timeout=2)
             except (RuntimeError, TimeoutError) as exc:
-                with self._lock:
+                with self._lock, self._state_lock:
                     if self._heartbeat_stop is stop and not stop.is_set():
                         self._attached = False
                         self._state = {"state": "failed", "message": str(exc)}
                 return  # Lost ownership is terminal for existing work.
 
     def status(self) -> dict:
-        if not self._attached:
-            return self._state.copy()
+        with self._state_lock:
+            if self._stopping:
+                return _STOPPING.copy()
+            if not self._attached:
+                return self._state.copy()
+            lease = self._heartbeat_stop
         try:
-            self._state = self._object("status")
+            observed = self._object("status")
         except (RuntimeError, TimeoutError) as exc:
-            self._state = {"state": "failed", "message": str(exc)}
-        return self._state.copy()
+            observed = {"state": "failed", "message": str(exc)}
+        with self._state_lock:
+            if self._stopping:
+                return _STOPPING.copy()
+            # A read may finish after release or after a new service was attached.
+            if self._attached and self._heartbeat_stop is lease:
+                self._state = observed
+            return self._state.copy()
 
     def start(self) -> dict:
-        if self._attached and (self._heartbeat_thread is None or not self._heartbeat_thread.is_alive()):
-            self._heartbeat_stop.set()
-            self._attached = False
-        try:
-            self._attach(launch=True)
-            return self._object("start", timeout=15)
-        except (RuntimeError, TimeoutError, ValueError) as exc:
-            self._state = {"state": "failed", "message": str(exc)}
-            raise
+        with self._lock:
+            with self._state_lock:
+                if self._attached and (self._heartbeat_thread is None or not self._heartbeat_thread.is_alive()):
+                    self._heartbeat_stop.set()
+                    self._attached = False
+            try:
+                self._attach(launch=True)
+                return self._object("start", timeout=15)
+            except (RuntimeError, TimeoutError, ValueError) as exc:
+                with self._state_lock:
+                    self._state = {"state": "failed", "message": str(exc)}
+                raise
 
     def close(self) -> dict:
         """Detach this GUI, cancelling its work without releasing the GPU world."""
@@ -182,20 +199,55 @@ class ResidentPreview:
             if not self._attached:
                 return {"detached": True}
             result = self._object("detach", timeout=20)
-            self._heartbeat_stop.set()
-            self._attached = False
+            with self._state_lock:
+                self._heartbeat_stop.set()
+                self._attached = False
             if not result["detached"]:
                 raise RuntimeError(result["error"])
             return result
 
     def stop(self) -> dict:
         """Explicit user operation: release the shared backend and all GPU resources."""
-        self._attach()  # Also permits releasing an incompatible older service.
-        result = self._object("stop", timeout=20)
-        self._heartbeat_stop.set()
-        self._attached = False
-        self._state = result
-        return result
+        import fcntl
+
+        with self._lock:
+            self._attach()  # Also permits releasing an incompatible older service.
+            with self._state_lock:
+                self._stopping = True
+            try:
+                with (self.state_dir / "launch.lock").open("a") as launch:
+                    fcntl.flock(launch, fcntl.LOCK_EX)
+                    result = self._object("stop", timeout=20)
+                    with self._state_lock:
+                        self._heartbeat_stop.set()
+                        self._attached = False
+                    self._wait_for_listener_release()
+                with self._state_lock:
+                    self._state = result
+                return result
+            except (RuntimeError, OSError) as exc:
+                with self._state_lock:
+                    self._state = {"state": "failed", "message": str(exc)}
+                raise
+            finally:
+                with self._state_lock:
+                    self._stopping = False
+
+    def _wait_for_listener_release(self) -> None:
+        """Confirm the service exited while its launch lock excludes a replacement."""
+        import fcntl
+
+        # The stop reply is sent before the listener closes and unlocks ownership.
+        deadline = time.monotonic() + 3
+        with (self.state_dir / "service.lock").open("a") as ownership:
+            while True:
+                try:
+                    fcntl.flock(ownership, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("仿真后台未及时释放监听资源，请检查 resident.log。") from exc
+                    time.sleep(0.05)
 
     def configure(self, **options: Any) -> dict:
         self._attach(launch=True)
@@ -205,10 +257,9 @@ class ResidentPreview:
         return self._object("reset_scene", timeout=20)
 
     def latest_frame(self) -> dict | None:
-        if not self._attached:
+        if not self._attached or self._stopping:
             return None
         response = self._object("poll")
-        self._state = response["status"]
         frame = response["frame"]
         if frame is not None and not isinstance(frame, dict):
             raise RuntimeError("仿真后台返回了无效的视频响应。")
@@ -250,7 +301,11 @@ class ResidentPreview:
         return self._object("capture_image", camera_name=camera_name, timeout=15, cancelled=cancelled, **options)
 
     def policy_action(self, owner: str, kind: str, *, cancelled: threading.Event | None = None, **options: Any) -> dict:
-        return self._object("policy_action", owner=owner, kind=kind, timeout=65, cancelled=cancelled, **options)
+        from ..mujoco.policy_actions import action_wait_s
+
+        return self._object(
+            "policy_action", owner=owner, kind=kind, timeout=action_wait_s(kind) + 15, cancelled=cancelled, **options
+        )
 
     def query_scene(self, operation: str, params: dict, *, cancelled: threading.Event | None = None) -> dict:
         return self._object("query_scene", operation=operation, params=params, timeout=65, cancelled=cancelled)

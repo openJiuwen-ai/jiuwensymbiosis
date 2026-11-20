@@ -15,6 +15,7 @@ from ..common.scene_catalog import resolve_scene
 from .jumper_motion import JumperMotion
 from .jumper_policy import JumperPolicy
 from .mujoco_runtime import MujocoCamera, MujocoPolicyRuntime
+from .policy_actions import action_controls
 
 
 class JumperRuntime(MujocoPolicyRuntime):
@@ -30,7 +31,20 @@ class JumperRuntime(MujocoPolicyRuntime):
         if self.asset.asset.preview_mode != "jumper" or settings.robot_id:
             raise ValueError("Jumper 模式需要索引中的官方 Jumper 模型和策略包。")
         try:
-            self.policy = JumperPolicy(self.asset.paths["policy_bundle"])
+            self.policy = JumperPolicy(self.asset.paths["policy_bundle"], self.asset.paths)
+            self.actions = [
+                "jump",
+                "set_gripper",
+                "claw_aperture",
+                "jumper_posture",
+                "claw_pose",
+                "claw_step",
+                "stow_claw",
+                *self.policy.durations,
+            ]
+            if "ref_free_jump" in self.policy.contracts:
+                self.actions.append("ref_free_jump")
+            self.controls = action_controls(self.actions)
             self.physics_dt = self.policy.dt
             root = ET.parse(self.asset.paths["source"]).getroot()
             root.find("compiler").set("meshdir", str(self.asset.paths["source"].parent))
@@ -211,7 +225,8 @@ class JumperRuntime(MujocoPolicyRuntime):
             "collision": True,
             "policy_mode": self.policy.fsm.mode,
             "running_policy": self.policy.fsm.running_policy,
-            "policy_actions": ["jump", "set_gripper"],
+            "policy_actions": self.actions,
+            "policy_controls": self.controls,
             "gripper": self.motion.gripper_snapshot(),
             "command": list(self._command),
             "motion_tolerances": {

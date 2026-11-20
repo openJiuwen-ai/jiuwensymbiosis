@@ -48,6 +48,12 @@
     <button data-base="stop" class="danger" disabled>停止机器人</button>
   </div>
 </section>
+  <form id="policy-controls" class="camera-toolbar" hidden>
+    <label>官方动作 <select name="kind"></select></label>
+    <fieldset data-fields aria-label="动作参数"></fieldset>
+    <button type="submit">执行动作</button>
+    <output aria-live="polite"></output>
+  </form>
   <section class="camera-toolbar" aria-label="观察视角控制" title="仅调整观察相机，不移动机器人"><span class="control-caption">视角</span><div class="camera-buttons">
     <button data-camera="left" title="左转" aria-label="左转" disabled>←</button><button data-camera="right" title="右转" aria-label="右转" disabled>→</button><button data-camera="up" title="抬高" aria-label="抬高" disabled>↑</button><button data-camera="down" title="降低" aria-label="降低" disabled>↓</button><span class="divider"></span><button data-camera="in" title="拉近" aria-label="拉近" disabled>＋</button><button data-camera="out" title="拉远" aria-label="拉远" disabled>−</button>
   </div></section>

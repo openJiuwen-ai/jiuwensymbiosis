@@ -213,7 +213,7 @@ async def test_readonly_chat_reuses_agent_and_discards_late_ui_callback(monkeypa
 
 
 @pytest.mark.parametrize("default_output", [False, True])
-@pytest.mark.parametrize("turns", [1, 2])
+@pytest.mark.parametrize("turns", [1, 8])
 @pytest.mark.timeout(25)
 def test_shared_agent_sends_camera_pixels_to_model_without_motion(
     preview, tmp_path, monkeypatch, default_output, turns
@@ -321,6 +321,7 @@ def test_shared_agent_sends_camera_pixels_to_model_without_motion(
     assert preview.capture_image.call_count == turns
     assert len({item["id"] for item in results}) == turns
     assert all(item["execution_status"] == "completed" for item in results)
+    assert all(not (expected_output / "workspace" / item["id"] / ".workspace").exists() for item in results)
     preview.acquire_motion.assert_not_called()
 
 

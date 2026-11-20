@@ -10,6 +10,13 @@ import os
 from pathlib import Path
 
 
+def source_checkout() -> Path | None:
+    checkout = Path(__file__).resolve().parents[2]
+    if (checkout / "pyproject.toml").is_file() and (checkout / "configs/simulators").is_dir():
+        return checkout
+    return None
+
+
 def simulator_root() -> Path:
     """Use an explicit data root, a source checkout, or a writable user directory.
 
@@ -23,7 +30,4 @@ def simulator_root() -> Path:
         if not root.is_absolute():
             raise ValueError("JIUWENSYMBIOSIS_SIMULATOR_HOME must be an absolute path")
         return root.resolve()
-    checkout = Path(__file__).resolve().parents[2]
-    if (checkout / "pyproject.toml").is_file() and (checkout / "configs/simulators").is_dir():
-        return checkout
-    return Path.home() / ".jiuwensymbiosis" / "simulators"
+    return source_checkout() or Path.home() / ".jiuwensymbiosis" / "simulators"
