@@ -1,6 +1,6 @@
-# 仿真指南（simulaiton-guide）
+# 仿真指南（simulation-guide）
 
-[English](../../en/how-to/simulaiton-guide.md)
+[English](../../en/how-to/simulation-guide.md)
 
 本页统一说明仿真后端安装、资产接入、工作台操作、Jumper/Microduck 控制和本地验收。
 Genesis 与 MuJoCo 共用工作台、视频、Agent 工具、控制租约和取消机制，在「后端」中选择。
@@ -28,8 +28,8 @@ python3.12 -m venv .venv-sim4
 .venv-sim4/bin/python -m pip install --upgrade pip
 ```
 
-`genesis` 统一作为 Mac 与 Linux 的安装项，通过标准平台条件选择依赖，支持 pip。
-Genesis/Nyx 仅支持 Linux/NVIDIA，使用 `torch==2.11.0+cu130`；Mac 使用 MuJoCo。
+`genesis` 安装项仅面向 Linux/NVIDIA；Mac 的仿真组合使用 MuJoCo，不需要 `genesis`。
+Genesis/Nyx 仅支持 Linux/NVIDIA，使用 `torch==2.11.0+cu130`。
 平台条件不检测 GPU 或驱动，Linux 仍须使用下方 CUDA 下载源；缺少 CUDA 包时安装失败，不会回退到 CPU 版。
 
 按需要选择安装组合：
@@ -38,13 +38,12 @@ Genesis/Nyx 仅支持 Linux/NVIDIA，使用 `torch==2.11.0+cu130`；Mac 使用 M
 |---|---|
 | MuJoCo 最小工作台与 MJCF 检视 | `.[gui,mujoco]` |
 | MuJoCo + Jumper / Microduck 控制 | `.[gui,mujoco,jumper,microduck]`（机器人 extra 可按需保留） |
-| Mac Genesis 演示 | `.[gui,genesis]` |
-| Mac 两套后端与两款机器人 | `.[gui,genesis,mujoco,jumper,microduck]` |
 
-Mac 仅使用 Genesis 时安装 `.[gui,genesis]`；例如，同时使用两套后端及机器人控制：
+Mac（Apple Silicon）不支持 Genesis 渲染，使用上面的 MuJoCo 组合即可。例如，同时启用
+MuJoCo 工作台与 Jumper / Microduck 控制：
 
 ```bash
-.venv-sim4/bin/python -m pip install -e '.[gui,genesis,mujoco,jumper,microduck]'
+.venv-sim4/bin/python -m pip install -e '.[gui,mujoco,jumper,microduck]'
 .venv-sim4/bin/python -m pip check
 ```
 
@@ -163,7 +162,7 @@ roots:
 Genesis 资产也在同一配置中登记：GenieSim 使用 `scanner: geniesim`，SpiritAI 使用
 `scanner: spiritai`，其他 USD 目录按 `content_tree` 声明分类；机器人需要匹配 URDF 或
 `export_manifest.json`，文件级入口与材质关联格式见本页[高级资产配置与查询](#高级资产配置与查询)。
-Mac Genesis 不开放这些 USD/URDF 场景。
+这些 USD/URDF 场景仅在 Linux/NVIDIA 的 Genesis 后端开放，Mac 仅使用 MuJoCo（MJCF）。
 
 ```bash
 .venv-sim4/bin/python -m jiuwensymbiosis.simulators.assets build
@@ -338,7 +337,7 @@ Linux / NVIDIA 的 Genesis 加载 MOZ1 后，「相机视角」可切换以下�
 | 左手相机、右手相机 | 从对应手部挂载位置观察，均为 640×480。 |
 
 Jumper、Microduck 还提供 640×480 的 head_cam；普通 MJCF 可选择模型中命名的相机。
-Mac Genesis 仅提供演示的观察视角。机器人相机随连杆运动，使用模型中的镜头参数，不能用观察视角的拖动、点选或聚焦功能。
+机器人相机随连杆运动，使用模型中的镜头参数，不能用观察视角的拖动、点选或聚焦功能。
 底盘物理模式中的上身关节保留自由度，由位置控制保持初始姿态；手部画面可能被夹爪或身体遮挡。
 
 ## 手动移动机器人
@@ -942,6 +941,55 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 这些检查覆盖动态图像、相机、重连、退出和编码，不代表室内接触物理、机器人任务或浏览器界面已验收。
 
+### Genesis 启动耗时与编译缓存
+
+`startup.phases_ms` 记录各阶段的墙钟耗时，阶段可能嵌套。`startup.quadrants_cache` 是
+`gs.init()` 后读到的实际编译缓存配置，`available=false` 表示无法从 SDK 读取配置。
+`startup.total_ms` 从 worker 启动计至首帧 RGB 完成同步。浏览器的 WebRTC 连接、解码和显示另行计时。
+
+在启动仿真的进程中可设置 `QD_OFFLINE_CACHE_FILE_PATH` 为本地目录，并可用
+`QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES` 指定缓存容量，范围为 1 到 2147483647 字节的整数。
+设置从下一次启动 worker 时生效。空目录可能触发重新编译，比较耗时时应核对 worker 状态中的实际配置。
+
 ### Genesis 机械臂规划
 
-`planning_profile` 仅用于 Genesis 的物理机器人模式。主仓的 cuRobo 规划、命名夹爪与实测抓取证据继续可用。MuJoCo 的机器人策略不会启用这些机械臂接口。
+按上游 CUDA 指南构建 [cuRobo V2 提交 `78fd485`](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a)
+（验证版本 `0.8.0.post1.dev43`，Apache-2.0）。集成使用 `MotionPlanner` 和 `MotionPlannerCfg`。
+Python 的 `PreviewSettings` 和 `GenesisPreview.configure()` 在 `backend="genesis"`、
+`robot_mode="moz1_wheels"` 下接受 `planning_profile`。工作台暂未提供这个配置入口。规划机械臂运动前须停稳底盘。
+
+`configs/simulators/planning/` 下的配置支持 JSON 和 YAML。使用 MOZ1 时，将 `MOZ1_XRDF`
+指向与 URDF 匹配、已更新拟合球的外部 `moz1.xrdf`。`moz1-graspgenx.json` 继承
+`moz1.json`，要求新版 XRDF 和对应准备后模型的 SHA-256 均匹配。XRDF 包含六个腕部和手指
+链节的 MorphIt 拟合结果。加载器记录来源哈希和自碰撞忽略理由。验证 Panda 模型和规划器时，
+将 `CUROBO_FRANKA_CONFIG` 指向该 cuRobo checkout 中的 Franka 配置。Panda 是验证参考，当前无对应的固定臂预览模式。
+
+设置 `MOZ1_XRDF` 后，在仓库根目录解析 GraspGenX 配置，并在启动预览前传入配置路径。
+解析后的文件仍引用外部 XRDF，运行时须保证 worker 能读取该资产。
+
+```python
+import json
+from pathlib import Path
+
+from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
+from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+
+profile = load_profile(Path("configs/simulators/planning/moz1-graspgenx.json"))
+resolved = Path("outputs/arm-planning/moz1-graspgenx.json").resolve()
+resolved.parent.mkdir(parents=True, exist_ok=True)
+resolved.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+
+preview = GenesisPreview()
+preview.configure(width=1280, height=720, fps=30, backend="genesis",
+                  robot_mode="moz1_wheels", planning_profile=str(resolved))
+```
+
+cuRobo 通过机器人碰撞球和场景障碍包围盒规划避障，结果以
+`collision_validation.method=curobo_motion_planner` 标明。当前执行路径没有独立的 FCL
+初态、端点和路径复核，因此规划成功无法确认网格级无碰撞。
+`collision_source.adjacent_self_collision_pairs` 说明设计上重叠的相邻球豁免，记录在
+`collision_provenance` 中。抓取结果由 Genesis 执行时实测。
+
+2026-11-20 的单次 Chrome 验证中，MOZ1 抬升约 8.2 cm，并通过 2 秒保持确认。Agent 随后未发出
+放置动作，持续悬空约 48 秒后，相对平移超过 3 mm 并触发 `payload_slip`。该次验证覆盖
+一次抬升与短时保持，稳定抓持和放置仍需闭环验收。

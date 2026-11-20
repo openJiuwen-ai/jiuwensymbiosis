@@ -91,7 +91,7 @@ python -m pip install -e ".[calib]"
 Extras can be combined, for example `.[full,piper]`, `.[full,so101]`, or `.[full,cruzr]`; commands containing `[full]` still require the
 PyTorch CUDA 12.8 extra index shown above.
 
-Genesis / MuJoCo simulation uses a separate environment; installation, asset setup and operation are in the [Simulation Guide](../how-to/simulaiton-guide.md).
+Genesis / MuJoCo simulation uses a separate environment; installation, asset setup and operation are in the [Simulation Guide](../how-to/simulation-guide.md).
 
 ## 6. Install version-pinned runtime dependencies
 

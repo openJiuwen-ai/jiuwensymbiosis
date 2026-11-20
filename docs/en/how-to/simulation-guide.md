@@ -1,6 +1,6 @@
-# Simulation Guide (simulaiton-guide)
+# Simulation Guide (simulation-guide)
 
-[中文](../../zh/how-to/simulaiton-guide.md)
+[中文](../../zh/how-to/simulation-guide.md)
 
 The simulation workbench shares video streaming, Agent tools, control leases and cancellation.
 Choose **Genesis** or **MuJoCo** in the backend selector. Genesis remains the default;
@@ -36,11 +36,11 @@ It does not require Genesis, Torch, CUDA or MuJoCo Studio. To enable both robot 
 .venv-sim4/bin/python -m pip install -e '.[gui,mujoco,jumper,microduck]'
 ```
 
-For Genesis alone on Apple Silicon, install `.[gui,genesis]`. For both backends, install
-`.[gui,genesis,mujoco,jumper,microduck]` instead. Genesis brings its own SDK dependencies.
+On Apple Silicon use the MuJoCo combinations above; Genesis is Linux/NVIDIA only and brings
+its own SDK dependencies.
 Keep core `.[dev]` tests in a separate environment because their Pillow requirement conflicts
-with Genesis's pinned version. The single `genesis` extra uses standard platform markers supported by pip. Mac selects regular
-Torch for MuJoCo tools; Genesis/Nyx requires Linux with `torch==2.11.0+cu130`. Markers do not detect GPU
+with Genesis's pinned version. The `genesis` extra targets Linux with `torch==2.11.0+cu130`;
+the MuJoCo extras do not require Torch. Markers do not detect GPU
 hardware or drivers. Linux still requires the CUDA package index below; unavailable CUDA wheels
 cause installation failure rather than CPU fallback.
 Use a new environment for MuJoCo 4: its distribution split can cause file conflicts when
@@ -331,7 +331,7 @@ http://127.0.0.1:8114 in the workbench's GroundingDINO + SAM2 panel; a manually 
 server is externally managed. Session cleanup does not stop it. Local Model mode instead owns
 its subprocess and needs an already compatible environment. The Nyx alignment guard covers
 the documented SDK versions. Detailed perception and stopping semantics remain in the
-[Chinese section of this guide](../../zh/how-to/simulaiton-guide.md#查询状态与使用-agent).
+[Chinese section of this guide](../../zh/how-to/simulation-guide.md#查询状态与使用-agent).
 
 ## Jumper control
 
@@ -434,7 +434,7 @@ Do not combine this profile with `full`, `vision-server` or `voice-local` (diffe
 or `dev`/`remote` (Pillow>=12). CPU tests can use `.[dev,gui,simulator-scenes]`.
 Source USD and texture files stay unchanged; roots that declare `material_rules` get a
 non-destructive material conversion and texture bake before rendering (see the
-[source material rendering section](../../zh/how-to/simulaiton-guide.md#源材质渲染)), with per-material details in
+[source material rendering section](../../zh/how-to/simulation-guide.md#源材质渲染)), with per-material details in
 the output directory's `material-repair.json`.
 Every USD also gets a material audit: native OmniPBR/UsdPreviewSurface stay unchanged, and
 OmniGlass is recognized automatically by a common shader-family rule for every USD asset
@@ -651,6 +651,62 @@ of indoor contacts, robot tasks or browser behavior.
 Agent tools use the upstream `effector` selector. Direct Jumper Python calls still accept legacy `side`; omitting a selector defaults to the left claw.
 
 
+### Genesis startup and compilation cache
+
+Inspect `startup.phases_ms` for wall-clock timings and `startup.quadrants_cache` for the effective
+compiler cache settings read after `gs.init()`. Phases can be nested. `startup.total_ms` spans worker
+startup through the first synchronized RGB frame. Browser WebRTC connection, decoding, and display
+have their own timings. A cache report with `available=false` means the SDK settings could not be read.
+
+Set `QD_OFFLINE_CACHE_FILE_PATH` to a local directory and, optionally,
+`QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES` to an integer from 1 to 2147483647 bytes in the process that
+starts the simulation. Changes apply to the next worker. An empty cache directory may require
+recompilation. Check the effective settings in the worker status when comparing startups.
+
 ### Genesis arm planning
 
-`planning_profile` is supported only for Genesis physical robot mode. Upstream cuRobo planning, named effectors and measured grasp evidence remain available. Native MuJoCo policies do not enable these arm interfaces.
+Build [cuRobo V2 at commit `78fd485`](https://github.com/NVlabs/curobo/tree/78fd485fa82d9b9a063fb4985e371814587e666a)
+using its CUDA build instructions (tested version `0.8.0.post1.dev43`, Apache-2.0). The integration uses
+`MotionPlanner` and `MotionPlannerCfg`. The Python `PreviewSettings` and `GenesisPreview.configure()`
+interfaces accept `planning_profile` with `backend="genesis"` and `robot_mode="moz1_wheels"`.
+The workbench currently has no planning-profile control. Keep the base stopped before planning arm motion.
+
+The profiles under `configs/simulators/planning/` accept JSON and YAML. For MOZ1, set `MOZ1_XRDF`
+to the external refitted `moz1.xrdf` that matches the URDF. `moz1-graspgenx.json` extends `moz1.json`
+and requires the refitted XRDF's exact SHA-256 and the corresponding prepared-model SHA-256.
+The XRDF contains the MorphIt fit for six wrist and finger links. The loader records the source
+checksum and self-collision exclusion rationale. For Panda model/planner validation, set
+`CUROBO_FRANKA_CONFIG` to the Franka configuration in that cuRobo checkout. Panda is a validation
+reference with no fixed-arm preview mode.
+
+From the repository root with `MOZ1_XRDF` set, resolve the GraspGenX profile and configure the
+preview before starting it. The resolved file retains a reference to the XRDF, so keep the asset
+accessible to the worker.
+
+```python
+import json
+from pathlib import Path
+
+from jiuwensymbiosis.simulators.genesis.planning_profile import load_profile
+from jiuwensymbiosis.simulators.genesis.preview import GenesisPreview
+
+profile = load_profile(Path("configs/simulators/planning/moz1-graspgenx.json"))
+resolved = Path("outputs/arm-planning/moz1-graspgenx.json").resolve()
+resolved.parent.mkdir(parents=True, exist_ok=True)
+resolved.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+
+preview = GenesisPreview()
+preview.configure(width=1280, height=720, fps=30, backend="genesis",
+                  robot_mode="moz1_wheels", planning_profile=str(resolved))
+```
+
+cuRobo plans against robot spheres and scene obstacle boxes. The result field
+`collision_validation.method=curobo_motion_planner` identifies that check. An independent FCL check
+of the start, endpoint, and path is absent, so planning success does not establish mesh-level
+clearance. `collision_source.adjacent_self_collision_pairs` documents designed sphere overlaps and
+is retained in `collision_provenance`. Genesis measures the grasp outcome during execution.
+
+In a single Chrome trial on 2026-11-20, MOZ1 lifted the object about 8.2 cm and passed a two-second
+hold check. The agent issued no placement, and relative translation exceeded 3 mm after about
+48 seconds suspended, triggering `payload_slip`. The trial establishes a single lift and short hold.
+Reliable holding and placement still require end-to-end acceptance.

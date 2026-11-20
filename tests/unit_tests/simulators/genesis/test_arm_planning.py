@@ -1,6 +1,8 @@
 """Robot-independent motion contracts: smooth limits, stale state and physical stop."""
 
+import hashlib
 import json
+import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -188,6 +190,59 @@ def test_asset_spheres_require_matching_prepared_model(tmp_path, matching):
             CuroboPlanner(manifest, loaded, tmp_path / "plans")
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_failed_curobo_refresh_discards_backend_before_retry(tmp_path, monkeypatch, cleanup_fails):
+    manifest, profile = model(tmp_path)
+    first_world = {"cuboid": {"first": {}}}
+    next_world = {"cuboid": {"next": {}}}
+
+    def create_backend(world):
+        backend = Mock(joint_names=["slide"], world=world)
+
+        def update_world(updated):
+            backend.world = updated
+
+        backend.update_world.side_effect = update_world
+        return backend
+
+    constructor = Mock(side_effect=create_backend)
+    monkeypatch.setitem(
+        sys.modules,
+        "curobo.motion_planner",
+        SimpleNamespace(
+            MotionPlanner=constructor,
+            MotionPlannerCfg=SimpleNamespace(create=lambda **kwargs: kwargs["scene_model"]),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "curobo.kinematics",
+        SimpleNamespace(KinematicsCfg=Mock()),
+    )
+    monkeypatch.setitem(sys.modules, "curobo.scene", SimpleNamespace(Scene=SimpleNamespace(create=lambda world: world)))
+
+    planner = CuroboPlanner(manifest, profile, tmp_path)
+    state = {"slide": 0.0, "follower": 0.1}
+    planner.prepare_motion("tool", state, first_world)
+    stale = planner.backend
+    planner.prepare_motion("tool", state, first_world)
+    assert planner.backend is stale and planner.prepare_timing["backend_reused"]
+
+    stale.reset_seed.side_effect = RuntimeError("refresh failed")
+    if cleanup_fails:
+        stale.destroy.side_effect = RuntimeError("cleanup failed")
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        planner.prepare_motion("tool", state, next_world)
+    assert stale.world == next_world
+    stale.destroy.assert_called_once_with()
+
+    planner.prepare_motion("tool", state, first_world)
+    assert planner.backend is not stale
+    assert planner.backend.world == first_world
+    assert not planner.prepare_timing["backend_reused"]
+    assert constructor.call_count == 2
+
+
 def test_fixed_zero_axis_is_not_normalized():
     root = ET.fromstring(
         '<robot><link name="a"/><link name="b"/><joint name="j" type="fixed"><parent link="a"/><child link="b"/><axis xyz="0 0 0"/></joint></robot>'
@@ -304,6 +359,34 @@ def test_profile_external_source_is_hashed_and_limits_are_explicit(tmp_path, mon
     source.write_text("{}")
     with pytest.raises(ValueError, match="source changed"):
         CuroboPlanner(manifest, loaded, tmp_path / "invalid")
+
+
+def test_grasp_profile_rejects_a_different_collision_source(tmp_path, monkeypatch):
+    _, profile = model(tmp_path)
+    source = tmp_path / "moz1.xrdf"
+    spheres = profile.pop("collision_spheres")
+    xrdf = {
+        "world_collision": {"geometry": "fit"},
+        "geometry": {"fit": {"spheres": spheres}},
+        "self_collision": {"ignore": {}},
+    }
+    source.write_text(json.dumps(xrdf))
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    monkeypatch.setenv("MOZ1_XRDF", str(source))
+    profile["collision_source"] = {"format": "xrdf", "path": "${MOZ1_XRDF}", "ignore_rationale": "No exclusions"}
+    (tmp_path / "base.json").write_text(json.dumps(profile))
+    grasp = tmp_path / "grasp.json"
+    grasp.write_text(
+        json.dumps({"schema_version": 1, "arm_profile": "base.json", "collision_source_sha256": source_hash})
+    )
+
+    loaded = load_profile(grasp)
+    assert loaded["collision_spheres"] == spheres
+    assert loaded["collision_provenance"]["sha256"] == source_hash
+    xrdf["geometry"]["fit"]["spheres"]["tip"][0]["radius"] = 0.2
+    source.write_text(json.dumps(xrdf))
+    with pytest.raises(ValueError, match="collision source SHA-256 mismatch"):
+        load_profile(grasp)
 
 
 def test_arm_transport_uses_existing_owner_and_unknown_stop_is_terminal(transport):

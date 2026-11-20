@@ -70,7 +70,7 @@ See [Installation and Quick Start](docs/en/tutorial/01-quick-start.md) for combi
 
 The workbench supports Genesis and MuJoCo as selectable simulation backends. Backend installation,
 external Jumper/Microduck assets, manual and Agent control, and startup/shutdown are documented in the
-[Simulation Guide](docs/en/how-to/simulaiton-guide.md).
+[Simulation Guide](docs/en/how-to/simulation-guide.md).
 
 The unified launcher selects a GUI plugin; this repository currently ships `workbench`:
 

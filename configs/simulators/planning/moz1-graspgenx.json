@@ -28,5 +28,6 @@
     "right_hand_narrow1_joint": -0.61
   },
   "robot_collision_policy": "../../../jiuwensymbiosis/simulators/genesis/data/moz1_right_collision.yaml",
-  "collision_model_sha256": "4b70f6792985df8ec6e5cabf1707f9491d46c1141674fb968be0ad50be51bf6c"
+  "collision_model_sha256": "4b70f6792985df8ec6e5cabf1707f9491d46c1141674fb968be0ad50be51bf6c",
+  "collision_source_sha256": "f6233fb396285eaea51cf669751407b6a22f84749d5bc7a6888a8a9b7ccbe982"
 }

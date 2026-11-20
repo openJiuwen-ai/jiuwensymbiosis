@@ -23,14 +23,16 @@ def load_profile(path: Path) -> dict:
             "fixture_posture",
             "robot_collision_policy",
             "collision_model_sha256",
+            "collision_source_sha256",
         }:
             raise ValueError("unexpected fields in grasp planning profile")
         base = (path.parent / profile["arm_profile"]).resolve(strict=True)
         model = yaml.safe_load(base.read_text())
         if model.get("schema_version") != 1 or "arm_profile" in model or "grasp_pose_configs" in model:
             raise ValueError("expected a standalone base arm profile")
-        if "collision_model_sha256" in profile:
-            model["collision_model_sha256"] = profile["collision_model_sha256"]
+        for field in ("collision_model_sha256", "collision_source_sha256"):
+            if field in profile:
+                model[field] = profile[field]
         model["tabletop_fixture"] = profile.get("tabletop_fixture", False)
         model["fixture_posture"] = profile.get("fixture_posture", {})
         if "robot_collision_policy" in profile:
@@ -47,9 +49,15 @@ def load_profile(path: Path) -> dict:
         raise ValueError("limits for joints outside configured groups")
     profile["limits"] = {name: defaults | overrides.get(name, {}) for name in sorted(names)}
     reference = profile.pop("collision_source", None)
+    expected_source_hash = profile.pop("collision_source_sha256", None)
+    if expected_source_hash is not None and not reference:
+        raise ValueError("collision source SHA-256 requires a collision source")
     if reference:
         source = (base.parent / os.path.expandvars(reference["path"])).resolve(strict=True)
         raw = source.read_bytes()
+        source_hash = hashlib.sha256(raw).hexdigest()
+        if expected_source_hash is not None and source_hash != expected_source_hash:
+            raise ValueError("collision source SHA-256 mismatch")
         data = yaml.safe_load(raw)
         if reference["format"] == "xrdf":
             spheres = data["geometry"][data["world_collision"]["geometry"]]["spheres"]
@@ -84,7 +92,7 @@ def load_profile(path: Path) -> dict:
                 values.append(second)
         profile["collision_provenance"] = {
             "path": str(source),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": source_hash,
             "ignore_rationale": reference["ignore_rationale"],
             "adjacent_self_collision_pairs": adjacent,
         }

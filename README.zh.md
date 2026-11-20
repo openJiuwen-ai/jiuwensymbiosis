@@ -69,7 +69,7 @@ python -m pip install -e ".[full]" \
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
 
 工作台支持选择 Genesis 或 MuJoCo 仿真后端。后端安装、Jumper/Microduck 外部资产接入、
-手动与 Agent 控制、启动与关闭统一见 [仿真指南](docs/zh/how-to/simulaiton-guide.md)。
+手动与 Agent 控制、启动与关闭统一见 [仿真指南](docs/zh/how-to/simulation-guide.md)。
 
 统一启动器通过 GUI 插件 key 选择界面；本仓库当前提供 `workbench`：
 

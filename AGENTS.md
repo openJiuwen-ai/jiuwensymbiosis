@@ -348,9 +348,12 @@ jiuwensymbiosis/          # Main package
   skills/                 # Built-in SKILL.md files (visual_pick, visual_place, transport)
   perception/             # Body-agnostic vision: frame, calibration, object_geometry, scene3d
   motion/                 # Body-agnostic motion: base_goal, approach, diff_drive, dual_arm, lift
-  simulators/             # Genesis/Nyx simulator: assets index, scene runtime + worker,
-                          #   material repair/baking (rules declared per root in assets.yaml), occupancy export,
+  simulators/             # Simulation host + engine backends: assets index, material
+                          #   repair/baking (rules declared per root in assets.yaml), occupancy export,
                           #   generic robot-model preparation and loaded-collision admission
+    common/               # Engine-agnostic host: agent, preview + worker, WebRTC video, web routes
+    genesis/              # Genesis/Nyx backend: scene runtime, cuRobo arm planning/IK, Nyx rendering
+    mujoco/               # MuJoCo backend: Jumper and Microduck runtimes (MJCF assets)
   adapters/
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)

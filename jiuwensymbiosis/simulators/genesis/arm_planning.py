@@ -178,7 +178,15 @@ class CuroboPlanner:
     def _prepare(self, group_name, state, world, *, ik_only=False):
         self.prepare_timing = {"backend_reused": False, "backend_create_s": 0.0, "warmup_s": 0.0}
         with timed(self.prepare_timing, "prepare_s"):
-            return self._prepare_backend(group_name, state, world, ik_only=ik_only)
+            try:
+                return self._prepare_backend(group_name, state, world, ik_only=ik_only)
+            except Exception as error:
+                # A failed in-place refresh can leave CUDA graphs bound to mixed state.
+                try:
+                    self.close()
+                except Exception as cleanup_error:
+                    error.add_note(f"cuRobo backend disposal failed: {cleanup_error}")
+                raise
 
     def _prepare_backend(self, group_name, state, world, *, ik_only=False):
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
@@ -453,7 +461,8 @@ class CuroboPlanner:
         return trajectory
 
     def close(self):
-        if self.backend is not None:
-            self.backend.destroy()
-            self.backend = None
+        backend, self.backend = self.backend, None
         self.key = None
+        self.backend_structure = None
+        if backend is not None:
+            backend.destroy()
