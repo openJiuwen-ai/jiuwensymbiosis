@@ -164,6 +164,30 @@ def test_bad_profile_or_changed_model_rejected_before_gpu(tmp_path, bad):
         CuroboPlanner(manifest, profile, tmp_path / "plans")
 
 
+@pytest.mark.parametrize("matching", [True, False])
+def test_asset_spheres_require_matching_prepared_model(tmp_path, matching):
+    manifest, profile = model(tmp_path)
+    profile["collision_model_sha256"] = manifest["model_sha256"] if matching else "0" * 64
+    path = tmp_path / "base.json"
+    path.write_text(json.dumps(profile))
+    wrapper = tmp_path / "grasp.json"
+    wrapper.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "arm_profile": "base.json",
+                "collision_model_sha256": profile["collision_model_sha256"],
+            }
+        )
+    )
+    loaded = load_profile(wrapper)
+    if matching:
+        CuroboPlanner(manifest, loaded, tmp_path / "plans").close()
+    else:
+        with pytest.raises(ValueError, match="do not match the prepared model"):
+            CuroboPlanner(manifest, loaded, tmp_path / "plans")
+
+
 def test_fixed_zero_axis_is_not_normalized():
     root = ET.fromstring(
         '<robot><link name="a"/><link name="b"/><joint name="j" type="fixed"><parent link="a"/><child link="b"/><axis xyz="0 0 0"/></joint></robot>'

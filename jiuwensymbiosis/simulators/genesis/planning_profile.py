@@ -7,48 +7,6 @@ import os
 from pathlib import Path
 
 
-def _apply_sphere_overrides(profile: dict, path: Path) -> None:
-    """Replace fitted link geometry while retaining the external body's policy."""
-    import yaml
-
-    path = path.resolve(strict=True)
-    raw = path.read_bytes()
-    data = yaml.safe_load(raw)
-    provenance = profile.get("collision_provenance", {})
-    if not isinstance(data, dict) or data.get("schema_version") != 1:
-        raise ValueError("unsupported sphere override schema")
-    if not provenance or data.get("base_collision_sha256") != provenance["sha256"]:
-        raise ValueError("sphere overrides require the matching collision source")
-    model_hash = data.get("prepared_model_sha256", "")
-    if not isinstance(model_hash, str) or len(model_hash) != 64 or any(c not in "0123456789abcdef" for c in model_hash):
-        raise ValueError("sphere overrides require a prepared model hash")
-    spheres = profile["collision_spheres"]
-    replacements = data.get("collision_spheres")
-    removed = data.get("remove_links", [])
-    if (
-        not isinstance(replacements, dict)
-        or not replacements
-        or set(replacements) - set(spheres)
-        or any(not isinstance(entries, list) or not entries for entries in replacements.values())
-        or not isinstance(removed, list)
-        or any(not isinstance(link, str) or link not in spheres or link in replacements for link in removed)
-    ):
-        raise ValueError("sphere overrides must replace known links with nonempty sphere lists")
-    profile["collision_spheres"] = {k: replacements.get(k, v) for k, v in spheres.items() if k not in removed}
-    profile["self_collision_ignore"] = {
-        k: [v for v in values if v not in removed]
-        for k, values in profile["self_collision_ignore"].items()
-        if k not in removed
-    }
-    provenance["sphere_overrides"] = {
-        "path": str(path),
-        "sha256": hashlib.sha256(raw).hexdigest(),
-        "prepared_model_sha256": model_hash,
-        "replaced_links": sorted(replacements),
-        "removed_links": removed,
-    }
-
-
 def load_profile(path: Path) -> dict:
     import yaml
 
@@ -57,7 +15,6 @@ def load_profile(path: Path) -> dict:
     if not isinstance(profile, dict) or profile.get("schema_version") != 1:
         raise ValueError("unsupported planning profile schema")
     references = profile.pop("grasp_pose_configs", {})
-    sphere_overrides = profile.pop("collision_sphere_overrides", None)
     if "arm_profile" in profile:
         if set(profile) - {
             "arm_profile",
@@ -65,12 +22,15 @@ def load_profile(path: Path) -> dict:
             "tabletop_fixture",
             "fixture_posture",
             "robot_collision_policy",
+            "collision_model_sha256",
         }:
             raise ValueError("unexpected fields in grasp planning profile")
         base = (path.parent / profile["arm_profile"]).resolve(strict=True)
         model = yaml.safe_load(base.read_text())
         if model.get("schema_version") != 1 or "arm_profile" in model or "grasp_pose_configs" in model:
             raise ValueError("expected a standalone base arm profile")
+        if "collision_model_sha256" in profile:
+            model["collision_model_sha256"] = profile["collision_model_sha256"]
         model["tabletop_fixture"] = profile.get("tabletop_fixture", False)
         model["fixture_posture"] = profile.get("fixture_posture", {})
         if "robot_collision_policy" in profile:
@@ -128,8 +88,6 @@ def load_profile(path: Path) -> dict:
             "ignore_rationale": reference["ignore_rationale"],
             "adjacent_self_collision_pairs": adjacent,
         }
-    if sphere_overrides is not None:
-        _apply_sphere_overrides(profile, path.parent / os.path.expandvars(sphere_overrides))
     # Referenced configs are optional; ordinary motion profiles need no model service.
     backends = {}
     for mode, filename in references.items():

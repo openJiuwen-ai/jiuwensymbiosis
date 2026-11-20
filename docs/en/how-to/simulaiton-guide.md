@@ -88,6 +88,33 @@ The resident world can also be released from another terminal:
 
 If the background service is already absent, the command reports that explicitly.
 
+### Unified local simulation environment
+
+The local Linux deployment uses the Conda `symbiosis_genesis` Python for the workbench,
+Genesis, MuJoCo, cuRobo and GraspGenX, retaining their separate processes. Physics stays
+on CPU; Nyx rendering, cuRobo and GraspGenX stay on GPU.
+
+From the Symbiosis repository root, activate the Linux simulation environment and run:
+
+```bash
+python -m pip install -e '.[gui,genesis,genesis-graspgenx]' --extra-index-url https://download.pytorch.org/whl/cu130
+bash scripts/simulator/install_graspgenx.sh
+```
+
+The first command includes the GraspGenX client. Add `mujoco` to the extras if needed.
+The second command fetches the pinned upstream checkout, applies the
+[compatibility patch](../../../configs/simulators/graspgenx-runtime.patch) once,
+installs its `serve` extra with the [Linux constraints](../../../configs/simulators/runtime-constraints-linux.txt)
+using the active Python, and runs `pip check`. Running it again reuses the checkout.
+Supply the released model configuration and gripper assets when starting the eager service:
+
+```bash
+export GRASPGENX_CHECKPOINT_DIR=/path/to/checkpoints
+export GRASPGENX_GRIPPER_CFG_DIR=/path/to/gripper-assets
+python "${XDG_DATA_HOME:-$HOME/.local/share}/jiuwensymbiosis/vendor/GraspGenX/client-server/graspgenx_server.py" \
+    --config "$GRASPGENX_CHECKPOINT_DIR/release" --assets_dir "$GRASPGENX_GRIPPER_CFG_DIR" --host 127.0.0.1 --port 5558
+```
+
 ## Add assets
 
 The source distribution includes integration code and scripts, without robot models, meshes,
@@ -626,4 +653,4 @@ Agent tools use the upstream `effector` selector. Direct Jumper Python calls sti
 
 ### Genesis arm planning
 
-`planning_profile` is supported only for Genesis physical robot mode. Upstream cuRobo planning, named effectors and measured grasp evidence remain available; see [Genesis arm planning](genesis-arm-planning.md). Native MuJoCo policies do not enable these arm interfaces.
+`planning_profile` is supported only for Genesis physical robot mode. Upstream cuRobo planning, named effectors and measured grasp evidence remain available. Native MuJoCo policies do not enable these arm interfaces.

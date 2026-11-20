@@ -138,12 +138,9 @@ class CuroboPlanner:
             source = Path(provenance["path"])
             if hashlib.sha256(source.read_bytes()).hexdigest() != provenance["sha256"]:
                 raise ValueError("collision profile source changed")
-            fitted = provenance.get("sphere_overrides")
-            if fitted:
-                if hashlib.sha256(Path(fitted["path"]).read_bytes()).hexdigest() != fitted["sha256"]:
-                    raise ValueError("collision sphere overrides changed")
-                if fitted["prepared_model_sha256"] != manifest["model_sha256"]:
-                    raise ValueError("collision sphere overrides do not match the prepared model")
+        fitted_model = profile.get("collision_model_sha256")
+        if fitted_model is not None and fitted_model != manifest["model_sha256"]:
+            raise ValueError("collision spheres do not match the prepared model")
         spheres = profile["collision_spheres"]
         if not spheres or set(spheres) - links:
             raise ValueError("unknown collision sphere links")

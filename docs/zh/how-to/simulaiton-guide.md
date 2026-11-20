@@ -74,6 +74,32 @@ Genesis 的已验证依赖以 [`pyproject.toml`](../../../pyproject.toml) 为准
 可用该环境的 `python -m ensurepip --upgrade` 补装 pip，或按上文重新创建独立 venv。软件 H264 的第三方二进制许可见
 [`Open_Source_Software_Notice.txt`](../../../Open_Source_Software_Notice.txt)。
 
+### 本机统一仿真环境
+
+Linux 本机运行方案统一使用 Conda `symbiosis_genesis` 的 Python：工作台、Genesis、MuJoCo、
+cuRobo 和 GraspGenX 共用依赖环境，仍各自保持进程边界。物理继续使用 CPU，Nyx 渲染、
+cuRobo 和 GraspGenX 继续使用 GPU；统一 Python 环境不会改变执行设备。
+
+在仓库根目录激活 Linux 仿真环境后，依次执行两步：
+
+```bash
+python -m pip install -e '.[gui,genesis,genesis-graspgenx]' --extra-index-url https://download.pytorch.org/whl/cu130
+bash scripts/simulator/install_graspgenx.sh
+```
+
+第一步包含 GraspGenX 客户端。需要 MuJoCo 时，可在同一条命令的方括号内加上 `mujoco`。
+第二步获取固定提交的上游源码，应用[兼容补丁](../../../configs/simulators/graspgenx-runtime.patch)，
+再用当前 Python 按 [Linux 版本约束](../../../configs/simulators/runtime-constraints-linux.txt) 安装
+`serve` 依赖并执行 `pip check`。重复执行会复用源码并跳过已应用的补丁。
+启动 eager 推理服务时，将以下两个路径替换为已准备好的模型配置目录和夹爪资产目录：
+
+```bash
+export GRASPGENX_CHECKPOINT_DIR=/path/to/checkpoints
+export GRASPGENX_GRIPPER_CFG_DIR=/path/to/gripper-assets
+python "${XDG_DATA_HOME:-$HOME/.local/share}/jiuwensymbiosis/vendor/GraspGenX/client-server/graspgenx_server.py" \
+    --config "$GRASPGENX_CHECKPOINT_DIR/release" --assets_dir "$GRASPGENX_GRIPPER_CFG_DIR" --host 127.0.0.1 --port 5558
+```
+
 ## 添加资产
 
 内置「动态物理演示」由代码生成，无需外部模型。资产索引只保存路径与元数据，加载仍需本地文件。
@@ -918,4 +944,4 @@ python -m pytest tests/integration/test_genesis_preview.py -q \
 
 ### Genesis 机械臂规划
 
-`planning_profile` 仅用于 Genesis 的物理机器人模式。主仓的 cuRobo 规划、命名夹爪与实测抓取证据继续可用；配置与操作见 [Genesis 机械臂规划](genesis-arm-planning.md)。MuJoCo 的机器人策略不会启用这些机械臂接口。
+`planning_profile` 仅用于 Genesis 的物理机器人模式。主仓的 cuRobo 规划、命名夹爪与实测抓取证据继续可用。MuJoCo 的机器人策略不会启用这些机械臂接口。

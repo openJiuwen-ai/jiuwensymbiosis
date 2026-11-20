@@ -1,0 +1,24 @@
+# Tested Linux simulation runtime. Install GraspGenX from the documented patched checkout.
+# Constraints do not install packages or change the lightweight client extras.
+numpy==2.3.5
+torch==2.11.0+cu130
+transformers==5.20.0
+trimesh==5.1.1
+diffusers==0.43.0
+huggingface-hub==2.2.0
+genesis-world==1.4.6
+gs-nyx==0.1.9
+gs-nyx-plugin==0.1.10
+mujoco==4.0.1
+mujoco-core==4.0.1
+mujoco-studio==4.0.1
+mujoco-studio-wasm==4.0.1
+onnxruntime==1.31.1
+better-actuator-models==1.0.3
+pyzmq==27.3.0
+msgpack==1.2.4
+msgpack-numpy==0.4.8
+omegaconf==2.4.0
+addict==2.4.0
+aiortc==1.15.0
+av==17.1.0
