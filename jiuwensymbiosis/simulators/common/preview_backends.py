@@ -9,6 +9,7 @@ from typing import Literal
 RobotMode = Literal["inspection", "moz1_wheels", "jumper", "microduck"]
 PhysicsBackend = Literal["genesis", "mujoco"]
 BackendId = Literal["mujoco", "genesis_raster", "genesis_nyx"]
+MUJOCO_VERSION = "4.0.1"
 
 
 @dataclass(frozen=True)

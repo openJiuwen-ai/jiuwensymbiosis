@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.common.agent import make_session
+from jiuwensymbiosis.simulators.common.agent import make_session, simulation_tools
 from jiuwensymbiosis.simulators.common.preview import SimulationPreview
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
@@ -123,6 +123,36 @@ def test_shared_tool_metadata_and_body_commands_include_lateral():
     assert preview.navigate_relative.call_args.args[:4] == ("owner", 0.0, 0.0, 0.5)
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_roller_policy_tools_connect_without_relative_navigation(preview, monkeypatch, enabled):
+    p, state = preview
+    state["settings"] = {"robot_mode": "microduck"}
+    state["robot"] = {
+        "control_mode": "policy_locomotion",
+        "relative_navigation": False,
+        "supports_lateral": False,
+        "policy_actions": ["roller_skate", "mouth"],
+    }
+    action = Mock(return_value={"kind": "roller_skate", "ok": True, "settled": True, "reason": "reached"})
+    monkeypatch.setattr(p, "policy_action", action)
+    session = make_session(p, actions_enabled=enabled)
+    session.strict_capabilities = True
+    with session:
+        names = {m["name"] for m in list_tool_meta(session.api, env=session.env)}
+        assert {"navigate_relative", "rotate_base"}.isdisjoint(names)
+        tools = {tool.card.name: tool for tool in simulation_tools(session.api)}
+        assert tools.keys() == ({"roller_skate", "mouth"} if enabled else set())
+        if enabled:
+            owner = p._motion_owner
+            assert owner
+            assert (await tools["roller_skate"].invoke({"forward": 0.6}))["ok"]
+            assert action.call_args.args == (owner, "roller_skate")
+        else:
+            assert p._motion_owner is None
+            action.assert_not_called()
+    assert p._motion_owner is None
+
+
 def test_failed_action_blocks_followup_in_the_same_session(preview, monkeypatch):
     p, _ = preview
     session = make_session(p)
@@ -134,3 +164,59 @@ def test_failed_action_blocks_followup_in_the_same_session(preview, monkeypatch)
     with pytest.raises(RuntimeError, match="取消"):
         session.api.navigate_relative(0.1)
     session.env.disconnect()
+
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_missed_kick_replans_only_after_fresh_head_image(preview, monkeypatch, settled):
+    p, _ = preview
+    session = make_session(p)
+    driver = session.env.low_level
+    kick = Mock(return_value={"kind": "kick_left", "ok": False, "settled": settled, "reason": "kick_unconfirmed"})
+    move = Mock(return_value={"ok": True, "settled": True, "reason": "reached"})
+    monkeypatch.setattr(p, "policy_action", kick)
+    monkeypatch.setattr(p, "navigate_relative", move)
+
+    with session:
+        before_kick = time.monotonic()
+        feedback = driver.policy_action("kick_left")
+        assert feedback["reason"] == "kick_unconfirmed"
+        assert feedback["recoverable"] is settled
+        if settled:
+            assert feedback["next_observation"] == "capture_camera(head_cam)"
+            driver.accept_camera_observation("head_cam", before_kick)
+            driver.accept_camera_observation("observer", time.monotonic())
+            with pytest.raises(RuntimeError, match="capture_camera"):
+                driver.navigate_relative(0.1)
+            move.assert_not_called()
+            driver.accept_camera_observation("head_cam", time.monotonic())
+            assert driver.navigate_relative(0.1)["ok"]
+        else:
+            driver.accept_camera_observation("head_cam", time.monotonic())
+            with pytest.raises(RuntimeError, match="取消"):
+                driver.navigate_relative(0.1)
+            move.assert_not_called()
+
+
+def test_settled_short_sprint_returns_measured_failure_to_agent(preview, monkeypatch):
+    p, _ = preview
+    session = make_session(p)
+    driver = session.env.low_level
+    monkeypatch.setattr(
+        p,
+        "policy_action",
+        Mock(
+            return_value={
+                "kind": "sprint_2m",
+                "ok": False,
+                "settled": True,
+                "reason": "sprint_short",
+                "forward_displacement_m": 1.999,
+                "after": {"position_m": [1.999, 0, 0.116]},
+            }
+        ),
+    )
+    with session:
+        feedback = driver.policy_action("sprint_2m")
+        assert feedback["reason"] == "sprint_short" and not feedback["ok"]
+        assert feedback["settled"] and feedback["forward_displacement_m"] == 1.999
+        assert "after" not in feedback and not driver.cancelled.is_set()

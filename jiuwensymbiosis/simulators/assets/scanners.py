@@ -19,6 +19,7 @@ import yaml
 from .companions import attach_companions
 from .config import RootSpec
 from .models import Asset, AssetError, asset_id, local_file
+from .policy_files import MICRODUCK_ARENA, MICRODUCK_FILES, jumper_export_files
 
 USD_SUFFIXES = {".usd", ".usda", ".usdc"}
 SUPPORT_DIRS = {
@@ -102,6 +103,96 @@ def _select(stem: str, variants: dict[str, Path]) -> Path | None:
     return next((variants[s] for s in (".usda", ".usd", ".usdc") if s in variants), None)
 
 
+def _scan_microduck(spec: RootSpec, root: Path) -> ScanResult:
+    # Official microduck_rl layout. Indexing MJCF does not grant control capabilities.
+    model_dir = "src/mjlab_microduck/robot/microduck"
+    microduck_paths = {
+        "source": f"{model_dir}/robot_walk.xml",
+        "scene": f"{model_dir}/scene_walk.xml",
+        "code_license": "LICENSE",
+        "model_license": "LICENSE-MODELS.md",
+    }
+    for microduck_file in microduck_paths.values():
+        if not local_file(root, microduck_file).is_file():
+            raise AssetError(f"官方 Microduck 资产缺失：{microduck_file}")
+    policy_paths = {
+        "policy_manifest": "policies/manifest.json",
+        "walking_policy": "policies/velstand.onnx",
+        "policy_reference": "scripts/infer_policy.py",
+        "runtime_scene": f"{model_dir}/scene.xml",
+    }
+    runnable = local_file(root, policy_paths["walking_policy"]).is_file()
+    if runnable:
+        for role, policy_relative in policy_paths.items():
+            if not local_file(root, policy_relative).is_file():
+                raise AssetError(f"Microduck 策略配套文件缺失：{policy_relative}")
+            microduck_paths[role] = policy_relative
+        for filename in MICRODUCK_FILES:
+            if (
+                filename not in {"manifest.json", "velstand.onnx"}
+                and local_file(root, f"policies/{filename}").is_file()
+            ):
+                microduck_paths[Path(filename).stem] = f"policies/{filename}"
+        if "ball_kick_left" in microduck_paths or "ball_kick_right" in microduck_paths:
+            ball_scene = f"{model_dir}/scene_ball.xml"
+            if not local_file(root, ball_scene).is_file():
+                raise AssetError(f"Microduck 踢球场景缺失：{ball_scene}")
+            microduck_paths["runtime_scene"] = ball_scene
+        for name, release in MICRODUCK_ARENA.items():
+            folder = f"policies/arena/{name}"
+            if local_file(root, folder).is_dir():
+                for filename in release["files"]:
+                    relative = f"{folder}/{filename}"
+                    if not local_file(root, relative).is_file():
+                        raise AssetError(f"Microduck 策略配套文件缺失：{relative}")
+                    microduck_paths[f"{name}/{filename}"] = relative
+    assets = [
+        Asset(
+            id=asset_id(spec.id, microduck_paths["source"]),
+            root_id=spec.id,
+            name="Microduck",
+            kind="robot",
+            category="biped",
+            representations={k: v for k, v in microduck_paths.items() if not k.startswith("roller")},
+            preview_mode="microduck" if runnable else None,
+        )
+    ]
+    if "roller" in microduck_paths:
+        roller_roles = {"policy_reference", "policy_manifest", "code_license", "model_license", "roller"}
+        roller_paths = {
+            key: value
+            for key, value in microduck_paths.items()
+            if key in roller_roles or key.startswith("roller_sprint_2m/")
+        }
+        if "roller_crouch" in microduck_paths:
+            roller_paths["roller_crouch"] = microduck_paths["roller_crouch"]
+        # Pollen's roller configuration retains both kick skills.
+        for key in ("ball_kick_left", "ball_kick_right"):
+            if key in microduck_paths:
+                roller_paths[key] = microduck_paths[key]
+        if any(key in roller_paths for key in ("ball_kick_left", "ball_kick_right")):
+            roller_paths["roller_ball"] = f"{model_dir}/ball.xml"
+        roller_paths.update(
+            source=f"{model_dir}/robot_groundcontact_rollers.xml", runtime_scene=f"{model_dir}/scene_rollers.xml"
+        )
+        for relative in roller_paths.values():
+            if not local_file(root, relative).is_file():
+                raise AssetError(f"Microduck 轮滑配套文件缺失：{relative}")
+        assets.append(
+            Asset(
+                id=asset_id(spec.id, roller_paths["source"]),
+                root_id=spec.id,
+                name="Microduck · 轮滑",
+                kind="robot",
+                category="biped",
+                representations=roller_paths,
+                preview_mode="microduck",
+                options={"rollers": True},
+            )
+        )
+    return ScanResult(assets=assets)
+
+
 def scan_root(spec: RootSpec, root: Path) -> ScanResult:
     """读取一个已配置的库；缺失根目录/内容目录会使整个构建失败。"""
     content = local_file(root, spec.content_path)
@@ -125,42 +216,7 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
             ]
         )
     if spec.scanner == "microduck":
-        # Official microduck_rl layout. Indexing MJCF does not grant control capabilities.
-        model_dir = "src/mjlab_microduck/robot/microduck"
-        microduck_paths = {
-            "source": f"{model_dir}/robot_walk.xml",
-            "scene": f"{model_dir}/scene_walk.xml",
-            "code_license": "LICENSE",
-            "model_license": "LICENSE-MODELS.md",
-        }
-        for microduck_file in microduck_paths.values():
-            if not local_file(root, microduck_file).is_file():
-                raise AssetError(f"官方 Microduck 资产缺失：{microduck_file}")
-        policy_paths = {
-            "policy_manifest": "policies/manifest.json",
-            "walking_policy": "policies/velstand.onnx",
-            "policy_reference": "scripts/infer_policy.py",
-            "runtime_scene": f"{model_dir}/scene.xml",
-        }
-        runnable = local_file(root, policy_paths["walking_policy"]).is_file()
-        if runnable:
-            for role, policy_relative in policy_paths.items():
-                if not local_file(root, policy_relative).is_file():
-                    raise AssetError(f"Microduck 策略配套文件缺失：{policy_relative}")
-                microduck_paths[role] = policy_relative
-        return ScanResult(
-            assets=[
-                Asset(
-                    id=asset_id(spec.id, microduck_paths["source"]),
-                    root_id=spec.id,
-                    name="Microduck",
-                    kind="robot",
-                    category="biped",
-                    representations=microduck_paths,
-                    preview_mode="microduck" if runnable else None,
-                )
-            ]
-        )
+        return _scan_microduck(spec, root)
     if spec.scanner == "jumper":
         # Explicit upstream layout, not a guess based on a robot's filename.
         jumper_paths = {
@@ -171,6 +227,12 @@ def scan_root(spec: RootSpec, root: Path) -> ScanResult:
         for jumper_file in jumper_paths.values():
             if not local_file(root, jumper_file).is_file():
                 raise AssetError(f"官方 Jumper 资产缺失：{jumper_file}")
+        for mode, filename, export_relative, _ in jumper_export_files():
+            if local_file(root, export_relative).is_file():
+                jumper_paths[f"{mode}/{filename}"] = export_relative
+        for mode in {key.split("/")[0] for key in jumper_paths if "/" in key}:
+            if any(f"{mode}/{name}" not in jumper_paths for m, name, _, _ in jumper_export_files() if m == mode):
+                raise AssetError(f"Jumper 策略配套文件缺失：{mode}")
         return ScanResult(
             assets=[
                 Asset(

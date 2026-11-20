@@ -7,10 +7,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
-from jiuwensymbiosis.simulators.common import preview
+from jiuwensymbiosis.simulators.common import preview, worker_python
 from jiuwensymbiosis.simulators.common.camera import OrbitCamera
 
 
@@ -107,8 +108,19 @@ def test_child_crash_is_reported_and_can_restart(manager):
     wait_for(lambda: manager.status()["state"] == "ready")
 
 
-def test_backend_switch_exits_old_worker_and_revokes_control(manager, monkeypatch):
-    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda _: object())
+def test_backend_switch_and_restart_use_compatible_mujoco_python(manager, monkeypatch, tmp_path):
+    fallback = tmp_path / ".venv-sim4/bin/python"
+    fallback.parent.mkdir(parents=True)
+    fallback.symlink_to(sys.executable)
+    monkeypatch.delenv(worker_python.MUJOCO_PYTHON_ENV, raising=False)
+    monkeypatch.setattr(worker_python, "source_checkout", lambda: tmp_path)
+    probes = []
+
+    def probe(python, modules, environment):
+        probes.append(python)
+        return "加载的 mujoco 为 3.17.0" if python == sys.executable else None
+
+    monkeypatch.setattr(worker_python, "_probe_mujoco", probe)
     manager.start()
     wait_for(lambda: manager.status()["state"] == "ready")
     old = manager._process
@@ -118,20 +130,38 @@ def test_backend_switch_exits_old_worker_and_revokes_control(manager, monkeypatc
     wait_for(lambda: manager.status()["state"] == "ready")
     assert old.poll() is not None and manager.status()["pid"] != old.pid
     assert manager.status()["backend"] == "mujoco"
+    assert manager._process.args[0] == str(fallback)
     with pytest.raises(RuntimeError, match="会话已失效"):
         manager.motion_state("old-owner")
+    manager.stop()
+    manager.start()
+    wait_for(lambda: manager.status()["state"] == "ready")
+    assert manager._process.args[0] == str(fallback)
+    assert probes == [sys.executable, str(fallback)] * 2
 
 
 def test_missing_target_dependency_preserves_running_engine(manager, monkeypatch):
     manager.start()
     wait_for(lambda: manager.status()["state"] == "ready")
     old = manager._process
-    original = preview.importlib.util.find_spec
-    monkeypatch.setattr(preview.importlib.util, "find_spec", lambda name: None if name == "mujoco" else original(name))
+    monkeypatch.delenv(worker_python.MUJOCO_PYTHON_ENV, raising=False)
+    monkeypatch.setattr(worker_python, "source_checkout", lambda: None)
+    monkeypatch.setattr(worker_python, "_probe_mujoco", lambda *_: "缺少 mujoco")
     with pytest.raises(RuntimeError, match="缺少 mujoco"):
         manager.configure(backend="mujoco", width=960, height=540, fps=30)
     assert manager._process is old and old.poll() is None
     assert manager.status()["backend"] == "genesis"
+
+
+def test_explicit_mujoco_python_is_checked_for_the_robot_mode(monkeypatch, tmp_path):
+    configured = tmp_path / "python"
+    configured.touch()
+    probe = Mock(return_value="缺少 bam")
+    monkeypatch.setattr(worker_python, "_probe_mujoco", probe)
+    environment = {worker_python.MUJOCO_PYTHON_ENV: str(configured)}
+    with pytest.raises(RuntimeError, match=r"缺少 bam.*\.\[mujoco,microduck\]"):
+        worker_python.mujoco_worker_python("microduck", environment)
+    probe.assert_called_once_with(str(configured), ("mujoco", "aiortc", "av", "PIL", "onnxruntime", "bam"), environment)
 
 
 def test_missing_dependency_never_spawns(manager, monkeypatch):
@@ -247,8 +277,6 @@ def test_orbit_eye_outside_flight_bounds_can_return_without_snapping():
 
 
 def test_failed_spawn_and_stop_before_ready_release_mailbox(manager, monkeypatch):
-    from unittest.mock import Mock
-
     monkeypatch.setattr(preview.subprocess, "Popen", Mock(side_effect=OSError("fixture spawn failure")))
     assert manager.start()["state"] == "failed"
     assert "fixture spawn failure" in manager.status()["message"]
@@ -412,8 +440,6 @@ def test_worker_environment_keeps_gpu_paths_without_host_credentials(manager, mo
 
 
 def test_stop_retains_unconfirmed_process_and_can_retry(tmp_path):
-    from unittest.mock import Mock
-
     manager = preview.SimulationPreview(state_dir=tmp_path)
     process = Mock()
     process.wait.side_effect = [subprocess.TimeoutExpired("worker", 1)] * 3 + [0]

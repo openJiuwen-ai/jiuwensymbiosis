@@ -3,6 +3,7 @@
 import socket
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -140,14 +141,75 @@ def test_unconfirmed_detach_stop_retains_ownership_and_reports_error(service):
 
 
 def test_failed_explicit_stop_does_not_shut_down_service(service):
-    client = uuid.uuid4().hex
-    dispatch(service.host, client, "attach")
-    service.preview.stop.side_effect = RuntimeError("process alive")
-    with pytest.raises(RuntimeError):
-        dispatch(service.host, client, "stop")
-    assert not service.host.closing
-    assert not service.host.shutdown_ready
-    assert dispatch(service.host, client, "status")["state"] == "ready"
+    client = ResidentPreview(state_dir=service.root)
+    client.start()
+    try:
+        service.preview.stop.side_effect = RuntimeError("process alive")
+        with pytest.raises(RuntimeError, match="process alive"):
+            client.stop()
+        assert not service.host.closing
+        assert not service.host.shutdown_ready
+        assert client.status()["state"] == "ready"
+    finally:
+        client.close()
+
+
+def test_status_reports_stopping_through_worker_and_listener_shutdown(service):
+    import fcntl
+
+    client = ResidentPreview(state_dir=service.root)
+    entered, exit_worker = threading.Event(), threading.Event()
+
+    def stop_worker():
+        entered.set()
+        assert exit_worker.wait(3)
+        return {"state": "stopped"}
+
+    service.preview.stop.side_effect = stop_worker
+    client.start()
+    with ThreadPoolExecutor(max_workers=1) as pool, (service.root / "service.lock").open("a") as ownership:
+        fcntl.flock(ownership, fcntl.LOCK_EX)
+        stopping = pool.submit(client.stop)
+        try:
+            assert entered.wait(2)
+            assert client.status()["state"] == "stopping"
+            exit_worker.set()
+            assert client._heartbeat_stop.wait(2)
+            assert client.status()["state"] == "stopping"
+            assert not stopping.done()
+        finally:
+            exit_worker.set()
+            fcntl.flock(ownership, fcntl.LOCK_UN)
+        assert stopping.result(timeout=2)["state"] == "stopped"
+    assert client.status()["state"] == "stopped"
+
+
+@pytest.mark.parametrize("failed_reply", [False, True])
+def test_status_reply_in_flight_cannot_overwrite_confirmed_stop(service, monkeypatch, failed_reply):
+    client = ResidentPreview(state_dir=service.root)
+    status_entered, deliver_status = threading.Event(), threading.Event()
+    client.start()
+    fetch = client._object
+
+    def delayed_status(method, **kwargs):
+        if method == "status":
+            status_entered.set()
+            assert deliver_status.wait(3)
+            if failed_reply:
+                raise RuntimeError("late response from the released service")
+            return {"state": "ready"}
+        return fetch(method, **kwargs)
+
+    monkeypatch.setattr(client, "_object", delayed_status)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        status = pool.submit(client.status)
+        try:
+            assert status_entered.wait(2)
+            assert client.stop()["state"] == "stopped"
+        finally:
+            deliver_status.set()
+        assert status.result(timeout=2)["state"] == "stopped"
+    assert client.status()["state"] == "stopped"
 
 
 def test_transport_rejects_oversized_header_without_reading_body():

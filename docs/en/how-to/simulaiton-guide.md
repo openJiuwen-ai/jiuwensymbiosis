@@ -45,6 +45,10 @@ hardware or drivers. Linux still requires the CUDA package index below; unavaila
 cause installation failure rather than CPU fallback.
 Use a new environment for MuJoCo 4: its distribution split can cause file conflicts when
 upgrading an existing 3.x installation in place.
+On each MuJoCo startup, the simulator checks the current Python and, in a source checkout,
+tries `.venv-sim4/bin/python` if the version or selected robot's dependencies are incompatible.
+To select another environment, set `JIUWEN_MUJOCO_PYTHON` to its absolute Python path before
+starting the workbench. Genesis continues to use the workbench's interpreter.
 
 If an existing uv environment reports `No module named pip`, use its Python to run
 `python -m ensurepip --upgrade`, or create a fresh venv as above.
@@ -104,6 +108,9 @@ The scripts fetch runtime files at pinned commits, verify the Jumper bundle and 
 and verify the pinned Microduck policy downloads. They retain upstream license files and refuse
 to overwrite an existing destination. Failed downloads are not registered. Existing complete
 checkouts can be registered with the same commands without `--fetch`, using their local paths.
+For a previously registered walking-only checkout, use `--complete` in place of `--fetch`.
+It verifies existing files, downloads missing official policies and rebuilds the local index.
+Offline registration exposes the actions supported by the files present.
 Registration appends to the local asset configuration and rebuilds the index without modifying models.
 Use `--home` to select a simulator data root. Without `--source`, the destination is
 `outputs/vendor/jumper` or `outputs/vendor/microduck_rl` under that data root. Startup never downloads assets.
@@ -327,8 +334,21 @@ Only one claw is active at a time. Explicitly open the current claw before switc
 walking or jumping; closing remains in effect across task exit and stop. Completion does not
 prove a grasp or establish payload.held. The simulation host uses the existing configuration to
 disable automatic recovery. Failed policy dispatch revokes further actuation, and closed/unknown
-claws block homing. These guards live under `simulators/`; hardware recovery is unchanged. Multi-payload state, object carrying and dance remain outside
-this integration. Policies retain the official gains, torque/speed and thermal limits.
+claws block homing. Policies retain the official gains, torque/speed and thermal limits.
+
+With video connected, open **手动控制 → 官方动作** (Manual controls → Official actions).
+The same named controls are available to the simulation Agent through its tool list.
+
+| Control | What runs |
+|---|---|
+| `jumper_posture` | Command pitch, roll, trunk twist and body height while standing or walking. |
+| `claw_aperture` | Set either claw to a fraction of its travel using the official analog trigger. Zero is closed and one is fully open. |
+| `claw_pose`, `claw_step`, `stow_claw` | Select a left/right arm pose, move or tilt on five supporting feet, then stow the open claw. |
+| `dance_crab`, `dance_brazilian`, `dance_maze`, `dance_dream_wings`, `dance_waist` | Play the complete official dance, then return to a settled gait. Crab lasts almost four minutes. |
+| `gesture_hello`, `gesture_bow`, `gesture_paw`, `gesture_salute` | Play a wave, bow, paw or salute. |
+| `ref_free_jump` | Run the separately published actor. On the pinned CPU scene it returned to standing without measured takeoff and reported `flight_unconfirmed`. Use `jump` for the verified jump. |
+
+The source for the walking, arm and mode controls is the [official Jumper controller](https://github.com/KingKongRobotics/jumper/blob/198686eac0d188815d0943e9fee50de415edc80a/docs/CONTROLS.md).
 
 The official checkout is pinned to 198686eac0d188815d0943e9fee50de415edc80a. The loader verifies
 consumed file hashes and replays the official reference; this validates the integration path,
@@ -339,11 +359,35 @@ for one second. A command acknowledgement is not a successful movement.
 
 Choose MuJoCo and microduck · Microduck, RGB-only observation and a model with image/tool support.
 Ask: “Look through the head camera, walk forward 20 cm, turn left 0.5 radians, stop and look again.”
-It uses capture_camera(head_cam), navigate_relative and rotate_base; jump, gripper and dance tools
-are not exposed for this body.
+The ordinary feet reuse `capture_camera`, `navigate_relative` and `rotate_base`.
+Select **Microduck · 轮滑** for the wheel model. Both scenes offer the observer and the 640×480 head camera.
+After connecting video, open **手动控制 → 官方动作**. The workbench and simulation Agent share the following controls.
 
-The pinned official checkout is 0daab160d3fb1c2cbaba16a4a19052f36709dd9e and velstand policy
-revision is 283771bcb3690a0a94a288c108365d9b630d21e4. Script and policy SHA256 are verified
+| Scene | Official controls |
+|---|---|
+| Ordinary feet | Four head/neck axes, six body posture axes, sit, stand, recover stance, ground pick, left/right ball kick and forward roll. A kick requires contact by the selected foot and at least 1 cm of ball travel. A roll counts trunk inversions and can chain multiple turns. |
+| Ordinary feet, gaits and choreography | Select velstand, classic walk/stand, hill climb or sock-heist for navigation. `sprint_2m` runs forward, checks for at least 2 m of measured forward displacement after stopping and restores velstand. The talent show plays the released 20-second sit/stand timeline. |
+| Roller feet | Select factory roller or roller sprint. Use `roller_skate` for forward speed, braking and heading. Both kicks and the full `roller_crouch` cycle are available. On wheels, `sit` holds the low phase of the released roller crouch and `stand` resumes its rise. Ordinary feet use `alpha_sitstand`. A kick can miss after skating and returns `kick_unconfirmed`. |
+
+With Agent control enabled in the roller scene, try “Look ahead with the head camera,
+skate forward for one second, stop, then look again.” The roller tool takes speed,
+heading offset and duration. Ordinary feet use relative navigation for distance and angle.
+
+Both variants kick from their current stance. MuJoCo carries the ball's position and velocity across the start
+of a kick. After a settled `kick_unconfirmed` result, the Agent needs a fresh head-camera image before repositioning.
+
+Simulation Agent timeouts track progress through model requests, camera captures and actions. Long-running
+actions have their own time budgets. If an action triggers a protective stop, the chat and status bar show the
+reason and whether the robot was confirmed stopped.
+
+Both models expose `mouth(opening=0…1)`. The simulation articulates the jaw meshes at their CAD bearing and
+uses a separate BAM XL330 servo with Pollen's −5° to +30° command range. The moving mass is estimated from the
+mesh density while preserving the original neutral head inertia. Mouth completion uses measured joint angle and speed.
+Ground pick and beak closure provide no payload measurement. [Pollen mouth control](https://github.com/pollen-robotics/microduck/blob/ef666aada8a7e945cbbeefbf1577a091b8a8294b/duck-control/src/model.rs)
+
+The pinned official checkout is `0daab160d3fb1c2cbaba16a4a19052f36709dd9e` and the ten factory models use
+[Pollen's release at 236d1835](https://huggingface.co/pollen-robotics/microduck-policies/blob/236d1835b03ac7b45d962efbf2fe3a6940206112/manifest.json).
+The five Arena references also have individually pinned revisions and hashes. Script and policy SHA256 are verified
 before executing the official CPU reference. The 61-element observation, 14-element action,
 50 Hz inference and 200 Hz physics retain official semantics. BAM 1.0.3 supplies actuator
 physics and the corrected DOF friction implementation, with a 0.1 Ω supply resistance and 7.4 V nominal voltage.
@@ -573,6 +617,13 @@ JIUWEN_MICRODUCK_INTEGRATION=1 JIUWEN_SIM_RESIDENT_INTEGRATION=1 \
 JIUWEN_MICRODUCK_SOURCE="$PWD/outputs/vendor/microduck_rl" \
 JIUWEN_MICRODUCK_EVIDENCE="$PWD/outputs/microduck" \
   .venv-sim4/bin/python -m pytest tests/integration/test_jumper_macos.py -k microduck -q
+
+# Exercise every installed official action on Jumper, Microduck and the roller model.
+JIUWEN_POLICY_CATALOG_INTEGRATION=1 \
+JIUWEN_JUMPER_SOURCE="$PWD/outputs/vendor/jumper" \
+JIUWEN_MICRODUCK_SOURCE="$PWD/outputs/vendor/microduck_rl" \
+JIUWEN_POLICY_CATALOG_EVIDENCE="$PWD/outputs/official-sim-motions" \
+  .venv-sim4/bin/python -m pytest tests/integration/test_native_policy_catalog.py -q
 ```
  Automated Agent acceptance uses a controlled model service with real tools and physics;
 planning quality with your configured model requires separate local acceptance.

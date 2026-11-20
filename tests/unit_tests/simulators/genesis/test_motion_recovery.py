@@ -130,6 +130,22 @@ def test_user_cancel_cannot_be_cleared_by_stopped_timeout():
     result = driver.navigate_relative(0.25)
     assert driver.cancelled.is_set()
     assert not result.get("recoverable")
+    assert driver.motion_abort is None
+
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_unstable_turn_keeps_specific_abort_reason_and_blocks_sprint(settled):
+    driver, preview = make_driver({"ok": False, "settled": settled, "reason": "recovery_required"})
+    preview.policy_action = Mock()
+    feedback = driver.navigate_relative(0, dyaw_rad=3.14)
+    assert feedback["reason"] == "recovery_required"
+    assert driver.motion_abort == (
+        "转身时检测到机器人姿态不稳，需要恢复站姿，本轮已中止。"
+        + ("机器人已停稳。" if settled else "尚未确认机器人停稳。")
+    )
+    with pytest.raises(RuntimeError, match="取消"):
+        driver.policy_action("sprint_2m")
+    preview.policy_action.assert_not_called()
 
 
 @pytest.mark.parametrize("error", [TimeoutError("unknown stop"), RuntimeError("ownership lost")])
@@ -167,14 +183,15 @@ async def test_failed_image_delivery_keeps_recovery_locked(tmp_path):
     assert preview.navigate_relative.call_count == 1
 
 
-def test_agent_tool_loop_observes_then_replans_after_timeout(tmp_path):
+@pytest.mark.parametrize("turn_unstable", [False, True])
+def test_agent_tool_loop_handles_recoverable_timeout_and_unstable_turn(tmp_path, turn_unstable):
     """A local model fixture drives the real Agent/SDK, not direct driver calls."""
     _, preview = make_driver({})
     preview.navigate_relative.side_effect = [
         {
             "ok": False,
             "settled": True,
-            "reason": "motion_timeout",
+            "reason": "recovery_required" if turn_unstable else "motion_timeout",
             "before": "PRIVATE_BEFORE",
             "target_world": "PRIVATE_TARGET",
         },
@@ -209,7 +226,7 @@ def test_agent_tool_loop_observes_then_replans_after_timeout(tmp_path):
             requests.append(request)
             calls = [m for m in request["messages"] if m["role"] == "tool"]
             sequence = [
-                ("navigate_relative", {"dx_m": 0.25}),
+                ("rotate_base", {"dyaw_rad": 3.14}) if turn_unstable else ("navigate_relative", {"dx_m": 0.25}),
                 ("capture_camera", {"camera_name": "head_cam"}),
                 ("navigate_relative", {"dx_m": -0.1, "dy_m": 0.1}),
             ]
@@ -257,7 +274,7 @@ def test_agent_tool_loop_observes_then_replans_after_timeout(tmp_path):
             result = run_agent_query(
                 preview,
                 ModelSpec(api_base=f"http://127.0.0.1:{server.server_port}/v1", model_name="test"),
-                "靠近目标；超时停车后重新看图，调整路线继续。",
+                "转身后跑四米" if turn_unstable else "靠近目标；超时停车后重新看图，调整路线继续。",
                 output_dir=tmp_path,
                 history=[
                     {"role": "assistant", "content": "PRIVATE_LEGACY_STATE"},
@@ -267,6 +284,15 @@ def test_agent_tool_loop_observes_then_replans_after_timeout(tmp_path):
         finally:
             server.shutdown()
             thread.join(2)
+    if turn_unstable:
+        assert result["execution_status"] == "cancelled" and result["control_released"]
+        assert result["reply"] == result["motion_abort"]
+        assert "转身时检测到机器人姿态不稳" in result["reply"] and "机器人已停稳" in result["reply"]
+        assert "PRIVATE_" not in result["reply"]
+        assert sum(bool(request.get("tools")) for request in requests) == 1
+        preview.navigate_relative.assert_called_once()
+        preview.release_motion.assert_called_once()
+        return
     assert result["execution_status"] == "completed"
     assert len(result["actions"]) == 2
     assert result["actions"][0]["recoverable"] and result["actions"][1]["ok"]
