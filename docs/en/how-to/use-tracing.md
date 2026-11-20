@@ -17,7 +17,7 @@ see the [Tracing reference](../reference/tracing.md); for the implementation mec
 |------|------|
 | **Structured record** | Per turn: `tool_name` / `input_params` / output summary / `success`/`error` / `duration_s` / `observation` snapshot / Rail events / key logs |
 | **Persistence** | One JSON per invoke written to `<workspace>/traces/`, vision frames to `frames/{run_token}/` |
-| **Replayable** | `jiuwensymbiosis-replay <trace.json>` replays a text timeline, optionally showing frames |
+| **Replayable** | `jiuwensymbiosis-replay <trace.json>` writes an HTML replay by default. Add `--open` to open it in a browser or `--text` for a terminal timeline |
 | **Zero intrusion** | Changes no `@implements`, no env, and no existing behavior of any other rail |
 | **Off by default** | `modules.tracing.enabled=False`; zero overhead when off, breaking no existing deployment |
 | **Bounded overhead** | `max_entries` / `max_frames` truncate; frame persistence is capped per frame budget |
