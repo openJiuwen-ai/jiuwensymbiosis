@@ -68,7 +68,8 @@ class EndEffectors:
             self.groups[name] = [{links[link].idx for link in group} for group in groups]
             ids = [entity.get_joint(j).dofs_idx_local[0] for j in motors]
             self.ids[name] = ids
-            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1)
+            # The ramp compares its endpoint exactly; float32 readback must not round the accumulator.
+            self.targets[name] = sibling("arm_collision").array(entity.get_dofs_position(ids)).reshape(-1).astype(float)
             self.opening[name] = False
             self.latched[name] = False
             self.support_geoms[name] = set()
@@ -198,7 +199,7 @@ class EndEffectors:
             evidence.released_time = evidence.support_time = 0.0
         if opened or (not self.latched[name] and name not in self.full_close):
             self.targets[name] = (
-                sibling("arm_collision").array(self.entity.get_dofs_position(self.ids[name])).reshape(-1)
+                sibling("arm_collision").array(self.entity.get_dofs_position(self.ids[name])).reshape(-1).astype(float)
             )
         self.opening[name] = opened
         if opened:

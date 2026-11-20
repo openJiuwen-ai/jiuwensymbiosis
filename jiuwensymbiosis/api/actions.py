@@ -525,7 +525,9 @@ SIM_GET_ROBOT_STATE = ActionSpec(
     description=(
         "Read simulator base position (authored root, metres), body-front yaw (radians) and actual world "
         "velocities from one physical snapshot. Reuse snapshot_id to compare with an entity at the same step; "
-        "omit it for a new measurement."
+        "omit it for a new measurement. When available, robot.effectors reports measured payload evidence "
+        "and a logical entity_id usable with sim_get_entity_state. A null entity_id means no registered "
+        "payload identity; use holding_payload and grasp_confirmed to judge whether the hand holds it."
     ),
     params=("snapshot_id",),
     result=SimulationSnapshotResult,
@@ -535,7 +537,9 @@ SIM_GET_ENTITY_STATE = ActionSpec(
     name="sim_get_entity_state",
     capability="simulation.truth",
     description=(
-        "Read one simulator entity by stable ID. Distinguishes authored origin, geometry bounds and center. "
+        "Read one simulator entity by the logical entity_id returned by sim_list_entities or "
+        "sim_get_robot_state's robot.effectors. Physics body indices are not entity IDs. "
+        "Distinguishes authored origin, geometry bounds and center. "
         "frame is world or base (+X forward, +Y left, +Z up, rooted at the robot's authored root). "
         "Coordinates are metres; reuse snapshot_id for consistent comparisons."
     ),

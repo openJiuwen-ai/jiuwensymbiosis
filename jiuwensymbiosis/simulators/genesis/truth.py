@@ -155,6 +155,18 @@ class EntityRegistry:
             ):
                 self._add(key, name, body=body, collision=True)
 
+    def _effector_states(self, reports: dict[str, dict]) -> dict[str, dict]:
+        """Expose payloads in the same logical ID namespace as entity queries."""
+        entity_ids = {body.idx: entity_id for entity_id, body in self.bodies.items()}
+        return {
+            name: {
+                # object_id is a worker-local Genesis body index, not a scene ID.
+                **{key: value for key, value in report.items() if key != "object_id"},
+                "entity_id": entity_ids.get(report.get("object_id")),
+            }
+            for name, report in reports.items()
+        }
+
     def snapshot(self, snapshot_id: str | None = None) -> dict:
         runtime, now = self.runtime, time.monotonic()
         for key, value in list(self.snapshots.items()):
@@ -197,7 +209,7 @@ class EntityRegistry:
                     planning_groups=arm.profile["groups"],
                     planning_base_link=arm.profile["base_link"],
                     tool_poses_base_m_wxyz=arm.tool_poses(),
-                    effectors=arm.effectors.report(),
+                    effectors=self._effector_states(arm.effectors.report()),
                 )
 
         result = {

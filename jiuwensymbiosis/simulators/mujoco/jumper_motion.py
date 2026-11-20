@@ -127,6 +127,7 @@ class JumperMotion:
         if self.base.active:
             self.base.cancel(reason)
         elif self.task and self.task["failure"] is None:
+            cancelled_phase = self.task["phase"]
             self.task["failure"] = reason
             # A started jump/closure finishes its bounded motion. A not-yet
             # started action must never be triggered by a cancellation.
@@ -140,6 +141,19 @@ class JumperMotion:
                 self.robot.policy.key_events.clear()
                 self.claw_side, self.claw_closed = self.task["previous_claw"]
                 self.task["phase"] = "rejected"
+            # Diagnostics must never interrupt cancellation or leave queued actions.
+            cancellation = {"reason": reason, "phase": cancelled_phase}
+            self._result["cancellation"] = cancellation
+            try:
+                cancellation.update(
+                    sim_time_s=float(self.robot.data.time),
+                    policy_mode=self.robot.policy.fsm.mode,
+                    support_contacts=self._support_count(),
+                    base=self.robot.observe_base(),
+                    flight_s=self._result.get("flight_s", 0.0),
+                )
+            except Exception as exc:
+                cancellation["diagnostic_error"] = f"{type(exc).__name__}: {exc}"
 
     def _still(self) -> bool:
         state = self.robot.observe_base()

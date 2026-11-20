@@ -245,13 +245,16 @@ class Moz1Base:
         collision_policy: dict | None = None,
         initial_posture: dict | None = None,
         model_directory: Path,
+        collision_cache: Path | None = None,
     ) -> None:
         import genesis as gs
 
         self.layout = OmniWheelLayout.from_urdf(source)
         targets = mobile_home_targets(source, self.layout, initial_posture=initial_posture)
         model_module = import_module(f"{__package__}.robot_model" if __package__ else "robot_model")
-        self.model_manifest = model_module.prepare_robot_model(source, model_directory, policy=collision_policy)
+        self.model_manifest = model_module.prepare_robot_model(
+            source, model_directory, policy=collision_policy, collision_cache=collision_cache
+        )
         self.path = Path(self.model_manifest["urdf"])
         self.source, self.name, self.render_urdf = source, name, render_urdf
         self.entity = scene.add_entity(

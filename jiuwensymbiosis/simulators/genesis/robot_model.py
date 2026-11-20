@@ -183,12 +183,19 @@ def inspect_structure(root: ET.Element) -> tuple[list[dict], list[dict]]:
 
 
 def prepare_robot_model(
-    source: Path, directory: Path, *, policy: dict | None = None, packages: dict[str, Path] | None = None
+    source: Path,
+    directory: Path,
+    *,
+    policy: dict | None = None,
+    packages: dict[str, Path] | None = None,
+    collision_cache: Path | None = None,
 ) -> dict:
     """Resolve resources, validate structure, apply explicit policy, write manifest.
 
     URDF dimensions are metres/radians; mesh scale is retained. Package URIs
     require an explicit package-root mapping. No guessed paths or unit conversion.
+    An optional shared collision cache retains validated content-addressed parts
+    across scene lifetimes; each model still gets its own manifest and audit.
     """
     source = Path(source).resolve(strict=True)
     directory = Path(directory).resolve()
@@ -223,7 +230,9 @@ def prepare_robot_model(
     links, joints = inspect_structure(root)
     preparation = None
     if policy is not None:
-        preparation = _module("collision_preparation").apply_collision_policy(root, directory, policy)
+        preparation = _module("collision_preparation").apply_collision_policy(
+            root, directory if collision_cache is None else collision_cache, policy
+        )
         links, joints = inspect_structure(root)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "robot.urdf"

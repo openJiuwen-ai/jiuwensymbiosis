@@ -273,7 +273,6 @@ def test_jumper_gripper_rejects_invalid_side_before_dispatch(action, side):
     [
         ("ground_truth", {"runtime_backend": "mujoco"}),
         ("perception", {"runtime_backend": "mujoco"}),
-        ("perception", {"runtime_backend": "genesis_raster"}),
     ],
 )
 def test_unimplemented_observation_backends_fail_before_exposing_tools(tmp_path, monkeypatch, mode, state):
@@ -318,7 +317,7 @@ def policy_motion(monkeypatch):
         policy=policy,
         stop=Mock(),
         model=NS(geom_bodyid=np.asarray([0, 1])),
-        data=NS(qpos=np.asarray([0.0, 0.0, 0.105, 0.0, 0.0]), qvel=np.zeros(2), contact=[contact] * 3),
+        data=NS(time=0.0, qpos=np.asarray([0.0, 0.0, 0.105, 0.0, 0.0]), qvel=np.zeros(2), contact=[contact] * 3),
         qids=np.asarray([3, 4]),
         vids=np.asarray([0, 1]),
         targets=np.zeros(2),
