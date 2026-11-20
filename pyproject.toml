@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+spatial-memory = ["pillow>=12"]
+spatial-memory-yoloe = ["pillow>=12", "ultralytics==8.4.193"]
+
 remote = [
     # Agent-side HTTP inference clients and image codecs; no model runtime.
     "httpx>=0.28",

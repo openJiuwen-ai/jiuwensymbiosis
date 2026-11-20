@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>空间记忆 · 观测回放</title>
+<style>
+:root{color-scheme:dark;--bg:#0c111b;--panel:#141d2b;--line:#293548;--fg:#eef3fb;--muted:#a3b2c9;--accent:#6fe0d0}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Noto Sans CJK SC",sans-serif}header{padding:22px 28px 16px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid var(--line);gap:24px}h1{font-size:25px;margin:3px 0}h2{font-size:16px;margin:0 0 10px}.eyebrow{color:var(--accent);font-size:11px;letter-spacing:2px}.muted{color:var(--muted)}.metrics{display:flex;gap:28px}.metrics b{font-size:24px;font-weight:550;display:block}.metrics span{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(420px,1fr) 360px;min-height:680px;height:calc(100vh - 116px)}.stage{position:relative;min-width:0;display:flex;flex-direction:column}.toolbar,.timeline{padding:13px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}.toolbar{border-bottom:1px solid var(--line);font-size:12px}label{cursor:pointer;white-space:nowrap}input[type=checkbox]{accent-color:var(--accent)}button,select{background:#202d40;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}button:hover{border-color:var(--accent)}#world{width:100%;flex:1;min-height:360px;touch-action:none;cursor:grab}.timeline{background:var(--panel);border-top:1px solid var(--line)}#time{flex:1;accent-color:var(--accent);min-width:100px}.hint{position:absolute;left:20px;top:68px;font-size:12px;color:var(--muted);pointer-events:none}.legend{position:absolute;left:20px;bottom:73px;display:flex;gap:18px;font-size:11px;color:var(--muted);pointer-events:none}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}aside{border-left:1px solid var(--line);background:var(--panel);padding:20px;overflow:auto}.tag{display:inline-block;font-size:11px;padding:3px 7px;border-radius:5px;background:#263142;color:#c8d5e9;margin:0 5px 7px 0}.warning{color:#f8c57c;background:#372d24}#evidence{width:100%;height:auto;border-radius:8px;background:#080d16;margin:10px 0}#objects{display:flex;flex-wrap:wrap;gap:6px;max-height:170px;overflow:auto;margin:10px 0 18px}#objects button{font-size:11px;padding:4px 7px}#details{font-size:12px;overflow-wrap:anywhere}#details dl{display:grid;grid-template-columns:88px 1fr;gap:5px;margin:12px 0}dt{color:var(--muted)}dd{margin:0}.divider{border-top:1px solid var(--line);margin:18px 0}#evidenceLinks{display:flex;gap:5px;flex-wrap:wrap}#evidenceLinks button{font-size:11px}#scope{font-size:12px;color:var(--muted)}.key{color:var(--accent)}@media(max-width:900px){main{height:auto;display:block}.stage{height:70vh;min-height:550px}aside{border-left:0;border-top:1px solid var(--line)}header{align-items:start;flex-direction:column;gap:10px}.metrics{gap:22px}}
+</style></head><body>
+<header><div><div class="eyebrow">SPATIAL MEMORY / OBSERVED EVIDENCE</div><h1>房间空间记忆</h1><div class="muted">YOLOE · 三维表面关联 · 实测轨迹 · 时间回放</div></div><div class="metrics"><div><b id="nObjects">—</b><span>当前候选实体</span></div><div><b id="nFrames">—</b><span>观测帧</span></div><div><b id="nPath">—</b><span>实测路径 / 米</span></div></div></header>
+<main><section class="stage"><div class="toolbar"><label><input id="context" type="checkbox" checked> 环境深度点</label><label><input id="prior" type="checkbox" checked> 已知可行域</label><label><input id="cameras" type="checkbox" checked> 相机 / 轨迹</label><label><input id="gaps" type="checkbox"> 未关联表面</label><button id="reset">复位视角</button><button id="top">俯视</button></div><canvas id="world"></canvas><div class="hint">拖动旋转 · 滚轮缩放 · 点击实体标签查看原始证据</div><div class="legend"><span><i class="dot" style="background:#6fe0d0"></i>机器人实测轨迹</span><span><i class="dot" style="background:#66748a"></i>观测表面</span><span><i class="dot" style="background:#f5aa58"></i>待补看</span></div><div class="timeline"><button id="play">▶ 播放</button><input id="time" type="range" min="0" value="0"><span id="frameLabel"></span></div></section>
+<aside><h2 id="selection">选择一个实体</h2><span class="tag warning">标签未经人工确认</span><span class="tag">观测表面 ≠ 完整物体</span><div id="objects"></div><canvas id="evidence"></canvas><div id="evidenceLinks"></div><div id="details"></div><div class="divider"></div><h2>扫描范围与缺口</h2><div id="scope"></div></aside></main>
+<script id="memory-data" type="application/json">__MEMORY_DATA__</script>
+<script>
+"use strict";
+const data=JSON.parse(document.getElementById("memory-data").textContent);
+const $=id=>document.getElementById(id),canvas=$("world"),ctx=canvas.getContext("2d"),ev=$("evidence"),ec=ev.getContext("2d");
+let frame=data.frames.length-1,selected=null,yaw=-0.8,pitch=0.75,zoom=1,playing=null,drag=null,hit=[],cloud=[],currentObjects=new Map(),imageToken=0;
+const color=i=>i<0?"#f5aa58":`hsl(${(i*137.508+15)%360} 65% 68%)`;
+const fmt=n=>typeof n==="number"?n.toFixed(2):"—";
+const all=data.frames.flatMap(f=>f.context),low=[0,1,2].map(k=>all.reduce((m,p)=>Math.min(m,p[k]),Infinity)),high=[0,1,2].map(k=>all.reduce((m,p)=>Math.max(m,p[k]),-Infinity));
+if(!all.length){low.splice(0,3,-1,-1,0);high.splice(0,3,1,1,2)}
+const center=low.map((v,k)=>(v+high[k])/2),span=Math.max(high[0]-low[0],high[1]-low[1],high[2]-low[2],1);
+function project(p){const x=p[0]-center[0],y=p[1]-center[1],z=p[2]-center[2];const a=Math.cos(yaw)*x-Math.sin(yaw)*y,b=Math.sin(yaw)*x+Math.cos(yaw)*y;const scale=Math.min(canvas.clientWidth,canvas.clientHeight)/span*0.80*zoom;return [canvas.clientWidth/2+a*scale,canvas.clientHeight/2+(Math.sin(pitch)*b-Math.cos(pitch)*z)*scale,Math.cos(pitch)*b+Math.sin(pitch)*z]}
+function line(points,stroke,width=1){if(points.length<2)return;ctx.beginPath();points.forEach((p,i)=>{const q=project(p);i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1])});ctx.strokeStyle=stroke;ctx.lineWidth=width;ctx.stroke()}
+function rebuild(){
+  cloud=[];currentObjects=new Map();const seen=new Set();
+  for(let f=0;f<=frame;f++)for(const part of data.frames[f].parts){
+    if(part.object>=0){let entry=currentObjects.get(part.object);if(!entry){entry={points:[],evidence:[]};currentObjects.set(part.object,entry)}entry.evidence.push([f,part]);for(const p of part.points)entry.points.push(p)}
+    if(part.object<0&&!$("gaps").checked)continue;
+    for(const p of part.points){const key=part.object+":"+p.map(v=>Math.floor(v/.04)).join(",");if(seen.has(key))continue;seen.add(key);cloud.push({p,id:part.object})}
+  }
+  $("nObjects").textContent=currentObjects.size;$("nFrames").textContent=`${frame+1} / ${data.frames.length}`;
+  $("frameLabel").textContent=`第 ${frame+1} 帧 · +${fmt(data.frames[frame].time-data.frames[0].time)} s`;
+  const list=$("objects");list.replaceChildren();for(const [id,entry] of currentObjects){const button=document.createElement("button");button.textContent=`O${String(id+1).padStart(3,"0")} · ${entry.evidence.at(-1)[1].label}`;button.style.borderColor=color(id);button.onclick=()=>choose(id);list.append(button)}
+  if(selected!==null&&!currentObjects.has(selected))selected=null;
+  const trajectory=data.trajectory.filter(t=>t.captured_at<=data.frames[frame].time);let length=0;for(let i=1;i<trajectory.length;i++)length+=Math.hypot(...trajectory[i].robot.position_m.slice(0,2).map((v,k)=>v-trajectory[i-1].robot.position_m[k]));
+  $("nPath").textContent=trajectory.length?fmt(length):"未记录";
+  draw();showEvidence();
+}
+function draw(){
+  const ratio=window.devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;canvas.width=Math.round(w*ratio);canvas.height=Math.round(h*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);ctx.fillStyle="#0c111b";ctx.fillRect(0,0,w,h);hit=[];
+  if(data.map&&$("prior").checked){ctx.fillStyle="#193636";for(const p of data.map.points){const q=project(p);ctx.fillRect(q[0],q[1],2,2)}}
+  for(let x=Math.floor(low[0]);x<=Math.ceil(high[0]);x++)line([[x,low[1],0],[x,high[1],0]],"#1c2635");for(let y=Math.floor(low[1]);y<=Math.ceil(high[1]);y++)line([[low[0],y,0],[high[0],y,0]],"#1c2635");
+  if($("context").checked){ctx.fillStyle="#4e5c70";for(let f=0;f<=frame;f++)for(const p of data.frames[f].context){const q=project(p);ctx.fillRect(q[0],q[1],1.3,1.3)}}
+  const projected=cloud.map(o=>({...o,q:project(o.p)})).sort((a,b)=>a.q[2]-b.q[2]);
+  for(const o of projected){ctx.globalAlpha=(selected!==null && o.id!==selected) ? .22 : .9;ctx.fillStyle=color(o.id);const r=o.id===selected?2.4:1.8;ctx.fillRect(o.q[0]-r/2,o.q[1]-r/2,r,r)}ctx.globalAlpha=1;
+  if($("cameras").checked){
+    const trajectory=data.trajectory.filter(t=>t.captured_at<=data.frames[frame].time).map(t=>t.robot.position_m);line(trajectory,"#6fe0d0",2.6);
+    const positions=data.frames.slice(0,frame+1).map(f=>f.camera.slice(0,3).map(row=>row[3]));line(positions,"#486d8f",1);
+    positions.forEach((p,i)=>{const q=project(p);ctx.fillStyle=i===frame?"white":"#759abf";ctx.beginPath();ctx.arc(q[0],q[1],i===frame?4:1.8,0,Math.PI*2);ctx.fill()});
+    const t=data.frames[frame].camera,o=t.slice(0,3).map(r=>r[3]);const ends=[[-.12,-.09,.25],[.12,-.09,.25],[.12,.09,.25],[-.12,.09,.25]].map(p=>[0,1,2].map(k=>o[k]+p.reduce((s,v,j)=>s+v*t[k][j],0)));ends.forEach(p=>line([o,p],"#b6cee8"));line([...ends,ends[0]],"#b6cee8");
+  }
+  for(const [id,entry] of currentObjects){if(!entry.points.length)continue;const p=[0,1,2].map(k=>entry.points.reduce((s,p)=>s+p[k],0)/entry.points.length),q=project(p);if(q[0]<0||q[1]<0||q[0]>w||q[1]>h)continue;const text=`O${String(id+1).padStart(3,"0")}`;ctx.font="11px system-ui";ctx.fillStyle=selected===id?"#e7f6fa":"#172233";ctx.fillRect(q[0]-22,q[1]-10,44,18);ctx.fillStyle=selected===id?"#0c111b":color(id);ctx.fillText(text,q[0]-18,q[1]+3);hit.push({id,x:q[0],y:q[1]})}
+  line([[low[0],low[1],0],[low[0]+1,low[1],0]],"#ed8c8c",2);line([[low[0],low[1],0],[low[0],low[1]+1,0]],"#6fe0d0",2);line([[low[0],low[1],0],[low[0],low[1],1]],"#7da9ef",2);
+}
+function choose(id){selected=id;draw();showEvidence()}
+function showEvidence(chosenFrame=null){
+  const entry=selected===null?null:currentObjects.get(selected);let view=frame,part=null;
+  if(entry){const row=chosenFrame===null?entry.evidence.at(-1):entry.evidence.find(e=>e[0]===chosenFrame);view=row[0];part=row[1]}
+  $("selection").textContent=entry?`O${String(selected+1).padStart(3,"0")} · ${part.label}`:"当前相机观测";
+  const links=$("evidenceLinks");links.replaceChildren();if(entry)for(const [f] of entry.evidence){const b=document.createElement("button");b.textContent=`帧 ${f+1}`;b.onclick=()=>showEvidence(f);links.append(b)}
+  const image=new Image(),token=++imageToken;image.onload=()=>{if(token!==imageToken)return;ev.width=image.naturalWidth;ev.height=image.naturalHeight;ec.drawImage(image,0,0);if(part){ec.strokeStyle=color(selected);ec.lineWidth=3;const b=part.box;ec.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1])}};image.src=data.frames[view].image;
+  const details=$("details");details.replaceChildren();const rows=part?[["原始标签",part.label],["YOLOE 分数",fmt(part.score)],["关联决策",part.status],["关联分数",fmt(part.association_score)],["观测次数",entry.evidence.length],["证据帧",view+1],["物理步",data.frames[view].step??"未提供"],["身份 ID",data.objects[selected].entity_id]]:[["证据帧",view+1],["物理步",data.frames[view].step??"未提供"],["同步方式",data.frames[view].synchronization?.kind??"见源记录"]];const dl=document.createElement("dl");for(const [a,b] of rows){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=a;dd.textContent=b;dl.append(dt,dd)}details.append(dl);
+  if(part?.candidates?.length){const p=document.createElement("p");p.className="muted";p.textContent=`最佳候选表面重叠 ${fmt(part.candidates[0].overlap)} · 外观相似度 ${fmt(part.candidates[0].appearance_similarity)}。类别名称不决定身份。`;details.append(p)}
+}
+const scan=data.scan,tasks=data.memory_status.view_task_counts||{},scope=$("scope");
+const reason={route_exhausted:"预设路线走完，仍保留缺口",budget_exhausted:"达到扫描预算",failed:"运行失败，保留已提交证据",cancelled:"已取消",sampled_scope_sufficient:"已满足本次采样范围判据"};
+scope.textContent=scan?`${reason[scan.stop_reason]||scan.stop_reason}。已完成视点 ${scan.completed_views}/${scan.planned_views}，处理帧 ${scan.processed_frames}/${scan.captured_frames}。`:"本记录未评估房间扫描完成度。";
+const info=document.createElement("p");info.textContent=`最终补看任务：待处理 ${tasks.open||0} · 已解决 ${tasks.resolved||0} · 暂缓 ${tasks.deferred||0}。柜内、遮挡和不可达空间保持未知。三维点云经过显示抽样，不代表完整表面或物体清单。`;scope.append(info);
+$("time").max=data.frames.length-1;$("time").value=frame;$("time").oninput=e=>{frame=Number(e.target.value);rebuild()};
+$("play").onclick=()=>{if(playing){clearInterval(playing);playing=null;$("play").textContent="▶ 播放"}else{if(frame===data.frames.length-1)frame=-1;$("play").textContent="Ⅱ 暂停";playing=setInterval(()=>{frame++;if(frame>=data.frames.length){clearInterval(playing);playing=null;frame=data.frames.length-1;$("play").textContent="▶ 播放"}$("time").value=frame;rebuild()},700)}};
+canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,ox:e.clientX,oy:e.clientY};canvas.setPointerCapture(e.pointerId)};canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag.x)*.008;pitch=Math.max(-.2,Math.min(1.56,pitch+(e.clientY-drag.y)*.008));drag.x=e.clientX;drag.y=e.clientY;draw()};canvas.onpointerup=e=>{if(drag&&Math.hypot(e.clientX-drag.ox,e.clientY-drag.oy)<5){const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;const closest=hit.slice().sort((a,b)=>Math.hypot(a.x-x,a.y-y)-Math.hypot(b.x-x,b.y-y))[0];if(closest&&Math.hypot(closest.x-x,closest.y-y)<25)choose(closest.id)}drag=null};canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.3,Math.min(8,zoom*Math.exp(-e.deltaY*.001)));draw()};
+$("reset").onclick=()=>{yaw=-.8;pitch=.75;zoom=1;draw()};$("top").onclick=()=>{yaw=0;pitch=1.56;draw()};["context","prior","cameras","gaps"].forEach(id=>$(id).onchange=rebuild);new ResizeObserver(draw).observe(canvas);rebuild();
+</script></body></html>
