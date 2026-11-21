@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,9 @@ def main() -> None:
         "reviewer": annotations["reviewer"],
         "methods": {},
     }
+    # Keep the CLI's JSON-lines stream independent of framework diagnostics.
+    output_logger = logging.Logger("spatial_memory_benchmark.output", level=logging.INFO)
+    output_logger.addHandler(logging.StreamHandler(sys.stdout))
     input_digest = None
     for kind, directory in methods:
         with contextlib.redirect_stdout(sys.stderr):
@@ -86,15 +90,13 @@ def main() -> None:
             report["methods"][kind] = metrics
             (args.output / "benchmark.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             del encoder
-        # Stdout is the benchmark's JSON-lines output.
         result = {
             "method": kind,
             "association": metrics["association"]["association"],
             "appearance_top1": metrics["appearance"]["retrieval_top1"],
             "feature_s": sum(x["elapsed_s"] for x in metrics["feature_timings"]),
         }
-        sys.stdout.write(json.dumps(result) + "\n")
-        sys.stdout.flush()
+        output_logger.info("%s", json.dumps(result))
 
 
 if __name__ == "__main__":
