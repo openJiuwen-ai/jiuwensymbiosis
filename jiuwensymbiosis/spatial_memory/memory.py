@@ -139,20 +139,16 @@ class SpatialMemory:
                 }
             )
             provenance = json.loads(detections.provenance_json)
-            model = canonical(
-                {
-                    k: provenance.get(k)
-                    for k in (
-                        "model_id",
-                        "weights_sha256",
-                        "vocabulary_sha256",
-                        "inference",
-                        "kind_policy",
-                        "ultralytics_version",
-                        "appearance",
-                    )
-                }
+            model_fields = (
+                "model_id",
+                "weights_sha256",
+                "vocabulary_sha256",
+                "inference",
+                "kind_policy",
+                "ultralytics_version",
+                "appearance",
             )
+            model = canonical({key: provenance.get(key) for key in model_fields})
             for key, value in (("scope", scope), ("model", model)):
                 existing = self._meta(key)
                 if existing is not None and existing != value:
@@ -233,11 +229,14 @@ class SpatialMemory:
                 )
             else:
                 for j, entity in enumerate(entities):
-                    if not len(visible[j]):
+                    if visible[j].size == 0:
                         continue
                     comparison = compare_surfaces(
-                        points, histogram, visible[j], entity["record"]["appearance_gallery"], self.policy
+                        points, histogram, visible[j], entity["record"].get("appearance_gallery", []), self.policy
                     )
+                    if comparison.get("rejection") == "invalid_appearance_gallery":
+                        # A geometrically plausible candidate with unreadable appearance is still ambiguous.
+                        reasons[i] = "invalid_appearance_gallery"
                     comparison.update(
                         entity_point_count=len(entity["points"]), visible_entity_point_count=len(visible[j])
                     )
@@ -307,7 +306,7 @@ class SpatialMemory:
             rejected = [
                 {"entity_id": entities[j]["record"]["entity_id"], **comparison}
                 for j, comparison in sorted(comparisons[i].items(), key=lambda pair: pair[1]["bbox_gap_m"])
-                if comparison.get("rejection") == "insufficient_surface_overlap"
+                if comparison.get("rejection") in {"insufficient_surface_overlap", "invalid_appearance_gallery"}
             ][:5]
             item = {
                 **detection.metadata(),
@@ -368,14 +367,15 @@ class SpatialMemory:
                 )
                 item["entity_id"] = record["entity_id"]
                 self.connection.execute(
-                    "INSERT INTO entities VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record, points=excluded.points",
+                    "INSERT INTO entities VALUES (?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET record=excluded.record, points=excluded.points",
                     (record["entity_id"], canonical(record), pack(points=merged)),
                 )
             assignments.append(item)
-        by_id = {item["local_id"]: item for item in assignments}
         for i, j in aliases.items():
-            item = by_id[detections.instances[i].local_id]
-            representative = by_id[detections.instances[j].local_id]
+            # Assignments are emitted once per detection, in input order.
+            item = assignments[i]
+            representative = assignments[j]
             item.update(
                 status="duplicate_detection",
                 reason="redundant_mask",
@@ -420,10 +420,10 @@ class SpatialMemory:
         """Case-insensitive label substring and distance to the observed surface centre."""
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be in [1, 1000]")
-        if near is not None and (
-            len(near) != 3 or not np.isfinite(near).all() or not np.isfinite(radius_m) or radius_m <= 0
-        ):
-            raise ValueError("near requires three finite metre coordinates and positive radius_m")
+        if near is not None:
+            valid_radius = bool(np.isfinite(radius_m)) and radius_m > 0
+            if len(near) != 3 or not np.isfinite(near).all() or not valid_radius:
+                raise ValueError("near requires three finite metre coordinates and positive radius_m")
         results = []
         for row in self.connection.execute("SELECT record FROM entities ORDER BY id"):
             record: dict = json.loads(row[0])
@@ -435,7 +435,7 @@ class SpatialMemory:
                     continue
                 record["distance_m"] = distance
             for key in ("appearance_gallery", "first_camera_pose"):
-                record.pop(key)
+                record.pop(key, None)
             record["location_semantics"] = "observed surface estimate; not a grasp or navigation target"
             record["semantic_status"] = "unverified_model_labels"
             results.append(record)
@@ -451,13 +451,11 @@ class SpatialMemory:
         record["semantic_status"] = "unverified_model_labels"
         record["location_semantics"] = "observed surface estimate; not a grasp or navigation target"
         for key in ("appearance_gallery", "first_camera_pose"):
-            record.pop(key)
-        record["evidence"] = [
-            {"observation_id": row[0], **json.loads(row[1])}
-            for row in self.connection.execute(
-                "SELECT observation_id, record FROM assignments WHERE entity_id=? ORDER BY rowid", (entity_id,)
-            )
-        ]
+            record.pop(key, None)
+        evidence = self.connection.execute(
+            "SELECT observation_id, record FROM assignments WHERE entity_id=? ORDER BY rowid", (entity_id,)
+        )
+        record["evidence"] = [{"observation_id": row[0], **json.loads(row[1])} for row in evidence]
         return record
 
     def get_observation(self, observation_id: str) -> tuple[Observation, Detections]:

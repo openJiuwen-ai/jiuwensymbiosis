@@ -25,20 +25,26 @@ def _write_json(path: Path, value: object) -> None:
 class ScanPort(Protocol):
     """Caller owns connection; execute must independently admit the full robot."""
 
-    def capture(self) -> Observation: ...
-    def execute(self, choice: dict, observation: Observation) -> dict: ...
-    def confirm_stopped(self) -> bool: ...
+    def capture(self) -> Observation:
+        """Return a synchronized RGB-D observation."""
+
+    def execute(self, choice: dict, observation: Observation) -> dict:
+        """Admit and execute the selected observation move."""
+
+    def confirm_stopped(self) -> bool:
+        """Confirm the body has stopped using measured state."""
 
 
 class Detector(Protocol):
-    def detect(self, rgb: np.ndarray) -> Detections: ...
+    def detect(self, rgb: np.ndarray) -> Detections:
+        """Return the evidence from successful inference."""
 
 
 @dataclass(frozen=True)
 class ScanBudget:
     max_frames: int = 16
-    max_seconds: float = 600
-    max_distance_m: float = 2
+    max_seconds: float = 600.0
+    max_distance_m: float = 2.0
 
     def __post_init__(self) -> None:
         if type(self.max_frames) is not int or not 1 <= self.max_frames <= 1000:

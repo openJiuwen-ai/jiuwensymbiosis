@@ -38,7 +38,7 @@ class MemoryPolicy:
 
 
 def downsample(points: np.ndarray, policy: MemoryPolicy) -> np.ndarray:
-    if not len(points):
+    if points.size == 0:
         return points
     _, indices = np.unique(np.floor(points / policy.voxel_m).astype(np.int64), axis=0, return_index=True)
     selected = points[np.sort(indices)]
@@ -127,7 +127,16 @@ def compare_surfaces(
     evidence.update(overlap=overlap, forward_overlap=float(forward), reverse_overlap=float(reverse))
     if overlap < policy.min_overlap:
         return {**evidence, "rejection": "insufficient_surface_overlap"}
-    appearance = max(float(np.dot(histogram, row)) for row in gallery)
+    invalid_gallery = {**evidence, "rejection": "invalid_appearance_gallery"}
+    try:
+        features = np.asarray(gallery, dtype=float)
+    except (TypeError, ValueError):
+        return invalid_gallery
+    if features.ndim != 2 or features.size == 0 or features.shape[1:] != histogram.shape:
+        return invalid_gallery
+    if not np.isfinite(features).all():
+        return invalid_gallery
+    appearance = max(float(np.dot(histogram, row)) for row in features)
     weight = policy.appearance_weight
     return {**evidence, "score": (1 - weight) * overlap + weight * appearance, "appearance_similarity": appearance}
 

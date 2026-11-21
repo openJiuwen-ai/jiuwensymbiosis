@@ -55,6 +55,30 @@ def test_model_space_changes_rejected_before_partial_update(tmp_path):
         assert memory.get_status()["observation_count"] == 1
 
 
+@pytest.mark.parametrize("gallery", [None, [], [[1, 0, 0, 0]], [[1, 0, 0], [1, 0, 0, 0]]])
+def test_incompatible_gallery_defers_identity_without_losing_frame(tmp_path, gallery):
+    with SpatialMemory(tmp_path / "memory.sqlite") as memory:
+        first = memory.ingest(*sample())
+        entity_id = first["assignments"][0]["entity_id"]
+        row = memory.connection.execute("SELECT record FROM entities WHERE id=?", (entity_id,)).fetchone()
+        record = json.loads(row["record"])
+        if gallery is None:
+            del record["appearance_gallery"]
+        else:
+            record["appearance_gallery"] = gallery
+        with memory.connection:
+            memory.connection.execute("UPDATE entities SET record=? WHERE id=?", (canonical(record), entity_id))
+
+        second = memory.ingest(*sample(1))
+        item, other = second["assignments"]
+        assert (item["status"], item["reason"], item["entity_id"]) == ("needs_view", "invalid_appearance_gallery", None)
+        assert item["rejected_candidates"][0]["entity_id"] == entity_id
+        assert other["status"] == "matched"
+        assert memory.get_status()["observation_count"] == 2
+        assert len(memory.query_objects()) == 2
+        assert memory.get_entity(entity_id)["observation_count"] == 1
+
+
 def test_feature_provenance_and_dimensions_are_required():
     _, batch = sample()
     with pytest.raises(ValueError, match="provenance"):

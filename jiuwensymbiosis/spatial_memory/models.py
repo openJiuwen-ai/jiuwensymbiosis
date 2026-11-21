@@ -85,18 +85,16 @@ class Observation:
             raise ValueError("Camera transform must be a proper rigid transform")
 
     def metadata(self) -> dict:
-        return {
-            name: getattr(self, name)
-            for name in (
-                "observation_id",
-                "scene_epoch",
-                "map_frame",
-                "calibration_id",
-                "timestamp_s",
-                "clock_id",
-                "pose_source",
-            )
-        }
+        fields = (
+            "observation_id",
+            "scene_epoch",
+            "map_frame",
+            "calibration_id",
+            "timestamp_s",
+            "clock_id",
+            "pose_source",
+        )
+        return {field: getattr(self, field) for field in fields}
 
     def arrays(self) -> dict[str, np.ndarray]:
         return {name: getattr(self, name) for name in ("rgb", "depth_m", "intrinsics", "map_from_camera")}
@@ -113,7 +111,8 @@ class Detection:
     embedding: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        if not self.local_id or not self.label or not np.isfinite(self.score) or not 0 <= self.score <= 1:
+        valid_score = bool(np.isfinite(self.score)) and 0 <= self.score <= 1
+        if not self.local_id or not self.label or not valid_score:
             raise ValueError("Invalid detection identity, label or score")
         if self.kind not in {"object", "surface", "scene"}:
             raise ValueError("Invalid detection kind")
@@ -123,12 +122,8 @@ class Detection:
         object.__setattr__(self, "mask", frozen_array(mask, np.bool_))
         if self.embedding is not None:
             vector = np.asarray(self.embedding, dtype=np.float32)
-            if (
-                vector.ndim != 1
-                or not 3 <= vector.size <= 4096
-                or not np.isfinite(vector).all()
-                or not np.isclose(np.linalg.norm(vector), 1, atol=1e-4)
-            ):
+            valid_shape = vector.ndim == 1 and 3 <= vector.size <= 4096
+            if not valid_shape or not np.isfinite(vector).all() or not np.isclose(np.linalg.norm(vector), 1, atol=1e-4):
                 raise ValueError("Appearance embedding must be a finite unit vector")
             object.__setattr__(self, "embedding", frozen_array(vector, np.float32))
 

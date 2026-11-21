@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,8 @@ class OnlineMap:
         self.ground_level: float | None = None
 
     def integrate(self, rgb: np.ndarray, depth: np.ndarray, k: np.ndarray, pose: np.ndarray) -> None:
-        v, u = np.mgrid[0 : depth.shape[0] : 4, 0 : depth.shape[1] : 4]
+        height, width = depth.shape
+        v, u = np.mgrid[:height:4, :width:4]
         z = depth[v, u]
         ok = np.isfinite(z) & (z > 0.08) & (z < 8)
         u, v, z = u[ok], v[ok], z[ok]
@@ -60,7 +62,8 @@ class OnlineMap:
         # returns never clear space; unobserved cells remain absent/unknown.
         distances = np.arange(0, min(8, lengths.max()), RES / 2) if len(lengths) else np.array([])
         for start in range(0, len(vectors), 512):
-            vec, lens = vectors[start : start + 512], lengths[start : start + 512]
+            end = start + 512
+            vec, lens = vectors[start:end], lengths[start:end]
             valid = distances[None, :] < lens[:, None] - 0.075
             ray = origin + vec[:, None, :] / lens[:, None, None] * distances[None, :, None]
             cells = np.unique(np.floor(ray[valid] / RES).astype(np.int32), axis=0)
@@ -106,7 +109,7 @@ class OnlineMap:
             occupied = {(x, y) for x, y, z in self.occupied if low < (z + 0.5) * RES < high}
             # Current physical camera/base proxy, including self returns below
             # the camera. This is not a clearance envelope for the full robot.
-            current = {(center[0] + x, center[1] + y) for x in range(-2, 3) for y in range(-2, 3) if x * x + y * y <= 4}
+            current = {(center[0] + x, center[1] + y) for x, y in product(range(-2, 3), repeat=2) if x * x + y * y <= 4}
             free.update(current)
             occupied -= current
         free -= occupied
@@ -184,15 +187,12 @@ class OnlineMap:
             add("scan", position, heading, [position], "observe a different direction from current position")
         # Frontier stands inside observed free space, facing nearby unknown.
         frontier = []
+        known = free | occupied
         for p in sorted(paths):
             if np.linalg.norm(np.array(p) - center) < 3:
                 continue
-            unseen = [
-                (p[0] + dx, p[1] + dy)
-                for dx in range(-3, 4)
-                for dy in range(-3, 4)
-                if (p[0] + dx, p[1] + dy) not in free and (p[0] + dx, p[1] + dy) not in occupied
-            ]
+            nearby = ((p[0] + dx, p[1] + dy) for dx, dy in product(range(-3, 4), repeat=2))
+            unseen = [cell for cell in nearby if cell not in known]
             if unseen:
                 frontier.append((p, np.mean(unseen, axis=0)))
         groups: dict[tuple, tuple] = {}
@@ -302,19 +302,14 @@ class OnlineMap:
                     break
         # Already observed scans with zero estimated new volume and no semantic
         # target are redundant. Apply the same filter to every policy.
-        choices = [
-            c
-            for c in choices
-            if not (
-                c["kind"] == "scan"
-                and c["view_already_observed"]
-                and c["estimated_unknown_view_m2"] < 0.01
-                and c["semantic_need"] == 0
-            )
-        ]
-        for i, c in enumerate(choices):
-            c["id"] = f"a{i}"
-        return choices, {
+        useful_choices = []
+        for choice in choices:
+            repeated_scan = choice["kind"] == "scan" and choice["view_already_observed"]
+            if repeated_scan and choice["estimated_unknown_view_m2"] < 0.01 and choice["semantic_need"] == 0:
+                continue
+            choice["id"] = f"a{len(useful_choices)}"
+            useful_choices.append(choice)
+        return useful_choices, {
             "reachable_cells": len(paths),
             "free_cells": len(free),
             "occupied_cells": len(occupied),

@@ -15,7 +15,7 @@ from jiuwensymbiosis.spatial_memory.memory import SpatialMemory
 
 
 def _sample(points: np.ndarray, count: int) -> list:
-    if not len(points):
+    if points.size == 0:
         return []
     return [
         list(map(float, row))
@@ -150,11 +150,14 @@ def write_snapshot(data: dict, output: Path) -> None:
         if len(context):
             ax.scatter(*context.T, s=0.4, color="#728197", alpha=0.22)
         for identity in range(len(data["objects"])):
-            points = np.asarray(
-                [p for f in data["frames"] for part in f["parts"] if part["object"] == identity for p in part["points"]]
-            )
-            if not len(points):
+            observed_points = []
+            for frame in data["frames"]:
+                for part in frame["parts"]:
+                    if part["object"] == identity:
+                        observed_points.extend(part["points"])
+            if not observed_points:
                 continue
+            points = np.asarray(observed_points)
             color = colors.hsv_to_rgb([((identity * 137.508 + 15) % 360) / 360, 0.55, 0.95])
             ax.scatter(*points.T, s=1.5, color=color, alpha=0.8)
             plan.scatter(points[:, 0], points[:, 1], s=1, color=color, alpha=0.35)
@@ -168,7 +171,7 @@ def write_snapshot(data: dict, output: Path) -> None:
             plan.scatter(trajectory[0, 0], trajectory[0, 1], marker="o", color="white", s=50, label="start")
             plan.scatter(trajectory[-1, 0], trajectory[-1, 1], marker="x", color="#ff9a66", s=60, label="end")
             plan.legend(loc="upper right", fontsize=8)
-        if data["map"]:
+        if data["map"] and data["map"]["points"]:
             free = np.asarray(data["map"]["points"])
             plan.scatter(free[:, 0], free[:, 1], s=2, color="#226660", alpha=0.3, zorder=0)
         ax.set(xlabel="X / m", ylabel="Y / m", zlabel="Z / m", title="Observed surfaces and persistent IDs")
@@ -180,13 +183,15 @@ def write_snapshot(data: dict, output: Path) -> None:
         plan.grid(alpha=0.15)
         status = data["memory_status"]
         figure.suptitle(
-            f"Spatial memory  |  {len(data['frames'])} RGB-D frames  |  {len(data['objects'])} candidate entities  |  {status['appearance_kind']}",
+            f"Spatial memory  |  {len(data['frames'])} RGB-D frames  |  "
+            f"{len(data['objects'])} candidate entities  |  {status['appearance_kind']}",
             fontsize=14,
         )
         figure.text(
             0.02,
             0.02,
-            "Display samples of observed surfaces. Model labels and identities may be wrong; hidden space remains unknown.",
+            "Display samples of observed surfaces. Model labels and identities may be wrong; "
+            "hidden space remains unknown.",
             fontsize=9,
             color="#adbcd0",
         )

@@ -18,7 +18,8 @@ from jiuwensymbiosis.spatial_memory.models import Detections, canonical, discove
 
 
 class Discovery(Protocol):
-    def detect(self, rgb: np.ndarray) -> Detections: ...
+    def detect(self, rgb: np.ndarray) -> Detections:
+        """Return immutable detections for the supplied RGB frame."""
 
 
 def replay(
@@ -87,7 +88,7 @@ def replay(
 def _report(output: Path, frames: list, receipts: list, summary: dict) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
-    names = {o["entity_id"]: f"O{i + 1:03d}" for i, o in enumerate(summary["objects"])}
+    names = {item["entity_id"]: f"O{index + 1:03d}" for index, item in enumerate(summary["objects"])}
     panels = []
     for index, (observation, receipt) in enumerate(zip(frames, receipts, strict=True)):
         batch = read_detections(output / "detections" / f"{index:03d}")
@@ -113,7 +114,9 @@ def _report(output: Path, frames: list, receipts: list, summary: dict) -> None:
             coverage = quality.get("depth_coverage_fraction")
             coverage_text = f"{coverage:.1%}" if coverage is not None else "—"
             rows.append(
-                f"<tr><td>{html.escape(detection.local_id)}</td><td>{html.escape(detection.label)}</td><td>{identity}</td><td>{html.escape(item.get('reason', item['status']))}</td><td>{depth_samples} / {coverage_text}</td><td>{item['point_count']}</td></tr>"
+                f"<tr><td>{html.escape(detection.local_id)}</td><td>{html.escape(detection.label)}</td>"
+                f"<td>{identity}</td><td>{html.escape(item.get('reason', item['status']))}</td>"
+                f"<td>{depth_samples} / {coverage_text}</td><td>{item['point_count']}</td></tr>"
             )
         image = Image.alpha_composite(image, Image.fromarray(tint))
         draw = ImageDraw.Draw(image)
@@ -138,18 +141,43 @@ def _report(output: Path, frames: list, receipts: list, summary: dict) -> None:
         image.convert("RGB").save(output / f"frame-{index:03d}.jpg", quality=95)
         Image.fromarray(observation.rgb).save(output / f"raw-{index:03d}.jpg", quality=95)
         panels.append(
-            f'<section><h2>View {index + 1}</h2><p>{html.escape(observation.observation_id)}</p><div class="images"><img src="raw-{index:03d}.jpg"><img src="frame-{index:03d}.jpg"></div><table><tr><th>Instance</th><th>Raw label</th><th>Identity</th><th>Decision</th><th>Depth samples / mask coverage</th><th>Surface voxels</th></tr>{"".join(rows)}</table></section>'
+            f"<section><h2>View {index + 1}</h2><p>{html.escape(observation.observation_id)}</p>"
+            f'<div class="images"><img src="raw-{index:03d}.jpg"><img src="frame-{index:03d}.jpg"></div>'
+            "<table><tr><th>Instance</th><th>Raw label</th><th>Identity</th><th>Decision</th>"
+            f"<th>Depth samples / mask coverage</th><th>Surface voxels</th></tr>{''.join(rows)}</table></section>"
         )
     objects = []
     for item in summary["objects"]:
         labels_text = ", ".join(item["labels"])
         objects.append(
-            f"<tr><td>{names[item['entity_id']]}<br><small>{item['entity_id']}</small></td><td>{html.escape(labels_text)}</td><td>{item['state']}</td><td>{item['observation_count']}</td><td>{[round(x, 3) for x in item['observed_center_m']]}</td></tr>"
+            f"<tr><td>{names[item['entity_id']]}<br><small>{item['entity_id']}</small></td>"
+            f"<td>{html.escape(labels_text)}</td><td>{item['state']}</td><td>{item['observation_count']}</td>"
+            f"<td>{[round(x, 3) for x in item['observed_center_m']]}</td></tr>"
         )
     content = f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>空间记忆第一阶段实测</title>
-<style>body{{font:16px/1.6 system-ui;margin:32px auto;max-width:1400px;padding:0 24px;color:#203040;background:#f4f7fa}}section{{background:white;padding:24px;margin:24px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;text-align:left;border-bottom:1px solid #ddd}}small{{font-size:11px}}.images{{display:flex;gap:12px}}img{{width:calc(50% - 6px);object-fit:contain}}pre{{white-space:pre-wrap}}@media(max-width:700px){{.images{{display:block}}img{{width:100%}}}}</style>
-<h1>空间记忆：多视角证据与实体 ID</h1><p>已处理 {len(frames)} 帧，记录 {len(objects)} 个候选实体。确认仅表示不同视角支持；不表示类别正确、物体完整或房间扫描完成。</p>
-<p>历史待补看记录：{summary["status"]["needs_view_history_count"]}；最后一帧待补看：{summary["status"]["latest_observation_needs_view_count"]}。它们是逐次检测记录，不是独立物体数或已调度任务数。所有类别均为尚未核验的模型标签；深度覆盖率不表示透明表面测量正确。</p>
-<p>定位来源：{html.escape(frames[0].pose_source)}；关联：三维表面重叠 + {html.escape(summary["status"].get("appearance_kind", "rgb-histogram"))}。图中 O 编号对应实体表，? 表示需要补看，方括号为该帧检测编号。完整记录见 <a href="summary.json">summary.json</a>。</p>
-<section><h2>持久实体</h2><table><tr><th>ID</th><th>Label evidence</th><th>State</th><th>Views</th><th>Observed centre (m)</th></tr>{"".join(objects)}</table></section>{"".join(panels)}</html>"""
+<style>
+body{{font:16px/1.6 system-ui;margin:32px auto;max-width:1400px;padding:0 24px;color:#203040;background:#f4f7fa}}
+section{{background:white;padding:24px;margin:24px 0;border-radius:12px}}
+table{{border-collapse:collapse;width:100%;font-size:14px}}
+td,th{{padding:8px;text-align:left;border-bottom:1px solid #ddd}}
+small{{font-size:11px}}
+.images{{display:flex;gap:12px}}
+img{{width:calc(50% - 6px);object-fit:contain}}
+pre{{white-space:pre-wrap}}
+@media(max-width:700px){{.images{{display:block}}img{{width:100%}}}}
+</style>
+<h1>空间记忆：多视角证据与实体 ID</h1>
+<p>已处理 {len(frames)} 帧，记录 {len(objects)} 个候选实体。
+确认仅表示不同视角支持；不表示类别正确、物体完整或房间扫描完成。</p>
+<p>历史待补看记录：{summary["status"]["needs_view_history_count"]}；
+最后一帧待补看：{summary["status"]["latest_observation_needs_view_count"]}。
+它们是逐次检测记录，不是独立物体数或已调度任务数。
+所有类别均为尚未核验的模型标签；深度覆盖率不表示透明表面测量正确。</p>
+<p>定位来源：{html.escape(frames[0].pose_source)}；
+关联：三维表面重叠 + {html.escape(summary["status"].get("appearance_kind", "rgb-histogram"))}。
+图中 O 编号对应实体表，? 表示需要补看，方括号为该帧检测编号。
+完整记录见 <a href="summary.json">summary.json</a>。</p>
+<section><h2>持久实体</h2><table>
+<tr><th>ID</th><th>Label evidence</th><th>State</th><th>Views</th><th>Observed centre (m)</th></tr>
+{"".join(objects)}</table></section>{"".join(panels)}</html>"""
     (output / "review.html").write_text(content)

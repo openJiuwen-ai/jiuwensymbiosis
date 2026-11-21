@@ -86,17 +86,15 @@ def main() -> None:
             report["methods"][kind] = metrics
             (args.output / "benchmark.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             del encoder
-        print(
-            json.dumps(
-                {
-                    "method": kind,
-                    "association": metrics["association"]["association"],
-                    "appearance_top1": metrics["appearance"]["retrieval_top1"],
-                    "feature_s": sum(x["elapsed_s"] for x in metrics["feature_timings"]),
-                }
-            ),
-            flush=True,
-        )
+        # Stdout is the benchmark's JSON-lines output.
+        result = {
+            "method": kind,
+            "association": metrics["association"]["association"],
+            "appearance_top1": metrics["appearance"]["retrieval_top1"],
+            "feature_s": sum(x["elapsed_s"] for x in metrics["feature_timings"]),
+        }
+        sys.stdout.write(json.dumps(result) + "\n")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

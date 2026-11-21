@@ -17,7 +17,8 @@ from jiuwensymbiosis.spatial_memory.models import Detections, canonical
 class AppearanceEncoder(Protocol):
     """Attach versioned descriptors while preserving raw segmentation evidence."""
 
-    def enrich(self, rgb: np.ndarray, detections: Detections) -> Detections: ...
+    def enrich(self, rgb: np.ndarray, detections: Detections) -> Detections:
+        """Return the detections with their versioned appearance descriptors."""
 
 
 def model_manifest(directory: Path) -> dict:
@@ -56,8 +57,9 @@ def object_crops(rgb: np.ndarray, masks: list[np.ndarray], *, size: int = 224) -
         square = np.full((side, side, 3), 127, dtype=np.uint8)
         square_mask = np.zeros((side, side), dtype=np.float32)
         y, x = (side - height) // 2, (side - width) // 2
-        square[y : y + height, x : x + width] = pixels
-        square_mask[y : y + height, x : x + width] = selected
+        y_end, x_end = y + height, x + width
+        square[y:y_end, x:x_end] = pixels
+        square_mask[y:y_end, x:x_end] = selected
         images.append(Image.fromarray(square).resize((size, size), Image.Resampling.BICUBIC))
         weights.append(np.asarray(Image.fromarray(square_mask).resize((size, size), Image.Resampling.BILINEAR)))
     return images, weights
@@ -132,8 +134,9 @@ class TransformersAppearance:
         vectors: list[np.ndarray] = []
         with torch.inference_mode():
             for start in range(0, len(images), self.batch_size):
+                end = start + self.batch_size
                 inputs = self.processor(
-                    images=images[start : start + self.batch_size],
+                    images=images[start:end],
                     return_tensors="pt",
                     do_resize=False,
                     do_center_crop=False,
@@ -144,11 +147,12 @@ class TransformersAppearance:
                 elif self.kind == "dinov3-cls":
                     encoded = output.last_hidden_state[:, 0]
                 else:
-                    tokens = output.last_hidden_state[:, 1 + self.model.config.num_register_tokens :]
+                    first_patch = 1 + self.model.config.num_register_tokens
+                    tokens = output.last_hidden_state[:, first_patch:]
                     side = self.size // self.model.config.patch_size
                     if tokens.shape[1] != side * side:
                         raise ValueError("DINOv3 patch grid does not match transformed image")
-                    pixels = torch.as_tensor(np.stack(masks[start : start + self.batch_size]), device=self.device)
+                    pixels = torch.as_tensor(np.stack(masks[start:end]), device=self.device)
                     weights = functional.interpolate(pixels[:, None], (side, side), mode="area").flatten(1)
                     encoded = (tokens * weights[..., None]).sum(1) / weights.sum(1, keepdim=True).clamp_min(1e-8)
                 vectors.extend(functional.normalize(encoded.float(), dim=-1).cpu().numpy())

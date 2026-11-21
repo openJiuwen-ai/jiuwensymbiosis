@@ -12,7 +12,7 @@ from jiuwensymbiosis.spatial_memory.models import Observation, canonical
 
 
 def overlap(first: np.ndarray, second: np.ndarray, distance: float) -> float:
-    if not len(first) or not len(second):
+    if first.size == 0 or second.size == 0:
         return 0.0
     if np.linalg.norm(np.maximum(0, np.maximum(first.min(0) - second.max(0), second.min(0) - first.max(0)))) > distance:
         return 0.0
@@ -64,16 +64,13 @@ def update_tasks(
         if item["status"] != "needs_view":
             continue
         reference = {"observation_id": observation.observation_id, "local_id": item["local_id"]}
-        prior = next(
-            (
-                task
-                for task in tasks
-                if task["state"] in {"open", "deferred"}
-                and task["reason"] == item["reason"]
-                and overlap(points, np.asarray(task["surface_m"]), policy.surface_distance_m) >= 0.65
-            ),
-            None,
-        )
+        prior = None
+        for task in tasks:
+            if task["state"] not in {"open", "deferred"} or task["reason"] != item["reason"]:
+                continue
+            if overlap(points, np.asarray(task["surface_m"]), policy.surface_distance_m) >= 0.65:
+                prior = task
+                break
         if prior is not None:
             prior["evidence_count"] += 1
             prior["last_evidence"] = reference

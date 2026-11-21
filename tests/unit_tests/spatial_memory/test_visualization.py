@@ -4,6 +4,9 @@ import hashlib
 import json
 import re
 
+import numpy as np
+import pytest
+
 from jiuwensymbiosis.spatial_memory.memory import SpatialMemory
 from jiuwensymbiosis.spatial_memory.visualization import write_viewer
 from tests.unit_tests.spatial_memory.test_memory import sample
@@ -25,3 +28,15 @@ def test_viewer_contains_separate_frame_evidence_and_escapes_labels(tmp_path):
     assert data["frames"][0]["image"].startswith("data:image/jpeg;base64,")
     assert "</script><script>alert(1)</script>" not in html
     assert result["source_sha256"] == before == hashlib.sha256(database.read_bytes()).hexdigest()
+
+
+def test_viewer_snapshot_accepts_a_grid_without_free_cells(tmp_path):
+    pytest.importorskip("matplotlib")
+    database = tmp_path / "memory.sqlite"
+    with SpatialMemory(database) as memory:
+        memory.ingest(*sample())
+    grid = tmp_path / "navigation.npz"
+    np.savez(grid, free=np.zeros((3, 3), dtype=bool), origin=[0, 0], resolution=0.1, radius=0.2)
+    output = tmp_path / "view.html"
+    write_viewer(database, output, navigation=grid, snapshot=True)
+    assert output.with_suffix(".png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
