@@ -39,7 +39,7 @@ The runtime forms a **Perceive → Plan → Execute → Observe → Feedback** l
 | Operating system | Ubuntu 22.04 (currently verified platform) |
 | Python | `>=3.11,<3.14`; the SO-101 adapter requires Python 3.12 |
 | Core | `openjiuwen>=0.1.13`; other versions follow `[project.dependencies]` in `pyproject.toml` |
-| Vision/GPU | The `[full]` extra uses the CUDA 12.8 build of PyTorch 2.8.0 |
+| Vision/GPU | The `[full]` extra uses the CUDA 13.0 build of PyTorch 2.11.0 and needs a CUDA 13.0-compatible NVIDIA driver ([release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-13-0)) |
 | Real hardware | Prepare the adapter's CAN/serial bus, camera, calibration, vendor SDK, and validated safety bounds |
 
 ## Installation
@@ -63,7 +63,7 @@ python -m pip install -e ".[voice]"     # ASR and audio capture
 python -m pip install -e ".[gui]"       # Existing workbench GUI (NiceGUI browser UI)
 python -m pip install -e ".[calib]"     # Hand-eye calibration
 python -m pip install -e ".[full]" \
-  --extra-index-url https://download.pytorch.org/whl/cu128  # Vision/GPU stack
+  --extra-index-url https://download.pytorch.org/whl/cu130  # Vision/GPU stack
 ```
 
 See [Installation and Quick Start](docs/en/tutorial/01-quick-start.md) for combined extras and pinned runtime dependencies.
@@ -90,7 +90,7 @@ with `--gui <key>`.
 | Adapter | Status | Main capabilities | Optional dependencies |
 | --- | --- | --- | --- |
 | Piper | Built-in real adapter | 6-DoF motion, parallel gripper, eye-in-hand RealSense vision | `[piper]`; add `[full]` for vision |
-| SO-101 | Built-in real adapter | 5-DoF motion, parallel gripper, eye-to-hand RealSense vision | Python 3.12 + `[so101]`; add `[full]` for vision |
+| SO-101 | Built-in real adapter | 5-DoF motion, parallel gripper, eye-to-hand RealSense vision | Python 3.12 + `[so101]`; add `[remote,camera]` for HTTP detection and RealSense; run the detector service in `[full]`/`[vision-server]` |
 | Cruzr | Built-in real adapter | Mobile dual-arm (base + lift + waist), paddle grasp, waist/head dual cameras | `[cruzr]`; add `[full]` for vision; requires sourcing the ROS workspace at runtime |
 
 `MockArmEnv` remains available as a built-in in-memory simulation Env and powers `--mock` (Piper only), but it is not a hardware adapter.

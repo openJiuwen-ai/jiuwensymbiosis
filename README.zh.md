@@ -39,7 +39,7 @@ JiuwenSymbiosis 是基于 openjiuwen 的具身智能体框架，让一套安全�
 | 操作系统 | Ubuntu 22.04（当前已验证平台） |
 | Python | `>=3.11,<3.14`；SO-101 适配器需要 Python 3.12 |
 | 核心依赖 | `openjiuwen>=0.1.13`；其他版本以 `pyproject.toml` 的 `[project.dependencies]` 为准 |
-| 视觉/GPU | `[full]` 使用 CUDA 12.8 对应的 PyTorch 2.8.0 构建 |
+| 视觉/GPU | `[full]` 使用 CUDA 13.0 对应的 PyTorch 2.11.0 构建，需要兼容 CUDA 13.0 的 NVIDIA 驱动（[release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-13-0)） |
 | 真机 | 准备适配器所需的 CAN/串口、相机、标定、厂商 SDK，并验收安全边界 |
 
 ## 安装指南
@@ -63,7 +63,7 @@ python -m pip install -e ".[voice]"     # ASR 与录音
 python -m pip install -e ".[gui]"       # 现有工作台 GUI（NiceGUI 浏览器界面）
 python -m pip install -e ".[calib]"     # 手眼标定
 python -m pip install -e ".[full]" \
-  --extra-index-url https://download.pytorch.org/whl/cu128  # 视觉/GPU 栈
+  --extra-index-url https://download.pytorch.org/whl/cu130  # 视觉/GPU 栈
 ```
 
 组合安装和固定版本运行依赖见[安装与快速开始](docs/zh/tutorial/01-quick-start.md)。
@@ -88,7 +88,7 @@ python -m jiuwensymbiosis_gui --gui workbench
 | 适配器 | 状态 | 主要能力 | 可选依赖 |
 | --- | --- | --- | --- |
 | Piper | 内置真机适配器 | 6-DoF 运动、平行夹爪、眼在手上 RealSense 视觉 | `[piper]`；视觉另加 `[full]` |
-| SO-101 | 内置真机适配器 | 5-DoF 运动、平行夹爪、眼在手外 RealSense 视觉 | Python 3.12 + `[so101]`；视觉另加 `[full]` |
+| SO-101 | 内置真机适配器 | 5-DoF 运动、平行夹爪、眼在手外 RealSense 视觉 | Python 3.12 + `[so101]`；视觉另加 `[remote,camera]`（HTTP 检测 + RealSense），检测服务用 `[full]`/`[vision-server]` |
 | Cruzr | 内置真机适配器 | 移动双臂（底盘 + 升降 + 腰部）、夹板夹取、腰/头双路相机 | `[cruzr]`；视觉另加 `[full]`；运行时需 source ROS 工作区 |
 
 `MockArmEnv` 仍作为内置内存模拟 Env 提供，并用于 `--mock`（仅 Piper），但它不是硬件适配器。

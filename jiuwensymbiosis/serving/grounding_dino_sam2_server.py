@@ -16,7 +16,7 @@ Why this backend:
     mask centroid stays accurate for irregular / non-box objects.
   * GroundingDINO is loaded via HF ``transformers`` (AutoModelForZeroShot-
     ObjectDetection), which avoids compiling GroundingDINO's custom CUDA op
-    (painful on CUDA 12.8).
+    (painful on CUDA 13.0).
 
 Accuracy choices (see detector.local in the runtime YAML):
   * detector default = ``IDEA-Research/grounding-dino-base`` (Swin-B, not Tiny).
@@ -168,24 +168,15 @@ def _gdino_detect(pil_image: Image.Image, text: str) -> tuple[np.ndarray, np.nda
     with torch.no_grad():
         outputs = _GDINO_MODEL(**inputs)  # type: ignore[misc]
     target_sizes = [(pil_image.height, pil_image.width)]  # (h, w)
-    # transformers renamed ``box_threshold`` -> ``threshold`` across versions;
-    # try the modern kwarg first, fall back to the legacy one.
-    try:
-        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(  # type: ignore[union-attr]
-            outputs,
-            inputs["input_ids"],
-            threshold=_BOX_THR,
-            text_threshold=_TEXT_THR,
-            target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        res = _GDINO_PROCESSOR.post_process_grounded_object_detection(  # type: ignore[union-attr]
-            outputs,
-            inputs["input_ids"],
-            box_threshold=_BOX_THR,
-            text_threshold=_TEXT_THR,
-            target_sizes=target_sizes,
-        )[0]
+    # transformers>=5.17 uses ``threshold``; ``box_threshold`` no longer exists,
+    # so let an unexpected kwarg error surface instead of masking it with a retry.
+    res = _GDINO_PROCESSOR.post_process_grounded_object_detection(  # type: ignore[union-attr]
+        outputs,
+        inputs["input_ids"],
+        threshold=_BOX_THR,
+        text_threshold=_TEXT_THR,
+        target_sizes=target_sizes,
+    )[0]
     boxes = _to_numpy(res["boxes"]).reshape(-1, 4)
     scores = _to_numpy(res["scores"]).reshape(-1)
     if len(scores) != len(boxes):

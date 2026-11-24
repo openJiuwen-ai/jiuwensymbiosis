@@ -70,7 +70,7 @@ python -m pip install -e ".[gui,calib,so101]"
 ```
 
 The `gui` extra installs NiceGUI for the existing workbench. If you only run the headless CLI workflow below,
-install `.[calib,so101]` instead.
+install `.[calib,so101]` instead. LeRobot 0.7 supports Pillow 13, so `[full]` (vision) can be added to the same environment.
 
 To run the calibration subsystem tests:
 

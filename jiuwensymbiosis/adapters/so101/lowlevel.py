@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SO-101 low-level driver wrapping LeRobot 0.6.x ``SOFollower``.
+"""SO-101 low-level driver wrapping LeRobot 0.7.x ``SOFollower``.
 
 Design contract (see ``.claude/plans/so101-adapter.md`` §A3):
 
@@ -296,6 +296,13 @@ def _lerobot_version_tuple(version: str) -> tuple[int, ...]:
         if digits:
             parts.append(int(digits))
     return tuple(parts) or (0,)
+
+
+def _check_lerobot_version(version: str) -> None:
+    """Fail fast unless ``version`` is a LeRobot release the SO-101 driver supports."""
+    vt = _lerobot_version_tuple(version)
+    if not ((0, 7, 0) <= vt < (0, 8, 0)):
+        raise RuntimeError(f"SO-101 driver requires LeRobot >=0.7.0,<0.8.0, got {version}.")
 
 
 # --------------------------------------------------------------------- driver
@@ -2627,9 +2634,7 @@ class So101Driver:
         import lerobot as _lerobot
 
         version = getattr(_lerobot, "__version__", "0.0.0")
-        vt = _lerobot_version_tuple(version)
-        if not (vt >= (0, 6, 0) and vt < (0, 7, 0)):
-            raise RuntimeError(f"SO-101 driver requires LeRobot >=0.6.0,<0.7.0, got {version}.")
+        _check_lerobot_version(version)
         from lerobot.model.kinematics import RobotKinematics  # noqa: F401
         from lerobot.robots.so_follower.config_so_follower import (  # noqa: F401
             SOFollowerRobotConfig,

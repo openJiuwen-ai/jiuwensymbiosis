@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SO-101 adapter (5-DoF underactuated arm + parallel gripper via LeRobot 0.6.x).
+"""SO-101 adapter (5-DoF underactuated arm + parallel gripper via LeRobot 0.7.x).
 
 Public surface mirrors the other adapters::
 

@@ -38,8 +38,11 @@ It does not require Genesis, Torch, CUDA or MuJoCo Studio. To enable both robot 
 
 For Genesis alone on Apple Silicon, install `.[gui,genesis]`. For both backends, install
 `.[gui,genesis,mujoco,jumper,microduck]` instead. Genesis brings its own SDK dependencies.
-Keep core `.[dev]` tests in a separate environment because their Pillow requirement conflicts
-with Genesis's pinned version. The single `genesis` extra uses standard platform markers supported by pip. Mac selects regular
+`genesis` pins Pillow 13.0.0 and Torch 2.11.0+cu130, the same Pillow/Torch line as
+`dev`, `remote`, `gui`, `full`, and `vision-server`; keep a separate simulation environment
+to isolate GPU/driver and Nyx runtime dependencies, not because of Pillow/Torch conflicts.
+`[so101]` still needs its own environment because LeRobot 0.7 requires NumPy<2.3 while
+`genesis` pins NumPy 2.3.5. The single `genesis` extra uses standard platform markers supported by pip. Mac selects regular
 Torch and the Rasterizer; Linux retains `torch==2.11.0+cu130` and Nyx. Markers do not detect GPU
 hardware or drivers. Linux still requires the CUDA package index below; unavailable CUDA wheels
 cause installation failure rather than CPU fallback.
@@ -287,7 +290,8 @@ starts new chat context. It does not change the physical scene.
 
 ### RGB-D inference service
 
-Prefer a separate inference environment so its Pillow/Torch constraints do not conflict with Genesis:
+Prefer a separate inference environment to isolate its GPU/runtime stack from Genesis;
+Pillow 13 and Torch 2.11 are shared, so version conflicts are not the reason:
 
 ```bash
 conda create -n symbiosis_vision python=3.12 pip
@@ -438,10 +442,10 @@ python -m pip install -e ".[genesis]" --extra-index-url https://download.pytorch
 python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <asset-id> --output outputs/usd-preview
 ```
 
-This pins Torch 2.11.0+cu130, Genesis 1.4.4, Nyx plugin 0.1.9/Nyx 0.1.7 and Pillow 11.3.0.
+This pins Torch 2.11.0+cu130, Genesis 1.4.4, Nyx plugin 0.1.9/Nyx 0.1.7 and Pillow 13.0.0.
 A supported NVIDIA GPU/driver is required; successful installation is not GPU acceptance.
-Do not combine this profile with `full`, `vision-server` or `voice-local` (different Torch),
-or `dev`/`remote` (Pillow>=12). CPU tests can use `.[dev,gui,simulator-scenes]`.
+A dedicated Python 3.12 environment is still recommended for Genesis/Nyx; CPU tests can use
+`.[dev,gui,simulator-scenes]`.
 Source USD and texture files stay unchanged; roots that declare `material_rules` get a
 non-destructive material conversion and texture bake before rendering (see the
 [source material rendering section](../../zh/how-to/simulaiton-guide.md#源材质渲染)), with per-material details in

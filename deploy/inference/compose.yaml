@@ -7,8 +7,8 @@ services:
       dockerfile: deploy/inference/Dockerfile
       args:
         MODEL_EXTRAS: vision-server
-        TORCH_PACKAGES: torch==2.8.0 torchvision==0.23.0
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_PACKAGES: torch==2.11.0 torchvision==0.26.0
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
     command: [python, -m, jiuwensymbiosis.serving.grounding_dino_sam2_server, --host, 0.0.0.0, --port, '8114', --device, '${MODEL_DEVICE:-cpu}', --gdino-model-id, /weights/grounding-dino, --sam2-model-id, /weights/sam2]
     ports: ['${INFERENCE_BIND:-127.0.0.1}:8114:8114']
     volumes: ['${MODEL_ROOT:-./weights}:/weights:ro']
@@ -26,8 +26,8 @@ services:
       dockerfile: deploy/inference/Dockerfile
       args:
         MODEL_EXTRAS: speech-server,voice-local
-        TORCH_PACKAGES: torch==2.8.0 torchaudio==2.8.0
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_PACKAGES: torch==2.11.0 torchaudio==2.11.0
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
     command: [python, -m, jiuwensymbiosis.serving.speech_server, --host, 0.0.0.0, --port, '8115', --asr, funasr, --asr-model-path, /weights/paraformer, --device, '${MODEL_DEVICE:-cpu}']
     ports: ['${INFERENCE_BIND:-127.0.0.1}:8115:8115']
     volumes: ['${MODEL_ROOT:-./weights}:/weights:ro']
@@ -45,8 +45,8 @@ services:
       dockerfile: deploy/inference/Dockerfile
       args:
         MODEL_EXTRAS: speech-server,chattts-server
-        TORCH_PACKAGES: torch==2.8.0 torchaudio==2.8.0
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_PACKAGES: torch==2.11.0 torchaudio==2.11.0
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
     command: [python, -m, jiuwensymbiosis.serving.speech_server, --host, 0.0.0.0, --port, '8116', --tts, chattts, --tts-model-path, /weights/chattts, --device, '${MODEL_DEVICE:-cpu}']
     ports: ['${INFERENCE_BIND:-127.0.0.1}:8116:8116']
     volumes: ['${MODEL_ROOT:-./weights}:/weights:ro']

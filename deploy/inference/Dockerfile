@@ -1,8 +1,8 @@
 # Build from the repository root; weights are supplied at runtime.
 FROM python:3.12-slim-bookworm
 ARG MODEL_EXTRAS=vision-server
-ARG TORCH_PACKAGES="torch==2.8.0 torchvision==0.23.0"
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_PACKAGES="torch==2.11.0 torchvision==0.26.0"
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libsndfile1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*

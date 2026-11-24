@@ -24,7 +24,7 @@ dependencies = [
 remote = [
     # Agent-side HTTP inference clients and image codecs; no model runtime.
     "httpx>=0.28",
-    "pillow>=12",
+    "pillow>=13.0.0",
 ]
 camera = [
     "pyrealsense2>=2.57",
@@ -37,18 +37,18 @@ voice-io = [
 ]
 vision-server = [
     # Choose matching CPU/CUDA wheels at deployment; never install on remote-only Agents.
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "transformers>=5",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "transformers>=5.17.0",
     "fastapi>=0.136",
     "uvicorn>=0.46",
-    "pillow>=12",
+    "pillow>=13.0.0",
     "httpx>=0.28",
 ]
 voice-local = [
     "funasr>=1.0",
-    "torch==2.8.0",
-    "torchaudio==2.8.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
     "soundfile>=0.12",
 ]
 speech-server = [
@@ -57,12 +57,12 @@ speech-server = [
     "uvicorn>=0.46",
 ]
 chattts-server = [
-    "ChatTTS==0.2.4",
-    # ChatTTS 0.2.4 uses the Transformers 4 cache API. Deploy TTS in its own
-    # environment, separate from vision-server/full (which require Transformers 5).
-    "transformers==4.53.3",
-    "torch==2.8.0",
-    "torchaudio==2.8.0",
+    "ChatTTS==0.2.5",
+    # ChatTTS 0.2.5 updated its generation-cache code for Transformers 5, so it
+    # can share an environment with vision-server/full (both use Transformers 5.17).
+    "transformers>=5.17.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
 ]
 dev = [
     "python-fcl==0.7.0.11",  # Exercise the CPU loaded-geometry gate in core CI.
@@ -77,23 +77,23 @@ dev = [
     # HTTP server contract tests use model stubs; no GUI or model runtime needed.
     "fastapi>=0.136",
     "uvicorn>=0.46",
-    "pillow>=12",
+    "pillow>=13.0.0",
     "httpx>=0.28",
     "rtree>=1",  # Mesh spatial queries exercised by the core indoor tests.
 ]
 full = [
-    # torch/torchvision 必须配合 --extra-index-url https://download.pytorch.org/whl/cu128 安装，
-    # torchvision 0.23.0 与 torch 2.8.0 配对；SAM2(transformers Sam2ImageProcessor)依赖 torchvision。
-    "torch==2.8.0+cu128",
-    "torchvision==0.23.0+cu128",
-    "torchaudio==2.8.0+cu128",  # funasr（[voice] 的 ASR）音频处理依赖，须与 torch 同版本+CUDA 构建
+    # torch/torchvision 必须配合 --extra-index-url https://download.pytorch.org/whl/cu130 安装，
+    # torchvision 0.26.0 与 torch 2.11.0 配对；SAM2(transformers Sam2ImageProcessor)依赖 torchvision。
+    "torch==2.11.0+cu130",
+    "torchvision==0.26.0+cu130",
+    "torchaudio==2.11.0+cu130",  # funasr（[voice] 的 ASR）音频处理依赖，须与 torch 同版本+CUDA 构建
     "pyrealsense2>=2.57",
     "opencv-python>=4.8,<5.0",
-    "transformers>=5",
+    "transformers>=5.17.0",
     "fastapi>=0.136",
     "uvicorn>=0.46",
     "requests>=2.31",
-    "pillow>=12",
+    "pillow>=13.0.0",
     "httpx>=0.28",
 ]
 piper = ["piper_sdk>=0.6.1"]
@@ -107,8 +107,10 @@ cruzr = [
 so101 = [
     # SO101 适配器仅支持 Python>=3.12。feetech 提供 STS3215 串口总线驱动，
     # kinematics 提供 RobotKinematics/placo，用于基于 URDF 的 IK/FK。
-    # lerobot 限定在 0.6.x
-    "lerobot[feetech,kinematics]>=0.6.0,<0.7",
+    # lerobot 0.7 允许 Pillow<14；显式保留 Pillow>=13 下限，保证与 [full]/[vision-server]
+    # 等 extras 同装时也解析到 13。驱动按 0.7 的 API 校验版本，故仍限制在 0.7.x。
+    "lerobot[feetech,kinematics]>=0.7.0,<0.8",
+    "pillow>=13.0.0",
 ]
 voice = [
     # 兼容旧本地语音安装：ASR + 录音。远程使用 [remote,voice-io]；
@@ -125,14 +127,15 @@ gui = [
     "nicegui>=2,<3",
     "httpx>=0.28",  # Explicit model discovery; no SDK provider dependency.
     "keyring>=25,<26",  # OS credential storage only; no plaintext fallback.
-    "pillow>=10",
+    # Project-wide Pillow 13 floor; LeRobot 0.7 no longer caps it for the SO-101 wizard.
+    "pillow>=13.0.0",
 ]
 simulator-scenes = [
     # CPU USD/mesh/material inspection, independent of the Genesis renderer.
     "usd-core==25.11",
     "trimesh>=4.8.2,<6",
     "rtree>=1",
-    "pillow>=11.3",
+    "pillow>=13.0.0",
 ]
 simulator-collision = [
     # CPU geometry preparation; POSIX cache locks. Genesis is a separate extra.
@@ -160,7 +163,7 @@ genesis = [
     "gs-nyx==0.1.7; sys_platform == 'linux'",
     "aiortc==1.15.0",
     "av==17.1.0",
-    "pillow==11.3.0",
+    "pillow==13.0.0",
     "opencv-python>=4.8,<5",
 ]
 mujoco = [
@@ -168,7 +171,7 @@ mujoco = [
     "mujoco-core[rendering]==4.0.1",
     "aiortc==1.15.0",
     "av==17.1.0",
-    "pillow>=11.3",
+    "pillow>=13.0.0",
 ]
 jumper = [
     # Official native controller + CPU ONNX; use with the simulation workbench.

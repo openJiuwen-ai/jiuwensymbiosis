@@ -62,7 +62,9 @@ def test_installed_wheel_entries_and_workbench_resources(tmp_path):
             }
             selected = [req for req in requirements if req.marker is None or req.marker.evaluate(environment)]
             (torch,) = [req for req in selected if req.name == "torch"]
+            (pillow,) = [req for req in selected if req.name == "pillow"]
             (sdk,) = [req for req in selected if req.name == "genesis-world"]
+            assert str(pillow.specifier) == "==13.0.0"
             if platform == "linux":
                 assert "2.11.0+cu130" in torch.specifier
                 assert "2.11.0+cpu" not in torch.specifier and "2.11.0" not in torch.specifier

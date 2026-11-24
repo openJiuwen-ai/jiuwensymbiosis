@@ -13,7 +13,7 @@
 ```bash
 # 编辑式安装（extras 可组合，如 ".[dev,gui]"）
 pip install -e ".[dev]"                                          # 核心 + 测试依赖
-pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + 视觉/GPU 依赖
+pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu130  # + 视觉/GPU 依赖
 pip install -e ".[gui]"                                          # + 现有工作台（NiceGUI，浏览器模式）
 pip install -e ".[piper]"                                        # + piper 硬件 SDK
 pip install -e ".[so101]"                                        # + SO-101 硬件依赖

@@ -497,8 +497,8 @@ VoiceLoop 一次 `close()` 使用 `shutdown_timeout_s` 的共享截止时间，�
 OpenJiuwen 的 Transformers 间接依赖也仍存在。精简 Agent 的无 Torch 验证不包含 LeRobot。
 本地模型安装与硬件 SDK 安装按实际后端选择，不能用 `full` 代替精简客户端环境。
 
-当前视觉服务需要 Transformers 5，ChatTTS 安装组固定经验证的 Transformers 4 组合，
-二者使用独立环境/镜像。版本约束只维护在 pyproject.toml，具体命令、模型目录和 Compose profiles
+当前视觉服务与 ChatTTS 均使用 Transformers 5.17，可共用一个 Python 环境；Compose 仍按服务拆分镜像以隔离运行时与模型权重。
+版本约束只维护在 pyproject.toml，具体命令、模型目录和 Compose profiles
 见[部署说明](../deploy/inference/README.md)。仓库提供构建模板不等于已经验证真实 GPU 镜像。
 
 <a id="validation"></a>
