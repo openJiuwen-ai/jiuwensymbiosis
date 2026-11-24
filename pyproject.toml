@@ -21,6 +21,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Offline report and snapshot export, compatible with the Genesis Pillow pin.
+spatial-memory = ["pillow>=11.3", "matplotlib>=3.10"]
+# Local CLIP or DINOv3 descriptors. Select PyTorch wheels for the host.
+spatial-memory-appearance = ["pillow>=11.3", "torch>=2.8", "torchvision>=0.23", "transformers>=5"]
+
 remote = [
     # Agent-side HTTP inference clients and image codecs; no model runtime.
     "httpx>=0.28",
@@ -231,6 +236,7 @@ jiuwensymbiosis = [
     "simulators/assets/data/*.yaml",
     "simulators/genesis/data/*.yaml",
     "simulators/common/web/assets/*",
+    "spatial_memory/viewer.html",
 ]
 jiuwensymbiosis_gui = [
     "workbench/data/*.yaml",

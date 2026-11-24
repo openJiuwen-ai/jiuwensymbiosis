@@ -159,6 +159,10 @@ A recording failure is logged without turning a successful hardware action into 
 
 `WorldState.snapshot(session)` combines Env observations, execution memory, and reachability information into a planning snapshot. It does not persist execution records. The sequence executor's `<bind>.field` references results of executed steps, a mechanism separate from the locations stored in `ExecutionMemory`.
 
+### Persistent RGB-D evidence
+
+`jiuwensymbiosis.spatial_memory` owns its versioned observations, receipts, and entities. `contracts.py` owns action results. The evidence database is scoped to a scene epoch, camera calibration, and detector/appearance provenance. Action invalidation affects `ExecutionMemory`; persisted locations require new sensing before action use. Use `Observation.from_camera_frame()` with a synchronized base pose in metres to convert the millimetre camera extrinsics. Captured evidence can be replayed after upstream pose correction. Navigation and motion admission belong to the carrier and its ROS 2 stack.
+
 ### Vision: shared pipelines and explicit projection actions
 
 `perception/scene3d.py` uses the adapter's calibrated frames and detector to compute object or surface geometry in 3D. `api/defaults.py` forwards actions, and `motion/approach.py` reuses perception results for search and approach. See the [vision pipeline](#perception-pipeline).

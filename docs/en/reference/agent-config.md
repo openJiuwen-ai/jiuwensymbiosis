@@ -235,7 +235,7 @@ Unknown fields, invalid types and out-of-range values are rejected. Disabled mod
 - Disabling tracking removes tracking special operations; ordinary actions still run. `settle_grip_s` still applies to ordinary gripper commands.
 - `max_replans` caps replanning only. After exhausting the budget the runner still dispatches pending steps through existing execution checks. It is not a step or wall-time limit.
 - Tracing covers discrete actions and events, not each servo tick or fast planning before a trace is established.
-- Spatial memory and context enhancement are not implemented. `modules.spatial_memory` and `modules.context` are rejected as unknown fields. Foundational execution memory is not optional.
+- Persistent RGB-D memory is available through `jiuwensymbiosis.spatial_memory`. Use `.[spatial-memory]` for offline exports. The agent configuration rejects `modules.spatial_memory` and `modules.context`; execution memory is always enabled.
 
 ## Overrides and paths
 

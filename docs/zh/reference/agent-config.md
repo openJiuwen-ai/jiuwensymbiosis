@@ -235,7 +235,7 @@ agent:
 - `tracking.enabled=false` 禁用跟踪特殊动作，普通动作仍能执行。`settle_grip_s` 仍作用于普通夹爪动作。
 - `max_replans` 当前只限制重规划次数；预算用完后 runner 仍会派发待执行步骤，由现有执行检查处理。它不是最大步骤数或总时长上限。
 - tracing 记录离散动作及其事件，不保证覆盖每个跟踪控制周期，也不覆盖 fast 规划之前尚未建立轨迹的阶段。
-- 空间记忆和上下文增强尚未实现；`modules.spatial_memory`、`modules.context` 当前均会作为未知字段被拒绝。基础执行记忆不受这些未来开关控制。
+- 持久 RGB-D 空间记忆由 `jiuwensymbiosis.spatial_memory` 提供，离线导出可安装 `.[spatial-memory]`。Agent 配置会拒绝 `modules.spatial_memory` 和 `modules.context` 两个字段，基础执行记忆始终启用。
 
 ## 覆盖优先级和路径
 

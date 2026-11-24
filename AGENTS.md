@@ -29,6 +29,8 @@ make test-all     # pytest (incl. GUI + integration; requires their dependencies
 pip install -e ".[dev]"                                    # core + test deps
 pip install -e ".[dev,gui]"                               # tests for GUI pages and components
 pip install -e ".[remote]"                                # HTTP vision/speech clients, no model runtime
+pip install -e ".[spatial-memory]"                         # offline RGB-D reports and PNG export
+pip install -e ".[spatial-memory-appearance]"              # optional local CLIP / DINOv3 descriptors
 pip install -e ".[remote,camera,voice-io]"                 # optional host camera/audio capture and playback
 pip install -e ".[vision-server]"                         # optional local/remote vision server; choose Torch wheels for host
 pip install -e ".[speech-server,voice-local]"             # optional FunASR server; ChatTTS uses chattts-server
@@ -320,6 +322,7 @@ jiuwensymbiosis/          # Main package
   rails/                  # SafetyRail, RecoveryRail, VisualFeedbackRail, DiagnosisRail
   skills/                 # Built-in SKILL.md files (visual_pick, visual_place, transport)
   perception/             # Body-agnostic vision: frame, calibration, object_geometry, scene3d
+  spatial_memory/         # Persistent RGB-D evidence, object association and offline replay
   motion/                 # Body-agnostic motion: base_goal, approach, diff_drive, dual_arm, lift
   simulators/             # Genesis/Nyx simulator: assets index, scene runtime + worker,
                           #   material repair/baking (rules declared per root in assets.yaml), occupancy export,

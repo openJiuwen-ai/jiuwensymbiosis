@@ -50,6 +50,7 @@ def test_installed_wheel_entries_and_workbench_resources(tmp_path):
         metadata_name = next(name for name in distribution.namelist() if name.endswith(".dist-info/METADATA"))
         metadata = BytesParser().parsebytes(distribution.read(metadata_name))
         extras = metadata.get_all("Provides-Extra", [])
+        assert "jiuwensymbiosis/spatial_memory/viewer.html" in distribution.namelist()
         assert "genesis" in extras and "genesis-macos" not in extras
         requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
         for platform, system, machine in (("darwin", "Darwin", "arm64"), ("linux", "Linux", "x86_64")):

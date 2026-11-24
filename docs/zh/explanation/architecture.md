@@ -159,6 +159,10 @@ class CruzrApi(BaseRobotApi):
 
 `WorldState.snapshot(session)` 汇总 Env 观测、执行记忆和可达性信息，形成规划快照。它不负责持久保存执行记录。序列执行器的 `<bind>.field` 则引用已执行步骤的结果，与 `ExecutionMemory` 的位置记录是不同机制。
 
+### 持久 RGB-D 证据
+
+`jiuwensymbiosis.spatial_memory` 维护带版本的观测、入库回执和实体。`contracts.py` 负责动作结果。证据库按场景轮次、相机标定及检测与外观模型来源隔离。动作触发的失效作用于 `ExecutionMemory`，持久库中的位置用于动作前需要重新观测。将 `CameraFrame` 接入时，把同步的米制底座位姿传给 `Observation.from_camera_frame()`，由它转换毫米制相机外参。上游修正位姿后可重放已保存的证据。导航与运动准入由载体和 ROS 2 导航栈负责。
+
 ### 视觉：共享管线 + 显式投影动作
 
 `perception/scene3d.py` 接收适配器提供的标定帧和检测器，计算物体或表面的三维几何。`api/defaults.py` 提供动作转发，`motion/approach.py` 复用感知结果完成搜索与逼近。处理流程见[视觉管线](#perception-pipeline)。
