@@ -67,7 +67,7 @@ python -m pip install -e ".[dev]"
 
 # Vision and GPU dependencies
 python -m pip install -e ".[full]" \
-  --extra-index-url https://download.pytorch.org/whl/cu128
+  --extra-index-url https://download.pytorch.org/whl/cu130
 
 # Piper SDK
 python -m pip install -e ".[piper]"
@@ -88,8 +88,11 @@ python -m pip install -e ".[gui]"
 python -m pip install -e ".[calib]"
 ```
 
-Extras can be combined, for example `.[full,piper]`, `.[full,so101]`, or `.[full,cruzr]`; commands containing `[full]` still require the
-PyTorch CUDA 12.8 extra index shown above.
+Extras can be combined, for example `.[full,piper]` or `.[full,cruzr]`. `[so101]` uses LeRobot 0.7.x, which supports Pillow 13 and can combine with extras such as `[full]`, `[vision-server]`, `[simulator-scenes]`, or `[mujoco]`. `[genesis]` still pins NumPy 2.3.5 while LeRobot 0.7 requires NumPy<2.3, so install `[genesis]` and `[so101]` in separate environments. Commands containing `[full]` still require the
+PyTorch CUDA 13.0 extra index shown above. Upgrading from a cu128 environment requires reinstalling
+`torch`, `torchvision`, and `torchaudio` from the cu130 index (do not mix cu128/cu130 wheels) and a
+driver compatible with CUDA 13.0 (see the [CUDA 13.0 release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-13-0)).
+Verify with `python -c "import torch; print(torch.__version__, torch.version.cuda)"`.
 
 Genesis / MuJoCo simulation uses a separate environment; installation, asset setup and operation are in the [Simulation Guide](../how-to/simulaiton-guide.md).
 

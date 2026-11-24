@@ -23,8 +23,10 @@ pip install -e ".[remote,camera,voice-io]"
 
 硬件 SDK 仍按适配器要求安装，例如 Piper 的 `.[piper]`。这些客户端安装组不引入视觉、
 FunASR 或 ChatTTS 模型。**SO-101 的 LeRobot 安装组仍依赖 Torch**，所以“无需 GPU”
-不等于每一种适配器都能完全移除 Torch。已有 `.[full]` / `.[voice]` 保留为本地依赖的兼容入口；
-远程 Agent 不应为使用 HTTP 客户端而安装它们。
+不等于每一种适配器都能完全移除 Torch。除 SO-101 外，已有 `.[full]` / `.[voice]` 保留为
+本地依赖的兼容入口；远程 Agent 不应为使用 HTTP 客户端而安装它们。SO-101 使用 `.[remote]`
+接入 HTTP 检测服务、`.[camera]` 接入 RealSense；模型服务另用 `.[full]` 或 `.[vision-server]`
+安装。
 
 在模型服务器安装对应的 `vision-server`、`speech-server` 和实际选用的模型安装组，
 选择相匹配的 Torch/CUDA 环境。启动命令与模型路径见

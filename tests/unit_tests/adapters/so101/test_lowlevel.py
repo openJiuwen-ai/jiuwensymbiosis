@@ -37,6 +37,7 @@ from jiuwensymbiosis.adapters.so101.lowlevel import (
     So101PoseConvergenceError,
     So101PreDispatchError,
     So101TrackingViolation,
+    _check_lerobot_version,
 )
 from jiuwensymbiosis.agent.lifecycle import HardwareCleanupError
 from jiuwensymbiosis.env.protocol import HandGuidingDriver, HandGuidingRecoveryError
@@ -2559,3 +2560,17 @@ class TestPreDispatchErrorCode:
         # An orientation config error is not a boundary violation: it must not
         # inherit the safety card just because it shares the wrapper type.
         assert error_code(So101PreDispatchError("orientation overrides must be numeric.")) == ""
+
+
+class TestLeRobotVersionGuard:
+    """The optional extra pins the LeRobot major/minor range; the driver must
+    reject an installed release outside it before importing its private paths."""
+
+    def test_accepts_supported_07_versions(self):
+        for version in ("0.7.0", "0.7.1", "0.7.3"):
+            _check_lerobot_version(version)
+
+    def test_rejects_old_and_next_major_versions(self):
+        for version in ("0.6.0", "0.6.1", "0.8.0", "1.0.0"):
+            with pytest.raises(RuntimeError, match="requires LeRobot >=0.7.0,<0.8.0"):
+                _check_lerobot_version(version)

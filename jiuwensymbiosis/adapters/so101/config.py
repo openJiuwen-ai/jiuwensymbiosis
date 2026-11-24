@@ -4,7 +4,7 @@
 """SO-101 adapter config.
 
 SO-101 is a 5-DoF underactuated arm (Feetech STS3215 servos) driven by the
-LeRobot 0.6.x ``SOFollower``. This config captures the per-robot knobs the
+LeRobot 0.7.x ``SOFollower``. This config captures the per-robot knobs the
 adapter needs (serial port, explicit safe home joints, soft limits, IK weights,
 gripper two-state percentages) and validates them at load time.
 

@@ -1,6 +1,6 @@
 # jiuwensymbiosis — pinned dependencies for reproducibility
 # 开发安装推荐: pip install -e ".[dev]"
-# 完整安装（含视觉/GPU）: pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128
+# 完整安装（含视觉/GPU）: pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu130
 # Piper 硬件: pip install -e ".[piper]"
 # 本文件用精确版本号锁定，pyproject.toml 用最低版本约束，两者策略不同
 
@@ -9,16 +9,18 @@ httpx==0.28.1
 numpy==2.4.4
 opencv-python==4.13.0.92
 openjiuwen==0.1.13
-pillow==12.2.0
+pillow==13.0.0
 pydantic==2.13.3
 pyrealsense2==2.57.7.10387
 PyYAML==6.0.3
 requests==2.33.1
 scipy==1.17.1
-transformers==5.7.0
+transformers==5.17.0
 uvicorn==0.46.0
 
 # piper_sdk: 当前使用版本为piper_sdk==0.6.1，请手动安装
 
---extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.8.0+cu128
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+torchaudio==2.11.0+cu130

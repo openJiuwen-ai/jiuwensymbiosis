@@ -17,16 +17,16 @@ __all__ = ["ChatTTSSynthesizer"]
 
 
 class ChatTTSSynthesizer:
-    """ChatTTS 0.2.4's public waveform API, with explicitly prepared weights.
+    """ChatTTS 0.2.5's public waveform API, with explicitly prepared weights.
 
-    Upstream v0.2.4 ``Chat.load`` / ``Chat.infer`` return mono waveforms at
+    Upstream v0.2.5 ``Chat.load`` / ``Chat.infer`` return mono waveforms at
     24000 Hz. Using source=custom avoids implicit weight downloads at startup.
     This is separate from the legacy external safe_speak_text module.
     """
 
     sample_rate = 24000
     voices = ("default",)
-    model_version = "ChatTTS-0.2.4"
+    model_version = "ChatTTS-0.2.5"
 
     def __init__(self, model_path: str | Path, *, device: str = "cpu"):
         self.model_path = Path(model_path).expanduser().resolve()
