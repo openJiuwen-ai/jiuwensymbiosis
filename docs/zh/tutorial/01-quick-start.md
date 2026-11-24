@@ -4,7 +4,7 @@
 
 ## 1. 准备环境
 
-当前验证平台是 Ubuntu 22.04，Python 必须满足 `>=3.11,<3.14`。SO-101 适配器使用 LeRobot 0.6.x，因此需要 Python 3.12。
+当前验证平台是 Ubuntu 22.04，Python 必须满足 `>=3.11,<3.14`。SO-101 适配器使用 LeRobot 0.7.x，因此需要 Python 3.12。
 
 ```bash
 git clone https://gitcode.com/openJiuwen/jiuwensymbiosis.git
@@ -63,7 +63,7 @@ python -m pip install -e ".[dev]"
 
 # 视觉与 GPU
 python -m pip install -e ".[full]" \
-  --extra-index-url https://download.pytorch.org/whl/cu128
+  --extra-index-url https://download.pytorch.org/whl/cu130
 
 # Piper SDK
 python -m pip install -e ".[piper]"
@@ -84,7 +84,10 @@ python -m pip install -e ".[gui]"
 python -m pip install -e ".[calib]"
 ```
 
-可选依赖可以组合安装，例如 `.[full,piper]` 或 `.[full,so101]` 或 `.[full,cruzr]`；凡是包含 `[full]` 的命令，仍需使用上方 PyTorch CUDA 12.8 附加源。
+可选依赖可以组合安装，例如 `.[full,piper]` 或 `.[full,cruzr]`。`[so101]` 的 LeRobot 0.7.x 支持 Pillow 13，可与 `[full]`、`[vision-server]`、`[simulator-scenes]`、`[mujoco]` 等 extras 组合；`[genesis]` 仍固定 NumPy 2.3.5，而 LeRobot 0.7 要求 NumPy<2.3，故 `[genesis]` 与 `[so101]` 需使用独立环境。凡是包含 `[full]` 的命令，仍需使用上方 PyTorch CUDA 13.0 附加源。从 cu128 环境升级时，需要从
+cu130 索引重装 `torch`、`torchvision`、`torchaudio`（不要混装 cu128/cu130 轮子），并安装兼容
+CUDA 13.0 的 NVIDIA 驱动（见 [CUDA 13.0 release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-13-0)）。
+可用 `python -c "import torch; print(torch.__version__, torch.version.cuda)"` 验证。
 
 Genesis / MuJoCo 仿真按需使用独立环境，安装、资产接入与运行见 [仿真指南](../how-to/simulaiton-guide.md)。
 

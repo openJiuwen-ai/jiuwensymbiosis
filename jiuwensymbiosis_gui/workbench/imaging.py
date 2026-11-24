@@ -25,11 +25,11 @@ def _to_pil(rgb: Any) -> Image.Image:
     if arr.dtype != np.uint8:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
     if arr.ndim == 2:
-        return Image.fromarray(arr, mode="L")
+        return Image.fromarray(arr)
     if arr.ndim == 3 and arr.shape[2] == 3:
-        return Image.fromarray(arr, mode="RGB")
+        return Image.fromarray(arr)
     if arr.ndim == 3 and arr.shape[2] == 4:
-        return Image.fromarray(arr, mode="RGBA")
+        return Image.fromarray(arr)
     raise ValueError(f"unsupported frame shape {arr.shape}")
 
 

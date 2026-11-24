@@ -246,7 +246,7 @@ All other contributions:
 Copyright(c) 2015, 2016 the respective contributors
 All rights reserved.
 License: BSD 2-Clause License
-See the BSD 2-Clause License text under "Software: torchaudio 2.8.0".
+See the BSD 2-Clause License text under "Software: torchaudio 2.11.0".
 
 Caffe's BSD License
 Some parts of the caffe2 code is derived from the original Caffe code, which is
@@ -270,7 +270,7 @@ their specific copyright on a particular contribution, they should indicate
 their copyright solely in the commit message of the change when it is
 committed.
 License: BSD 2-Clause License
-See the BSD 2-Clause License text under "Software: torchaudio 2.8.0".
+See the BSD 2-Clause License text under "Software: torchaudio 2.11.0".
 
 CONTRIBUTION AGREEMENT
 By contributing to the BVLC/caffe repository through pull-request, comment,
@@ -420,7 +420,7 @@ PyAV build source: https://github.com/PyAV-Org/pyav-ffmpeg
 Upstream licensing discussion: https://github.com/PyAV-Org/PyAV/issues/2270
 FFmpeg license information: https://ffmpeg.org/legal.html
 Inspect the selected binary build with: python -m av --version
-Software: Pillow 12.2.0
+Software: Pillow 13.0.0
 Copyright notice:
 Copyright (c) 1997-2011 by Secret Labs AB
 Copyright (c) 1995-2011 by Fredrik Lundh and contributors
@@ -448,77 +448,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-Software: Pillow 11.3.0 (genesis ==11.3.0; simulator-scenes >=11.3)
-Copyright notice:
-Copyright © 1997-2011 by Secret Labs AB
-Copyright © 1995-2011 by Fredrik Lundh and contributors
-Copyright © 2010 by Jeffrey A. Clark and contributors
-
-License: MIT-CMU License
-The following is the license text supplied with Pillow 11.3.0:
-The Python Imaging Library (PIL) is
-
-    Copyright © 1997-2011 by Secret Labs AB
-    Copyright © 1995-2011 by Fredrik Lundh and contributors
-
-Pillow is the friendly PIL fork. It is
-
-    Copyright © 2010 by Jeffrey A. Clark and contributors
-
-Like PIL, Pillow is licensed under the open source MIT-CMU License:
-
-By obtaining, using, and/or copying this software and/or its associated
-documentation, you agree that you have read, understood, and will comply
-with the following terms and conditions:
-
-Permission to use, copy, modify and distribute this software and its
-documentation for any purpose and without fee is hereby granted,
-provided that the above copyright notice appears in all copies, and that
-both that copyright notice and this permission notice appear in supporting
-documentation, and that the name of Secret Labs AB or the author not be
-used in advertising or publicity pertaining to distribution of the software
-without specific, written prior permission.
-
-SECRET LABS AB AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
-SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
-IN NO EVENT SHALL SECRET LABS AB OR THE AUTHOR BE LIABLE FOR ANY SPECIAL,
-INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
-OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THIS SOFTWARE.
 Software: requests 2.33.1
 Copyright notice:
 Copyright 2019 Kenneth Reitz
 
 License: Apache License V2.0
 Please see above
-Software: torch 2.8.0
-Copyright notice:
-Copyright (c) 2016-2025 Facebook, Inc. (now Meta Platforms, Inc.)
-
-License: BSD License
-Copyright (c) 2016-2025 Facebook, Inc. (now Meta Platforms, Inc.)
-All rights reserved.
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-1. Redistributions of source code must retain the above copyright notice,
-   this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-3. Neither the name of the copyright holder nor the names of its contributors
-   may be used to endorse or promote products derived from this software
-   without specific prior written permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Software: httpx 0.28.1
 Copyright notice:
 Copyright (c) 2019, Encode OSS Ltd
@@ -537,7 +472,7 @@ Copyright (c) 2016 Intel Corporation
 
 License: Apache License V2.0
 Please see above
-Software: transformers 5.7.0
+Software: transformers 5.17.0
 Copyright notice:
 Copyright 2018- The Hugging Face team
 
@@ -549,41 +484,18 @@ Copyright (c) 2023 AgileX Robotics
 
 License: MIT License
 Please see above
-Software: LeRobot 0.6.0
+Software: LeRobot 0.7.0
 Copyright notice:
 Copyright 2024 The Hugging Face team. All rights reserved.
 
 License: Apache License V2.0
 Please see above
-Software: feetech-servo-sdk 1.0.0
+Software: rustypot 1.14.0
 Copyright notice:
 No copyright notice found in source files of this software
 
-License: The Unlicense
-This is free and unencumbered software released into the public domain.
-
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
-
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
-
-For more information, please refer to <https://unlicense.org>
+License: Apache License V2.0
+Please see above
 Software: placo 0.9.15
 Copyright notice:
 Copyright (c) <2023-2099> Rhoban Team
@@ -641,13 +553,13 @@ Copyright (c) 2021 Zauberzeug GmbH
 
 License: MIT License
 Please see above
-Software: torchvision 0.23.0
+Software: torchvision 0.26.0
 Copyright notice:
 Copyright (c) Soumith Chintala 2016
 
 License: BSD 3-Clause License
 Please see above
-Software: torchaudio 2.8.0
+Software: torchaudio 2.11.0
 Copyright notice:
 Copyright (c) 2017 Facebook Inc. (Soumith Chintala)
 

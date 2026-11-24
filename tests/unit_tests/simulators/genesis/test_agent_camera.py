@@ -350,18 +350,18 @@ async def test_camera_error_does_not_expose_backend_diagnostics(preview, tmp_pat
 
 @pytest.mark.parametrize("stage", ["capture", "delivery"])
 async def test_failure_diagnostics_are_actionable_without_private_payload(preview, tmp_path, caplog, stage):
-    secret = "PRIVATE_KEY=secret data:image/jpeg;base64,private-pixels"
+    private_payload = "sensitive test payload: not-a-real-image"
     camera = CameraObservation(preview, threading.Event(), tmp_path, "run", None)
     if stage == "capture":
-        preview.capture_image.side_effect = TimeoutError(secret)
+        preview.capture_image.side_effect = TimeoutError(private_payload)
         with pytest.raises(RuntimeError) as raised:
             await camera.capture("head_cam")
-        assert secret not in str(raised.value)
+        assert private_payload not in str(raised.value)
         code = "genesis.camera.capture_failed"
     else:
         await camera.capture("head_cam")
         ctx = SimpleNamespace(
-            context=SimpleNamespace(add_messages=AsyncMock(side_effect=TimeoutError(secret))),
+            context=SimpleNamespace(add_messages=AsyncMock(side_effect=TimeoutError(private_payload))),
             request_force_finish=Mock(),
         )
         await camera.before_model_call(ctx)
@@ -370,7 +370,7 @@ async def test_failure_diagnostics_are_actionable_without_private_payload(previe
         ctx.request_force_finish.assert_called_once()
         code = "genesis.camera.delivery_failed"
     assert code in caplog.text and "TimeoutError" in caplog.text
-    assert "PRIVATE_KEY" not in caplog.text and "private-pixels" not in caplog.text
+    assert "sensitive test payload" not in caplog.text and "not-a-real-image" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)
 
 

@@ -32,7 +32,10 @@ pip install -e ".[remote]"                                # HTTP vision/speech c
 pip install -e ".[remote,camera,voice-io]"                 # optional host camera/audio capture and playback
 pip install -e ".[vision-server]"                         # optional local/remote vision server; choose Torch wheels for host
 pip install -e ".[speech-server,voice-local]"             # optional FunASR server; ChatTTS uses chattts-server
-pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + vision/GPU deps
+pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu130  # + vision/GPU deps
+pip install -e ".[so101]"                                  # + SO-101 / LeRobot (Python 3.12)
+#   [so101] can combine with [full]/[vision-server] (Pillow 13); [genesis] needs a separate
+#   environment because it pins NumPy 2.3.5 while LeRobot 0.7 requires NumPy<2.3.
 pip install -e ".[piper]"                                  # + piper hardware SDK
 pip install -e ".[gui]"                                    # + 图形界面 (NiceGUI, 浏览器模式)
 

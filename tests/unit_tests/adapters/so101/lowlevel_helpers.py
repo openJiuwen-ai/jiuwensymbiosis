@@ -207,4 +207,4 @@ def fake_lerobot_import() -> tuple[Any, Any, Any, str]:
     slot reuses :class:`FakeKinematics`; the SOFollower slot is a placeholder
     that is short-circuited by the injected ``so_follower_factory``.
     """
-    return _FakeSOFollower, FakeRobotConfig, FakeKinematics, "0.6.0"
+    return _FakeSOFollower, FakeRobotConfig, FakeKinematics, "0.7.0"

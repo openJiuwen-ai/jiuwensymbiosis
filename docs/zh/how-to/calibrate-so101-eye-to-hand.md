@@ -63,6 +63,7 @@ python -m pip install -e ".[gui,calib,so101]"
 ```
 
 这里的 `gui` extra 安装现有工作台的 NiceGUI 依赖；只运行下方无界面 CLI 工作流时，可改装 `.[calib,so101]`。
+LeRobot 0.7 支持 Pillow 13，因此同一环境可以再安装 `[full]`（视觉）。
 
 如需运行标定模块测试：
 

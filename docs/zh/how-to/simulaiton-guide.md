@@ -74,8 +74,10 @@ python -c 'import torch; print(torch.__version__); assert torch.cuda.is_availabl
 ```
 
 Genesis 的已验证依赖以 [`pyproject.toml`](../../../pyproject.toml) 为准；安装成功后仍需验收画面。
-仿真环境不要混装 `dev`、`remote`、`full`、`vision-server` 等 Pillow/Torch 约束不同的组合。
-核心 UT 与推理服务使用各自环境。若已有 uv 环境执行 `python -m pip` 提示 `No module named pip`，
+`genesis` 固定 Pillow 13.0.0 和 Torch 2.11.0+cu130，与 `dev`、`remote`、`gui`、`full`、
+`vision-server` 处于同一 Pillow/Torch 线；分开环境是为了隔离 GPU/驱动与 Nyx 运行依赖，
+不再是因为 Pillow/Torch 版本冲突。`[so101]` 仍建议使用独立环境：LeRobot 0.7 要求 NumPy<2.3，
+而 `genesis` 固定 NumPy 2.3.5。核心 UT 与推理服务可使用各自环境。若已有 uv 环境执行 `python -m pip` 提示 `No module named pip`，
 可用该环境的 `python -m ensurepip --upgrade` 补装 pip，或按上文重新创建独立 venv。软件 H264 的第三方二进制许可见
 [`Open_Source_Software_Notice.txt`](../../../Open_Source_Software_Notice.txt)。
 
@@ -415,8 +417,8 @@ Agent 控制期间手动运动按钮的请求会被拒绝，手动停止仍可�
 1. 展开「GroundingDINO + SAM2 配置」，选择「连接已有服务」，填写服务地址并点击「应用感知配置」。
    手动启动在本机的 HTTP 服务也属于此模式；Session 不会停止它。
 2. 「本地启动模型」由 Session 启动并清理模型子进程，需要当前 Python 环境已有完整推理依赖和可用模型。
-   它不替用户安装依赖。仿真与标准推理安装的 Pillow 约束不同，首次部署推荐使用
-   [独立推理环境](#接入-rgb-d-检测服务)。
+   它不替用户安装依赖。仿真与标准推理的 Pillow/Torch 约束已对齐；首次部署仍推荐使用
+   [独立推理环境](#接入-rgb-d-检测服务)以隔离 GPU/驱动与模型运行时。
 3. 首次请求检查 GroundingDINO 和 SAM2 均已就绪；模型未加载、服务失败不会伪装成“没有目标”。
    「关闭检测，仅看图」不提供目标定位和接近工具。
 4. 先输入“定位头部画面中的 chair，报告距离和方位”。目标明确、深度足够且允许控制时，
@@ -649,7 +651,8 @@ Agent 需要重新取图，再根据球的实际位置调整机器人。
 ## 接入 RGB-D 检测服务
 
 RGB-D 感知需要 GroundingDINO 和 SAM2 同时可用。推荐把 HTTP 推理服务安装在独立环境中，
-仿真环境继续使用 `.[gui,genesis]`，避免混合 Pillow 版本约束。以下命令在仓库根目录的另一终端执行：
+仿真环境继续使用 `.[gui,genesis]`，以隔离 GPU/驱动与模型运行时；二者不再因 Pillow 版本冲突
+而必须分开。`[so101]` 因 NumPy 约束不同仍需与 `[genesis]` 分开安装。以下命令在仓库根目录的另一终端执行：
 
 ```bash
 conda create -n symbiosis_vision python=3.12 pip
@@ -699,9 +702,8 @@ python -m jiuwensymbiosis.simulators.genesis.usd_probe --scene <资产ID> --outp
 ```
 
 渲染需要受支持的 NVIDIA GPU/驱动；安装完成不等于 GPU 验收通过。
-`genesis` 固定 Torch 2.11.0+cu130、Genesis 1.4.4、Nyx plugin 0.1.9/Nyx 0.1.7、Pillow 11.3.0。
-不要与固定其他 Torch 版本的 `full`、`vision-server`、`voice-local` 合装，
-也不要与要求 Pillow>=12 的 `dev`、`remote` 合装；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
+`genesis` 固定 Torch 2.11.0+cu130、Genesis 1.4.4、Nyx plugin 0.1.9/Nyx 0.1.7、Pillow 13.0.0。
+仍建议为 Genesis/Nyx 使用独立 Python 3.12 环境；CPU 测试环境可使用 `.[dev,gui,simulator-scenes]`。
 
 源 USD 与贴图文件保持不变；对声明了 `material_rules` 的资产根，渲染前做非破坏的
 材质转换与贴图烘焙（见下文「源材质渲染」），逐材质明细写入输出目录的

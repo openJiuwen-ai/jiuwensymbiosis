@@ -27,8 +27,10 @@ pip install -e ".[remote,camera,voice-io]"
 Install hardware SDKs separately, such as `.[piper]` for Piper. These client extras do not
 install the vision, FunASR or ChatTTS models. **The SO-101 LeRobot extra still depends on
 Torch**, so GPU independence does not imply that every hardware adapter can omit Torch.
-The existing `.[full]` and `.[voice]` extras remain compatibility options for local model
-dependencies; they are unnecessary for a remote HTTP client.
+For adapters other than SO-101, the existing `.[full]` and `.[voice]` extras remain
+compatibility options for local model dependencies; they are unnecessary for a remote HTTP
+client. SO-101 uses `.[remote]` for the HTTP detector and `.[camera]` for RealSense; install
+the model server separately with `.[full]` or `.[vision-server]`.
 
 On inference servers, install `vision-server` or `speech-server` together with the model
 extras actually selected, using compatible Torch/CUDA wheels. Follow the

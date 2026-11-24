@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""SO-101 + real LeRobot 0.6.0 RobotKinematics FK/IK smoke (needs the so101 extra).
+"""SO-101 + real LeRobot 0.7.0 RobotKinematics FK/IK smoke (needs the so101 extra).
 
 These tests are SKIPPED when LeRobot is not installed (the ``so101`` extra is
 optional). When installed, they verify the packaged URDF loads, the 5 arm
@@ -298,30 +298,22 @@ class TestRealPlanner:
     RobotKinematics, which is sensitive to the IK seed. FakeKinematics in the
     unit tests is linear/exact and hides this.
 
-    These two joint configs are *each* reachable (FK-generated), so the endpoint
-    target is genuinely reachable. But the SE(3) Slerp+lerp path *between* them
-    is NOT plannable: Placo's IK for a 5-DoF underactuated arm does not return
-    the nearest-seed solution, and even the FIRST interpolation step (a ~1.86 mm
-    move at the default 1 mm/step) lands on a far branch with a ~127 mm residual.
-    The seed-chain planner does not bisect (the seed is already the best prior
-    solution), so it rejects immediately on the first failing waypoint rather
-    than exhaust a subdivision depth cap. This is exactly the case the planner
-    must reject safely (refuse + no action dispatch) rather than emit an unsafe
-    path — "endpoint reachable" does not imply "continuous Cartesian path
-    reachable". The successful-planning contract (small Cartesian steps where
-    the seed chain keeps placo in its convergence basin) is covered by the
-    FakeKinematics unit tests (deterministic) and the z +/-10/30 mm home-pose
-    diagnostics (~0.005 mm residual on real IK).
+    LeRobot 0.7 runs eight placo Newton steps per ``inverse_kinematics`` call
+    (0.6 ran one), so a direct solve seeded far from the target now converges.
+    The planner's safety contract is still the residual check: a target outside
+    the reachable workspace must be rejected before any action is dispatched.
+    The START -> END path is now plannable and remains the positive real-IK
+    control. The FakeKinematics unit tests cover the residual/branching logic
+    deterministically.
     """
 
     # Start and end joint configs (deg) — each reachable, FK-validated.
     START = np.array([0.0, -10.0, 20.0, -10.0, 0.0])
     END = np.array([20.0, -25.0, 35.0, -20.0, 15.0])
 
-    def test_direct_far_seed_ik_residual_is_large(self, kin):
-        """Establishes WHY a single-shot IK can't be trusted: a direct IK from
-        the start seed to the endpoint target has a huge residual (solver stays
-        near the seed instead of converging)."""
+    def test_direct_ik_converges_for_far_seed(self, kin):
+        """LeRobot 0.7's multi-step IK converges from START to the END pose;
+        the planner can therefore rely on it for a full Cartesian path."""
         target_m = np.asarray(kin.forward_kinematics(self.END), dtype=float)
         q_direct = np.asarray(
             kin.inverse_kinematics(self.START, target_m, position_weight=1.0, orientation_weight=0.01),
@@ -329,25 +321,33 @@ class TestRealPlanner:
         )
         fk_direct = np.asarray(kin.forward_kinematics(q_direct), dtype=float)
         residual = position_error_mm(matrix_m_to_pose_mm_deg(fk_direct), matrix_m_to_pose_mm_deg(target_m))
-        assert residual > 50.0, f"expected a large direct-IK residual (>50 mm, seed too far); got {residual:.3f}"
+        assert residual < 1.0, f"expected direct IK to converge (<1 mm); got {residual:.3f}"
 
-    def test_planner_rejects_unreachable_cartesian_path(self, kin):
-        """The endpoint is FK-reachable, but the SE(3) path between START and END
-        is not plannable: Placo IK jumps to a far branch on the very first
-        interpolation step (residual ~127 mm). The seed-chain planner does not
-        bisect, so it rejects immediately on that failing waypoint rather than
-        exhaust a subdivision cap. The planner must raise and never dispatch an
-        action — not silently emit a path that violates the residual tolerance.
+    def test_planner_rejects_unreachable_target(self, kin):
+        """A target 300 mm beyond the arm's reach has no IK solution within the
+        residual tolerance. The planner must raise and never dispatch an action;
+        a reachable pose is not enough if the requested Cartesian endpoint cannot
+        be reached. This is the pre-dispatch safety contract."""
+        driver = _make_planner_driver(kin, ik_position_tolerance_mm=3.0)
+        start_q = self.START
+        start_m = np.asarray(kin.forward_kinematics(start_q), dtype=float)
+        target_m = np.asarray(kin.forward_kinematics(self.END), dtype=float)
+        target_m[0, 3] += 0.3  # 300 mm beyond the endpoint; outside the workspace.
+        target_pose = matrix_m_to_pose_mm_deg(target_m)
 
-        This is the safety contract: "endpoint reachable" != "continuous
-        Cartesian path reachable", and the planner refuses rather than emit an
-        unsafe path.
-        """
+        with pytest.raises(ValueError, match="IK position residual.*exceeds tolerance"):
+            driver._plan_cartesian_waypoints(start_q, start_m, target_m, target_pose)
+
+    def test_planner_accepts_reachable_cartesian_path(self, kin):
+        """The START -> END path is reachable under LeRobot 0.7's multi-step IK;
+        the planner must return a residual-validated waypoint chain."""
         driver = _make_planner_driver(kin, ik_position_tolerance_mm=3.0)
         start_q = self.START
         start_m = np.asarray(kin.forward_kinematics(start_q), dtype=float)
         target_m = np.asarray(kin.forward_kinematics(self.END), dtype=float)
         target_pose = matrix_m_to_pose_mm_deg(target_m)
 
-        with pytest.raises(ValueError, match="IK position residual.*exceeds tolerance"):
-            driver._plan_cartesian_waypoints(start_q, start_m, target_m, target_pose)
+        waypoints = driver._plan_cartesian_waypoints(start_q, start_m, target_m, target_pose)
+        assert len(waypoints) > 0
+        final_pose = matrix_m_to_pose_mm_deg(np.asarray(kin.forward_kinematics(waypoints[-1]), dtype=float))
+        assert position_error_mm(final_pose, target_pose) <= 3.0

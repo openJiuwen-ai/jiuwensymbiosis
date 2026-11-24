@@ -1,4 +1,4 @@
-# SO-101 机械臂配置模板（5-DoF + 平行夹爪，基于 LeRobot 0.6.x SOFollower）
+# SO-101 机械臂配置模板（5-DoF + 平行夹爪，基于 LeRobot 0.7.x SOFollower）
 # 复制此文件到 configs/so101/so101.yaml 后按真机情况修改。
 # 标注: [必填] / [选填] / [真机风险]
 # 单位约定: 关节 = 度, 夹爪 = 0..100 百分比, 位移 = mm, 姿态 = intrinsic XYZ Euler 度

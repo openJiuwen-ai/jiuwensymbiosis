@@ -26,28 +26,30 @@ OpenJiuwen 的 Transformers 间接依赖仍存在；使用 HTTP 客户端不要�
 
 ## 准备服务环境与模型
 
-在独立 Python 3.12 环境选择配套的 Torch wheel，以下是 CUDA 12.8 构建示例：
+在独立 Python 3.12 环境选择配套的 Torch wheel，以下是 CUDA 13.0 构建示例：
 
 ```bash
 # 视觉服务器
-python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -e '.[vision-server]'
 # ASR 服务器（可用另一个环境）
-python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -e '.[speech-server,voice-local]'
-# TTS 服务器（必须使用独立环境）
-python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# TTS 服务器（可与视觉服务同环境）
+python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -e '.[speech-server,chattts-server]'
 ```
 
-`chattts-server` 固定 ChatTTS 0.2.4 + Transformers 4.53.3。ChatTTS 使用 4.x 的生成缓存接口，与视觉服务器的
-`transformers>=5` 不兼容；不要把 `vision-server` 和 `chattts-server` 安装到同一个
-Python 环境。Compose 的三个服务分别构建镜像，避免混合这两个模型依赖。
+`chattts-server` 使用 ChatTTS 0.2.5 + Transformers 5.17.0。ChatTTS 0.2.5 已跟踪最新
+Transformers，可与 `vision-server` 安装在同一个环境；Compose 的三个服务仍分别构建镜像，
+用于隔离运行时与模型权重。
 
 CPU 部署把 wheel 索引换成 `https://download.pytorch.org/whl/cpu`，启动时选择 `--device cpu`。
 这只解决安装与设备选择；大模型的 CPU 延迟需要单独测量。
 不要把不同版本或 CPU/CUDA 构建的 Torch、TorchVision、TorchAudio 混在同一环境。
-GPU 主机还需兼容 CUDA 12.8 的 NVIDIA 驱动；容器使用时另需 NVIDIA Container Toolkit。
+GPU 主机还需安装兼容 CUDA 13.0 的 NVIDIA 驱动（版本要求见
+[CUDA 13.0 release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-13-0)）；
+容器使用时另需 NVIDIA Container Toolkit。
 
 模型权重自行按模型发布方的说明和许可准备，记录实际使用的 revision。服务端不替 Agent 下载权重。
 示例目录结构如下（不是空目录，需包含完整配置、分词器和权重）：
@@ -57,7 +59,7 @@ GPU 主机还需兼容 CUDA 12.8 的 NVIDIA 驱动；容器使用时另需 NVIDI
   grounding-dino/  # IDEA-Research/grounding-dino-base 的 Transformers 快照
   sam2/            # facebook/sam2.1-hiera-large 的 Transformers 快照
   paraformer/      # FunASR paraformer-zh 本地模型目录
-  chattts/         # ChatTTS 0.2.4 source=custom 所需的完整目录（含 asset）
+  chattts/         # ChatTTS 0.2.5 source=custom 所需的完整目录（含 asset）
 ```
 
 直接运行：
@@ -124,7 +126,7 @@ python deploy/inference/smoke.py --config path/to/runtime.yaml \
 另以干净 Python 3.12 环境安装 `.[remote]` 检查无 Torch 的 Agent 路径。
 部署配置已通过 `docker compose config` 检查（含 GPU overlay），三个客户端和容器健康检查脚本
 已对临时 HTTP stub 验证成功，包括 WAV 导出与错误服务类型的拒绝。
-ChatTTS 0.2.4 + Transformers 4.53.3 已验证导入、构造和随机小型 Llama 的缓存生成；
+ChatTTS 0.2.5 + Transformers 5.17.0 已验证 GPT 缓存前向（随机小型 Llama）；
 这项检查不包含真实 ChatTTS 权重或完整音频合成。
 
 依赖审计仍发现 OpenJiuwen 的间接依赖以及可选旧模型栈的已知漏洞。
