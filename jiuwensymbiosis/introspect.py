@@ -19,7 +19,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
 
@@ -230,9 +230,13 @@ def render_state(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def emit(payload: Any, text: str, *, as_json: bool) -> None:
-    """Print the machine or the human rendering of one view."""
-    # The CLI's machine/human rendering goes to stdout so `--json | jq` works;
-    # routing it through a logger would add prefixes and send it to stderr.
+def emit(payload: Any, text: str, *, as_json: bool, stream: TextIO | None = None) -> None:
+    """Print the machine or the human rendering of one view.
+
+    The CLI's machine/human rendering goes to stdout so `--json | jq` works;
+    routing it through a logger would add prefixes and send it to stderr. The
+    CLI passes its saved stdout as ``stream`` while third-party log handlers are
+    pointed at stderr during import (#18).
+    """
     rendered = json.dumps(payload, ensure_ascii=False, indent=2) if as_json else text
-    sys.stdout.write(rendered + "\n")
+    (stream or sys.stdout).write(rendered + "\n")

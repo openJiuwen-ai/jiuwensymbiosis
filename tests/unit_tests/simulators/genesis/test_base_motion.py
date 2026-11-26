@@ -196,3 +196,46 @@ def test_live_request_after_rejected_id_still_starts(controller):
     motion.tick(0.05, 2)
     assert motion.active and motion.result["id"] == "b"
     motion.robot.command.assert_called_once()
+
+
+def test_invalid_motion_requests_never_start_the_base(controller, monkeypatch):
+    motion, _ = controller
+    reads = Mock(side_effect=RuntimeError("Non-finite physical base observation"))
+    monkeypatch.setattr(bm, "measure", reads)
+    malformed = (
+        {  # binding fields the shared parser rejects
+            "id": "malformed",
+            "dx": 0.3,
+            "dy": 0,
+            "dyaw": 0,
+            "scene_instance_id": None,
+            "config_revision": "two",
+            "lease_until": 100,
+            "cancelled": False,
+        },
+        {"scene_instance_id": "scene", "config_revision": 2, "lease_until": 100, "cancelled": False},
+        {"id": "", "scene_instance_id": "scene", "config_revision": 2, "lease_until": 100, "cancelled": False},
+        {"id": "a", "scene_instance_id": "scene", "config_revision": 2, "lease_until": "later", "cancelled": False},
+        {"id": "a", "scene_instance_id": "scene", "config_revision": 2, "lease_until": 100, "cancelled": "no"},
+        {  # a live envelope with an impossible payload
+            "id": "bad-payload",
+            "dx": float("nan"),
+            "dy": 0,
+            "dyaw": 0,
+            "scene_instance_id": "scene",
+            "config_revision": 2,
+            "lease_until": 100,
+            "cancelled": False,
+        },
+    )
+    for message in malformed:
+        motion.accept_request(message, scene_id="scene", revision=2, now=10, step=3)
+        assert not motion.active
+    reads.assert_not_called()
+
+
+def test_non_boolean_cancelled_flag_fails_closed(controller):
+    motion, _ = controller
+    motion.accept_request(request(cancelled=1), scene_id="scene", revision=2, now=10, step=0)
+    assert not motion.active
+    assert motion.result["reason"] == "cancelled_or_lease_expired"

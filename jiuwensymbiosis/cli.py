@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
+import os
 import runpy
 import sys
 import webbrowser
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 _PILImage: Any = None
 try:
@@ -250,10 +253,63 @@ def _introspect_parser(prog: str, description: str, *, needs_config: bool) -> ar
     return parser
 
 
+@contextlib.contextmanager
+def _machine_output(as_json: bool) -> Iterator[TextIO]:
+    """Keep third-party logs on stderr while ``--json`` builds its payload.
+
+    Importing the agent stack writes openjiuwen's console log to whatever
+    ``sys.stdout`` is at handler-creation time. Redirecting before those imports
+    means a fresh CLI process binds its console sink to stderr; the payload is
+    then written to the saved stream, so stdout stays valid JSON (#18).
+
+    This is a process-global, console-script boundary. When stdout is the real
+    process stream, the file descriptor itself is redirected so child processes
+    and C extensions (for example a local detector sidecar) cannot inherit fd 1
+    and pollute the JSON. Captured or wrapped streams fall back to the Python
+    object redirect.
+    """
+    out = sys.stdout
+    if not as_json:
+        yield out
+        return
+    sys.stdout = sys.stderr
+    fd: int | None = None
+    if out is sys.__stdout__:
+        try:
+            fd = out.fileno()
+        except (AttributeError, OSError, ValueError):
+            fd = None
+    if fd is None:
+        try:
+            yield out
+        finally:
+            sys.stdout = out
+        return
+
+    saved_fd = os.dup(fd)
+    restore_fd = os.dup(fd)
+    payload: TextIO | None = None
+    try:
+        os.dup2(sys.stderr.fileno(), fd)
+        try:
+            payload = os.fdopen(saved_fd, "w", encoding="utf-8", closefd=True)
+        except BaseException:
+            os.close(saved_fd)
+            raise
+        yield payload
+    finally:
+        try:
+            if payload is not None:
+                payload.flush()
+                payload.close()
+        finally:
+            os.dup2(restore_fd, fd)
+            os.close(restore_fd)
+            sys.stdout = out
+
+
 def actions_main() -> int:
     """Console-script entry: print a body's action contracts, or the shared vocabulary."""
-    from jiuwensymbiosis import introspect
-
     parser = _introspect_parser(
         "jiuwensymbiosis-actions", "Print every action a body exposes, with its planning contract.", needs_config=True
     )
@@ -264,50 +320,55 @@ def actions_main() -> int:
         "This is what to read when writing a skill that must run on more than one body.",
     )
     args = parser.parse_args()
-    if args.vocabulary:
-        specs = introspect.action_vocabulary()
-        introspect.emit(specs, introspect.render_vocabulary(specs), as_json=args.json)
+    with _machine_output(args.json) as out:
+        from jiuwensymbiosis import introspect
+
+        if args.vocabulary:
+            specs = introspect.action_vocabulary()
+            introspect.emit(specs, introspect.render_vocabulary(specs), as_json=args.json, stream=out)
+            return 0
+        if not args.config:
+            logger.error("--config is required (or pass --vocabulary for the body-independent action list)")
+            return 1
+        try:
+            session = introspect.build_session(args.config)
+        except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
+            logger.error("could not build a session from %s: %s", args.config, exc)
+            return 1
+        contracts = introspect.action_contracts(session)
+        introspect.emit(contracts, introspect.render_actions(contracts), as_json=args.json, stream=out)
         return 0
-    if not args.config:
-        logger.error("--config is required (or pass --vocabulary for the body-independent action list)")
-        return 1
-    try:
-        session = introspect.build_session(args.config)
-    except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
-        logger.error("could not build a session from %s: %s", args.config, exc)
-        return 1
-    contracts = introspect.action_contracts(session)
-    introspect.emit(contracts, introspect.render_actions(contracts), as_json=args.json)
-    return 0
 
 
 def skills_main() -> int:
     """Console-script entry: print the skill library's planning view."""
-    from jiuwensymbiosis import introspect
-
     args = _introspect_parser(
         "jiuwensymbiosis-skills", "Print the registered skills and their planning contracts.", needs_config=False
     ).parse_args()
-    skills = introspect.skill_contracts()
-    introspect.emit(skills, introspect.render_skills(skills), as_json=args.json)
-    return 0
+    with _machine_output(args.json) as out:
+        from jiuwensymbiosis import introspect
+
+        skills = introspect.skill_contracts()
+        introspect.emit(skills, introspect.render_skills(skills), as_json=args.json, stream=out)
+        return 0
 
 
 def state_main(*, resource_manager=None) -> int:
     """Console-script entry: print the live world state (connects to hardware)."""
-    from jiuwensymbiosis import introspect
-    from jiuwensymbiosis.api.world_state import WorldState
-    from jiuwensymbiosis.runtime.admission import admitted_session
-
     args = _introspect_parser(
         "jiuwensymbiosis-state", "Print the body's current world state (connects to the robot).", needs_config=True
     ).parse_args()
-    try:
-        binding = introspect.prepare_binding(args.config)
-    except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
-        logger.error("could not build a session from %s: %s", args.config, exc)
-        return 1
-    with admitted_session(binding, resource_manager=resource_manager, operation="cli-state") as session:
-        state = WorldState.snapshot(session).describe()
-    introspect.emit(state, introspect.render_state(state), as_json=args.json)
-    return 0
+    with _machine_output(args.json) as out:
+        from jiuwensymbiosis import introspect
+        from jiuwensymbiosis.api.world_state import WorldState
+        from jiuwensymbiosis.runtime.admission import admitted_session
+
+        try:
+            binding = introspect.prepare_binding(args.config)
+        except Exception as exc:  # noqa: BLE001 - a bad config / missing adapter is a user error, not a crash
+            logger.error("could not build a session from %s: %s", args.config, exc)
+            return 1
+        with admitted_session(binding, resource_manager=resource_manager, operation="cli-state") as session:
+            state = WorldState.snapshot(session).describe()
+        introspect.emit(state, introspect.render_state(state), as_json=args.json, stream=out)
+        return 0

@@ -327,6 +327,8 @@ jiuwensymbiosis/          # Main package
   simulators/             # Genesis/Nyx simulator: assets index, scene runtime + worker,
                           #   material repair/baking (rules declared per root in assets.yaml), occupancy export,
                           #   generic robot-model preparation and loaded-collision admission
+    common/protocol.py    # Parent/worker request/reply contract (standard library only)
+    common/reconfigurator.py  # One preview switch: precheck, replace, commit or roll back
   adapters/
     piper/                # Piper 6-DoF reference adapter (6-DoF + gripper + wrist vision)
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)

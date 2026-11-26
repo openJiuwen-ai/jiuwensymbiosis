@@ -47,7 +47,7 @@ Piper 命令文件沿用同一格式，连接时定位到当前运行目录。�
 
 ## 初始化与 Python API
 
-官方 CLI 先合并全部命令行覆盖，再构造、校验 Agent 配置，检查 query 后初始化日志，避免有效覆盖被提前校验拦截。CLI 和 Runtime 均在构建/连接会话、语音监听与首次规划之前应用配置。`prepare_session()`、Agent builder 和直接调用 `run_fast_task()` 的路径均会幂等配置，规划失败也能留下日志。缺少 query 时，CLI 向 stderr 报错并返回 2，不创建 Symbiosis 日志文件；adapter 导入之前已完成日志初始化，导入失败仍会落盘。包导入不主动配置上游日志，导入期输出遵循上游策略；显式 YAML 级别在入口读取配置后才生效。适配层通过 `get_log_config_snapshot()` / `configure_log_config()` 配置 default 和 Loguru 后端，无私有接口或生命周期挂钩。上游配置变化时，公开接口会重置其 logger 和输出；之后惰性创建的 logger 使用新级别。
+官方 CLI 先合并全部命令行覆盖，再构造、校验 Agent 配置，检查 query 后初始化日志，避免有效覆盖被提前校验拦截。CLI 和 Runtime 均在构建/连接会话、语音监听与首次规划之前应用配置。`prepare_session()`、Agent builder 和直接调用 `run_fast_task()` 的路径均会幂等配置，规划失败也能留下日志。缺少 query 时，CLI 向 stderr 报错并返回 2，不创建 Symbiosis 日志文件；adapter 导入之前已完成日志初始化，导入失败仍会落盘。包导入不主动配置上游日志，也不导入 agent 栈：裸 `import jiuwensymbiosis` 没有上游日志副作用，首次访问公共名字或导入子模块才加载 agent/openjiuwen。导入期输出遵循上游策略；显式 YAML 级别在入口读取配置后才生效。适配层通过 `get_log_config_snapshot()` / `configure_log_config()` 配置 default 和 Loguru 后端，无私有接口或生命周期挂钩。上游配置变化时，公开接口会重置其 logger 和输出；之后惰性创建的 logger 使用新级别。
 
 嵌入式宿主还需区分其他依赖的初始化行为：当前依赖链中的 `pymilvus` 首次导入会调用全局 `logging.dictConfig()`，可能关闭已有 handler；这不是日志适配层直接修改 root 造成的，也不由此适配层接管。
 

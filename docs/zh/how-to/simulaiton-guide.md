@@ -763,11 +763,13 @@ Genesis 的 USD、材质和碰撞准备留在 `simulators.genesis`，原生 MJCF
 | `common.resident.ResidentPreview` | 接入本用户的常驻仿真服务，工作台复用该服务。 |
 | `common.stream.PreviewStream` | 单观看者 WebRTC 信令和租约；不自行绑定 HTTP 端口。 |
 | `common.runtime.SimulationRuntime` | worker 消费的公共世界接口。 |
+| `common.protocol` | 父进程与 worker 的请求/回包字段，含构造与校验；改 wire 契约只改这里。 |
+| `common.reconfigurator` | 一次预览切换：预检候选资产、替换 renderer/runtime/encoder、提交或回滚。 |
 | `mujoco.mujoco_runtime.MujocoPolicyRuntime` | 原生策略世界的时钟、观测、相机与渲染生命周期。 |
 
 公开 `genesis.preview.GenesisPreview` 与旧 `/genesis` 地址保留兼容转发；新调用使用中立入口与
 `/simulation`。断开视频保留世界；宿主最终调用 `stop()` 并确认 worker 已退出。
-目标依赖检查失败时保留原世界；实际切换时取消控制，等旧 worker 退出后再创建新世界。
+目标依赖检查失败时保留原世界。切换物理后端时会取消控制、等旧 worker 退出后再创建新世界；同一后端内切换场景/机器人/渲染由 worker 原地重配置，可恢复的失败会恢复原世界与配置，清理或旧世界释放未确认时不会上报 ready。
 
 ### 接入机器人控制器
 

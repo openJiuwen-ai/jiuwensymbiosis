@@ -4,7 +4,7 @@
 
 `jiuwensymbiosis.utils.logging` 管理 Symbiosis 的格式、级别和主文件，使用标准库 Logger 与 handler。业务代码只产生日志；入口通过 `LoggingConfig.configure()` 应用配置。
 
-openjiuwen 保留自己的日志内容、后端、格式、输出目标、路由及文件轮转。`_openjiuwen_logging.py` 只通过公开 `get_log_config_snapshot()` / `configure_log_config()` 设置级别，不修改私有接口或包装生命周期方法。包导入不调用该适配层；只有入口应用显式上游级别时才调用。导入期日志遵循上游自身策略。
+openjiuwen 保留自己的日志内容、后端、格式、输出目标、路由及文件轮转。`_openjiuwen_logging.py` 只通过公开 `get_log_config_snapshot()` / `configure_log_config()` 设置级别，不修改私有接口或包装生命周期方法。包导入不调用该适配层，也不加载 agent 栈；只有入口应用显式上游级别时才调用。裸 `import jiuwensymbiosis` 没有上游日志副作用，首次访问公共名字或导入子模块才加载 agent/openjiuwen。导入期日志遵循上游自身策略。
 
 用户配置 `agent.logging.level` 默认 INFO；`agent.logging.openjiuwen_level` 默认 `None`，省略/null 保留上游当前配置，不修改 handler、logger 或 sink，也不重置其日志系统。先显式配置再传 None 保留当时状态，不回滚快照。显式级别与 Symbiosis 级别独立，分别作用于对应终端和文件；此时上游默认 logger、per-logger 和 Loguru sink 级别统一设置，不保留相互冲突的级别覆盖。旧的终端专用字段 `openjiuwen_console_level` 已移除。公开使用说明见 [配置和使用日志](../docs/zh/how-to/configure-logging.md)。
 

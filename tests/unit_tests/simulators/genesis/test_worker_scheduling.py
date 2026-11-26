@@ -3,7 +3,7 @@
 import copy
 import importlib.util
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -51,7 +51,7 @@ def worker_loop(monkeypatch, tmp_path):
         info={"mode": "robot_mobile", "instance_id": "scene"},
         pose={"revision": 0},
         initial_pose={},
-        motion=SimpleNamespace(active=False, result={}, accept_request=lambda *a, **kw: None),
+        motion=SimpleNamespace(active=False, result={}, accept_request=lambda *a, **kw: None, cancel=lambda *a: None),
         robot=SimpleNamespace(stop=stop_base, command=command_base, snapshot=lambda: {}),
         renderer=SimpleNamespace(read_rgb=read_rgb, fov_y=60, render_counts={}),
         cameras={},
@@ -141,6 +141,7 @@ def worker_loop(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: state.now, sleep=advance))
     state.run = lambda: worker.run_preview(mailbox, tmp_path)
     state.worker = worker
+    state.runtime = runtime
     state.directory = tmp_path
     return state
 
@@ -255,7 +256,14 @@ def test_encoder_rebuild_cannot_apply_a_stale_motion_lease(worker_loop):
 
 def test_unconfigured_arm_request_does_not_destroy_scene(worker_loop):
     state = worker_loop
-    state.command["base_motion"] = {"id": "arm-invalid", "kind": "arm"}
+    state.command["base_motion"] = {
+        "id": "arm-invalid",
+        "kind": "arm",
+        "scene_instance_id": "scene",
+        "config_revision": 0,
+        "lease_until": state.now + 10,
+        "cancelled": False,
+    }
     state.on_ready = lambda: setattr(state, "stopping", bool(state.steps and state.renders))
     state.on_camera = lambda: state.advance(0.100)
     state.run()
@@ -265,3 +273,148 @@ def test_unconfigured_arm_request_does_not_destroy_scene(worker_loop):
     result = ready[-1]["base_motion"]
     assert result["id"] == "arm-invalid" and not result["ok"]
     assert result["stop_confirmation"] == "unknown"
+
+
+def test_configuration_switch_updates_settings_through_the_reconfigurator(worker_loop):
+    state = worker_loop
+    target = replace(PreviewSettings(), fps=30)
+
+    def ready():
+        current = state.statuses[-1]
+        if state.command["config_revision"] == 0:
+            state.command.update(config_revision=1, settings=asdict(target))
+        elif current.get("config_revision") == 1:
+            state.stopping = True
+
+    state.on_ready = ready
+    state.run()
+
+    ready_statuses = [status for status in state.statuses if status.get("state") == "ready"]
+    assert ready_statuses[-1]["config_revision"] == 1
+    assert ready_statuses[-1]["settings"]["fps"] == 30
+    assert ready_statuses[-1]["reconfigure_error"] is None
+    assert state.encoders == 2
+    assert all(status["state"] != "failed" for status in state.statuses)
+
+
+def test_failed_configuration_switch_keeps_old_settings_and_reports_the_error(worker_loop, monkeypatch):
+    state = worker_loop
+    target = replace(PreviewSettings(), fps=30)
+    original = state.worker._encoder_type
+
+    def failing_factory(settings):
+        if settings.fps == 30:
+            return lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("nvenc unavailable"))
+        return original(settings)
+
+    monkeypatch.setattr(state.worker, "_encoder_type", failing_factory)
+
+    def ready():
+        if state.command["config_revision"] == 0:
+            state.command.update(config_revision=1, settings=asdict(target))
+        elif state.statuses[-1].get("config_revision") == 1:
+            state.stopping = True
+
+    state.on_ready = ready
+    state.run()
+
+    ready_statuses = [status for status in state.statuses if status.get("state") == "ready"]
+    final = ready_statuses[-1]
+    assert final["config_revision"] == 1
+    assert final["settings"]["fps"] == 60
+    assert "切换失败" in final["reconfigure_error"]
+    assert all(status["state"] != "failed" for status in state.statuses)
+
+
+def test_malformed_control_requests_stay_request_scoped(worker_loop):
+    state = worker_loop
+    state.command["capture"] = {**capture_request(), "include_depth": True}
+    state.command["pick"] = "not-an-object"
+    state.command["scene_query"] = {
+        "id": "query-bad",
+        "operation": "scene",
+        "params": [],
+        "scene_instance_id": "scene",
+        "config_revision": 0,
+        "expires_at": 10,
+    }
+    state.command["reset"] = {"id": "reset-bad"}
+    state.command["base_command"] = {
+        "id": "base-bad",
+        "vx": "fast",
+        "vy": 0,
+        "wz": 0,
+        "scene_instance_id": "scene",
+        "config_revision": 0,
+        "expires_at": 10,
+    }
+    state.command["base_motion"] = {"id": "motion-bad", "kind": "arm", "cancelled": 1}
+
+    state.on_ready = lambda: setattr(state, "stopping", bool(state.steps and state.renders))
+    state.on_camera = lambda: state.advance(0.100)
+    state.run()
+
+    ready = [status for status in state.statuses if status.get("state") == "ready"]
+    final = state.statuses[-1]
+    assert ready and final["state"] == "ready"
+    assert final["capture_result"]["error"] == "capture_failed"
+    assert final["pick_result"]["error"]
+    assert final["scene_query_result"]["error"]
+    assert final["reset_result"]["error"]
+    assert final["base_command_result"]["applied"] is False
+    assert final["base_command_result"]["error"]
+    assert final["base_motion"]["reason"] == "invalid_request"
+    assert final["base_motion"]["id"] == "motion-bad"
+    assert state.commands == []
+
+
+def test_rgbd_capture_reports_depth_and_the_base_sample(worker_loop):
+    state = worker_loop
+    runtime = state.runtime
+    runtime.robot.bounds = np.array([[0.1, 0.1, 0.0], [0.3, 0.3, 0.2]])
+    runtime.renderer.last_camera = {"T_world_camera": np.eye(4).tolist()}
+    state.worker.measure = lambda robot: {"position_m": [0.0, 0.0, 0.0], "body_yaw_rad": 0.0}
+
+    def read_rgbd(name, *, stride, check):
+        check()
+        return np.zeros((4, 6, 3), dtype=np.uint8), np.zeros((4, 6), dtype=np.float32)
+
+    runtime.renderer.read_rgbd = read_rgbd
+    state.command["capture"] = {**capture_request(), "camera_name": "wrist", "include_depth": True, "depth_stride": 8}
+    seen = {}
+
+    def on_ready():
+        if state.renders:
+            seen["depth_bytes"] = (state.directory / "capture-test.npz").stat().st_size
+        state.stopping = bool(state.steps and state.renders)
+
+    state.on_ready = on_ready
+    state.run()
+
+    final = state.statuses[-1]
+    assert final["state"] == "ready"
+    result = final["capture_result"]
+    assert (result["width"], result["height"]) == (6, 4)
+    assert result["base_sample"] == {"position_m": [0.0, 0.0, 0.0], "body_yaw_rad": 0.0}
+    assert result["body_bounds_m"] == [[0.1, 0.1, 0.0], [0.3, 0.3, 0.2]]
+    # The worker deletes the pending depth file on exit; it must exist while live.
+    assert seen["depth_bytes"] > 0
+
+
+def test_unconfirmed_cleanup_fails_the_worker_instead_of_reporting_ready(worker_loop, monkeypatch):
+    state = worker_loop
+    from jiuwensymbiosis.simulators.common import reconfigurator
+
+    def cleanup_failure(self, *args, **kwargs):
+        raise reconfigurator.ReconfigurationCleanupError("old world release unconfirmed", ())
+
+    monkeypatch.setattr(reconfigurator.Reconfigurator, "apply", cleanup_failure)
+    state.on_ready = lambda: state.command.update(config_revision=1) if state.steps else None
+    state.run()
+
+    ready = [status for status in state.statuses if status.get("state") == "ready"]
+    final = state.statuses[-1]
+    assert ready
+    assert final["state"] == "failed"
+    assert "unconfirmed" in final["message"]
+    assert all(status.get("config_revision") != 1 for status in ready)

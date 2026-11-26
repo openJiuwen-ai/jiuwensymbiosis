@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .protocol import base_motion_binding
+
 # This controller executes body-frame translation along both horizontal axes.
 MOZ1_SUPPORTS_LATERAL = True
 
@@ -89,23 +91,43 @@ class RelativeMotion:
             if self.active:
                 self.cancel("cancelled_or_lease_expired")
             return
-        bound = request["scene_instance_id"] == scene_id and request["config_revision"] == revision
-        live = bound and not request["cancelled"] and request["lease_until"] > now
-        same = request["id"] == self.result.get("id")
+        request_scene: str | None = None
+        request_revision: int | None = None
+        try:
+            request_scene, request_revision = base_motion_binding(request)
+        except ValueError:
+            # A truncated or older wire message is unbound, not a worker failure.
+            pass
+        request_id = request.get("id")
+        binding_matches = request_scene == scene_id and request_revision == revision
+        valid_id = isinstance(request_id, str) and bool(request_id)
+        bound = binding_matches and valid_id
+        lease = request.get("lease_until")
+        lease_live = isinstance(lease, (int, float)) and not isinstance(lease, bool) and lease > now
+        eligible = bound and not request.get("cancelled") and lease_live
+        motion_valid = False
+        if eligible:
+            try:
+                validate_move(request.get("dx"), request.get("dy"), request.get("dyaw"))
+                motion_valid = True
+            except (TypeError, ValueError):
+                motion_valid = False
+        live = eligible and motion_valid
+        same = request_id == self.result.get("id")
         if self.active:
             if not live or not same:
                 self.cancel("cancelled_or_lease_expired")
         elif bound and not same:
             if live:
-                self.start(request["id"], request["dx"], request["dy"], request["dyaw"], step=step)
+                self.start(request_id, request["dx"], request["dy"], request["dyaw"], step=step)
             else:
                 # Never initialize motion for an already invalidated request.
                 # No physical observation was taken, so stopping is unconfirmed.
                 self.result = {
-                    "id": request["id"],
+                    "id": request_id,
                     "status": "completed",
                     "ok": False,
-                    "reason": "cancelled_or_lease_expired",
+                    "reason": "invalid_request" if eligible else "cancelled_or_lease_expired",
                     "settled": False,
                     "end_step": step,
                     "duration_sim_s": 0.0,

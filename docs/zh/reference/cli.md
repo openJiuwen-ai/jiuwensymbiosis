@@ -82,7 +82,9 @@ jiuwensymbiosis-calibrate-hand-eye --replay STATION_ARCHIVE [--config RUNTIME_YA
 jiuwensymbiosis-actions --vocabulary [--json]                       # 共享动作词表（无机器人）
 jiuwensymbiosis-actions --config configs/cruzr/cruzr.yaml [--json]  # 门控到一个本体的动作词表
 jiuwensymbiosis-skills  [--json]                                    # 技能库 + 契约
-jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # 实时世界状态（可连接）
+jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # 实时世界状态（会连接硬件）
 ```
 
 这三者是规划器 / 编码智能体读取的机器可读视图（见[架构指南：两级自主规划](../explanation/architecture.md#two-tier-planning)）：一个动作是什么、一条技能有什么前置条件、当前世界都在哪个位置。
+
+带 `--json` 时 stdout 只有 JSON 文档，导入期、运行期日志以及会话托管子进程的输出都写到 stderr，因此 `jiuwensymbiosis-skills --json | jq` 可直接使用。不带 `--json` 时第三方终端日志可能与表格共用 stdout；需要被程序解析时请用 `--json`。
