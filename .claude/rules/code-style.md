@@ -57,6 +57,8 @@ paths:
 - Use `get_logger(__name__)` from `jiuwensymbiosis.utils.logging` in new
   library code. Existing `logging.getLogger` calls remain valid. Use the
   central logging configuration; keep `print()` for user-facing CLI output.
+  Machine output must go to the stream `_machine_output` yields, never to
+  `print()`, because `--json` redirects stdout while the payload is being built.
 
 ## Comments, suppressions, and helpers
 

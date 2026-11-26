@@ -139,7 +139,7 @@ class ArmMotion:
                 self.cancel("cancelled_or_lease_expired")
         elif request is not None and not same:
             self.result = {
-                "id": request["id"],
+                "id": request.get("id"),
                 "status": "running",
                 "ok": False,
                 "goal_reached": False,

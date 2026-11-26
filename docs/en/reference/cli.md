@@ -88,3 +88,5 @@ jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # live world
 ```
 
 These three are the machine-readable views a planner / coding agent reads (see [Architecture: two-tier planning](../explanation/architecture.md#two-tier-planning)): what an action is, what a skill's pre-conditions are, and where the current world stands.
+
+With `--json`, stdout contains only the JSON document; import/runtime logs and session-managed child process output go to stderr, so `jiuwensymbiosis-skills --json | jq` works. Without `--json`, third-party terminal logs may share stdout with the table; use `--json` when a program parses the output.

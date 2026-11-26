@@ -492,12 +492,16 @@ Only the selected engine is imported by the worker.
 | `common.resident.ResidentPreview` | Attaches to the user's resident service shared by workbenches. |
 | `common.stream.PreviewStream` | Owns one WebRTC viewer lease without binding an HTTP listener. |
 | `common.runtime.SimulationRuntime` | Defines the world interface consumed by the worker. |
+| `common.protocol` | Parent/worker request and reply fields with builders and validation; wire changes belong here. |
+| `common.reconfigurator` | One preview switch: precheck assets, replace renderer/runtime/encoder, commit or roll back. |
 | `mujoco.mujoco_runtime.MujocoPolicyRuntime` | Shares native policy clocks, observations, cameras and rendering lifecycle. |
 
 `genesis.preview.GenesisPreview` and `/genesis` remain compatibility forwards; new callers use
 neutral interfaces and `/simulation`. Disconnecting video retains the world; the owning host
 must call `stop()` and confirm worker exit. Failed dependency checks retain the old world;
 a real engine change ends control and waits for the old worker before creating the replacement.
+Scene/body/render changes within one backend reconfigure in place; recoverable failures keep the old world
+and settings, while an unconfirmed cleanup or old-world release never publishes ready.
 
 ### Register a model and integrate a controller
 

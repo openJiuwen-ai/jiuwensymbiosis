@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -11,14 +12,28 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from jiuwensymbiosis.simulators._paths import simulator_root
 from jiuwensymbiosis.simulators.common.camera import OrbitCamera, PreviewSettings
 from jiuwensymbiosis.simulators.common.ipc import Mailbox
 from jiuwensymbiosis.simulators.common.preview_backends import installation_extra, preview_backend, required_modules
+from jiuwensymbiosis.simulators.common.protocol import (
+    binding_mismatch,
+    build_base_command_request,
+    build_base_motion_request,
+    build_capture_request,
+    build_control_message,
+    build_pick_request,
+    build_reset_request,
+    build_scene_query_request,
+    capture_reply_matches,
+    pick_binding_error,
+    validate_capture_depth,
+)
 from jiuwensymbiosis.simulators.common.scene_catalog import scene_path
 from jiuwensymbiosis.simulators.common.worker_python import MUJOCO_PYTHON_ENV, mujoco_worker_python
 
@@ -108,6 +123,9 @@ def _worker_python(settings: PreviewSettings, environment: dict[str, str]) -> st
     if missing:
         raise RuntimeError(f"缺少 {', '.join(missing)}。请在独立环境安装 .[{installation_extra(backend, mode)}]。")
     return sys.executable
+
+
+_RequestSlot = Literal["_capture_request", "_pick_request", "_scene_query"]
 
 
 class SimulationPreview:
@@ -221,6 +239,66 @@ class SimulationPreview:
                 )
             return result
 
+    @contextlib.contextmanager
+    def _one_shot_request(
+        self, slot: _RequestSlot, install: Callable[[], dict], *, cleanup: Callable[[], None] | None = None
+    ) -> Iterator[dict]:
+        """Install one request slot, wait for its reply, and release only that slot.
+
+        Capture and select admit requests and interpret replies differently, but
+        both send one request through the control message, poll for a result with
+        the same id, and clean up only their own slot. This helper owns that
+        shared sequence; callers keep their admission, binding and error ordering.
+        """
+        with self._lock:
+            request = install()
+            setattr(self, slot, request)
+            try:
+                self._send_control()
+            except BaseException:
+                if getattr(self, slot) is request:
+                    setattr(self, slot, None)
+                raise
+        try:
+            yield request
+        finally:
+            with self._lock:
+                if getattr(self, slot) is request:
+                    setattr(self, slot, None)
+                    self._send_control()
+            if cleanup is not None:
+                cleanup()
+
+    def _await_reply(
+        self,
+        request: dict,
+        *,
+        result_key: str,
+        deadline: float,
+        check: Callable[[dict], None],
+        timeout: Exception,
+        poll_s: float = 0.02,
+        check_after_result: bool = False,
+    ) -> tuple[dict, dict]:
+        """Poll the status slot for this request's id, with caller-owned checks.
+
+        Capture and query reject a changed scene/view before reading a reply;
+        picking keeps its historical order, where a matching reply wins over a
+        simultaneous scene stop.
+        """
+        while time.monotonic() < deadline:
+            with self._lock:
+                state = self.status()
+                result = state.get(result_key, {})
+                matched = result.get("id") == request["id"]
+                if check_after_result and matched:
+                    return result, state
+                check(state)
+                if matched:
+                    return result, state
+            time.sleep(poll_s)
+        raise timeout
+
     def start(self) -> dict[str, Any]:
         """Launch a fresh interpreter by file path: multiprocessing spawn reimports the GUI."""
         with self._lock:
@@ -305,11 +383,10 @@ class SimulationPreview:
         request_id = uuid.uuid4().hex
         path = self.state_dir / f"capture-{request_id}.jpg"
         depth_path = self.state_dir / f"capture-{request_id}.npz"
-        if include_depth and camera_name == "observer":
-            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
-        if include_depth and (type(depth_stride) is not int or not 4 <= depth_stride <= 32):
-            raise ValueError("RGB-D requires a robot camera and sampling stride in [4, 32]")
-        with self._lock:
+        if include_depth:
+            validate_capture_depth(camera_name, depth_stride)
+
+        def install() -> dict:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("相机采样已取消。")
             state = self.status()
@@ -319,70 +396,60 @@ class SimulationPreview:
                 raise RuntimeError("另一张画面正在采样，请稍后重试。")
             if camera_name != "observer" and camera_name not in {c["name"] for c in state.get("cameras", [])}:
                 raise ValueError(f"当前机器人没有相机：{camera_name}")
-            scene_instance_id = state["scene"]["instance_id"]
-            config_revision = self._config_revision
-            camera_revision = self._camera.revision
-            binding = {
-                "scene_instance_id": scene_instance_id,
-                "config_revision": config_revision,
-                "camera_revision": camera_revision,
-                "camera_name": camera_name,
-            }
-            request = {
-                "id": request_id,
-                **binding,
-                "include_depth": include_depth,
-                "depth_stride": depth_stride,
-                "expires_at": time.monotonic() + 12,
-            }
-            self._capture_request = request
-            self._send_control()
-        try:
-            while time.monotonic() < request["expires_at"]:
-                with self._lock:
-                    if cancelled is not None and cancelled.is_set():
-                        raise RuntimeError("相机采样已取消。")
-                    state = self.status()
-                    scene_changed = (
-                        state.get("scene", {}).get("instance_id") != scene_instance_id
-                        or self._config_revision != config_revision
-                    )
-                    camera_changed = camera_name == "observer" and self._camera.revision != camera_revision
-                    if state["state"] != "ready" or scene_changed or camera_changed:
-                        raise RuntimeError("采样期间场景或视角已变化，请重新识别。")
-                    result = state.get("capture_result", {})
-                    if result.get("id") == request_id:
-                        if result.get("error"):
-                            raise RuntimeError("相机采样失败，请等待画面稳定后重试。")
-                        if (
-                            any(result.get(key) != value for key, value in binding.items())
-                            or time.monotonic() - result.get("captured_at", 0) > 2
-                        ):
-                            raise RuntimeError("相机采样已过期，请重新识别。")
-                        observation = {**result, "jpeg": path.read_bytes()}
-                        if include_depth:
-                            import numpy as np
+            return build_capture_request(
+                request_id,
+                scene_instance_id=state["scene"]["instance_id"],
+                config_revision=self._config_revision,
+                camera_revision=self._camera.revision,
+                camera_name=camera_name,
+                include_depth=include_depth,
+                depth_stride=depth_stride,
+                expires_at=time.monotonic() + 12,
+            )
 
-                            if depth_path.stat().st_size > 32 * 1024 * 1024:
-                                raise ValueError("RGB-D payload exceeds the capture budget")
-                            with np.load(depth_path, allow_pickle=False) as arrays:
-                                rgb, depth = arrays["rgb"], arrays["depth_m"]
-                            shape = (result["height"], result["width"])
-                            shape_invalid = rgb.shape != (*shape, 3) or depth.shape != shape
-                            dtype_invalid = rgb.dtype != np.uint8 or depth.dtype != np.float32
-                            if shape_invalid or dtype_invalid:
-                                raise ValueError("RGB-D payload shape or dtype mismatch")
-                            observation.update(rgb=rgb, depth_m=depth)
-                        return observation
-                time.sleep(0.02)
-            raise RuntimeError("相机采样超时，请检查 仿真后台。")
-        finally:
-            with self._lock:
-                if self._capture_request is request:
-                    self._capture_request = None
-                    self._send_control()
+        def cleanup() -> None:
             path.unlink(missing_ok=True)
             depth_path.unlink(missing_ok=True)
+
+        with self._one_shot_request("_capture_request", install, cleanup=cleanup) as request:
+
+            def check(state: dict) -> None:
+                if cancelled is not None and cancelled.is_set():
+                    raise RuntimeError("相机采样已取消。")
+                scene_changed = (
+                    state.get("scene", {}).get("instance_id") != request["scene_instance_id"]
+                    or self._config_revision != request["config_revision"]
+                )
+                camera_changed = camera_name == "observer" and self._camera.revision != request["camera_revision"]
+                if state["state"] != "ready" or scene_changed or camera_changed:
+                    raise RuntimeError("采样期间场景或视角已变化，请重新识别。")
+
+            result, _ = self._await_reply(
+                request,
+                result_key="capture_result",
+                deadline=request["expires_at"],
+                check=check,
+                timeout=RuntimeError("相机采样超时，请检查 仿真后台。"),
+            )
+            if result.get("error"):
+                raise RuntimeError("相机采样失败，请等待画面稳定后重试。")
+            if not capture_reply_matches(result, request, now=time.monotonic()):
+                raise RuntimeError("相机采样已过期，请重新识别。")
+            observation = {**result, "jpeg": path.read_bytes()}
+            if include_depth:
+                import numpy as np
+
+                if depth_path.stat().st_size > 32 * 1024 * 1024:
+                    raise ValueError("RGB-D payload exceeds the capture budget")
+                with np.load(depth_path, allow_pickle=False) as arrays:
+                    rgb, depth = arrays["rgb"], arrays["depth_m"]
+                shape = (result["height"], result["width"])
+                shape_invalid = rgb.shape != (*shape, 3) or depth.shape != shape
+                dtype_invalid = rgb.dtype != np.uint8 or depth.dtype != np.float32
+                if shape_invalid or dtype_invalid:
+                    raise ValueError("RGB-D payload shape or dtype mismatch")
+                observation.update(rgb=rgb, depth_m=depth)
+            return observation
 
     def request_keyframe(self) -> None:
         with self._lock:
@@ -395,9 +462,10 @@ class SimulationPreview:
         """Read a worker-step snapshot without acquiring or changing motion ownership."""
         if len(json.dumps(params or {}, allow_nan=False).encode()) > 2048:
             raise ValueError("Scene query parameters exceed the bounded request budget")
-        request_id = uuid.uuid4().hex
-        path = self.state_dir / f"query-{request_id}.json"
-        with self._lock:
+        path: Path | None = None
+
+        def install() -> dict:
+            nonlocal path
             state = self.status()
             if state["state"] != "ready" or time.monotonic() - state.get("measured_at", 0) > 2:
                 raise RuntimeError("Genesis scene is unavailable or stale")
@@ -405,50 +473,48 @@ class SimulationPreview:
                 raise RuntimeError("A scene query is already running")
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("任务已取消。")
-            request = {
-                "id": request_id,
-                "operation": operation,
-                "params": params or {},
-                "scene_instance_id": state["scene"]["instance_id"],
-                "config_revision": self._config_revision,
-                "expires_at": time.monotonic() + 60,
-            }
-            self._scene_query = request
-            try:
-                self._send_control()
-            except Exception:
-                self._scene_query = None
-                raise
-        try:
-            while time.monotonic() < request["expires_at"]:
-                with self._lock:
-                    state = self.status()
-                    if cancelled is not None and cancelled.is_set():
-                        raise RuntimeError("任务已取消。")
-                    if (
-                        state["state"] != "ready"
-                        or self._config_revision != request["config_revision"]
-                        or state.get("scene", {}).get("instance_id") != request["scene_instance_id"]
-                    ):
-                        raise RuntimeError("Scene changed during query")
-                    result = state.get("scene_query_result", {})
-                    if result.get("id") == request_id:
-                        if result.get("error"):
-                            raise ValueError(result["error"])
-                        data = json.loads(path.read_text())
-                        if not isinstance(data, dict):
-                            raise RuntimeError("Invalid scene query response")
-                        if data["scene_instance_id"] != request["scene_instance_id"]:
-                            raise RuntimeError("Scene query binding mismatch")
-                        return data
-                time.sleep(0.02)
-            raise TimeoutError("Scene query timed out")
-        finally:
-            with self._lock:
-                if self._scene_query is request:
-                    self._scene_query = None
-                    self._send_control()
-            path.unlink(missing_ok=True)
+            request = build_scene_query_request(
+                uuid.uuid4().hex,
+                operation=operation,
+                params=params or {},
+                scene_instance_id=state["scene"]["instance_id"],
+                config_revision=self._config_revision,
+                expires_at=time.monotonic() + 60,
+            )
+            path = self.state_dir / f"query-{request['id']}.json"
+            return request
+
+        def cleanup() -> None:
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+        with self._one_shot_request("_scene_query", install, cleanup=cleanup) as request:
+
+            def check(state: dict) -> None:
+                if cancelled is not None and cancelled.is_set():
+                    raise RuntimeError("任务已取消。")
+                if state["state"] != "ready" or binding_mismatch(
+                    request,
+                    config_revision=self._config_revision,
+                    scene_instance_id=state.get("scene", {}).get("instance_id"),
+                ):
+                    raise RuntimeError("Scene changed during query")
+
+            result, _ = self._await_reply(
+                request,
+                result_key="scene_query_result",
+                deadline=request["expires_at"],
+                check=check,
+                timeout=TimeoutError("Scene query timed out"),
+            )
+            if result.get("error"):
+                raise ValueError(result["error"])
+            data = json.loads(path.read_text()) if path is not None else None
+            if not isinstance(data, dict):
+                raise RuntimeError("Invalid scene query response")
+            if data["scene_instance_id"] != request["scene_instance_id"]:
+                raise RuntimeError("Scene query binding mismatch")
+            return data
 
     def configure(
         self,
@@ -532,12 +598,13 @@ class SimulationPreview:
                 raise RuntimeError("当前世界尚未就绪。")
             if self._motion_owner or self._capture_request or self._scene_query:
                 raise RuntimeError("当前有任务或感知请求，请结束后再复位。")
-            request_id = uuid.uuid4().hex
-            self._reset_request = {
-                "id": request_id,
-                "scene_instance_id": state["scene"]["instance_id"],
-                "config_revision": self._config_revision,
-            }
+            request = build_reset_request(
+                uuid.uuid4().hex,
+                scene_instance_id=state["scene"]["instance_id"],
+                config_revision=self._config_revision,
+            )
+            request_id = request["id"]
+            self._reset_request = request
             self._frame = self._base_request = self._pick_request = None
             self._stream_epoch += 1
             self._keyframe_request += 1
@@ -596,18 +663,18 @@ class SimulationPreview:
                 "instance_id"
             ):
                 raise ValueError("场景已切换，请等待新画面后操作。")
-            request_id = uuid.uuid4().hex
-            self._base_request = {
-                "id": request_id,
-                "vx": vx,
-                "vy": vy,
-                "wz": wz,
-                "scene_instance_id": scene_instance_id,
-                "config_revision": config_revision,
-                "expires_at": time.monotonic() + 1.0,
-            }
+            request = build_base_command_request(
+                uuid.uuid4().hex,
+                vx=vx,
+                vy=vy,
+                wz=wz,
+                scene_instance_id=scene_instance_id,
+                config_revision=config_revision,
+                expires_at=time.monotonic() + 1.0,
+            )
+            self._base_request = request
             self._send_control()
-            return {"queued_id": request_id, "max_duration_s": 1.0}
+            return {"queued_id": request["id"], "max_duration_s": 1.0}
 
     def acquire_motion(self) -> str:
         """Claim this physical scene without starting it or requiring a video peer."""
@@ -730,14 +797,13 @@ class SimulationPreview:
             )
             if self._motion_request and incomplete:
                 raise RuntimeError("上一条底盘动作尚未完成。")
-            request: dict[str, Any] = {
-                "id": uuid.uuid4().hex,
-                "scene_instance_id": self._motion_binding[0],
-                "config_revision": self._motion_binding[1],
+            request: dict[str, Any] = build_base_motion_request(
+                uuid.uuid4().hex,
+                scene_instance_id=self._motion_binding[0],
+                config_revision=self._motion_binding[1],
+                lease_until=time.monotonic() + 2,
                 **params,
-                "lease_until": time.monotonic() + 2,
-                "cancelled": False,
-            }
+            )
             self._motion_request = request
             self._send_control()
         deadline = time.monotonic() + timeout
@@ -793,69 +859,74 @@ class SimulationPreview:
         for coordinate in (u, v):
             if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)) or not 0 <= coordinate <= 1:
                 raise ValueError("点选坐标必须在画面内。")
-        request_id = uuid.uuid4().hex
-        with self._lock:
+
+        def install() -> dict:
             state = self.status()
             if state["state"] != "ready":
                 raise RuntimeError("仿真尚未就绪。")
             if self.settings.camera_name != "observer":
                 raise ValueError("请在观察视角中点选物体。")
-            if config_revision != self._config_revision or scene_instance_id != state.get("scene", {}).get(
-                "instance_id"
-            ):
+            request = build_pick_request(
+                uuid.uuid4().hex,
+                action=action,
+                u=u,
+                v=v,
+                scene_instance_id=scene_instance_id,
+                config_revision=config_revision,
+                camera_revision=camera_revision,
+            )
+            stale = pick_binding_error(
+                request,
+                config_revision=self._config_revision,
+                scene_instance_id=state.get("scene", {}).get("instance_id"),
+                camera_revision=self._camera.revision,
+            )
+            if stale == "scene":
                 raise ValueError("场景已经切换，请等待新画面后重新点选。")
-            if action == "pick" and camera_revision != self._camera.revision:
+            if stale == "camera":
                 raise ValueError("视角已经变化，请等待画面稳定后重新点选。")
-            self._pick_request = {
-                "id": request_id,
-                "action": action,
-                "u": u,
-                "v": v,
-                "scene_instance_id": scene_instance_id,
-                "config_revision": config_revision,
-                "camera_revision": camera_revision,
-            }
-            self._send_control()
-        try:
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                state = self.status()
-                result = state.get("pick_result", {})
-                if result.get("id") == request_id:
-                    if result.get("error"):
-                        raise ValueError(result["error"])
-                    return {
-                        "selection": state.get("selection"),
-                        "camera": state["camera"],
-                        "camera_fov_y": state["camera_fov_y"],
-                    }
+            return request
+
+        with self._one_shot_request("_pick_request", install) as request:
+
+            def check(state: dict) -> None:
                 if state["state"] != "ready":
                     raise RuntimeError("点选期间场景已停止或切换，请重试。")
-                time.sleep(0.01)
-            raise RuntimeError("点选未在时限内确认，请重试。")
-        finally:
-            with self._lock:
-                if self._pick_request and self._pick_request["id"] == request_id:
-                    self._pick_request = None
-                    self._send_control()
+
+            result, state = self._await_reply(
+                request,
+                result_key="pick_result",
+                deadline=time.monotonic() + 10,
+                check=check,
+                timeout=RuntimeError("点选未在时限内确认，请重试。"),
+                poll_s=0.01,
+                check_after_result=True,
+            )
+            if result.get("error"):
+                raise ValueError(result["error"])
+            return {
+                "selection": state.get("selection"),
+                "camera": state["camera"],
+                "camera_fov_y": state["camera_fov_y"],
+            }
 
     def _send_control(self) -> None:
         if self._mailbox is not None:
             self._mailbox.write_control(
-                {
-                    "streaming": self._streaming,
-                    "camera": self._camera.snapshot(),
-                    "settings": asdict(self._requested_settings),
-                    "config_revision": self._config_revision,
-                    "stream_epoch": self._stream_epoch,
-                    "keyframe_request": self._keyframe_request,
-                    "pick": self._pick_request,
-                    "base_command": self._base_request,
-                    "base_motion": self._motion_request,
-                    "capture": self._capture_request,
-                    "scene_query": self._scene_query,
-                    "reset": self._reset_request,
-                }
+                build_control_message(
+                    streaming=self._streaming,
+                    camera=self._camera.snapshot(),
+                    settings=asdict(self._requested_settings),
+                    config_revision=self._config_revision,
+                    stream_epoch=self._stream_epoch,
+                    keyframe_request=self._keyframe_request,
+                    pick=self._pick_request,
+                    base_command=self._base_request,
+                    base_motion=self._motion_request,
+                    capture=self._capture_request,
+                    scene_query=self._scene_query,
+                    reset=self._reset_request,
+                )
             )
 
     def stop(self) -> dict:

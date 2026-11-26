@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import time
 from collections import deque
 from contextlib import ExitStack, nullcontext
@@ -15,6 +14,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 # File entry keeps the worker independent of core/Agent import hooks.
 if not __package__:
@@ -43,12 +43,35 @@ from .camera import PreviewSettings
 from .encoding import NvEncoder, rgb_array
 from .ipc import Mailbox
 from .preview_backends import MUJOCO_VERSION, preview_backend
+from .protocol import (
+    base_command_valid,
+    binding_mismatch,
+    build_base_command_reply,
+    build_capture_error,
+    build_capture_reply,
+    build_pick_reply,
+    build_rejected_reply,
+    capture_request_invalid,
+    parse_base_command_request,
+    parse_base_motion_request,
+    parse_capture_request,
+    parse_pick_request,
+    parse_reset_request,
+    parse_scene_query_request,
+    pick_binding_error,
+)
+from .reconfigurator import Reconfigurator, SwitchResources, precheck_scene
 from .runtime import create_runtime, reset_runtime
-from .scene_catalog import resolve_scene, validate_material_bundle
 from .scheduling import PhysicsClock
 from .startup_diagnostics import StartupDiagnostics
 
 logger = logging.getLogger("jiuwensymbiosis.simulators.common.worker")
+
+
+def _message_id(value: Any) -> Any:
+    """Read a request id for an in-band rejection without requiring an object."""
+    return value.get("id") if isinstance(value, dict) else None
+
 
 # OpenCV reads this at its first import, which happens inside this process when
 # the renderer bakes EXR material textures; setting it later has no effect.
@@ -85,7 +108,11 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
     # Single-robot stepping on Apple Silicon is dominated by Metal dispatch
     # overhead. CPU keeps the same solver/timestep and leaves the GPU to GL.
     physics_backend = os.environ.get("JIUWEN_GENESIS_MACOS_BACKEND", "cpu") if macos else "cuda"
-    encoder_type = _encoder_type(settings)
+    reconfigurator = Reconfigurator(
+        precheck=precheck_scene,
+        runtime_factory=create_runtime,
+        encoder_factory=lambda config, *, resolution: _encoder_type(config)(config, resolution=resolution),
+    )
     profile = preview_backend(settings.backend)
     renderer_name = profile.renderer
     encoder_name = profile.encoder_name
@@ -128,7 +155,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             runtime = create_runtime(settings, directory, startup=startup)
         logger.info("Simulation world and %s renderer ready", renderer_name)
         with startup.phase("encoder_init" if profile.software_encoding else "nvenc_init"):
-            encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
+            encoder = reconfigurator.replace_encoder(
+                None, settings, resolution=runtime.frame_size(settings.camera_name)
+            )
         logger.info("%s encoder ready", encoder_name)
         stream_epoch = -1
         keyframe_request = -1
@@ -163,87 +192,31 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     if getattr(runtime, "arm_motion", None) is not None:
                         runtime.arm_motion.cancel("configuration_changed")
                     runtime.robot.stop()
-                started = time.monotonic()
                 requested = PreviewSettings(**command["settings"])
                 loading = StartupDiagnostics(
                     logger=logger,
                     operation="configure",
                     publish=partial(_publish_configuration, mailbox, revision, settings, startup),
                 )
-                candidate = new_encoder = None
-                renderer_changed = False
-                old_settings = settings
-                error = None
-                try:
-                    if requested.scene_id != settings.scene_id and requested.scene_id != "demo":
-                        asset = resolve_scene(requested.scene_id)
-                        if asset.asset.preview_mode == "urdf":
-                            from ..genesis.urdf_compat import validate_urdf
-
-                            validate_urdf(asset.preview_path)
-                            validate_material_bundle(asset)
-                        elif asset.asset.preview_mode == "static_usd":
-                            # Reject missing/empty/oversized assets before releasing the current renderer.
-                            with tempfile.TemporaryDirectory(prefix="check-", dir=directory) as check:
-                                from ..genesis.usd_scene import prepare_static_stage
-
-                                prepare_static_stage(asset.preview_path, Path(check) / "background.usda")
-                    encoder.close()
-                    encoder = None
-                    if (requested.scene_id, requested.robot_mode, requested.robot_id, requested.planning_profile) != (
-                        settings.scene_id,
-                        settings.robot_mode,
-                        settings.robot_id,
-                        settings.planning_profile,
-                    ):
-                        renderer_changed = True
-                        runtime.close_renderer()
-                        candidate = create_runtime(requested, directory, runtime.pose["revision"] + 1, startup=loading)
-                    elif (requested.width, requested.height, requested.spp, requested.render_mode) != (
-                        settings.width,
-                        settings.height,
-                        settings.spp,
-                        settings.render_mode,
-                    ):
-                        renderer_changed = True
-                        runtime.close_renderer()
-                        with loading.phase("nyx_renderer"):
-                            runtime.build_renderer(requested)
-                    # Open NVENC only after Nyx finishes replacing CUDA resources:
-                    # opening it before teardown fails on repeated 720p/1080p
-                    # switches in the real GPU regression test.
-                    with loading.phase(
-                        "encoder_init" if preview_backend(requested.backend).software_encoding else "nvenc"
-                    ):
-                        new_encoder = _encoder_type(requested)(
-                            requested, resolution=(candidate or runtime).frame_size(requested.camera_name)
-                        )
-                    if candidate is not None:
-                        runtime.close()
-                        runtime = candidate
-                        candidate = None
-                    encoder = new_encoder
-                    new_encoder = None
-                    settings = requested
-                    profile = preview_backend(settings.backend)
-                    renderer_name, encoder_name = profile.renderer, profile.encoder_name
-                    encoder_type = _encoder_type(settings)
-                    runtime.settings = requested
-                except Exception as exc:
-                    loading.finish(error=True)
-                    logger.exception("Simulation reconfiguration failed; restoring previous scene")
-                    error = f"切换失败，保留原场景和配置：{str(exc)[:1000]}"
-                    if candidate is not None:
-                        candidate.close()
-                    if new_encoder is not None:
-                        new_encoder.close()
-                    if renderer_changed:
-                        runtime.close_renderer()
-                        runtime.build_renderer(old_settings)
-                    if encoder is None:
-                        encoder = encoder_type(old_settings, resolution=runtime.frame_size(old_settings.camera_name))
-                revision = requested_revision
-                switch_ms = round((time.monotonic() - started) * 1000, 1)
+                switch = reconfigurator.apply(
+                    SwitchResources(runtime=runtime, encoder=encoder, settings=settings),
+                    requested,
+                    requested_revision,
+                    directory=directory,
+                    loading=loading,
+                )
+                runtime, encoder, settings = (
+                    switch.resources.runtime,
+                    switch.resources.encoder,
+                    switch.resources.settings,
+                )
+                error = switch.error
+                revision = switch.revision
+                switch_ms = switch.switch_ms
+                if switch.replaced_world:
+                    logger.info("Simulation world replaced during reconfiguration")
+                profile = preview_backend(settings.backend)
+                renderer_name, encoder_name = profile.renderer, profile.encoder_name
                 published = 0
                 keyframe_request = -1
                 camera_dirty = True
@@ -255,8 +228,18 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 physics_clock = PhysicsClock(settings.dt)
                 next_frame = next_status = time.monotonic()
             reset = command.get("reset")
-            if reset and reset["id"] != reset_result.get("id"):
-                reset_result = {"id": reset["id"], "complete": False}
+            if reset:
+                try:
+                    reset = parse_reset_request(reset)
+                except ValueError as exc:
+                    logger.warning("Simulation reset request rejected (%s)", exc)
+                    reset_result = build_rejected_reply(
+                        "reset", _message_id(reset), error=str(exc)[:1000], complete=True
+                    )
+                    reset = None
+                    next_status = 0
+            if reset and reset.get("id") != reset_result.get("id"):
+                reset_result = {"id": reset.get("id"), "complete": False}
 
                 def publish_reset(data, revision, settings, runtime, reset_result):
                     mailbox.write_status(
@@ -280,10 +263,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     ),
                 )
                 try:
-                    if (
-                        reset["scene_instance_id"] != runtime.info["instance_id"]
-                        or reset["config_revision"] != revision
-                    ):
+                    if binding_mismatch(reset, config_revision=revision, scene_instance_id=runtime.info["instance_id"]):
                         raise ValueError("复位请求所属世界已经变化。")
                     runtime, result = reset_runtime(
                         runtime, settings, directory, phase=loading.phase, stopping=mailbox.stopping, startup=loading
@@ -300,8 +280,9 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     next_status = 0
             if command["stream_epoch"] != stream_epoch:
                 if stream_epoch >= 0:
-                    encoder.close()
-                    encoder = encoder_type(settings, resolution=runtime.frame_size(settings.camera_name))
+                    encoder = reconfigurator.replace_encoder(
+                        encoder, settings, resolution=runtime.frame_size(settings.camera_name)
+                    )
                 stream_epoch = command["stream_epoch"]
                 published = 0
                 keyframe_request = -1
@@ -318,6 +299,21 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
             rejected_motion = {}
             if runtime.info["mode"] == "robot_mobile":
                 motion_request = command.get("base_motion")
+                if motion_request:
+                    try:
+                        motion_request = parse_base_motion_request(motion_request)
+                    except ValueError as exc:
+                        logger.warning("Simulation base motion request rejected (%s)", exc)
+                        rejected_motion = {
+                            "id": _message_id(motion_request),
+                            "status": "completed",
+                            "ok": False,
+                            "settled": False,
+                            "stop_confirmation": "unknown",
+                            "reason": "invalid_request",
+                        }
+                        motion_request = None
+                        next_status = 0
                 arm_request = bool(motion_request and motion_request.get("kind") == "arm")
                 motion = getattr(runtime, "arm_motion", None) if arm_request else runtime.motion
                 if motion is None:
@@ -354,22 +350,35 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                     step=runtime.steps,
                 )
                 base: dict = command.get("base_command") or {}
-                valid = (
-                    base
-                    and command["streaming"]
-                    and base["scene_instance_id"] == runtime.info["instance_id"]
-                    and base["config_revision"] == revision
-                    and base["expires_at"] > time.monotonic()
+                if base:
+                    try:
+                        base = parse_base_command_request(base)
+                    except ValueError as exc:
+                        logger.warning("Simulation base command rejected (%s)", exc)
+                        base_result = build_rejected_reply(
+                            "base_command", _message_id(base), error=str(exc)[:300], applied=False
+                        )
+                        base = {}
+                        next_status = 0
+                valid = base_command_valid(
+                    base,
+                    config_revision=revision,
+                    scene_instance_id=runtime.info["instance_id"],
+                    streaming=command["streaming"],
+                    now=time.monotonic(),
                 )
                 if motion.active or (getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active):
                     pass  # Motion owns wheel targets until measured completion, including braking.
                 elif rejected_motion or not valid:
                     runtime.robot.stop()
-                elif base["id"] != base_result.get("id"):
-                    base_result = {"id": base["id"], "applied": False}
+                elif base.get("id") != base_result.get("id"):
+                    base_result = build_base_command_reply(base.get("id"), applied=False)
                     try:
                         runtime.robot.command(
-                            base["vx"], base["vy"], base["wz"], min(1.0, base["expires_at"] - time.monotonic())
+                            base.get("vx", 0.0),
+                            base.get("vy", 0.0),
+                            base.get("wz", 0.0),
+                            min(1.0, base.get("expires_at", 0.0) - time.monotonic()),
                         )
                         base_result["applied"] = True
                     except ValueError as exc:
@@ -383,19 +392,25 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 break
             now = time.monotonic()
             query = command.get("scene_query")
-            if query and query["id"] != query_result.get("id"):
-                query_result = {"id": query["id"]}
+            if query:
                 try:
-                    if (
-                        query["config_revision"] != revision
-                        or query["scene_instance_id"] != runtime.info["instance_id"]
-                        or now > query["expires_at"]
-                    ):
+                    query = parse_scene_query_request(query)
+                except ValueError as exc:
+                    logger.warning("Simulation scene query request rejected (%s)", exc)
+                    query_result = build_rejected_reply("scene_query", _message_id(query), error=str(exc)[:300])
+                    next_status = 0
+                    query = None
+            if query and query.get("id") != query_result.get("id"):
+                query_result = {"id": query.get("id")}
+                try:
+                    if binding_mismatch(
+                        query, config_revision=revision, scene_instance_id=runtime.info["instance_id"]
+                    ) or now > query.get("expires_at", 0.0):
                         raise ValueError("scene_query_expired_or_scene_changed")
-                    result = runtime.query_truth(query["operation"], query["params"])
-                    if time.monotonic() > query["expires_at"]:
+                    result = runtime.query_truth(query.get("operation", ""), query.get("params", {}))
+                    if time.monotonic() > query.get("expires_at", 0.0):
                         raise ValueError("scene_query_expired")
-                    query_path = directory / f"query-{query['id']}.json"
+                    query_path = directory / f"query-{query.get('id')}.json"
                     query_path.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False))
                 except Exception as exc:
                     if isinstance(exc, ValueError):
@@ -405,18 +420,27 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                         query_result["error"] = "scene_query_failed"
                 next_status = 0
             capture: dict = command.get("capture") or {}
-            capture_pending = capture and capture["id"] != capture_result.get("id")
-            capture_invalid = capture_pending and (
-                capture["config_revision"] != revision
-                or capture["scene_instance_id"] != runtime.info["instance_id"]
-                or (
-                    capture.get("camera_name", "observer") == "observer"
-                    and capture["camera_revision"] != runtime.pose["revision"]
-                )
-                or now > capture["expires_at"]
+            if capture:
+                try:
+                    capture = parse_capture_request(capture)
+                except ValueError as exc:
+                    logger.warning("Simulation capture request rejected (%s)", exc)
+                    capture_result = build_rejected_reply("capture", _message_id(capture))
+                    capture = {}
+                    next_status = 0
+            capture_pending = capture and capture.get("id") != capture_result.get("id")
+            capture_invalid = capture_pending and capture_request_invalid(
+                capture,
+                config_revision=revision,
+                scene_instance_id=runtime.info["instance_id"],
+                camera_revision=runtime.pose["revision"],
+                now=now,
             )
-            if capture_pending and (capture_invalid or physics_clock.render_ready()):
-                capture_result = {"id": capture["id"]}
+            capture_due = bool(capture_pending and capture_invalid)
+            if capture_pending and not capture_due:
+                capture_due = physics_clock.render_ready()
+            if capture_due:
+                capture_result = build_capture_error(capture.get("id"))
                 try:
                     if capture_invalid:
                         raise ValueError("Capture request expired or view changed")
@@ -424,6 +448,7 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
 
                     captured_at = time.monotonic()
                     captured_utc = datetime.now(UTC).isoformat(timespec="milliseconds")
+                    capture_base_sample = capture_body_bounds = capture_motion_id = None
                     try:
                         name = capture.get("camera_name", "observer")
                         if capture.get("include_depth", False):
@@ -432,14 +457,15 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             arm_active = getattr(runtime, "arm_motion", None) is not None and runtime.arm_motion.active
                             if runtime.motion is None or runtime.motion.active or arm_active:
                                 raise ValueError("RGB-D requires a stationary supported mobile robot")
-                            deadline = min(capture["expires_at"], captured_at + 2.0)
+                            deadline = min(capture.get("expires_at", captured_at + 2.0), captured_at + 2.0)
 
                             def check_capture(deadline=deadline, capture=capture, revision=revision):
                                 current = mailbox.read_control()
+                                current_capture = current.get("capture") or {}
                                 expired = mailbox.stopping() or time.monotonic() > deadline
                                 if (
                                     expired
-                                    or (current.get("capture") or {}).get("id") != capture["id"]
+                                    or current_capture.get("id") != capture.get("id")
                                     or current.get("config_revision", 0) != revision
                                 ):
                                     raise ValueError("RGB-D capture cancelled or expired")
@@ -453,36 +479,38 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                             runtime.renderer.last_camera["T_base_camera_mm"] = base_from_camera(
                                 np.asarray(runtime.renderer.last_camera["T_world_camera"]), base_sample
                             ).tolist()
-                            capture_result.update(
-                                base_sample=base_sample,
-                                body_bounds_m=base_body_bounds(runtime.robot.bounds, base_sample).tolist(),
-                                motion_id=runtime.motion.result.get("id"),
-                            )
-                            depth_path = directory / f"capture-{capture['id']}.npz"
+                            capture_base_sample = base_sample
+                            capture_body_bounds = base_body_bounds(runtime.robot.bounds, base_sample).tolist()
+                            capture_motion_id = runtime.motion.result.get("id")
+                            depth_path = directory / f"capture-{capture.get('id')}.npz"
                             np.savez(depth_path, rgb=pixels, depth_m=depth)
                             check_capture()
                         else:
                             pixels = rgb_array(runtime.renderer.read_rgb(name))
                     finally:
                         physics_clock.mark_render()
-                    if time.monotonic() > capture["expires_at"]:
+                    if time.monotonic() > capture.get("expires_at", 0.0):
                         raise ValueError("Capture expired during rendering")
                     height, width = pixels.shape[:2]
-                    capture_path = directory / f"capture-{capture['id']}.jpg"
+                    capture_path = directory / f"capture-{capture.get('id')}.jpg"
                     Image.fromarray(pixels).save(capture_path, quality=95)
                     del pixels
-                    capture_result.update(
+                    capture_result = build_capture_reply(
+                        capture.get("id"),
                         captured_at=captured_at,
                         captured_utc=captured_utc,
                         scene_instance_id=runtime.info["instance_id"],
                         config_revision=revision,
-                        camera_revision=capture["camera_revision"],
+                        camera_revision=capture.get("camera_revision", 0),
                         camera_name=name,
                         camera=runtime.pose.copy() if name == "observer" else runtime.renderer.last_camera.copy(),
                         step=runtime.steps,
                         width=width,
                         height=height,
                         capture_duration_ms=(time.monotonic() - captured_at) * 1000,
+                        base_sample=capture_base_sample,
+                        body_bounds_m=capture_body_bounds,
+                        motion_id=capture_motion_id,
                     )
                 except Exception as exc:
                     logger.warning("Simulation image capture failed (%s)", type(exc).__name__)
@@ -545,22 +573,38 @@ def run_preview(mailbox: Mailbox, directory: Path) -> None:
                 camera_dirty = False
                 next_frame = max(next_frame + 1 / settings.fps, time.monotonic())
             pick = command.get("pick")
-            if pick and pick["id"] != pick_result.get("id") and not camera_dirty:
-                pick_started = time.monotonic()
-                pick_result = {"id": pick["id"]}
+            if pick:
                 try:
-                    if pick["config_revision"] != revision or pick["scene_instance_id"] != runtime.info["instance_id"]:
+                    pick = parse_pick_request(pick)
+                except ValueError as exc:
+                    logger.warning("Simulation pick request rejected (%s)", exc)
+                    pick_result = build_rejected_reply("pick", _message_id(pick), error=str(exc)[:500], duration_ms=0.0)
+                    next_status = 0
+                    pick = None
+            if pick and pick.get("id") != pick_result.get("id") and not camera_dirty:
+                pick_started = time.monotonic()
+                try:
+                    stale = pick_binding_error(
+                        pick,
+                        config_revision=revision,
+                        scene_instance_id=runtime.info["instance_id"],
+                        camera_revision=runtime.pose["revision"],
+                    )
+                    if stale == "scene":
                         raise ValueError("场景已经切换，请重新点选。")
-                    if pick["action"] == "clear":
-                        runtime.selection = None
-                    elif pick["camera_revision"] != runtime.pose["revision"]:
+                    if stale == "camera":
                         raise ValueError("视角已经变化，请重新点选。")
+                    if pick.get("action") == "clear":
+                        runtime.selection = None
                     else:
-                        runtime.pick(pick["u"], pick["v"])
+                        runtime.pick(pick.get("u", 0.0), pick.get("v", 0.0))
+                    pick_result = build_pick_reply(pick.get("id"), duration_ms=(time.monotonic() - pick_started) * 1000)
                 except Exception as exc:
                     logger.exception("Simulation picking failed")
-                    pick_result["error"] = str(exc)[:500]
-                pick_result["duration_ms"] = round((time.monotonic() - pick_started) * 1000, 2)
+                    pick_result = {
+                        **build_pick_reply(pick.get("id"), duration_ms=(time.monotonic() - pick_started) * 1000),
+                        "error": str(exc)[:500],
+                    }
                 next_status = 0
             now = time.monotonic()
             if now >= next_status:
